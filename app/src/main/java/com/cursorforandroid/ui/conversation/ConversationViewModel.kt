@@ -293,6 +293,7 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
         outgoing.listener = outgoingListener
         graph.conversations.attach(agentId)
         graph.steering.attach(agentId)
+        viewModelScope.launch { graph.prefs.markTouchedHere(agentId) }
         viewModelScope.launch { loadModels() }
         viewModelScope.launch {
             // Ask and Debug travel on the account's follow-up alone: with the mode turned off under a worn pill, the

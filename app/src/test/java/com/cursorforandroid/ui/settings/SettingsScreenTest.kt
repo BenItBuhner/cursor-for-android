@@ -6,7 +6,11 @@ import androidx.activity.ComponentActivity
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertHasClickAction
 import androidx.compose.ui.test.assertHasNoClickAction
+import androidx.compose.ui.test.assertIsOff
+import androidx.compose.ui.test.assertIsOn
+import androidx.compose.ui.test.hasAnyAncestor
 import androidx.compose.ui.test.hasTestTag
+import androidx.compose.ui.test.isToggleable
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.longClick
@@ -25,6 +29,7 @@ import com.cursorforandroid.domain.CursorUser
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.ui.theme.ThemeMode
 import com.google.common.truth.Truth.assertThat
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import org.junit.Before
 import org.junit.Rule
@@ -81,10 +86,10 @@ class SettingsScreenTest {
     fun `the list is the essentials in order, and none of what was cut`() {
         composeSettings(isDemo = false)
 
-        // Account, with the way out of it, first; then appearance, notifications, the Extended mode switch, the
-        // version with its updater and the crash report consent; the one-line disclaimer last.
+        // Account, with the way out of it, first; then appearance, which chats may show as unread, notifications, the
+        // Extended mode switch, the version with its updater and the crash report consent; the one-line disclaimer last.
         val order = listOf(
-            SettingsCopy.GROUP_ACCOUNT, SettingsCopy.SIGN_OUT, SettingsCopy.GROUP_APPEARANCE, SettingsCopy.GROUP_NOTIFICATIONS,
+            SettingsCopy.GROUP_ACCOUNT, SettingsCopy.SIGN_OUT, SettingsCopy.GROUP_APPEARANCE, SettingsCopy.GROUP_CHATS, SettingsCopy.UNREAD_THIS_PHONE, SettingsCopy.GROUP_NOTIFICATIONS,
             ExtendedModeCopy.SETTING_TITLE, SettingsCopy.GROUP_UPDATES, "Version ${BuildConfig.VERSION_NAME}", CrashReportCopy.TITLE, SettingsCopy.DISCLAIMER,
         )
         val tops = order.map(::top)
@@ -148,12 +153,33 @@ class SettingsScreenTest {
         composeSettings(isDemo = true)
 
         compose.onNodeWithText(SettingsCopy.LEAVE_DEMO).assertExists()
-        assertAbsent(SettingsCopy.SIGN_OUT, ExtendedModeCopy.SETTING_TITLE)
+        // Every chat in the demo is this phone's own: the unread switch would change nothing, so it is not offered.
+        assertAbsent(SettingsCopy.SIGN_OUT, ExtendedModeCopy.SETTING_TITLE, SettingsCopy.GROUP_CHATS, SettingsCopy.UNREAD_THIS_PHONE)
         compose.onAllNodes(hasTestTag(ExtendedModeTags.TOGGLE)).assertCountEquals(0)
         // The demo has no key to describe, so its account row is not a control.
         compose.onNodeWithTag(SettingsTags.ACCOUNT_ROW).assertHasNoClickAction()
         assertThat(top(SettingsCopy.GROUP_ACCOUNT)).isLessThan(top(SettingsCopy.GROUP_APPEARANCE))
         assertThat(top(SettingsCopy.GROUP_NOTIFICATIONS)).isLessThan(top(SettingsCopy.GROUP_UPDATES))
+    }
+
+    /** On by default; the row is the switch, and what it writes is the device's setting and nothing else. */
+    @Test
+    fun `the unread switch is on by default and the row turns it off and on`() {
+        composeSettings(isDemo = false)
+        val toggle = isToggleable() and hasAnyAncestor(hasTestTag(SettingsTags.UNREAD_THIS_PHONE))
+        compose.onNodeWithText(SettingsCopy.UNREAD_THIS_PHONE_DETAIL).assertExists()
+        compose.onNode(toggle).assertIsOn()
+
+        compose.onNodeWithText(SettingsCopy.UNREAD_THIS_PHONE).performClick()
+        compose.waitUntil(10_000) { runBlocking { !graph.prefs.unreadOnlyTouchedHere.first() } }
+        compose.waitForIdle()
+        compose.onNode(toggle).assertIsOff()
+        assertThat(runBlocking { graph.prefs.localAgentState.first() }.let { it.readMarkers.isEmpty() && it.touchedHereIds.isEmpty() }).isTrue()
+
+        compose.onNodeWithText(SettingsCopy.UNREAD_THIS_PHONE).performClick()
+        compose.waitUntil(10_000) { runBlocking { graph.prefs.unreadOnlyTouchedHere.first() } }
+        compose.waitForIdle()
+        compose.onNode(toggle).assertIsOn()
     }
 
     @Test

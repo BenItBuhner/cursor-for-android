@@ -757,6 +757,7 @@ class ProjectRepository(
     suspend fun startSideChat(parentId: String, name: String?): Result<String> = action(needs = { it.projects }) { api ->
         val created = api.startSideChat(parentId, name)
         agents.applyAccountSnapshots(listOf(created.copy(parent = created.parent ?: AgentParent(parentId, AgentParentKind.SIDE_CHAT))))
+        agents.markStartedHere(created.id)
         agents.loadDetail(created.id)
         created.id
     }
