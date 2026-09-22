@@ -84,7 +84,8 @@ sealed interface TranscriptRow {
      * step, not as a summary of it; a note is never drawn alone, it reads under the summary with the rest.
      */
     data class Stretch(val entries: List<Entry>, val live: Boolean = false) : TranscriptRow {
-        override val key: String get() = "stretch:${entries.first().key}"
+        // By its first step's own key: an event it opens with keeps it when the next event folds the two into a group.
+        override val key: String get() = "stretch:${entries.first().let { first -> (first as? Entry.Events)?.group?.rows?.first()?.key ?: first.key }}"
 
         /**
          * The one entry a stretch of one step is drawn as, or null for a stretch worth a summary. A failed run with
