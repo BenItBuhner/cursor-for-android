@@ -46,6 +46,14 @@ object CursorDimens {
     /** Visual box of a flat icon button; the touch target is [touchTarget]. */
     val iconButton = 32.dp
     val touchTarget = 44.dp
+    /** Android's minimum touch target (`ViewConfiguration.minimumTouchTargetSize`). */
+    val minTouchTarget = 48.dp
+    /**
+     * A chat's header row, which holds its controls and no title: as short as a [minTouchTarget] target centred on
+     * each [iconButton] allows without reaching above the row into the status bar, so the buttons stand
+     * `(minTouchTarget - iconButton) / 2` below the row's top and the row ends at their bottom edge.
+     */
+    val chatHeaderHeight = minTouchTarget / 2 + iconButton / 2
     val chevron = 16.dp
     /** Sidebar rows. */
     val sidebarRow = 36.dp
