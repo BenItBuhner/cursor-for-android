@@ -249,11 +249,12 @@ internal fun WorkerActionRow(call: ToolCall, action: ToolPayload.WorkerAction, m
         ToolPayload.WorkerAction.Kind.ReadTranscript -> if (call.isRunning) "Reading the transcript of" else "Read the transcript of"
         else -> call.action
     }
+    val taps = LocalDisclosureTaps.current
     Column(modifier.fillMaxWidth().testTag("worker-action")) {
         Row(
             Modifier
                 .fillMaxWidth()
-                .pressable({ expanded = !expanded }, CursorTheme.shapes.base, enabled = expandable)
+                .pressable({ taps.toggling(opening = !expanded); expanded = !expanded }, CursorTheme.shapes.base, enabled = expandable)
                 .heightIn(min = 24.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {

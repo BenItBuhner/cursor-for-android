@@ -32,6 +32,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
@@ -124,9 +125,8 @@ internal fun ConversationState.showsWorkingRow(): Boolean {
  * One chat: a header of controls alone (back, its pull request once it has one, the panel, the menu; the agent's name
  * is the header's accessibility label and the panel's header), the transcript, and the follow-up composer.
  *
- * The transcript is a bottom-anchored (`reverseLayout`) list, which is what keeps it stable while a run streams: the
- * newest item grows upward from the bottom edge without moving anything the reader is looking at, and a reader who
- * has scrolled up stays put. New items snap the list back to the bottom only while the reader is following along.
+ * The transcript follows the newest row while the reader is at the bottom, bottom-anchored, and holds what is on
+ * screen, top-anchored, once they have scrolled away or opened a dropdown (see [TranscriptScroll]).
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -228,6 +228,7 @@ fun ConversationScreen(
     // The turns just past the top edge are composed ahead of time, so the keyboard leaving uncovers rows that are
     // already built rather than building them on the frames of its animation (see TranscriptPrefetchStrategy).
     val listState = rememberLazyListState(prefetchStrategy = remember { TranscriptPrefetchStrategy() })
+    val transcriptScroll = rememberTranscriptScroll(listState, agentId)
     val scope = rememberCoroutineScope()
     var menuOpen by rememberSaveable { mutableStateOf(false) }
     var modelSheet by rememberSaveable { mutableStateOf(false) }
@@ -273,38 +274,48 @@ fun ConversationScreen(
     val canReadStores = capabilities.projects && !isDemo
     var openStorePath by rememberSaveable(agentId) { mutableStateOf<String?>(null) }
 
-    // In a reversed list index 0 is the newest item, so "at the bottom" is "first item, (almost) no offset".
-    val atBottom by remember {
-        derivedStateOf { listState.firstVisibleItemIndex == 0 && listState.firstVisibleItemScrollOffset <= BottomTolerancePx }
-    }
-    // Whether the reader wants to follow the newest content. Only the reader's own scrolls change it: a new item
-    // arriving cannot knock the list out of follow mode.
-    var following by remember { mutableStateOf(true) }
-    LaunchedEffect(listState) {
-        snapshotFlow { listState.isScrollInProgress }.collect { scrolling -> if (!scrolling) following = atBottom }
-    }
-    val newestKey = rows.lastOrNull()?.key
-    LaunchedEffect(rows.size, newestKey, showWorking) {
-        if (following) listState.requestScrollToItem(0)
-    }
-    // The chat opens on its newest turns; the ones before them are paged in when the reader scrolls up to them. In a
-    // reversed list the top is the highest index, so nearing it is the last visible item being within a few rows of
-    // the end — and only the reader's scroll asks: a gesture arms one page, a fling under way keeps asking as its
-    // rows come into reach, and a transcript short enough to show its oldest row at rest asks for nothing until the
-    // reader moves it. Until 0.3.47 the list asked whenever its end was in view: a coordinator's turns fold into a
-    // few rows, so a Project of 240 turns paged itself in whole, page after page, every turn's log replayed behind
-    // it, and again on every reopen (Bennett, 2026-09-20). "Older messages" stays a tap away at rest.
     val hasOlder = conversation.hasOlder
     val isLoadingOlder = conversation.isLoadingOlder
+    val showTraces = items.isNotEmpty() && conversation.traceStatus.let { it.pending + it.expired + it.failed > 0 }
+    val loadingRow = conversation.isLoading && items.isEmpty()
+    val emptyRow = !conversation.isLoading && items.isEmpty()
+    // Everything the list holds, top to bottom: the rows between the items above them and the working caption below.
+    val order = remember(rows, showWorking, showTraces, hasOlder, loadingRow, emptyRow) {
+        TranscriptOrder(
+            above = listOfNotNull(
+                LOADING_KEY.takeIf { loadingRow },
+                EMPTY_KEY.takeIf { emptyRow },
+                OLDER_KEY.takeIf { hasOlder && items.isNotEmpty() },
+                TRACES_KEY.takeIf { showTraces },
+            ),
+            rows = rows,
+            below = listOfNotNull(WORKING_KEY.takeIf { showWorking }),
+        )
+    }
+    val following = transcriptScroll.following
+    // The order the list was last measured in, which is what its scroll bounds are in: the fades read the two together.
+    val listReversed by remember(listState) { derivedStateOf { listState.layoutInfo.reverseLayout } }
+    // Following, a new row lands past the bottom edge, where the list's keyed anchoring leaves it; the list is taken
+    // back to it. Pinned, it stays there.
+    LaunchedEffect(rows.size, rows.lastOrNull()?.key, showWorking) {
+        if (transcriptScroll.following) listState.requestScrollToItem(0)
+    }
+    // The chat opens on its newest turns; the ones before them are paged in when the reader scrolls up to them:
+    // nearing the top is having only a few items above the top-most one in view — and only the reader's scroll asks:
+    // a gesture arms one page, a fling under way keeps asking as its rows come into reach, and a transcript short
+    // enough to show its oldest row at rest asks for nothing until the reader moves it. Until 0.3.47 the list asked
+    // whenever its end was in view: a coordinator's turns fold into a few rows, so a Project of 240 turns paged itself
+    // in whole, page after page, every turn's log replayed behind it, and again on every reopen (Bennett,
+    // 2026-09-20). "Older messages" stays a tap away at rest.
     var olderArmed by remember(agentId) { mutableStateOf(false) }
     LaunchedEffect(listState) {
         snapshotFlow { listState.isScrollInProgress }.collect { scrolling -> if (scrolling) olderArmed = true }
     }
     LaunchedEffect(listState, hasOlder, isLoadingOlder) {
         if (!hasOlder || isLoadingOlder) return@LaunchedEffect
-        snapshotFlow { listState.layoutInfo.let { info -> (info.visibleItemsInfo.lastOrNull()?.index ?: -1) to info.totalItemsCount } }
-            .collect { (lastVisible, total) ->
-                if ((olderArmed || listState.isScrollInProgress) && total > 0 && lastVisible >= total - OlderTurnsPrefetchRows) {
+        snapshotFlow { listState.layoutInfo.let { info -> TranscriptScroll.itemsAbove(info) to info.totalItemsCount } }
+            .collect { (above, total) ->
+                if ((olderArmed || listState.isScrollInProgress) && total > 0 && above < OlderTurnsPrefetchRows) {
                     olderArmed = false
                     viewModel.loadOlder()
                 }
@@ -422,91 +433,96 @@ fun ConversationScreen(
 
         Box(Modifier.weight(1f).fillMaxWidth()) {
             val paneWidth = Modifier.widthIn(max = CursorDimens.composerMaxWidth).fillMaxWidth()
-            // The media context is the same for every row, so it is provided once around the list rather than
-            // opening a provider scope per item.
-            CompositionLocalProvider(LocalMarkdownMedia provides markdownMedia, LocalTranscriptControls provides transcriptControls) {
-                LazyColumn(
-                    state = listState,
-                    reverseLayout = true,
-                    // Not fillMaxSize: a short transcript then sizes to its content and reads from the top. Once it
-                    // overflows, the items dissolve at whichever edge still has transcript past it rather than clipping
-                    // flat against the header or the composer. The fade is painted in the canvas colour: this list is
-                    // resized on every frame the keyboard moves, and an offscreen dissolve would re-allocate and
-                    // re-render a full-screen layer on each of them.
-                    modifier = Modifier.fillMaxWidth().align(Alignment.TopCenter).scrollEdgeFade(listState, reverseLayout = true, surface = colors.canvas),
-                    contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 6.dp, bottom = 12.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                ) {
-                    if (showWorking) {
-                        item("working") {
-                            // A dropped connection is not the run's problem: the agent keeps working while the stream
-                            // is re-established, so the caption keeps shimmering and only its wording says what is
-                            // going on. The caption is the whole indicator, as in the web chat: no glyph beside it.
-                            val caption = when {
-                                conversation.runStatus == RunStatus.CREATING -> "Starting…"
-                                conversation.isReconnecting -> "Reconnecting…"
-                                else -> "Working…"
-                            }
-                            Box(paneWidth) {
-                                ShimmerText(caption, style = type.base)
-                            }
+            // The items above and below the rows, by their keys in [order].
+            val edgeItem: @Composable (String) -> Unit = { key ->
+                when (key) {
+                    WORKING_KEY -> {
+                        // A dropped connection is not the run's problem: the agent keeps working while the stream
+                        // is re-established, so the caption keeps shimmering and only its wording says what is
+                        // going on. The caption is the whole indicator, as in the web chat: no glyph beside it.
+                        val caption = when {
+                            conversation.runStatus == RunStatus.CREATING -> "Starting…"
+                            conversation.isReconnecting -> "Reconnecting…"
+                            else -> "Working…"
                         }
-                    }
-                    // Without a content type the lazy layout offers a scrolled-off user bubble's slot to an activity
-                    // group, whose subtree shares nothing with it: the reuse always fails and costs more than it saves.
-                    items(rows.asReversed(), key = { it.key }, contentType = { it::class }) { row ->
-                        TranscriptRowView(row, paneWidth)
+                        Box(paneWidth) {
+                            ShimmerText(caption, style = type.base)
+                        }
                     }
                     // Where the window's traces stand, when not every turn shown has its activity: the turns being
                     // read or replayed, the ones whose logs Cursor no longer has, the ones that could not be read
                     // this time (with a Retry). Above the oldest turn shown, where the missing activity would be
                     // noticed; nothing when every turn is whole.
-                    if (items.isNotEmpty() && conversation.traceStatus.let { it.pending + it.expired + it.failed > 0 }) {
-                        item("traces") {
-                            TraceStatusRow(conversation.traceStatus, onRetry = viewModel::retryTraces, modifier = paneWidth)
-                        }
-                    }
+                    TRACES_KEY -> TraceStatusRow(conversation.traceStatus, onRetry = viewModel::retryTraces, modifier = paneWidth)
                     // Past the oldest turn shown: the turns before it, being paged in, or a tap away when the
                     // reader's scroll did not reach far enough to ask for them.
-                    if (hasOlder && items.isNotEmpty()) {
-                        item("older") {
-                            OlderTurnsRow(isLoading = isLoadingOlder, onLoad = viewModel::loadOlder, modifier = paneWidth)
+                    OLDER_KEY -> OlderTurnsRow(isLoading = isLoadingOlder, onLoad = viewModel::loadOlder, modifier = paneWidth)
+                    EMPTY_KEY -> {
+                        val failure = conversation.error ?: conversation.transcriptError?.let { "Couldn't load the transcript: $it" }
+                        if (failure != null) {
+                            // Nothing loaded at all: the failure is the screen, with the same two ways out, at
+                            // the transcript's own margins rather than the dock's.
+                            LoadErrorRow(
+                                message = failure,
+                                onRetry = viewModel::reload,
+                                onShareDiagnostics = { scope.launch { panelActions.shareText(viewModel.loadDiagnosticsReport()) } },
+                                modifier = paneWidth.padding(top = 32.dp),
+                                docked = false,
+                            )
+                        } else {
+                            Text(
+                                if (conversation.transcriptUnavailable) "The transcript isn't available for this chat." else "Nothing here yet.",
+                                style = type.base,
+                                color = colors.textQuaternary,
+                                modifier = Modifier.padding(top = 32.dp),
+                            )
                         }
                     }
-                    if (!conversation.isLoading && items.isEmpty()) {
-                        item("empty") {
-                            val failure = conversation.error ?: conversation.transcriptError?.let { "Couldn't load the transcript: $it" }
-                            if (failure != null) {
-                                // Nothing loaded at all: the failure is the screen, with the same two ways out, at
-                                // the transcript's own margins rather than the dock's.
-                                LoadErrorRow(
-                                    message = failure,
-                                    onRetry = viewModel::reload,
-                                    onShareDiagnostics = { scope.launch { panelActions.shareText(viewModel.loadDiagnosticsReport()) } },
-                                    modifier = paneWidth.padding(top = 32.dp),
-                                    docked = false,
-                                )
-                            } else {
-                                Text(
-                                    if (conversation.transcriptUnavailable) "The transcript isn't available for this chat." else "Nothing here yet.",
-                                    style = type.base,
-                                    color = colors.textQuaternary,
-                                    modifier = Modifier.padding(top = 32.dp),
-                                )
-                            }
-                        }
-                    }
-                    if (conversation.isLoading && items.isEmpty()) {
-                        item("loading") {
-                            Row(Modifier.fillMaxWidth().padding(top = 24.dp), horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
-                                SpinnerRing(size = 14.dp)
-                                Spacer(Modifier.width(8.dp))
-                                Text("Loading…", style = type.base, color = colors.textQuaternary)
-                            }
-                        }
+                    LOADING_KEY -> Row(Modifier.fillMaxWidth().padding(top = 24.dp), horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
+                        SpinnerRing(size = 14.dp)
+                        Spacer(Modifier.width(8.dp))
+                        Text("Loading…", style = type.base, color = colors.textQuaternary)
                     }
                 }
+            }
+            // The media context is the same for every row, so it is provided once around the list rather than
+            // opening a provider scope per item.
+            CompositionLocalProvider(
+                LocalMarkdownMedia provides markdownMedia,
+                LocalTranscriptControls provides transcriptControls,
+                LocalDisclosureTaps provides transcriptScroll,
+            ) {
+                LazyColumn(
+                    state = listState,
+                    reverseLayout = following,
+                    // The reader's scroll is the transcript's own, the same way in both orders (see readerScrolling).
+                    userScrollEnabled = false,
+                    // Not fillMaxSize: a short transcript then sizes to its content and reads from the top. Once it
+                    // overflows, the items dissolve at whichever edge still has transcript past it rather than clipping
+                    // flat against the header or the composer. The fade is painted in the canvas colour: this list is
+                    // resized on every frame the keyboard moves, and an offscreen dissolve would re-allocate and
+                    // re-render a full-screen layer on each of them.
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .align(Alignment.TopCenter)
+                        .scrollEdgeFade(listState, reverseLayout = listReversed, surface = colors.canvas)
+                        .readerScrolling(transcriptScroll),
+                    contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 6.dp, bottom = 12.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    // A following list is declared bottom-up, the newest row first (see TranscriptScroll). Each kind of
+                    // item has one call site for both orders: a row declared from two would be a different group in
+                    // each, and every switch would rebuild every row on screen and drop what the reader had opened.
+                    fun edge(key: String) = item(key) { edgeItem(key) }
+                    val (before, after) = if (following) order.below.asReversed() to order.above.asReversed() else order.above to order.below
+                    before.forEach(::edge)
+                    // Without a content type the lazy layout offers a scrolled-off user bubble's slot to an activity
+                    // group, whose subtree shares nothing with it: the reuse always fails and costs more than it saves.
+                    items(if (following) rows.asReversed() else rows, key = { it.key }, contentType = { it::class }) { row -> TranscriptRowView(row, paneWidth) }
+                    after.forEach(::edge)
+                }
+                SideEffect { transcriptScroll.orient(following, order) }
             }
 
             androidx.compose.animation.AnimatedVisibility(
@@ -520,7 +536,7 @@ fun ConversationScreen(
                         // The flat icon-button box: one step up from the composer's round buttons it floats above.
                         .size(CursorDimens.iconButton)
                         .cursorSurface(colors.elevated, colors.strokeStrong, CircleShape)
-                        .pressable({ scope.launch { listState.animateScrollToItem(0) } }, CircleShape),
+                        .pressable({ scope.launch { transcriptScroll.jumpToBottom() } }, CircleShape),
                     contentAlignment = Alignment.Center,
                 ) {
                     Icon(CursorIcons.ArrowDown, "Scroll to latest", tint = colors.iconPrimary, modifier = Modifier.size(16.dp))
@@ -701,8 +717,12 @@ fun ConversationScreen(
     RunStopDialog(stopConfirmation)
 }
 
-/** How far (px) the newest item may be scrolled past before the reader counts as having left the bottom. */
-private const val BottomTolerancePx = 48
+/** The keys of the list's items that are not rows of the transcript (see [TranscriptOrder]). */
+private const val WORKING_KEY = "working"
+private const val TRACES_KEY = "traces"
+private const val OLDER_KEY = "older"
+private const val EMPTY_KEY = "empty"
+private const val LOADING_KEY = "loading"
 
 /**
  * How many rows from the oldest one shown the reader may be before the turns before it are asked for: about a

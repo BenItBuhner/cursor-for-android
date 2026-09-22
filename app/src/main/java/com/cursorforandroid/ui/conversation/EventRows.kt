@@ -79,8 +79,9 @@ internal fun EventRow(item: SystemNotification, count: Int = 1, modifier: Modifi
     // A worker's (or a cloud subagent's) report names the agent it came from: the row can take the reader there.
     val controls = LocalTranscriptControls.current
     val openAgent = item.agentId?.let { id -> controls.onOpenAgent?.let { handler -> { handler(id) } } }
+    val taps = LocalDisclosureTaps.current
     val onClick: (() -> Unit)? = when {
-        body != null -> ({ expanded = !expanded })
+        body != null -> ({ taps.toggling(opening = !expanded); expanded = !expanded })
         openAgent != null -> openAgent
         else -> null
     }
@@ -190,10 +191,11 @@ internal fun RunFailureRow(footer: RunFooter, modifier: Modifier = Modifier) {
     var tailCut by remember(reason) { mutableStateOf(false) }
     val chevron by animateFloatAsState(if (expanded) 180f else 0f, tween(180), label = "chevron")
     val opens = reason != null && (tailCut || reason.contains('\n'))
+    val taps = LocalDisclosureTaps.current
     Column(modifier.fillMaxWidth().testTag("run-failure")) {
         MessageActions(
             text = listOfNotNull(RUN_FAILED, reason).joinToString(": "),
-            onClick = if (opens) ({ expanded = !expanded }) else null,
+            onClick = if (opens) ({ taps.toggling(opening = !expanded); expanded = !expanded }) else null,
             modifier = Modifier.offset(x = (-6).dp).clip(CursorTheme.shapes.base),
         ) {
             Row(Modifier.heightIn(min = 28.dp).padding(horizontal = 6.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -285,11 +287,12 @@ internal fun EventGroupView(group: TranscriptRow.Events, modifier: Modifier = Mo
     var expanded by rememberSaveable(group.key) { mutableStateOf(group.startsOpen) }
     val summary = group.summary
     val chevron by animateFloatAsState(if (expanded) 180f else 0f, tween(180), label = "chevron")
+    val taps = LocalDisclosureTaps.current
     Column(modifier.fillMaxWidth().testTag("event-group")) {
         Row(
             Modifier
                 .offset(x = (-6).dp)
-                .pressable({ expanded = !expanded }, CursorTheme.shapes.base)
+                .pressable({ taps.toggling(opening = !expanded); expanded = !expanded }, CursorTheme.shapes.base)
                 .heightIn(min = 28.dp)
                 .padding(horizontal = 6.dp)
                 .semantics { contentDescription = if (expanded) "Hide events" else "Show events" },

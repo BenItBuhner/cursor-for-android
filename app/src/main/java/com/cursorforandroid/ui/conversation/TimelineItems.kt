@@ -375,10 +375,11 @@ internal fun DisclosureRow(
 ) {
     val colors = CursorTheme.colors
     val chevron by animateFloatAsState(if (expanded) 90f else 0f, tween(180), label = "chevron")
+    val taps = LocalDisclosureTaps.current
     Row(
         Modifier
             .offset(x = (-6).dp)
-            .pressable(onToggle, CursorTheme.shapes.base, enabled = expandable)
+            .pressable({ taps.toggling(opening = !expanded); onToggle() }, CursorTheme.shapes.base, enabled = expandable)
             .heightIn(min = 28.dp)
             .padding(horizontal = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -534,11 +535,12 @@ internal fun ToolCallLine(call: ToolCall, modifier: Modifier = Modifier) {
     val showOutput = !output.isEmpty && !(output.output == null && (call.payload is ToolPayload.FileDiff || call.payload is ToolPayload.FileContent))
     val expandable = showOutput || payload || truncated
     var expanded by rememberSaveable(key = call.callId) { mutableStateOf(false) }
+    val taps = LocalDisclosureTaps.current
     Column(modifier.fillMaxWidth()) {
         Row(
             Modifier
                 .offset(x = (-6).dp)
-                .pressable({ expanded = !expanded }, CursorTheme.shapes.base, enabled = expandable)
+                .pressable({ taps.toggling(opening = !expanded); expanded = !expanded }, CursorTheme.shapes.base, enabled = expandable)
                 .heightIn(min = 24.dp)
                 .padding(horizontal = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
