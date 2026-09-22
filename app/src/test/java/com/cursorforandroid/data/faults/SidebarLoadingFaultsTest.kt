@@ -336,13 +336,18 @@ class SidebarLoadingFaultsTest {
         val refusal = Fault.Status(429, "rate_limited", "Too many requests from this key.", retryAfter = "1")
         server.script(Route.AccountList, Fault.Pass, Fault.Pass, refusal, refusal)
         rig.agents.refresh()
-        // The scan ran into the refusals: a partial pass of one page, with a retry scheduled — and not Running.
-        rig.awaitUntil(60_000) { rig.projects.lastRootScan.value?.let { it.status == RootScanRecord.Status.Partial && it.pagesRead == 1 } == true }
-        assertThat(rig.projects.lastRootScan.value?.notice).contains("page 2")
+        // The scan ran into the refusals: a partial pass of one page, with a retry scheduled — and not Running. The
+        // record is read in the one reading that found it partial: the retry is a second away, and a record read
+        // again after the wait may be the retry's.
+        var partial: RootScanRecord? = null
+        rig.awaitUntil(60_000) { rig.projects.lastRootScan.value?.takeIf { it.status == RootScanRecord.Status.Partial && it.pagesRead == 1 }?.also { partial = it } != null }
+        assertThat(partial!!.notice).contains("page 2")
         assertThat(rig.agents.registryCompleteAtMillis).isNull()
 
-        // The retry (the refusals are spent) reads the whole list and the registry is complete.
-        rig.awaitUntil(60_000) { rig.projects.lastRootScan.value?.status == RootScanRecord.Status.Done }
+        // The retry (the refusals are spent) reads the whole list and the registry is complete. The watcher is let go
+        // once it has seen the end itself: it collects on the rig's threads, and the pass's last word reaching the
+        // flow is not its reaching the watcher (#289's CI cancelled it in between and read no Done).
+        rig.awaitUntil(60_000) { statuses.lastOrNull()?.second == RootScanRecord.Status.Done }
         watcher.cancel()
         // Running was never held longer than a pass's pages take: every Running stretch ended within the bound.
         statuses.zipWithNext().forEach { (a, b) -> if (a.second == RootScanRecord.Status.Running) assertWithMessage("Running for ${b.first - a.first} ms").that(b.first - a.first).isAtMost(30_000L) }
