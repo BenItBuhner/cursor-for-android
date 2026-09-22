@@ -107,7 +107,7 @@ class FaultServer(
      * names it for [queueLagMs] (the account's bookkeeping trails the run it starts, and a poll that began before is
      * older still). Null while it waits.
      */
-    data class Pending(val followupId: String, val text: String, val createdAtMs: Long, @Volatile var consumedAtMs: Long? = null) {
+    data class Pending(val followupId: String, val text: String, val createdAtMs: Long, @Volatile var consumedAtMs: Long? = null, val runId: String? = null) {
         /** When the account consumed it, by the server's own monotonic clock (the app's clock is frozen in most tests). */
         @Volatile var consumedAtServerMs: Long? = null
     }
@@ -116,6 +116,15 @@ class FaultServer(
     val pending: MutableMap<String, MutableList<Pending>> = ConcurrentHashMap()
     /** How long the account's list keeps naming a followup after the run it started (or the steer it became) exists. */
     @Volatile var queueLagMs: Long = 0L
+    /**
+     * A Project's coordinator: behind a turn under way the account names, in its answer, the run the queued message
+     * will start ([Pending.runId]) and starts that very run once the turn is over (see [deliverNext]), the list naming
+     * the message as waiting meanwhile — what Bennett's frames of 2026-09-20 23:24, 2026-09-21 09:18 and 2026-09-22
+     * 19:42 show the account answering in Projects. Off, an ordinary chat's answer: no run until one starts.
+     */
+    @Volatile var namesQueuedRuns = false
+    /** With [namesQueuedRuns], the run list also carries the named run as `CREATING` while it waits (not seen on the account; the app must not follow it either way). */
+    @Volatile var listsQueuedRuns = false
     /** Whether the account may start the next run on a queued message on its own the moment the turn ends (see [endTurn]); tests deliver by hand otherwise. */
     @Volatile var autoDeliver = false
     /** The followups delivered, in order, and the run each started (a steer's run is the one it was delivered into). */
@@ -457,8 +466,9 @@ class FaultServer(
 
     /**
      * `AddAsyncFollowupBackgroundComposer {bcId, followup, followupId, synchronous, …}`: behind a turn under way the
-     * message joins the account's queue and the answer names no run; on a free agent (or sent `synchronous`) the
-     * account starts the run at once and names it, filing the prompt in the transcript as `POST /runs` does.
+     * message joins the account's queue and the answer names no run — a Project's names the run it will start (see
+     * [namesQueuedRuns]); on a free agent (or sent `synchronous`) the account starts the run at once and names it,
+     * filing the prompt in the transcript as `POST /runs` does.
      */
     private fun queueAdd(request: RecordedRequest, processed: Boolean): MockResponse {
         val body = CursorJson.parseToJsonElement(request.body.readUtf8()).jsonObject
@@ -470,8 +480,18 @@ class FaultServer(
         if (!processed) return json(500, connectError("internal", "The fault said this request was never processed."))
         val onATurn = agent.latestRunId?.let { runs[it]?.status }?.let { com.cursorforandroid.domain.RunStatus.parse(it).isActive } == true
         if (onATurn && !synchronous) {
-            pending.getOrPut(agentId) { CopyOnWriteArrayList() } += Pending(followupId, text, clock())
-            return json(200, "{}")
+            if (!namesQueuedRuns) {
+                pending.getOrPut(agentId) { CopyOnWriteArrayList() } += Pending(followupId, text, clock())
+                return json(200, "{}")
+            }
+            val sequence = ids.incrementAndGet()
+            val runId = "run-followup-$sequence"
+            if (listsQueuedRuns) {
+                val at = Instant.ofEpochMilli(clock() + sequence).toString()
+                runs[runId] = RunDto(id = runId, agentId = agentId, status = "CREATING", createdAt = at, updatedAt = at)
+            }
+            pending.getOrPut(agentId) { CopyOnWriteArrayList() } += Pending(followupId, text, clock(), runId = runId)
+            return json(200, """{"runId":"$runId"}""")
         }
         val run = startRun(agentId, text)
         // A message the account starts the run on at once still passes through its queue: the list names it for
@@ -541,11 +561,11 @@ class FaultServer(
         return json(200, """{"outcome":"OUTCOME_QUEUED"}""")
     }
 
-    /** The account starts a run on [text] now: the run record, the agent's latest, the transcript's prompt. */
-    private fun startRun(agentId: String, text: String): RunDto {
+    /** The account starts a run on [text] now — [named] when it named one when it took the message: the run record, the agent's latest, the transcript's prompt. */
+    private fun startRun(agentId: String, text: String, named: String? = null): RunDto {
         val agent = agents.getValue(agentId)
         val sequence = ids.incrementAndGet()
-        val runId = "run-followup-$sequence"
+        val runId = named ?: "run-followup-$sequence"
         val now = Instant.ofEpochMilli(clock() + sequence).toString()
         val run = RunDto(id = runId, agentId = agentId, status = "RUNNING", createdAt = now, updatedAt = now)
         runs[runId] = run
@@ -563,7 +583,7 @@ class FaultServer(
      */
     fun deliverNext(agentId: String, log: List<Pair<String, String>> = emptyList()): RunDto? {
         val next = pending[agentId]?.firstOrNull { it.consumedAtMs == null } ?: return null
-        val run = startRun(agentId, next.text)
+        val run = startRun(agentId, next.text, named = next.runId)
         logs[run.id] = log
         next.consumedAtMs = clock()
         next.consumedAtServerMs = nowMillis()

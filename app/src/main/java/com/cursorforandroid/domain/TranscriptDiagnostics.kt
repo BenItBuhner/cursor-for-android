@@ -63,7 +63,18 @@ data class TranscriptLoadDiagnostics(
      * whether a coordinator's messages are in the record at all, and in what shape, when they are not on screen.
      */
     val shapes: List<TurnShape> = emptyList(),
+    /** The messages sent from here that the account holds behind a turn (see [QueuedLine]); empty when none. */
+    val queued: List<QueuedLine> = emptyList(),
 ) {
+    /**
+     * One message the account took behind a turn: where it is shown ([place]: `transcript`, a Project's; `card`, a
+     * chat's), the run the account named for it when it answered ([runTail], null when it named none), the run it waits
+     * behind ([behindTail]), and whether the account's last list still named it ([listed], null when not known here).
+     */
+    data class QueuedLine(val place: String, val runTail: String?, val behindTail: String?, val listed: Boolean?) {
+        val text: String get() = "[$place run=${runTail ?: "none"} behind=${behindTail ?: "-"}" + (listed?.let { " listed=$it" } ?: "") + "]"
+    }
+
     /**
      * [shown] is the status the screen has; [latestRun] the latest run record's; [streaming] whether a stream is open
      * on it; [rowRunning] the row's word; [accountRunning] the account list's running set's (Extended mode);
@@ -265,6 +276,7 @@ object TranscriptDiagnostics {
             "traces: shown=$shown of ${load.runs.count { it.trace != "live" }} queue=${load.traceQueue} inFlight=${load.traceInFlight} worker=${load.traceWorkerRunning} expiredRuns=${load.expiredRuns} expiredBefore=${load.expiredBeforeIso ?: "-"} failed=${load.failedTraces}",
         )
         load.runs.forEach { appendLine("  run ${it.idTail} ${it.status} trace=${it.trace} items=${it.items}" + (it.message?.let { m -> " sendMessage: $m" } ?: "")) }
+        if (load.queued.isNotEmpty()) appendLine("queued: ${load.queued.size} " + load.queued.joinToString(" ") { it.text })
         appendLine(
             "live: run=${load.liveRunId?.let { ProjectDiagnostics.tail(it) } ?: "-"} following=${load.following}" +
                 (load.liveStream?.let { " stream=events:${it.events},status:${it.status},reconnecting:${it.reconnecting},expired:${it.expired},finished:${it.finished},items:${it.items}" } ?: " stream=none"),
