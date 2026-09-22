@@ -55,6 +55,7 @@ import com.cursorforandroid.ui.components.dockedCard
 import com.cursorforandroid.ui.components.highlightSlashCommands
 import com.cursorforandroid.ui.components.icon
 import com.cursorforandroid.ui.components.slashCommandTint
+import com.cursorforandroid.ui.components.stylusWriting
 import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.util.AppClock
@@ -302,7 +303,7 @@ private fun AccountQueueRow(
                 cursorBrush = SolidColor(colors.textPrimary),
                 // The commands painted as they are reworded, the way the composer paints them.
                 visualTransformation = SlashCommandVisualTransformation(slashCommandTint()),
-                modifier = Modifier.weight(1f).padding(vertical = 8.dp).testTag("account-queue-edit"),
+                modifier = Modifier.weight(1f).stylusWriting().padding(vertical = 8.dp).testTag("account-queue-edit"),
             )
             Spacer(Modifier.width(8.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {

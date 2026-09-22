@@ -67,6 +67,7 @@ import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.zIndex
 import com.cursorforandroid.data.media.MediaLoader
 import com.cursorforandroid.domain.AgentListOrganizer
 import com.cursorforandroid.domain.CursorUser
@@ -76,6 +77,7 @@ import com.cursorforandroid.ui.components.FlatIconButton
 import com.cursorforandroid.ui.components.pressable
 import com.cursorforandroid.ui.components.SpinnerRing
 import com.cursorforandroid.ui.components.scrollEdgeFade
+import com.cursorforandroid.ui.components.stylusWriting
 import com.cursorforandroid.ui.settings.ExtendedModeCopy
 import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
@@ -192,7 +194,14 @@ fun Sidebar(
             }
         }
 
-        AnimatedVisibility(visible = searching, enter = expandVertically(tween(160)) + fadeIn(tween(160)), exit = shrinkVertically(tween(140)) + fadeOut(tween(100))) {
+        // A pen writes into the search from its row and the slack around it, outside the reveal's clip, and before the
+        // list under it gets to call the stroke a scroll: drawn over the list, it is hit first.
+        AnimatedVisibility(
+            visible = searching,
+            enter = expandVertically(tween(160)) + fadeIn(tween(160)),
+            exit = shrinkVertically(tween(140)) + fadeOut(tween(100)),
+            modifier = Modifier.zIndex(1f).stylusWriting(enabled = searching),
+        ) {
             SearchField(
                 value = query,
                 onValueChange = ::setSearchQuery,
@@ -443,6 +452,7 @@ private fun SearchField(value: String, onValueChange: (String) -> Unit, onClose:
             .background(colors.fillFaint, shape)
             .border(CursorDimens.hairline, colors.strokeSubtle, shape)
             .height(CursorDimens.sidebarRow)
+            .testTag("sidebar-search")
             .padding(start = 10.dp, end = 2.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {

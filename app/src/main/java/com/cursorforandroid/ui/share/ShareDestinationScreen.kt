@@ -48,6 +48,7 @@ import com.cursorforandroid.ui.components.GroupLabel
 import com.cursorforandroid.ui.components.hitTestBoundary
 import com.cursorforandroid.ui.components.pressable
 import com.cursorforandroid.ui.components.scrollEdgeFade
+import com.cursorforandroid.ui.components.stylusWriting
 import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
 
@@ -179,6 +180,7 @@ private fun SearchField(value: String, onValueChange: (String) -> Unit, onClear:
         Modifier
             .fillMaxWidth()
             .padding(horizontal = CursorDimens.selectionInset, vertical = 4.dp)
+            .stylusWriting()
             .background(colors.fillFaint, shape)
             .border(CursorDimens.hairline, colors.strokeSubtle, shape)
             .height(CursorDimens.sidebarRow)

@@ -311,8 +311,8 @@ fun ComposerBox(
         }
         // The Box is the popover's anchor: it drops from the text, over the footer, like the web's.
         // The extra inset is on the Box so the popover stays under the glyphs, not under the corner,
-        // and the top/bottom air matches the left/right.
-        Box(Modifier.padding(CursorDimens.composerTextInset)) {
+        // and the top/bottom air matches the left/right. It is also where a pen writes, out to the box's rounded edge.
+        Box(Modifier.stylusWriting().padding(CursorDimens.composerTextInset)) {
             // The field's layout, handed over as it is measured and read back as the command highlight draws.
             val textLayout = remember { TextLayoutHandle() }
             BasicTextField(

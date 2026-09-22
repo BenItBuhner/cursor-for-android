@@ -58,6 +58,7 @@ import com.cursorforandroid.ui.components.CursorIcons
 import com.cursorforandroid.ui.components.ProjectGlyph
 import com.cursorforandroid.ui.components.RunningGlyph
 import com.cursorforandroid.ui.components.StateGlyph
+import com.cursorforandroid.ui.components.stylusWriting
 import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.util.AppClock
@@ -293,6 +294,7 @@ fun RenameChatDialog(
             Box(
                 Modifier
                     .fillMaxWidth()
+                    .stylusWriting()
                     .background(colors.fillFaint, CursorTheme.shapes.base)
                     .padding(horizontal = 12.dp, vertical = 10.dp),
             ) {

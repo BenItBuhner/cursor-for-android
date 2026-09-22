@@ -336,6 +336,7 @@ private fun MenuSearchField(value: String, onValueChange: (String) -> Unit, plac
         Modifier
             .fillMaxWidth()
             .padding(horizontal = 8.dp)
+            .stylusWriting()
             .background(colors.fillFaint, CursorTheme.shapes.base)
             .heightIn(min = 30.dp)
             .padding(horizontal = 8.dp),
@@ -489,6 +490,7 @@ private fun SheetField(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 16.dp)
+            .stylusWriting()
             .background(colors.fillFaint, CursorTheme.shapes.base)
             .padding(horizontal = 10.dp, vertical = 8.dp),
         decorationBox = { inner -> Box { if (value.isEmpty()) Text(placeholder, style = style, color = colors.textQuaternary); inner() } },

@@ -55,6 +55,7 @@ import com.cursorforandroid.ui.components.CursorSheet
 import com.cursorforandroid.ui.components.HairlineDivider
 import com.cursorforandroid.ui.components.SheetHeader
 import com.cursorforandroid.ui.components.pressable
+import com.cursorforandroid.ui.components.stylusWriting
 import com.cursorforandroid.ui.home.SheetRow
 import com.cursorforandroid.ui.home.SheetSearchField
 import com.cursorforandroid.ui.icons.ProjectIcons
@@ -360,6 +361,7 @@ private fun SheetField(value: String, onValueChange: (String) -> Unit, placehold
         Box(
             Modifier
                 .fillMaxWidth()
+                .stylusWriting()
                 .background(colors.fillFaint, shape)
                 .border(CursorDimens.hairline, colors.strokeSubtle, shape)
                 .heightIn(min = 38.dp)

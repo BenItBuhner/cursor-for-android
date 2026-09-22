@@ -80,6 +80,7 @@ import com.cursorforandroid.ui.components.SheetHeader
 import com.cursorforandroid.ui.components.SpinnerRing
 import com.cursorforandroid.ui.components.pressable
 import com.cursorforandroid.ui.components.scrollEdgeFade
+import com.cursorforandroid.ui.components.stylusWriting
 import com.cursorforandroid.ui.home.ModelSheet
 import com.cursorforandroid.ui.icons.ProjectIconGroup
 import com.cursorforandroid.ui.icons.ProjectIcons
@@ -575,7 +576,7 @@ private fun NameField(value: String, onValueChange: (String) -> Unit) {
     val focused by interaction.collectIsFocusedAsState()
     val fill by animateColorAsState(if (focused) colors.fill else colors.fillSoft, tween(160), label = "name")
     Box(
-        Modifier.fillMaxWidth().padding(horizontal = CardGutter).background(fill, CardShape).heightIn(min = 48.dp).padding(horizontal = 16.dp, vertical = 14.dp),
+        Modifier.fillMaxWidth().padding(horizontal = CardGutter).stylusWriting().background(fill, CardShape).heightIn(min = 48.dp).padding(horizontal = 16.dp, vertical = 14.dp),
         contentAlignment = Alignment.CenterStart,
     ) {
         BasicTextField(
@@ -600,7 +601,7 @@ private fun SearchField(value: String, onValueChange: (String) -> Unit, placehol
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
     Row(
-        Modifier.fillMaxWidth().padding(horizontal = CardGutter).background(colors.fillSoft, CardShape).heightIn(min = 44.dp).padding(horizontal = 14.dp),
+        Modifier.fillMaxWidth().padding(horizontal = CardGutter).stylusWriting().background(colors.fillSoft, CardShape).heightIn(min = 44.dp).padding(horizontal = 14.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Icon(CursorIcons.Search, null, tint = colors.iconTertiary, modifier = Modifier.size(15.dp))
