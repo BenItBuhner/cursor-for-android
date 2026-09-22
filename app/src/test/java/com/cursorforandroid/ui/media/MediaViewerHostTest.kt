@@ -24,6 +24,7 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.swipeDown
 import androidx.compose.ui.unit.dp
+import androidx.core.view.drawToBitmap
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.google.common.truth.Truth.assertThat
 import org.junit.Before
@@ -286,5 +287,39 @@ class MediaViewerHostTest {
         settle { !state.isOpen }
         assertThat(exists("media-viewer")).isFalse()
         assertThat(nodes("First figure")).isEqualTo(1)
+    }
+
+    /**
+     * The frame the viewer first appears on already draws the picture over its thumbnail, which the viewer hides
+     * from that frame: set by an effect a frame later, the transform's frames left that first frame blank where the
+     * thumbnail had been (the composer's open-start frame caught it on CI).
+     */
+    @Test
+    fun `the viewer's first frame draws the picture where its thumbnail was`() {
+        val red = ViewerFixtures.png("first-frame.png", 400, 300, 0xFFD02020.toInt())
+        val single = listOf(MediaEntry(red, MediaEntry.Kind.Image, "Red figure"))
+        compose.setContent { ViewerScene(state, loader, single) }
+        settle { nodes("Red figure") == 1 }
+        val thumbnail = compose.onAllNodes(hasContentDescription("Red figure"))[0].fetchSemanticsNode().boundsInRoot
+
+        compose.mainClock.autoAdvance = false
+        compose.onAllNodes(hasContentDescription("Red figure"))[0].performClick()
+        var frames = 0
+        while (!exists("media-viewer") && frames < 10) {
+            compose.mainClock.advanceTimeByFrame()
+            frames++
+        }
+        assertThat(exists("media-viewer")).isTrue()
+        assertThat(state.phase).isEqualTo(MediaViewerState.Phase.Opening)
+        // The Compose view drawn by hand: a capture through the harness would wait on a clock that is held still.
+        var pixel = 0
+        compose.runOnUiThread {
+            val view = compose.activity.findViewById<android.view.ViewGroup>(android.R.id.content).getChildAt(0)
+            pixel = view.drawToBitmap().getPixel(thumbnail.center.x.toInt(), thumbnail.center.y.toInt())
+        }
+        assertThat(android.graphics.Color.red(pixel)).isGreaterThan(150)
+        assertThat(android.graphics.Color.green(pixel)).isLessThan(90)
+        compose.mainClock.autoAdvance = true
+        settle { state.phase == MediaViewerState.Phase.Open }
     }
 }
