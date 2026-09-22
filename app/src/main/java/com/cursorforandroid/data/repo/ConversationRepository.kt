@@ -1650,6 +1650,9 @@ class ConversationRepository(
                 } else null,
                 // The newest turns' steps and calls as the record gave them this session, keys and value types only.
                 shapes = window?.turns?.mapNotNull { it.shape }.orEmpty(),
+                // What the account answered for each message it holds behind a turn, and where that put the message.
+                queued = e.local.filter { it.waitsBehind != null }.map { TranscriptLoadDiagnostics.QueuedLine("transcript", ProjectDiagnostics.tail(it.run.id), ProjectDiagnostics.tail(it.waitsBehind!!), null) } +
+                    e.awaiting.map { a -> TranscriptLoadDiagnostics.QueuedLine("card", a.runId?.let(ProjectDiagnostics::tail), a.behindRunId?.let(ProjectDiagnostics::tail), a.queuedOnAccount) },
                 status = run {
                     val latest = e.latestRun()
                     val row = agents.agent(agentId)
