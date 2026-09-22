@@ -394,7 +394,7 @@ class NewAgentViewModel(
         if (!s.hasContent) {
             savedImages = emptyMap()
             savedFiles = emptyMap()
-            if (existing != null && existing.launchedAs == null) drafts.remove(id)
+            if (existing != null && existing.launchedAs == null) drafts.remove(id, byComposer = true)
             return@withLock
         }
         val stored = s.attachments.mapNotNull { a -> (savedImages[a.id] ?: graph.drafts.writeImage(id, a.image))?.let { a.id to it } }
