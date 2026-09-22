@@ -5,6 +5,7 @@ import androidx.activity.ComponentActivity
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.LocalRippleConfiguration
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.hasScrollToIndexAction
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
@@ -142,6 +143,9 @@ class TranscriptScreenBenchmarkTest {
         return result
     }
 
+    /** The transcript's newest item: its accessibility actions index the items top-down (see `readerScrolling`). */
+    private fun newestIndex(): Int = compose.onAllNodes(hasScrollToIndexAction()).onFirst().fetchSemanticsNode().config[SemanticsProperties.CollectionInfo].rowCount - 1
+
     private fun rowsComposed(): Int = TranscriptPerf.sessionOrNull(agentId)?.snapshot()?.rowCompositions ?: 0
 
     private fun report(metric: String, value: Any?) = println("BENCH screen | $metric | $value")
@@ -216,7 +220,7 @@ class TranscriptScreenBenchmarkTest {
 
         // Back at the newest turn, a burst of live deltas on the whole 300-turn chat: the reply of the newest turn
         // written a word at a time, a tool call between — every delta a publication over the whole transcript.
-        onMain(paging) { compose.onAllNodes(hasScrollToIndexAction()).onFirst().performScrollToIndex(0); compose.waitForIdle() }
+        onMain(paging) { compose.onAllNodes(hasScrollToIndexAction()).onFirst().performScrollToIndex(newestIndex()); compose.waitForIdle() }
         val burst = MainCost()
         val composedBeforeBurst = rowsComposed()
         val live = "run-$runs"
@@ -241,17 +245,18 @@ class TranscriptScreenBenchmarkTest {
         // composed on both sides of the change, so the cost is the rows' own.
         val scroll = MainCost()
         val composedBeforeScroll = rowsComposed()
-        var index = 0
+        val newest = newestIndex()
+        var index = newest
         var steps = 0
         val scrollStarted = System.nanoTime()
-        while (steps < 2_000) {
+        while (steps < 2_000 && index >= 0) {
             val ok = runCatching { onMain(scroll) { compose.onAllNodes(hasScrollToIndexAction()).onFirst().performScrollToIndex(index); compose.waitForIdle() } }.isSuccess
             if (!ok) break
-            index += 4
+            index -= 4
             steps++
         }
         val scrollMs = (System.nanoTime() - scrollStarted) / 1_000_000
-        report("scroll.steps", "$steps steps of 4 rows, ${index - 4} rows deep")
+        report("scroll.steps", "$steps steps of 4 rows, ${newest - index - 4} rows deep")
         report("scroll.wallMs", scrollMs)
         report("scroll.main", scroll)
         report("scroll.rowsComposed", rowsComposed() - composedBeforeScroll)
