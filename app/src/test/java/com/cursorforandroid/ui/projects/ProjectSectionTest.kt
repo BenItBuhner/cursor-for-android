@@ -1,10 +1,12 @@
 package com.cursorforandroid.ui.projects
 
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsNotEnabled
+import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
@@ -13,7 +15,9 @@ import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.cursorforandroid.data.local.PreferencesStore
 import com.cursorforandroid.data.repo.ContextState
 import com.cursorforandroid.data.repo.ProjectRepository
 import com.cursorforandroid.data.repo.ProjectViewState
@@ -31,9 +35,15 @@ import com.cursorforandroid.domain.ProjectWorker
 import com.cursorforandroid.domain.RunStatus
 import com.cursorforandroid.domain.WorkerMembership
 import com.cursorforandroid.domain.WorkerSpawnKind
+import com.cursorforandroid.ui.components.LocalRunStopConfirmation
+import com.cursorforandroid.ui.components.RunInterruption
+import com.cursorforandroid.ui.components.RunStopDialog
+import com.cursorforandroid.ui.components.RunStopTags
+import com.cursorforandroid.ui.components.rememberRunStopConfirmation
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.ui.theme.ThemeMode
 import com.google.common.truth.Truth.assertThat
+import kotlinx.coroutines.runBlocking
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -223,5 +233,75 @@ class ProjectSectionTest {
         compose.waitForIdle()
         compose.onNodeWithText("Loading\u2026").assertIsDisplayed()
         compose.onNodeWithText("0 primaries \u00B7 updated 10m").assertIsDisplayed()
+    }
+
+    private fun dialogShown() = compose.onAllNodes(hasTestTag(RunStopTags.DIALOG)).fetchSemanticsNodes().isNotEmpty()
+
+    private fun openMenuAndTap(item: String) {
+        compose.onNodeWithContentDescription("Actions for Stripe webhook handler").performClick()
+        compose.onNodeWithText(item).performClick()
+    }
+
+    @Test
+    fun `a running primary's Pause and Stop ask first under Confirm before stopping, and only the dialog's answer reaches the hand`() {
+        current = state(actionsAvailable = true)
+        val prefs = PreferencesStore(ApplicationProvider.getApplicationContext())
+        compose.setContent {
+            CursorTheme(mode = ThemeMode.Dark) {
+                val confirmation = rememberRunStopConfirmation(prefs)
+                CompositionLocalProvider(LocalRunStopConfirmation provides confirmation) {
+                    ProjectSectionBody(state = current, local = LocalAgentState(), busy = busy, actions = actions(), nowMillis = now)
+                }
+                RunStopDialog(confirmation)
+            }
+        }
+
+        openMenuAndTap("Stop")
+        compose.waitUntil(10_000) { dialogShown() }
+        compose.onNodeWithText(RunInterruption.Stop.title).assertIsDisplayed()
+        compose.onNodeWithTag(RunStopTags.KEEP_RUNNING).performClick()
+        compose.waitUntil(10_000) { !dialogShown() }
+        assertThat(tapped).doesNotContain("stop:bc-w1")
+
+        openMenuAndTap("Pause")
+        compose.waitUntil(10_000) { dialogShown() }
+        compose.onNodeWithText(RunInterruption.Pause.title).assertIsDisplayed()
+        compose.onNodeWithTag(RunStopTags.CONFIRM).performClick()
+        compose.waitUntil(10_000) { !dialogShown() }
+        assertThat(tapped).contains("pause:bc-w1")
+
+        openMenuAndTap("Stop")
+        compose.waitUntil(10_000) { dialogShown() }
+        compose.onNodeWithTag(RunStopTags.CONFIRM).performClick()
+        compose.waitUntil(10_000) { !dialogShown() }
+        assertThat(tapped).containsAtLeast("pause:bc-w1", "stop:bc-w1").inOrder()
+
+        // Turned off, the menu's Stop reaches the hand at once.
+        runBlocking { prefs.setConfirmStop(false) }
+        tapped.clear()
+        openMenuAndTap("Stop")
+        compose.waitUntil(10_000) { "stop:bc-w1" in tapped }
+        assertThat(dialogShown()).isFalse()
+    }
+
+    @Test
+    fun `a question about a primary goes when that primary stops running by itself`() {
+        current = state(actionsAvailable = true)
+        compose.setContent {
+            CursorTheme(mode = ThemeMode.Dark) {
+                val confirmation = rememberRunStopConfirmation(PreferencesStore(ApplicationProvider.getApplicationContext()))
+                CompositionLocalProvider(LocalRunStopConfirmation provides confirmation) {
+                    ProjectSectionBody(state = current, local = LocalAgentState(), busy = busy, actions = actions(), nowMillis = now)
+                }
+                RunStopDialog(confirmation)
+            }
+        }
+        openMenuAndTap("Stop")
+        compose.waitUntil(10_000) { dialogShown() }
+
+        val finished = workers.first().let { it.copy(agent = it.agent.copy(lifecycle = AgentLifecycle.IDLE, runStatus = RunStatus.FINISHED)) }
+        current = current.copy(workers = listOf(finished) + workers.drop(1))
+        compose.waitUntil(10_000) { !dialogShown() }
+        assertThat(tapped).doesNotContain("stop:bc-w1")
     }
 }

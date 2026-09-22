@@ -4,6 +4,9 @@ import android.content.Context
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.datastore.preferences.core.Preferences
+import androidx.datastore.preferences.core.booleanPreferencesKey
+import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.preferencesDataStoreFile
 import androidx.test.core.app.ApplicationProvider
@@ -15,7 +18,9 @@ import com.cursorforandroid.ui.theme.ThemeMode
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
@@ -187,6 +192,41 @@ class PreferencesStoreTest {
         // The file was replaced from empty rather than being left broken, so settings stick again.
         prefs.setThemeMode(ThemeMode.Light)
         assertThat(prefs.themeMode.first()).isEqualTo(ThemeMode.Light)
+    }
+
+    @Test
+    fun `confirm before stopping is on for a fresh install`() = runBlocking<Unit> {
+        assertThat(PreferencesStore(ApplicationProvider.getApplicationContext()).confirmStop.first()).isTrue()
+    }
+
+    @Test
+    fun `an install upgraded from a build without Confirm before stopping reads it as on, and keeps what the user sets through a sign-out`() = runBlocking<Unit> {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        // The file an earlier build left: its own settings written, this one never. Written through a DataStore of its
+        // own, closed before the app's opens the file, as a process that has since been replaced would have.
+        val earlierBuild = Job()
+        val earlier = PreferenceDataStoreFactory.create(
+            scope = CoroutineScope(Dispatchers.IO + earlierBuild),
+            produceFile = { context.preferencesDataStoreFile("cursor_settings") },
+        )
+        earlier.edit { p ->
+            p[stringPreferencesKey("theme_mode")] = ThemeMode.Light.name
+            p[booleanPreferencesKey("live_notifications")] = false
+        }
+        earlierBuild.cancelAndJoin()
+
+        val prefs = PreferencesStore(context)
+        assertThat(prefs.themeMode.first()).isEqualTo(ThemeMode.Light)
+        assertThat(prefs.liveNotifications.first()).isFalse()
+        assertThat(prefs.confirmStop.first()).isTrue()
+
+        prefs.setConfirmStop(false)
+        assertThat(prefs.confirmStop.first()).isFalse()
+        // The device's preference, not the account's.
+        prefs.clearSession()
+        assertThat(prefs.confirmStop.first()).isFalse()
+        prefs.setConfirmStop(true)
+        assertThat(prefs.confirmStop.first()).isTrue()
     }
 
     @Test

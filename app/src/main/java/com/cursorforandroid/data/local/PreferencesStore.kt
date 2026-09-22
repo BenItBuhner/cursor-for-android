@@ -161,6 +161,8 @@ class PreferencesStore(
         val collapsedSidebarSections = stringSetPreferencesKey("sidebar_collapsed_sections")
         /** The transcript notices closed over each chat's composer: `agentId -> identities` (see `LoadNotice.identity`). */
         val dismissedNotices = stringPreferencesKey("dismissed_notices")
+        /** Settings › Confirm before stopping; absent reads as on (see [confirmStop]). */
+        val confirmStop = booleanPreferencesKey("confirm_stop")
     }
 
     /** What [clearSession] removes: everything here belongs to the account rather than to the device. */
@@ -237,6 +239,16 @@ class PreferencesStore(
     val whatsNewReadVersion: Flow<String?> = data.map { it[Keys.whatsNewReadVersion] }
 
     suspend fun setWhatsNewReadVersion(versionName: String) = edit { it[Keys.whatsNewReadVersion] = versionName }
+
+    // ---- chats (device-level; deliberately untouched by clearSession) --------------------------------------------
+
+    /**
+     * Whether a tap that would stop, pause or interrupt a running agent asks first (see `RunStopConfirmation`). On by
+     * default, and on for every install that predates the setting: only the user turning it off here writes it off.
+     */
+    val confirmStop: Flow<Boolean> = data.map { it[Keys.confirmStop] ?: true }
+
+    suspend fun setConfirmStop(enabled: Boolean) = edit { it[Keys.confirmStop] = enabled }
 
     // ---- Extended mode (device-level; deliberately untouched by clearSession) ------------------------------------
 

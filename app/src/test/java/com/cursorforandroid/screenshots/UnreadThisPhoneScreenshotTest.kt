@@ -172,14 +172,14 @@ class UnreadThisPhoneScreenshotTest {
     fun sidebarSwitchOff() {
         showSidebar(switchOn = false)
         compose.onNodeWithTag(YESTERDAY_DOT, useUnmergedTree = true).assertExists()
-        capture("143_sidebar_unread_switch_off")
+        capture("147_sidebar_unread_switch_off")
     }
 
     @Test
     fun sidebarSwitchOn() {
         showSidebar(switchOn = true)
         compose.onAllNodes(hasTestTag(YESTERDAY_DOT), useUnmergedTree = true).fetchSemanticsNodes().let { check(it.isEmpty()) { "The folded group of untouched chats still carries a dot." } }
-        capture("144_sidebar_unread_switch_on")
+        capture("148_sidebar_unread_switch_on")
     }
 
     @Test
@@ -194,7 +194,7 @@ class UnreadThisPhoneScreenshotTest {
             Scene { SettingsScreen(graph = graph, user = USER, isDemo = false, onOpenSidebar = null, onBack = {}) }
         }
         compose.waitUntil(30_000) { compose.onAllNodes(hasTestTag(SettingsTags.UNREAD_THIS_PHONE)).fetchSemanticsNodes().isNotEmpty() }
-        capture("145_settings_unread_this_phone")
+        capture("149_settings_unread_this_phone")
     }
 
     private companion object {
