@@ -5,11 +5,12 @@ import androidx.activity.ComponentActivity
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.LocalRippleConfiguration
 import androidx.compose.runtime.CompositionLocalProvider
-import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.test.hasContentDescription
 import androidx.compose.ui.test.hasScrollToIndexAction
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onFirst
+import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.performScrollToIndex
 import androidx.compose.ui.test.performScrollToNode
@@ -143,9 +144,6 @@ class TranscriptScreenBenchmarkTest {
         return result
     }
 
-    /** The transcript's newest item: its accessibility actions index the items top-down (see `readerScrolling`). */
-    private fun newestIndex(): Int = compose.onAllNodes(hasScrollToIndexAction()).onFirst().fetchSemanticsNode().config[SemanticsProperties.CollectionInfo].rowCount - 1
-
     private fun rowsComposed(): Int = TranscriptPerf.sessionOrNull(agentId)?.snapshot()?.rowCompositions ?: 0
 
     private fun report(metric: String, value: Any?) = println("BENCH screen | $metric | $value")
@@ -220,7 +218,10 @@ class TranscriptScreenBenchmarkTest {
 
         // Back at the newest turn, a burst of live deltas on the whole 300-turn chat: the reply of the newest turn
         // written a word at a time, a tool call between — every delta a publication over the whole transcript.
-        onMain(paging) { compose.onAllNodes(hasScrollToIndexAction()).onFirst().performScrollToIndex(newestIndex()); compose.waitForIdle() }
+        onMain(paging) {
+            compose.onAllNodes(hasContentDescription("Scroll to latest")).fetchSemanticsNodes().firstOrNull()?.let { compose.onNode(hasContentDescription("Scroll to latest")).performClick() }
+            compose.waitForIdle()
+        }
         val burst = MainCost()
         val composedBeforeBurst = rowsComposed()
         val live = "run-$runs"
@@ -241,22 +242,22 @@ class TranscriptScreenBenchmarkTest {
         report("burst.main", burst)
         report("burst.rowsComposed", rowsComposed() - composedBeforeBurst)
 
-        // A scroll through the whole chat, half a screen at a time, from the newest row to the oldest: the same rows
+        // A scroll through the whole chat, half a screen at a time, from the oldest row to the newest: the same rows
         // composed on both sides of the change, so the cost is the rows' own.
         val scroll = MainCost()
         val composedBeforeScroll = rowsComposed()
-        val newest = newestIndex()
-        var index = newest
+        // The transcript's accessibility actions index its items top-down (see `readerScrolling`); past the last, they refuse.
+        var index = 0
         var steps = 0
         val scrollStarted = System.nanoTime()
-        while (steps < 2_000 && index >= 0) {
+        while (steps < 2_000) {
             val ok = runCatching { onMain(scroll) { compose.onAllNodes(hasScrollToIndexAction()).onFirst().performScrollToIndex(index); compose.waitForIdle() } }.isSuccess
             if (!ok) break
-            index -= 4
+            index += 4
             steps++
         }
         val scrollMs = (System.nanoTime() - scrollStarted) / 1_000_000
-        report("scroll.steps", "$steps steps of 4 rows, ${newest - index - 4} rows deep")
+        report("scroll.steps", "$steps steps of 4 rows, ${index - 4} rows deep")
         report("scroll.wallMs", scrollMs)
         report("scroll.main", scroll)
         report("scroll.rowsComposed", rowsComposed() - composedBeforeScroll)
