@@ -118,10 +118,11 @@ object SettingsTags {
 
 /**
  * Settings in the desktop settings-page idiom: 12sp group labels, bordered cards of rows. The list is the essentials
- * and nothing else — the account and the way out of it, appearance, which chats may show as unread, notifications, the Extended mode switch, the
- * version with its updater and the crash report consent, one line of disclaimer. What the account's key is and
- * where to manage it sits behind a tap on the account row; the diagnostics exports, the About links and the credits
- * sit behind a long press on the version row ([SettingsDebugSheet]), where support can ask for them.
+ * and nothing else — the account and the way out of it, appearance, which chats may show as unread, notifications,
+ * the Extended mode switch, the version with its updater and the crash report consent, one line of disclaimer. What
+ * the account's key is and where to manage it sits behind a tap on the account row; the diagnostics exports, the
+ * About links and the credits sit behind a long press on the version row ([SettingsDebugSheet]), where support can
+ * ask for them.
  */
 @Composable
 fun SettingsScreen(
