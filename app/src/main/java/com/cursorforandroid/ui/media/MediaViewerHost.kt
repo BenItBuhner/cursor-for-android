@@ -43,6 +43,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.RoundRect
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.clipPath
 import androidx.compose.ui.graphics.drawscope.clipRect
@@ -73,6 +74,7 @@ import com.cursorforandroid.ui.components.hitTestBoundary
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlin.math.roundToInt
 
 /**
  * Hosts the media viewer over [content] — the whole app, so that on a tablet the viewer covers the sidebar as well
@@ -148,6 +150,8 @@ private class TransformFrames(
     val pageRect: () -> Rect,
     val source: () -> PagePresentation?,
     val fallbackSize: IntSize,
+    /** The thumbnail's own decode, drawn until the page's presentation is registered: the open's first frame has it. */
+    val fallbackBitmap: ImageBitmap? = null,
 )
 
 @Composable
@@ -158,7 +162,19 @@ private fun MediaViewerOverlay(state: MediaViewerState, session: MediaViewerStat
     val pagerState = rememberPagerState(initialPage = session.initialIndex) { session.entries.size }
     val presentations = remember { HashMap<Int, PagePresentation>() }
     val dismiss = remember { DismissState() }
-    var frames by remember { mutableStateOf<TransformFrames?>(null) }
+
+    /** The open's frames: out of the tapped thumbnail, into wherever the first page rests once it is laid out. */
+    fun openingFrames() = TransformFrames(
+        thumbnail = state.originFrame(),
+        pageRect = { presentations[session.initialIndex]?.fitted?.takeIf { it != Rect.Zero } ?: restingRect(viewport, session.seenSize) },
+        source = { presentations[session.initialIndex] },
+        fallbackSize = session.seenSize,
+        fallbackBitmap = session.seen,
+    )
+
+    // Set as the overlay is first composed, not by an effect a frame later: the frame the viewer appears on already
+    // draws the picture over its thumbnail — which the viewer has hidden — rather than a blank where it was.
+    var frames by remember { mutableStateOf(if (state.phase == MediaViewerState.Phase.Opening) openingFrames() else null) }
     var notice by remember { mutableStateOf<String?>(null) }
     var interactions by remember { mutableIntStateOf(0) }
     val actions = remember(loader) { MediaActions(context, loader) }
@@ -197,12 +213,7 @@ private fun MediaViewerOverlay(state: MediaViewerState, session: MediaViewerStat
     // Opening: out of the tapped thumbnail (or, without one, up from a little below scale where the page will be).
     LaunchedEffect(Unit) {
         if (state.phase != MediaViewerState.Phase.Opening) return@LaunchedEffect
-        frames = TransformFrames(
-            thumbnail = state.originFrame(),
-            pageRect = { presentations[session.initialIndex]?.fitted?.takeIf { it != Rect.Zero } ?: restingRect(viewport, session.seenSize) },
-            source = { presentations[session.initialIndex] },
-            fallbackSize = session.seenSize,
-        )
+        if (frames == null) frames = openingFrames()
         state.progress.snapTo(0f)
         state.progress.animateTo(1f, TransformSpec)
         if (state.phase == MediaViewerState.Phase.Opening) {
@@ -387,10 +398,11 @@ private fun TransformLayer(state: MediaViewerState, frames: TransformFrames, dis
     Spacer(
         modifier.drawBehind {
             val progress = state.progress.value
-            val bitmap = frames.source()?.bitmap
+            val bitmap = frames.source()?.bitmap ?: frames.fallbackBitmap
             val imageSize = bitmap?.let { IntSize(it.width, it.height) } ?: frames.fallbackSize
             if (imageSize.width <= 0 || imageSize.height <= 0) return@drawBehind
-            val page = frames.pageRect()
+            // Before the viewer's own size is measured the layer's is the viewport: the page's rest is known from it.
+            val page = frames.pageRect().takeIf { it.width > 0f && it.height > 0f } ?: restingRect(IntSize(size.width.roundToInt(), size.height.roundToInt()), imageSize)
             if (page.width <= 0f || page.height <= 0f) return@drawBehind
             val viewport = Rect(Offset.Zero, size)
             val thumbnail = frames.thumbnail
