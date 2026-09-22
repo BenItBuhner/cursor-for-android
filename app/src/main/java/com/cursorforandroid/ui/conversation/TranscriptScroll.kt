@@ -128,17 +128,18 @@ internal class TranscriptScroll(val list: LazyListState, private val followingSt
     }
 
     /**
-     * Pinned, the list keeps its first visible item by key, which is right for every row but the ones above the
-     * transcript's own — "Older messages", the trace line — and for a row that moved further than the list looks for
-     * it. Under one of those, an older page landing would push the rows being read down by the page; the first row
-     * below them is held instead.
+     * Pinned, the list keeps its first visible item by key, which is right for every row but the items above the
+     * transcript's own — "Older messages", the trace line, which go as well as come — and for a row that moved further
+     * than the list looks for it. Under one of those, an older page landing would push the rows being read down by the
+     * page; the first row on screen is held instead.
      */
     private fun holdAboveInsert(info: LazyListLayoutInfo, order: TranscriptOrder) {
-        val first = info.visibleItemsInfo.firstOrNull() ?: return
-        val held = if (first.key in order.above) info.visibleItemsInfo.firstOrNull { it.key !in order.above } ?: return else first
-        if (order.keyAt(held.index, following = false) == held.key) return
+        val visible = info.visibleItemsInfo
+        val first = visible.firstOrNull() ?: return
+        if (order.keyAt(first.index, following = false) == first.key && first.key !in order.above) return
+        val held = if (order.isRow(first.key)) first else visible.firstOrNull { order.isRow(it.key) } ?: return
         val index = order.index(held.key, following = false) ?: return
-        if (held === first && abs(index - held.index) < KEYED_REACH) return
+        if (index == held.index || (held === first && abs(index - held.index) < KEYED_REACH)) return
         list.requestScrollToItem(index, topPadding(info) - top(held, info))
     }
 
@@ -236,6 +237,8 @@ internal class TranscriptOrder(val above: List<String>, val rows: List<Transcrip
             ?: return null
         return if (following) size - 1 - topDown else topDown
     }
+
+    fun isRow(key: Any): Boolean = key in rowIndex
 
     fun keyAt(index: Int, following: Boolean): Any? {
         val topDown = if (following) size - 1 - index else index
