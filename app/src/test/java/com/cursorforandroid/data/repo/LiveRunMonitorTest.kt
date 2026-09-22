@@ -21,6 +21,7 @@ import com.cursorforandroid.domain.AgentParent
 import com.cursorforandroid.data.api.ComposerSnapshot
 import com.cursorforandroid.domain.LineageSignal
 import com.cursorforandroid.domain.AssistantMessage
+import com.cursorforandroid.domain.LiveActivityState
 import com.cursorforandroid.domain.LivePhase
 import com.cursorforandroid.domain.RunFooter
 import com.cursorforandroid.domain.RunStatus
@@ -28,7 +29,10 @@ import com.cursorforandroid.domain.ActivityGroup
 import com.cursorforandroid.domain.TrackedRun
 import com.cursorforandroid.domain.UserMessage
 import com.google.common.truth.Truth.assertThat
+import com.google.common.truth.Truth.assertWithMessage
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
@@ -401,7 +405,9 @@ class LiveRunMonitorTest {
         monitor.start()
         // A run is listed as tracked the moment its tracker starts; the hub opens its stream a beat later, on its own
         // scope, so the connections are waited for in their own right rather than assumed to keep pace with the state.
-        awaitUntil { monitor.state.value.hasReconciled && running().size == 8 && streamer.connections.distinct().size == 8 }
+        // Each check reads the state once: a pass is published in steps (see the handoff below), and fields read off
+        // two of them describe no state the monitor was ever in.
+        awaitUntil { monitor.state.value.let { it.hasReconciled && it.running.size == 8 } && streamer.connections.distinct().size == 8 }
         // Left to settle: the cap must hold, so nothing beyond the eight may follow.
         delay(100)
         assertThat(running()).hasSize(8)
@@ -413,17 +419,57 @@ class LiveRunMonitorTest {
             assertThat(untrackedCount).isEqualTo(2)
         }
 
-        // A tracked run finishing hands its slot to one of the untracked agents; the count drops by exactly one.
+        // A tracked run finishing hands its slot to one of the untracked agents; the count drops by exactly one. The
+        // handoff is published in steps — the count at once, the finished run's line dropped, the newcomer's line once
+        // its run record has been read, a round trip later — so the newcomer's read is held and the step between is
+        // asserted rather than raced. #287's CI read the count and the lines off the first step and "the finished
+        // line gone" off the second, so the wait passed with seven lines up and read two untracked.
+        val tracked = running().map { it.agentId }
+        val untracked = (0 until 10).map { "bc-$it" } - tracked.toSet()
         val finishedId = running().first().agentId
         val finishedRun = running().first().runId
+        val frames = CopyOnWriteArrayList<LiveActivityState>()
+        val recorder = scope.launch(start = CoroutineStart.UNDISPATCHED) { monitor.state.collect { frames += it } }
+        val reads = api.getRunCalls
+        api.getRunGate = CompletableDeferred()
         streamer.emit(finishedRun, RunStreamEvent.Result(finishedRun, RunStatus.FINISHED, "Done", 1_000, null))
         streamer.emit(finishedRun, RunStreamEvent.Done)
-        awaitUntil { monitor.state.value.runningCount == 9 && running().size == 8 && running().none { it.agentId == finishedId } }
-        assertThat(monitor.state.value.untrackedCount).isEqualTo(1)
+        // The newcomer's record read is out: the finished line is down, the newcomer's is not up yet, and both of the
+        // agents not shown are said to be there.
+        awaitUntil { api.getRunCalls > reads }
+        with(monitor.state.value) {
+            assertThat(runningCount).isEqualTo(9)
+            assertThat(running.map { it.agentId }).containsExactlyElementsIn(tracked - finishedId)
+            assertThat(untrackedCount).isEqualTo(2)
+        }
+        api.getRunGate!!.complete(Unit)
+        awaitUntil { monitor.state.value.running.size == 8 }
+        with(monitor.state.value) {
+            assertThat(runningCount).isEqualTo(9)
+            assertThat((running.map { it.agentId } - tracked.toSet()).single()).isIn(untracked)
+            assertThat(running.none { it.agentId == finishedId }).isTrue()
+            assertThat(untrackedCount).isEqualTo(1)
+        }
         // The slot's new occupant is tracked before its stream is open; wait for the connection it is about to be
         // counted by.
         awaitUntil { streamer.connections.distinct().size == 9 }
         assertThat(streamer.connections.distinct()).hasSize(9)
+        // Its finish is reported once, whichever of its tracker and the pass that dropped it saw the end first.
+        awaitUntil { finished.isNotEmpty() }
+        delay(100)
+        assertThat(finished.map { it.agentId }).containsExactly(finishedId)
+        recorder.cancel()
+        // Every frame of the handoff: never more lines than the cap nor than the count; the count ten until it is
+        // nine, and nine from then on; the finished agent, once off the card, never back on it.
+        val drop = frames.indexOfFirst { it.runningCount == 9 }
+        assertThat(drop).isAtLeast(0)
+        val gone = frames.indexOfFirst { f -> f.running.none { it.agentId == finishedId } }
+        frames.forEachIndexed { i, f ->
+            assertWithMessage("frame $i: ${f.running.size} lines").that(f.running.size).isAtMost(8)
+            assertWithMessage("frame $i: fewer counted than listed").that(f.runningCount).isAtLeast(f.running.size)
+            assertWithMessage("frame $i: the count").that(f.runningCount).isEqualTo(if (i < drop) 10 else 9)
+            if (i >= gone) assertWithMessage("frame $i: the finished agent back on the card").that(f.running.none { it.agentId == finishedId }).isTrue()
+        }
     }
 
     /** The retained event log of a finished run, as the server would replay it on a fresh connection. */
