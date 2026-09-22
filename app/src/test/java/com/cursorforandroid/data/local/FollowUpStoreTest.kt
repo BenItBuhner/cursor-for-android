@@ -3,8 +3,10 @@ package com.cursorforandroid.data.local
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.cursorforandroid.domain.AgentMode
 import com.cursorforandroid.domain.DraftFile
 import com.cursorforandroid.domain.DraftImage
+import com.cursorforandroid.domain.DraftModel
 import com.cursorforandroid.domain.FollowUpDraft
 import com.cursorforandroid.domain.ModelParam
 import com.cursorforandroid.domain.PromptFile
@@ -161,6 +163,51 @@ class FollowUpStoreTest {
         val read = store.read("bc-1")!!
         assertThat(read.draft.text).isEqualTo("a")
         assertThat(read.draft.images).isEmpty()
+    }
+
+    @Test
+    fun `the draft's mode pill and model, every parameter included, round-trip and keep the chat's directory on their own`() = runBlocking<Unit> {
+        val model = DraftModel("claude-fable-5.1-thinking", listOf(ModelParam("context", "300k"), ModelParam("effort", "low")), "Claude Fable 5.1")
+        store.write("bc-1", FollowUpDraft("Plan it", mode = AgentMode.PLAN, model = model), emptyList())
+
+        val read = FollowUpStore(context).read("bc-1")!!.draft
+        assertThat(read.text).isEqualTo("Plan it")
+        assertThat(read.mode).isEqualTo(AgentMode.PLAN)
+        assertThat(read.model).isEqualTo(model)
+        assertThat(File(agentDir("bc-1"), "state.json").readText()).contains("\"schema\":${FollowUpStore.SCHEMA}")
+
+        // Sent: the text goes, the choices stay, and so does the directory that holds them.
+        store.write("bc-1", FollowUpDraft(mode = AgentMode.PLAN, model = model), emptyList())
+        val afterSend = FollowUpStore(context).read("bc-1")!!.draft
+        assertThat(afterSend.isBlank).isTrue()
+        assertThat(afterSend.mode).isEqualTo(AgentMode.PLAN)
+        assertThat(afterSend.model).isEqualTo(model)
+    }
+
+    @Test
+    fun `a mode a later build added reads as none rather than failing the draft`() = runBlocking<Unit> {
+        agentDir("bc-1").mkdirs()
+        File(agentDir("bc-1"), "state.json").writeText("""{"schema":3,"draft":{"text":"From the future","mode":"TELEPATHY","hue":"blue"}}""")
+
+        val read = store.read("bc-1")!!.draft
+        assertThat(read.text).isEqualTo("From the future")
+        assertThat(read.mode).isNull()
+    }
+
+    @Test
+    fun `a file this build cannot read is set aside with its images, and the next save does not write over it`() = runBlocking<Unit> {
+        agentDir("bc-1").mkdirs()
+        File(agentDir("bc-1"), "state.json").writeText("""{"draft":{"text":"half a file""")
+        File(agentDir("bc-1"), "photo.png").writeBytes(byteArrayOf(4, 2))
+
+        assertThat(store.read("bc-1")).isNull()
+        store.write("bc-1", FollowUpDraft("A new draft"), emptyList())
+
+        assertThat(store.read("bc-1")!!.draft.text).isEqualTo("A new draft")
+        val shelf = File(File(context.filesDir, "followups"), DraftFiles.UNREADABLE_DIR).listFiles()!!.single()
+        assertThat(shelf.name).startsWith("bc-1-")
+        assertThat(File(shelf, "state.json").readText()).isEqualTo("""{"draft":{"text":"half a file""")
+        assertThat(File(shelf, "photo.png").readBytes().toList()).containsExactly(4.toByte(), 2.toByte()).inOrder()
     }
 
     @Test

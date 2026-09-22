@@ -15,8 +15,11 @@ import com.cursorforandroid.data.local.JsonDiskCache
 import com.cursorforandroid.data.local.PreferencesStore
 import com.cursorforandroid.data.local.SecureKeyStore
 import com.cursorforandroid.data.api.dto.V0ConversationMessageDto
+import com.cursorforandroid.domain.AgentMode
 import com.cursorforandroid.domain.DraftImage
+import com.cursorforandroid.domain.DraftModel
 import com.cursorforandroid.domain.FollowUpDraft
+import com.cursorforandroid.domain.ModelParam
 import com.cursorforandroid.domain.PromptImage
 import com.cursorforandroid.domain.QueuedFollowUp
 import com.cursorforandroid.data.api.ComposerSnapshot
@@ -112,13 +115,14 @@ class FollowUpRepositoryTest {
         retryBaseMs: Long = 20,
         scope: CoroutineScope = this.scope,
         conversations: ConversationRepository = this.conversations,
+        draftSaveDelayMs: Long = 10,
     ) = FollowUpRepository(
         conversations, agents, hub,
         mcpServers = { mcpCalls.incrementAndGet(); mcpGate?.await(); emptyList() },
         store = store.takeIf { persist },
         persist = { true },
         scope = scope,
-        draftSaveDelayMs = 10,
+        draftSaveDelayMs = draftSaveDelayMs,
         idleSettleMs = idleSettleMs,
         retryBaseMs = retryBaseMs,
     )
@@ -1166,5 +1170,58 @@ class FollowUpRepositoryTest {
         awaitUntil { store.read("bc-1")?.draft?.text == "Something" }
         followUps.setDraftText("bc-1", "")
         awaitUntil { store.read("bc-1") == null }
+    }
+
+    /** The home button, then the process ended from the recents a moment later: the last words typed are on disk. */
+    @Test
+    fun `leaving the app writes a draft that is still inside its debounce`() = runBlocking<Unit> {
+        api.addIdleAgent("bc-1", "Agent", "run-0")
+        agents.refresh()
+        val followUps = repository(persist = true, draftSaveDelayMs = 60_000)
+        followUps.state("bc-1").first { it.restored }
+        // The restore ends on a save of its own, at once; it is let land before the debounce is timed.
+        delay(300)
+
+        followUps.setDraftText("bc-1", "Typed just before the home button")
+        delay(100)
+        assertThat(store.read("bc-1")).isNull()
+
+        followUps.flushAll()
+        awaitUntil(timeoutMs = 5_000) { store.read("bc-1")?.draft?.text == "Typed just before the home button" }
+    }
+
+    @Test
+    fun `a pick made before the disk was read keeps the saved text, and the saved mode fills a composer that asked for none`() = runBlocking<Unit> {
+        api.addIdleAgent("bc-1", "Agent", "run-0")
+        agents.refresh()
+        val saved = DraftModel("composer-2.5", listOf(ModelParam("fast", "true")), "Composer 2.5")
+        val picked = DraftModel("claude-fable-5.1-thinking", listOf(ModelParam("context", "300k"), ModelParam("effort", "low")), "Claude Fable 5.1")
+        store.write("bc-1", FollowUpDraft("Saved text", mode = AgentMode.PLAN, model = saved), emptyList())
+        val followUps = repository(persist = true)
+
+        followUps.setDraftModel("bc-1", picked)
+        val restored = followUps.state("bc-1").first { it.restored }.draft
+
+        assertThat(restored.text).isEqualTo("Saved text")
+        assertThat(restored.mode).isEqualTo(AgentMode.PLAN)
+        assertThat(restored.model).isEqualTo(picked)
+        awaitUntil { store.read("bc-1")?.draft?.model == picked }
+    }
+
+    @Test
+    fun `a composer holding only its pill and model is not queued in place of a message taken back to edit`() = runBlocking<Unit> {
+        api.addRunningAgent("bc-1", "Agent", "run-1")
+        agents.refresh()
+        val followUps = repository()
+        followUps.state("bc-1").first { it.restored }
+        val queued = followUps.enqueue("bc-1", "Queued one")
+        followUps.setDraftMode("bc-1", AgentMode.PLAN)
+
+        followUps.takeForEdit("bc-1", queued.id)
+
+        val state = followUps.state("bc-1").value
+        assertThat(state.queue).isEmpty()
+        assertThat(state.draft.text).isEqualTo("Queued one")
+        assertThat(state.draft.mode).isEqualTo(AgentMode.PLAN)
     }
 }

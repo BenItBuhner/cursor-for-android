@@ -63,6 +63,7 @@ import com.cursorforandroid.data.demo.DemoReview
 import com.cursorforandroid.data.local.AppCaches
 import com.cursorforandroid.data.local.JsonDiskCache
 import com.cursorforandroid.data.local.AttachmentStore
+import com.cursorforandroid.data.local.DraftFiles
 import com.cursorforandroid.data.local.DraftStore
 import com.cursorforandroid.data.local.FollowUpStore
 import com.cursorforandroid.data.local.GeneratedMediaStore
@@ -96,6 +97,7 @@ import com.cursorforandroid.data.repo.RemoteRepository
 import com.cursorforandroid.data.repo.ReviewRepository
 import com.cursorforandroid.data.repo.RunMonitor
 import com.cursorforandroid.data.repo.SessionManager
+import com.cursorforandroid.data.repo.SessionState
 import com.cursorforandroid.data.repo.SlashCommandRepository
 import com.cursorforandroid.data.repo.WorkspaceRepository
 import com.cursorforandroid.domain.AgentDiff
@@ -208,6 +210,37 @@ class AppGraph(
     /** The New Chat composer's unsent draft, so a process death does not lose what was typed. */
     private val lazyDrafts = lazy { DraftStore(app) }
     val drafts: DraftStore get() = lazyDrafts.value
+
+    /** The directories unsent drafts are kept in, as a sign-out parks them (see [DraftFiles.park]). */
+    private val draftRoots = listOf(DraftFiles.Root(FollowUpStore.ROOT, entryWise = true), DraftFiles.Root(DraftStore.ROOT, entryWise = false))
+
+    /**
+     * Who the drafts on disk belong to, as a sign-out parks them: the account signed in, else the one last cached; an
+     * account nothing can name (a session restored offline with nothing cached) is [DraftFiles.UNATTRIBUTED]. Null for
+     * the demo, whose drafts are nobody's.
+     */
+    private suspend fun draftOwner(): String? {
+        val signedIn = session.state.value as? SessionState.SignedIn
+        if (signedIn?.isDemo == true || session.isDemo) return null
+        return DraftFiles.ownerKey(signedIn?.user) ?: DraftFiles.ownerKey(prefs.cachedUser.first()) ?: DraftFiles.UNATTRIBUTED
+    }
+
+    /**
+     * The account signing in gets back what it left unsent on this device, and so do drafts no account could be
+     * named for, which can only have been typed by whoever holds this device.
+     */
+    private suspend fun handBackDrafts() {
+        val owner = DraftFiles.ownerKey(prefs.cachedUser.first())
+        withContext(Dispatchers.IO) {
+            if (owner != null) DraftFiles.unpark(app.filesDir, owner, draftRoots)
+            DraftFiles.unpark(app.filesDir, DraftFiles.UNATTRIBUTED, draftRoots)
+        }
+    }
+
+    /** The app has left the screen: every draft still waiting for its debounce is written now. */
+    fun flushDrafts() {
+        if (lazyFollowUps.isInitialized()) followUps.flushAll()
+    }
 
     /** The account's API: one client, with the SSE stream sharing its dispatcher and connection pool. */
     private val realParts = lazy {
@@ -754,10 +787,19 @@ class AppGraph(
     val whatsNew: WhatsNewRepository get() = lazyWhatsNew.value
 
     init {
-        // A sign-in through the sign-in screen owes the first-run choice; a restored session never does.
-        session.onSignedIn = { onboarding.signedIn() }
-        // Whether the user signs out or the key is rejected, nothing of the account stays on disk.
+        session.onSignedIn = {
+            // A sign-in through the sign-in screen owes the first-run choice; a restored session never does.
+            onboarding.signedIn()
+            // What this account left unsent here when it last signed out is its own again, before any screen reads it.
+            handBackDrafts()
+        }
+        // Whether the user signs out or the key is rejected, nothing of the account stays readable: what it had
+        // cached is wiped, and what it had typed and not sent is parked where only the same account's sign-in finds it.
         session.onSignedOut = {
+            // Read before anything is reset: the account the drafts belong to — and what it typed a moment ago,
+            // written before the saves are stopped.
+            val owner = draftOwner()
+            if (owner != null && lazyFollowUps.isInitialized()) followUps.saveAll()
             // The choice the account owed goes with it (its stored flag is among the session keys cleared below).
             onboarding.signedOut()
             // Cancelling a write does not stop it: the caches are closed first so nothing this account still has in
@@ -794,8 +836,13 @@ class AppGraph(
             media.clearCaches()
             attachments.clear()
             generatedMedia.clear()
-            drafts.clear()
-            followUpStore.clear()
+            if (owner == null) {
+                // The demo's drafts are the demo's: nothing real was typed against an account.
+                drafts.clear()
+                followUpStore.clear()
+            } else {
+                drafts.whileStopped { withContext(Dispatchers.IO) { DraftFiles.park(app.filesDir, owner, draftRoots) } }
+            }
             caches.clear()
         }
 

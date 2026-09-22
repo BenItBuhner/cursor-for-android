@@ -26,7 +26,7 @@ import java.util.concurrent.atomic.AtomicInteger
  */
 class DraftStore(context: Context) {
 
-    private val dir = File(context.applicationContext.filesDir, "draft")
+    private val dir = File(context.applicationContext.filesDir, ROOT)
     private val file = File(dir, "composer.json")
 
     /** One writer at a time, so [clear] never runs half-way through a save and leaves its files behind. */
@@ -160,11 +160,22 @@ class DraftStore(context: Context) {
         }
     }
 
+    /**
+     * Runs [move] — the draft's directory leaving for the signed-out account's parking place — with no write under
+     * way, and makes any save that was scheduled before it a no-op, as [clear] does.
+     */
+    suspend fun whileStopped(move: suspend () -> Unit) {
+        generation.incrementAndGet()
+        mutex.withLock { move() }
+    }
+
     private fun prune(keep: Set<String>) {
         dir.listFiles()?.forEach { if (it.name != file.name && it.name !in keep) it.delete() }
     }
 
-    private companion object {
-        const val TAG = "DraftStore"
+    companion object {
+        /** The store's directory under `files/`: one record, moved whole (see [DraftFiles.Root]). */
+        const val ROOT = "draft"
+        private const val TAG = "DraftStore"
     }
 }
