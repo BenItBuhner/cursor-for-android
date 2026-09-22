@@ -344,6 +344,19 @@ class ConversationRepositoryTest {
                 }
             }
         }
+
+        /**
+         * Every frame that shows [runId]'s footer shows [reply] above it: the frame that first says the run is over
+         * carries the reply it ended on. Main's CI on #281's head (`e24ef7f`) caught the footer a frame ahead of the
+         * reply, once, in `revalidating an open chat swaps a fragment…`.
+         */
+        fun assertEndedRunWhole(runId: String, reply: String) {
+            frames.forEachIndexed { i, (f, _) ->
+                val footer = f.items.indexOfFirst { it is RunFooter && it.runId == runId }
+                if (footer < 0) return@forEachIndexed
+                assertWithMessage("frame $i shows $runId's footer without its reply: items=${f.types()}").that(f.items.take(footer).count { it is AssistantMessage && it.markdown == reply }).isEqualTo(1)
+            }
+        }
     }
 
     @Test
@@ -661,6 +674,8 @@ class ConversationRepositoryTest {
         awaitUntil { conversations.state("bc-1").value.let { it.items.lastOrNull() is RunFooter && !it.isStreaming } }
         frames.stop()
         frames.assertNoEndedRunStreaming("run-1")
+        // Whichever of the hub's two listeners publishes first, the footer's first frame has the reply above it.
+        frames.assertEndedRunWhole("run-1", "Shipped.")
         val polled = conversations.state("bc-1").value
         assertThat(polled.isStreaming).isFalse()
         // The outcome is shown right away — final reply included — even though the edit in between never arrived.
@@ -710,6 +725,8 @@ class ConversationRepositoryTest {
         awaitUntil { conversations.state("bc-1").value.items.any { it is RunFooter && it.runId == "run-1" } }
         frames.stop()
         frames.assertNoEndedRunStreaming("run-1")
+        // The run list may land before the transcript (see the pin below): either way the footer comes with the reply.
+        frames.assertEndedRunWhole("run-1", "Shipped.")
         val settled = conversations.state("bc-1").value
         assertThat(settled.isStreaming).isFalse()
         assertThat(settled.isReconnecting).isFalse()
@@ -722,6 +739,93 @@ class ConversationRepositoryTest {
         delay(200)
         assertThat(conversations.state("bc-1").value.isStreaming).isFalse()
         assertThat(conversations.state("bc-1").value.types()).isEqualTo(settled.types())
+    }
+
+    /**
+     * The ordering main's CI hit once on #281's head (`e24ef7f`, shard 2/5) in `revalidating an open chat swaps a
+     * fragment…`: the hub reports a run's end to two listeners at once — the follow's own collector and the
+     * repository's finish listener — and the finish listener published first. Its frame marked the run's record over
+     * under the story the stream had told before it broke: the footer under the tool call, the final reply the run
+     * ended on drawn a frame later, above it. Forced here: the follow's collector is held while the finish lands, so
+     * the finish listener's frame is the first to show the run over; it must carry the reply.
+     */
+    @Test
+    fun `a finish the hub reports before the follow applies it shows the run's reply in the frame that first shows its footer`() = runBlocking<Unit> {
+        api.addRunningAgent("bc-1", "Agent", "run-1")
+        api.transcripts["bc-1"] = transcript("user_message" to "Ship it")
+        agents.refresh()
+        val follow = HeldDispatcher()
+        val conversations = ConversationRepository(
+            session, agents, prefs, hub, attachments, cache, traces,
+            isForeground = { true }, prefetchLimit = 0, prefetchSpacingMs = 0, scope = scope,
+            entryDispatcher = follow.dispatcher,
+        )
+        try {
+            conversations.attach("bc-1")
+            awaitUntil { !conversations.state("bc-1").value.isLoading && conversations.state("bc-1").value.isStreaming }
+            streamFirstHalf("run-1")
+            awaitUntil { conversations.state("bc-1").value.items.any { it is ActivityGroup } }
+            val frames = Frames(conversations, "bc-1")
+            // The connection drops after the first tool call; the run is over by its record, and the follow is held.
+            follow.hold = true
+            api.runs["run-1"] = api.runs.getValue("run-1").copy(status = "FINISHED", result = "Shipped.", durationMs = 30_000)
+            streamer.emit("run-1", RunStreamEvent.Done)
+            awaitUntil { conversations.state("bc-1").value.items.any { it is RunFooter && it.runId == "run-1" } }
+            assertWithMessage("the follow's collector was held while the finish landed").that(follow.heldCount).isAtLeast(1)
+            val first = conversations.state("bc-1").value
+            assertThat(first.types()).containsExactly("UserMessage", "ActivityGroup", "AssistantMessage", "RunFooter").inOrder()
+            assertThat(first.items.filterIsInstance<AssistantMessage>().single().markdown).isEqualTo("Shipped.")
+            assertThat(first.items.filterIsInstance<ActivityGroup>().single().calls).hasSize(1)
+            assertThat(first.isStreaming).isFalse()
+            assertThat(first.runStatus).isEqualTo(RunStatus.FINISHED)
+            // The follow's own frame, landing after, is the same frame.
+            follow.release()
+            awaitUntil { follow.heldCount == 0 }
+            delay(200)
+            assertThat(conversations.state("bc-1").value.types()).isEqualTo(first.types())
+            frames.stop()
+            frames.assertEndedRunWhole("run-1", "Shipped.")
+            frames.assertNoEndedRunStreaming("run-1")
+        } finally {
+            follow.close()
+        }
+    }
+
+    /**
+     * The same frame from a revalidation whose run list lands before its transcript (see [ConversationRepository]'s
+     * `publishRunsFirst`): the page shows the followed run over and ends the follow, its story kept, under the
+     * record's footer — while the reply is in the transcript still on its way (megabytes, for a long chat on a cell
+     * connection). The run's record carries the reply it ended on; the frame shows it, and the transcript's copy takes
+     * over without a second one.
+     */
+    @Test
+    fun `a run list that lands before the transcript shows the followed run's reply from its record with the footer`() = runBlocking<Unit> {
+        api.addRunningAgent("bc-1", "Agent", "run-1")
+        api.transcripts["bc-1"] = transcript("user_message" to "Ship it")
+        agents.refresh()
+        val conversations = repository()
+        conversations.attach("bc-1")
+        awaitUntil { !conversations.state("bc-1").value.isLoading && conversations.state("bc-1").value.isStreaming }
+        streamFirstHalf("run-1")
+        awaitUntil { conversations.state("bc-1").value.items.any { it is ActivityGroup } }
+        val frames = Frames(conversations, "bc-1")
+        now += 60_000
+        finishOnServer("bc-1", "run-1", "Shipped.", at = "2026-04-13T19:00:00.000Z")
+        api.conversationGate = CompletableDeferred()
+        conversations.revalidate("bc-1")
+        awaitUntil { conversations.state("bc-1").value.items.any { it is RunFooter && it.runId == "run-1" } }
+        val runsFirst = conversations.state("bc-1").value
+        assertThat(runsFirst.isLoading).isTrue()
+        assertThat(runsFirst.types()).containsExactly("UserMessage", "ActivityGroup", "AssistantMessage", "RunFooter").inOrder()
+        assertThat(runsFirst.items.filterIsInstance<AssistantMessage>().single().markdown).isEqualTo("Shipped.")
+        assertThat(runsFirst.isStreaming).isFalse()
+        api.conversationGate!!.complete(Unit)
+        awaitUntil { !conversations.state("bc-1").value.isLoading }
+        delay(150)
+        frames.stop()
+        frames.assertEndedRunWhole("run-1", "Shipped.")
+        frames.assertNoEndedRunStreaming("run-1")
+        assertThat(conversations.state("bc-1").value.types()).isEqualTo(runsFirst.types())
     }
 
     @Test

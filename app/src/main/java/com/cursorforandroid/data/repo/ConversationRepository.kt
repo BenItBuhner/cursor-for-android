@@ -866,8 +866,9 @@ class ConversationRepository(
             val prefix = builtPrefix?.takeIf { it.matches(this, tail.runId) } ?: buildPrefix(tail.runId, layout)
             val steered = local.firstOrNull { it.run.id == tail.runId && it.steeredAfter != null }
             val story = if (steered == null) tail.items else tail.items.toMutableList().also { spliceSteered(it, last!!, steered, mapOf(tail.runId to tail.items)) }
-            // The run's footer, as [TimelineBuilder.fromTurns] would close it: a run over by its record whose story has none yet.
-            val closed = if (!last!!.statusEnum().isActive && story.none { it is RunFooter && it.runId == last.id }) story + TimelineBuilder.footer(last) else story
+            // The run's end, as [TimelineBuilder.fromTurns] would close it: a run over by its record whose story has none
+            // yet — the reply the record ended on, then its footer.
+            val closed = if (!last!!.statusEnum().isActive && story.none { it is RunFooter && it.runId == last.id }) TimelineBuilder.withReplies(story, TimelineBuilder.recordReply(last)) + TimelineBuilder.footer(last) else story
             return prefix.items + closed.withUniqueIds(prefix.ids)
         }
 
@@ -1004,9 +1005,12 @@ class ConversationRepository(
                 // The story the stream told before the follow ended, until the whole trace lands (see [Entry.partial]):
                 // with its footer when the stream's end gave one, else the run's below.
                 inputs.partial != null -> {
-                    // With the record's own words for the turn, when the stream never delivered them.
-                    items += TimelineBuilder.withReplies(CoordinatorTranscript.withoutRepeats(inputs.partial, inputs.repeats), turn.items.filterIsInstance<AssistantMessage>())
-                    if (inputs.partial.any { it is RunFooter }) return items
+                    // With the record's own words for the turn, when the stream never delivered them — else, the record
+                    // behind, the reply the run's record ended on.
+                    val ended = inputs.partial.any { it is RunFooter }
+                    val words = turn.items.filterIsInstance<AssistantMessage>().ifEmpty { if (!ended && run != null) TimelineBuilder.recordReply(run) else emptyList() }
+                    items += TimelineBuilder.withReplies(CoordinatorTranscript.withoutRepeats(inputs.partial, inputs.repeats), words)
+                    if (ended) return items
                 }
                 // The record's own body — with the reply the transcript gave when the record lacked it and the log
                 // was gone, in which case the turn still says its activity is not to be had (see [fillTextFromTranscript]).
@@ -3493,6 +3497,9 @@ class ConversationRepository(
      */
     private fun Entry.applyLive(follower: Job?, run: RunDto, snapshot: LiveRunHub.Snapshot): Boolean = synchronized(this) {
         if (streamJob !== follower) return false
+        // The hub's report of the run's end can reach [recordFinish] while this follower is still a snapshot behind:
+        // the end is on screen then, and a snapshot from before it would turn the stream back on over the footer.
+        if (!snapshot.finished && run.id in recordedFinishes) return false
         val mutate: Entry.() -> Unit = {
             if (snapshot.hasTrace) {
                 traces = traces + (run.id to snapshot.items)
@@ -3588,6 +3595,10 @@ class ConversationRepository(
                     if (run.id in partial) partial = partial - run.id
                 }
                 followed = live?.runId == run.id
+                // The run is marked over in this frame, so the story it ended on goes with it — its final reply and
+                // its footer — whether or not the follow's collector has applied the finished snapshot yet: the story
+                // from before the end, drawn under the record's footer, showed the footer a frame ahead of the reply.
+                if (followed && snapshot.finished && !snapshot.hasTrace) live = LiveTrace(run.id, storySoFar(run.id, snapshot))
             },
             // With no screen following it, the status would otherwise stay at the last thing the screen saw. The
             // run's end is the run's; the chat's status is the freshest word there is (see [Entry.chatStatus]): an
