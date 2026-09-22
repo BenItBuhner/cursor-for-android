@@ -109,6 +109,25 @@ class ToolCallFileTapTest {
     }
 
     @Test
+    fun `a file of a Project's store opens the store sheet, not the workspace read`() {
+        val storeRead = ToolCall("c-store", "read_file", ToolKind.Read, ToolCall.STATUS_COMPLETED, "project-context.md", detail = "/cursor/stores/bc-proj/docs/project-context.md")
+        val sheet = mutableListOf<String>()
+        compose.setContent {
+            CursorTheme(mode = ThemeMode.Dark) {
+                CompositionLocalProvider(
+                    LocalTranscriptControls provides TranscriptControls(onOpenFile = { opened += it }),
+                    LocalMarkdownMedia provides MarkdownMediaContext("bc-taps", ViewerFixtures.loader(), canReadStores = true, onOpenStorePath = { sheet += it.text }),
+                ) {
+                    ToolCallLine(storeRead)
+                }
+            }
+        }
+        compose.onNodeWithTag("file-link").performClick()
+        assertThat(sheet).containsExactly("/cursor/stores/bc-proj/docs/project-context.md")
+        assertThat(opened).isEmpty()
+    }
+
+    @Test
     fun `a search's hits open their file at the line of the hit`() {
         compose.setContent { Rows(grep) }
         // Only the hits open files: the search's own words name a pattern, not a file.

@@ -26,6 +26,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.cursorforandroid.domain.FileFormat
 import com.cursorforandroid.domain.FileOpenRequest
+import com.cursorforandroid.domain.StorePath
 import com.cursorforandroid.domain.ToolCall
 import com.cursorforandroid.domain.ToolKind
 import com.cursorforandroid.domain.ToolNames
@@ -78,6 +79,10 @@ fun rememberFileOpener(path: String, call: ToolCall? = null, line: Int? = null):
         val entry = MediaEntry(src, kind, fileName = name, mimeType = format?.mimeType)
         return FileOpener(slot, { viewer.open(media.agentId, listOf(entry), src, slot, fallback = entry, autoplay = entry.isPlayable) }, "Open $name")
     }
+    // A file of an Agent Store (a Project's context) is the store sheet's: it reads the store, not the workspace.
+    val store = StorePath.parse(path)
+    val onStore = media?.onOpenStorePath
+    if (store != null && onStore != null) return FileOpener(null, { onStore(store) }, "Open $name")
     val onOpen = controls.onOpenFile ?: return null
     return FileOpener(null, { onOpen(FileOpenRequest(path, call?.callId, line)) }, "Open $name")
 }
