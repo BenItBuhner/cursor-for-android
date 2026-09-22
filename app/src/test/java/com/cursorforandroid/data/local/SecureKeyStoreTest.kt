@@ -1,5 +1,6 @@
 package com.cursorforandroid.data.local
 
+import android.app.Application
 import android.content.Context
 import android.content.SharedPreferences
 import androidx.test.core.app.ApplicationProvider
@@ -17,9 +18,14 @@ import java.security.GeneralSecurityException
  * What happens when the Android Keystore lets the app down: a store that cannot be opened, an entry that will not
  * decrypt, and the plaintext file an older build could leave behind. Robolectric has no Keystore of its own, so the
  * encrypted store is stood in for by an ordinary [SharedPreferences] the test can make fail on demand.
+ *
+ * Under a plain [Application], not the app's own: `CursorApp` builds the graph, whose startup reads its own store in
+ * the background — the real encrypted one, which cannot open without a Keystore — and counts that failed open in the
+ * same health file these stores count theirs in, about a hundred milliseconds into every test. #289's CI caught the
+ * count landing between two of the three launches below.
  */
 @RunWith(AndroidJUnit4::class)
-@Config(sdk = [35])
+@Config(sdk = [35], application = Application::class)
 class SecureKeyStoreTest {
 
     private val context = ApplicationProvider.getApplicationContext<Context>()
@@ -269,12 +275,20 @@ class SecureKeyStoreTest {
             if (attempts <= 6) throw IllegalStateException("the Keystore is not ready yet") else FailingPrefs(backing("recreated-3"))
         }
 
+        fun failures() = backing("cursor_secure_health").getInt("open_failures", 0)
+
+        // The launches a beat apart, as on a phone: longer than any other open in this process would take to count
+        // a failure of its own, so the count read after each launch is these launches' alone.
         assertThat(store().also { it.apiKey() }.availability.value).isEqualTo(SecureKeyStore.Availability.Unavailable)
+        Thread.sleep(300)
+        assertThat(failures()).isEqualTo(1)
         assertThat(store().also { it.apiKey() }.availability.value).isEqualTo(SecureKeyStore.Availability.Unavailable)
+        assertThat(failures()).isEqualTo(2)
         val third = store()
         assertThat(third.apiKey()).isNull()
         assertThat(third.availability.value).isEqualTo(SecureKeyStore.Availability.Reset)
         assertThat(attempts).isEqualTo(7)
+        assertThat(failures()).isEqualTo(0)
 
         // The run of failures is over, so a store that opens straight away is not reset again.
         val fourth = store()
