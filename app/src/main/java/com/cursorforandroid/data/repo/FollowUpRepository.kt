@@ -7,8 +7,10 @@ import com.cursorforandroid.data.api.userMessage
 import com.cursorforandroid.data.local.FollowUpStore
 import com.cursorforandroid.domain.Agent
 import com.cursorforandroid.domain.AgentLifecycle
+import com.cursorforandroid.domain.AgentMode
 import com.cursorforandroid.domain.DraftFile
 import com.cursorforandroid.domain.DraftImage
+import com.cursorforandroid.domain.DraftModel
 import com.cursorforandroid.domain.FollowUpComposerState
 import com.cursorforandroid.domain.FollowUpDraft
 import com.cursorforandroid.domain.McpServer
@@ -62,8 +64,9 @@ import java.util.concurrent.atomic.AtomicInteger
  * when no screen and no service is watching. The chat's own live state, while it is streaming, has the last word:
  * the row can be a poll behind.
  *
- * The draft is the composer's text and images as typed. Both draft and queue are written to the [FollowUpStore] so
- * leaving the chat, or the app, loses nothing; the demo backend's chats are not written, like its transcripts.
+ * The draft is the composer as it was left: the text, the attachments, the mode pill and the model picked for the next
+ * follow-up. Both draft and queue are written to the [FollowUpStore] so leaving the chat, or the app, loses nothing;
+ * the demo backend's chats are not written, like its transcripts.
  */
 class FollowUpRepository(
     private val conversations: ConversationRepository,
@@ -213,9 +216,41 @@ class FollowUpRepository(
         e.scheduleSave()
     }
 
+    /** The composer's mode pill (see [FollowUpDraft.mode]), kept with the draft so it comes back with it. */
+    fun setDraftMode(agentId: String, mode: AgentMode?) {
+        val e = entry(agentId)
+        if (e.state.value.draft.mode == mode) return
+        e.update { copy(draft = draft.copy(mode = mode)) }
+        e.scheduleSave()
+    }
+
+    /** The model picked for the next follow-up, every parameter included (see [FollowUpDraft.model]); null keeps the chat's. */
+    fun setDraftModel(agentId: String, model: DraftModel?) {
+        val e = entry(agentId)
+        if (e.state.value.draft.model == model) return
+        e.update { copy(draft = draft.copy(model = model)) }
+        e.scheduleSave()
+    }
+
+    /**
+     * The server has the message [model] was picked for, and keeps the chat on it for the runs after: the draft's
+     * pick is spent — unless another has been picked since.
+     */
+    fun spendDraftModel(agentId: String, model: DraftModel) {
+        val e = entry(agentId)
+        val current = e.state.value.draft.model ?: return
+        if (current.id != model.id || current.params != model.params) return
+        e.update { copy(draft = draft.copy(model = null)) }
+        e.scheduleSave()
+    }
+
+    /**
+     * What a send takes away: the text and the attachments. The mode pill and the model stay, as the composer still
+     * shows them; the model goes once the server has the message it was picked for ([spendDraftModel]).
+     */
     fun clearDraft(agentId: String) {
         val e = entry(agentId)
-        e.update { copy(draft = FollowUpDraft.EMPTY) }
+        e.update { copy(draft = draft.withoutContent()) }
         e.scheduleSave()
     }
 
@@ -223,6 +258,29 @@ class FollowUpRepository(
     fun flush(agentId: String) {
         val e = synchronized(entries) { entries[agentId] } ?: return
         if (e.saveJob?.isActive == true) e.scheduleSave()
+    }
+
+    /**
+     * Writes every draft still waiting for its debounce: called when the app leaves the screen, after which the
+     * process may be ended at any moment — a swipe from the recents, the system reclaiming memory — without another word.
+     */
+    fun flushAll() {
+        val waiting = synchronized(entries) { entries.values.filter { it.saveJob?.isActive == true } }
+        waiting.forEach { it.scheduleSave() }
+    }
+
+    /**
+     * Writes every draft and queue still waiting to be written, and returns once they are on disk: what a sign-out
+     * does before [resetAll] stops the saves and the files are parked for the account.
+     */
+    suspend fun saveAll() {
+        val store = store?.takeIf { persist() } ?: return
+        val waiting = synchronized(entries) { entries.values.filter { it.saveJob?.isActive == true && it.state.value.restored } }
+        for (e in waiting) {
+            e.saveJob?.cancel()
+            val snapshot = e.state.value
+            runCatching { store.write(e.agentId, snapshot.draft, snapshot.queue) }.onFailure { if (it is CancellationException) throw it }
+        }
     }
 
     // -- queue -------------------------------------------------------------------------------------------------------
@@ -288,11 +346,11 @@ class FollowUpRepository(
             e.update {
                 val item = queue.firstOrNull { it.id == id && !it.isSending && !it.isSteered } ?: return@update this
                 taken = item
-                val displaced = draft.takeUnless { it.isEmpty }?.let { d ->
+                val displaced = draft.takeUnless { it.isBlank }?.let { d ->
                     item.copy(id = "queued-" + UUID.randomUUID(), text = d.text.trim(), images = d.images, files = d.files, queuedAtMillis = AppClock.now(), error = null)
                 }
                 copy(
-                    draft = FollowUpDraft(item.text, item.images, item.files),
+                    draft = draft.copy(text = item.text, images = item.images, files = item.files),
                     queue = queue.flatMap { q -> if (q.id != id) listOf(q) else listOfNotNull(displaced) },
                 )
             }
@@ -416,6 +474,7 @@ class FollowUpRepository(
                     e.attempt(item, VIA_STEER, "accepted", result.getOrNull())
                     result.getOrNull()?.let { e.acceptedId(it) }
                     e.update { copy(queue = queue.filterNot { it.id == item.id }) }
+                    spendPickOf(e, item)
                     e.scheduleSave()
                     return
                 }
@@ -561,10 +620,26 @@ class FollowUpRepository(
 
     private inline fun Entry.update(transform: FollowUpComposerState.() -> FollowUpComposerState) = state.update { it.transform() }
 
+    /** [item] went out on the model the draft still has picked: the chat runs on it now, and the pick is spent (see [spendDraftModel]). */
+    private fun spendPickOf(e: Entry, item: QueuedFollowUp) {
+        val id = item.modelId ?: return
+        e.update {
+            val picked = draft.model
+            if (picked != null && picked.id == id && picked.params == item.modelParams) copy(draft = draft.copy(model = null)) else this
+        }
+    }
+
+    /** This draft, written into before the [saved] one was read, with the saved one filling in what it has not set. */
+    private fun FollowUpDraft.over(saved: FollowUpDraft): FollowUpDraft {
+        val content = if (isBlank) saved else this
+        return FollowUpDraft(content.text, content.images, content.files, mode = mode ?: saved.mode, model = model ?: saved.model)
+    }
+
     /**
-     * Folds the disk copy in. The user may have typed, or queued, before the file was read: what is in memory is
-     * newer and stays; the saved draft only fills an empty composer, and the saved queue goes ahead of anything
-     * queued since. Nothing is written back before this has run, so an early save cannot wipe the file.
+     * Folds the disk copy in. The user may have typed, picked or queued before the file was read: what is in memory
+     * is newer and stays, part by part — the saved text and attachments only fill a composer with none, the saved
+     * mode and model only one where none was asked for — and the saved queue goes ahead of anything queued since.
+     * Nothing is written back before this has run, so an early save cannot wipe the file.
      */
     private fun restore(e: Entry) {
         val store = store?.takeIf { persist() } ?: return
@@ -576,7 +651,7 @@ class FollowUpRepository(
                 e.update {
                     val known = queue.mapTo(HashSet()) { it.id }
                     copy(
-                        draft = if (draft.isEmpty && saved != null) saved.draft else draft,
+                        draft = saved?.draft?.let { draft.over(it) } ?: draft,
                         queue = saved?.queue?.filter { it.id !in known }.orEmpty() + queue,
                         restored = true,
                     )
@@ -788,6 +863,7 @@ class FollowUpRepository(
                 e.attempt(item, via, "accepted", runId)
                 runId?.let { e.acceptedId(it) }
                 e.update { copy(queue = queue.filterNot { it.id == item.id }) }
+                spendPickOf(e, item)
                 e.scheduleSave()
             },
             onFailure = { t ->

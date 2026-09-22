@@ -50,6 +50,7 @@ class AppGraphTest {
         val attachment = write(File(app.filesDir, "attachments/bc-1/run-1/0.png"))
         val generated = write(File(app.filesDir, "generated/bc-1/call-1.png"))
         val draft = write(File(app.filesDir, "draft/composer.json"))
+        val followUp = write(File(app.filesDir, "followups/bc-1/state.json"))
         assertThat(graph.builtParts()).isEmpty()
 
         runBlocking { graph.signOut() }
@@ -57,7 +58,11 @@ class AppGraphTest {
         assertThat(cached.exists()).isFalse()
         assertThat(attachment.exists()).isFalse()
         assertThat(generated.exists()).isFalse()
+        // Unsent drafts are not the next account's to read, nor the signed-out one's to lose: they are parked.
         assertThat(draft.exists()).isFalse()
+        assertThat(followUp.exists()).isFalse()
+        val parked = File(app.filesDir, "parked-drafts").walk().filter { it.isFile }.map { it.name }.toList()
+        assertThat(parked).containsAtLeast("composer.json", "state.json")
         // A wipe has to be performed whatever this process touched, so those stores are built here; the
         // repositories the sign-out would only have emptied in memory are left unbuilt. The image loader is in the
         // first group because Coil's disk cache outlives the process that filled it.

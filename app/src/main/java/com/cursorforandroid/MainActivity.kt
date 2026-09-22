@@ -64,6 +64,12 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /** Off the screen, the process may be ended without another word: what was typed a moment ago is written now. */
+    override fun onStop() {
+        super.onStop()
+        appGraph.flushDrafts()
+    }
+
     /**
      * A second launch of this `singleTask` activity. [setIntent] is what makes [getIntent] answer with it: without
      * that, a later recreation reads the *launch* intent again and replays a deep link the user left long ago.

@@ -20,6 +20,7 @@ import com.cursorforandroid.domain.Capabilities
 import com.cursorforandroid.domain.ConversationControls
 import com.cursorforandroid.domain.DraftFile
 import com.cursorforandroid.domain.DraftImage
+import com.cursorforandroid.domain.DraftModel
 import com.cursorforandroid.domain.FollowUpDraft
 import com.cursorforandroid.domain.Goal
 import com.cursorforandroid.domain.GoalStatus
@@ -32,6 +33,7 @@ import com.cursorforandroid.domain.PromptFile
 import com.cursorforandroid.domain.PromptImage
 import com.cursorforandroid.domain.QueuedFollowUp
 import com.cursorforandroid.domain.attachmentOnlyText
+import com.cursorforandroid.domain.choiceFor
 import com.cursorforandroid.domain.SlashCatalog
 import com.cursorforandroid.domain.SlashCommand
 import com.cursorforandroid.domain.SlashCommands
@@ -162,8 +164,14 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
         override fun onSent(message: OutgoingMessages.Outgoing) = this@ConversationViewModel.onSent(message)
         override fun onReturned(draft: OutgoingMessages.Draft) = this@ConversationViewModel.onReturned(draft)
     }
-    /** The picker's own state; the catalog and the chat's current model are folded in by [modelPicker]. */
-    private val picker = MutableStateFlow(FollowUpModelState())
+    /**
+     * The picker's own state; the catalog and the chat's current model are folded in by [modelPicker]. The mode pill
+     * and the model picked are the draft's too (see [setPickedMode], [setOverride]): a chat whose draft is in memory
+     * opens on them from its first frame, and one read from disk takes them once it has been.
+     */
+    private val picker = MutableStateFlow(
+        FollowUpModelState().let { initial -> graph.followUps.state(agentId).value.takeIf { it.restored }?.let { initial.adopting(it.draft) } ?: initial },
+    )
     /** Decoded previews of the images the queue cards and a restored draft show, by [DraftImage.id]. */
     private val thumbnails = MutableStateFlow<Map<String, ImageBitmap>>(emptyMap())
 
@@ -297,9 +305,10 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
         viewModelScope.launch { loadModels() }
         viewModelScope.launch {
             // Ask and Debug travel on the account's follow-up alone: with the mode turned off under a worn pill, the
-            // pill comes off (to "not asked", as if never picked) rather than stay on to refuse the next send.
-            capabilities.collect { caps ->
-                if (!caps.agentModes) picker.update { if (it.mode?.needsAccountService == true) it.copy(mode = null) else it }
+            // pill comes off (to "not asked", as if never picked) rather than stay on to refuse the next send. Read
+            // from the setting itself, not [capabilities]' placeholder, which would take a restored pill off unasked.
+            graph.extendedMode.capabilities.collect { caps ->
+                if (!caps.agentModes && picker.value.mode?.needsAccountService == true) setPickedMode(null)
             }
         }
         viewModelScope.launch {
@@ -314,11 +323,17 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
         }
         viewModelScope.launch {
             // The draft left here last time comes back once the disk has been read — unless something was typed first.
-            // Nothing kept means nothing to put back: no trip off the main thread, during which a file attached just
-            // now would have been written over by an empty draft.
-            val restored = graph.followUps.state(agentId).first { it.restored }
-            if (restored.draft.isEmpty) return@launch
-            if (composerIsEmpty()) adoptDraft(restored.draft, unlessWrittenInto = true)
+            // Its mode pill and model come back with it: the repository has already kept any picked since the screen
+            // opened over the saved ones. Nothing kept means nothing to put back: no trip off the main thread, during
+            // which a file attached just now would have been written over by an empty draft.
+            graph.followUps.state(agentId).first { it.restored }
+            val allowed = graph.extendedMode.capabilities.first().agentModes
+            // Read now, not when the disk was: anything picked while the setting was read is in it too.
+            if (!allowed && graph.followUps.state(agentId).value.draft.mode?.needsAccountService == true) graph.followUps.setDraftMode(agentId, null)
+            val restored = graph.followUps.state(agentId).value.draft
+            picker.update { it.adopting(restored) }
+            if (restored.isBlank) return@launch
+            if (composerIsEmpty()) adoptDraft(restored, unlessWrittenInto = true)
         }
         viewModelScope.launch {
             graph.followUps.state(agentId).map { s -> s.queue.flatMap { it.images } + s.draft.images }.collect(::decodeThumbnails)
@@ -378,7 +393,37 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
      */
     private fun pickerState(agent: Agent?, models: List<ModelOption>, local: FollowUpModelState): FollowUpModelState {
         val resolved = ModelResolution.forChat(agent, models)
-        return local.copy(models = models, currentLabel = resolved.label, current = resolved.choice, currentAssumed = resolved.isAssumed)
+        // A pick restored before the catalogue answered is a stand-in named from the draft: the catalogue's entry takes
+        // its place by id, its variant the one nearest the saved parameters.
+        val override = local.override?.let { o -> models.choiceFor(o.model.id, o.params) ?: o }
+        return local.copy(models = models, currentLabel = resolved.label, current = resolved.choice, currentAssumed = resolved.isAssumed, override = override)
+    }
+
+    /** The picker with [saved]'s mode pill and model, as the draft left them. */
+    private fun FollowUpModelState.adopting(saved: FollowUpDraft): FollowUpModelState =
+        copy(mode = saved.mode, override = saved.model?.let(::choiceOf))
+
+    /**
+     * The picker entry a saved model names: the catalogue's own when it lists the model, else a stand-in carrying the
+     * id, the parameters and the name, which is all a request needs and all the chip shows.
+     */
+    private fun choiceOf(model: DraftModel): ModelChoice {
+        graph.catalog.models.value.choiceFor(model.id, model.params)?.let { return it }
+        val name = model.label ?: model.id
+        val variant = model.params.takeIf { it.isNotEmpty() }?.let { ModelVariant(name, it, isDefault = true) }
+        return ModelChoice(ModelOption(model.id, name, variants = listOfNotNull(variant)), variant)
+    }
+
+    /** The pick for the next follow-up, filed with the draft so it comes back with it; null keeps the chat's model. */
+    private fun setOverride(choice: ModelChoice?) {
+        picker.update { it.copy(override = choice) }
+        graph.followUps.setDraftModel(agentId, choice?.let { DraftModel(it.model.id, it.params, it.label) })
+    }
+
+    /** The composer's mode pill, filed with the draft. */
+    private fun setPickedMode(mode: AgentMode?) {
+        picker.update { it.copy(mode = mode) }
+        graph.followUps.setDraftMode(agentId, mode)
     }
 
     /** The catalog is shared with the home composer and fetched once per session; a saved copy shows meanwhile. */
@@ -394,7 +439,7 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
     /** A model picks the next follow-up's model (its default variant unless one is given); null keeps the chat's current one. */
     fun selectModel(model: ModelOption?, variant: ModelVariant?) {
         val choice = model?.let { m -> ModelChoice(m, variant ?: m.defaultVariant) }
-        picker.update { it.copy(override = choice) }
+        setOverride(choice)
         // An explicit pick is the new-chat composer's next default — opening the app must not fall back to Auto.
         if (choice != null) {
             viewModelScope.launch {
@@ -411,7 +456,7 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
 
     /** The modes and `/multitask` are one slot: asking for one takes the command out of the draft. */
     fun setMode(mode: AgentMode?) {
-        picker.update { it.copy(mode = mode) }
+        setPickedMode(mode)
         if (mode != null && mode != AgentMode.AGENT && SlashCommands.has(draft.value, SlashCommands.MULTITASK)) {
             setDraft(SlashCommands.remove(draft.value, SlashCommands.MULTITASK))
         }
@@ -431,7 +476,8 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
      * mode never asked for stays not asked for.
      */
     private fun keepModesExclusive(text: String) {
-        if (SlashCommands.has(text, SlashCommands.MULTITASK)) picker.update { if (it.mode != null && it.mode != AgentMode.AGENT) it.copy(mode = AgentMode.AGENT) else it }
+        val mode = picker.value.mode
+        if (SlashCommands.has(text, SlashCommands.MULTITASK) && mode != null && mode != AgentMode.AGENT) setPickedMode(AgentMode.AGENT)
     }
 
     fun addAttachments(items: List<PendingAttachment>) {
@@ -596,8 +642,8 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
 
     /** The server has the message: the model override it went out with is spent — unless another was picked meanwhile. */
     private fun onSent(sent: OutgoingMessages.Outgoing) {
-        val override = sent.draft.override
-        picker.update { if (it.override == override) it.copy(override = null) else it }
+        val override = sent.draft.override ?: return
+        if (picker.value.override == override) setOverride(null)
     }
 
     /**

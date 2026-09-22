@@ -9,13 +9,35 @@ class DraftImage(val id: String, val image: PromptImage)
 /** A file (any type, Extended mode) in the follow-up composer or a queued follow-up; the same id rule as [DraftImage]. */
 class DraftFile(val id: String, val file: PromptFile)
 
-/** What the follow-up composer holds for one chat: the text, the images and the files, saved as typed so leaving the chat loses nothing. */
+/**
+ * The model the next follow-up asks for, as the picker left it: the model's id and every parameter of the variant
+ * picked — context, effort, speed, whatever the model offers — with the name the chip showed, so a composer restored
+ * before the catalogue has loaded still names it.
+ */
+data class DraftModel(val id: String, val params: List<ModelParam> = emptyList(), val label: String? = null)
+
+/**
+ * What the follow-up composer holds for one chat, saved as it changes so leaving the chat, or the app, loses nothing:
+ * the text, the images and the files, the mode pill it wears ([mode]; Multitask rides in the text as `/multitask`),
+ * and the model picked for the next follow-up ([model]).
+ */
 data class FollowUpDraft(
     val text: String = "",
     val images: List<DraftImage> = emptyList(),
     val files: List<DraftFile> = emptyList(),
+    /** Plan, Ask or Debug, or Agent after the pill's cross; null when no mode was asked for. */
+    val mode: AgentMode? = null,
+    /** Null keeps the chat on the model it runs on. */
+    val model: DraftModel? = null,
 ) {
-    val isEmpty: Boolean get() = text.isBlank() && images.isEmpty() && files.isEmpty()
+    /** Nothing typed and nothing attached: what a send takes away. The composer's mode and model may still be set. */
+    val isBlank: Boolean get() = text.isBlank() && images.isEmpty() && files.isEmpty()
+
+    /** Nothing to keep at all, the composer's choices included. */
+    val isEmpty: Boolean get() = isBlank && mode == null && model == null
+
+    /** The same choices with nothing typed or attached — the composer after a send. */
+    fun withoutContent(): FollowUpDraft = FollowUpDraft(mode = mode, model = model)
 
     companion object {
         val EMPTY = FollowUpDraft()

@@ -12,6 +12,7 @@ import com.cursorforandroid.data.repo.SteeringRepository
 import com.cursorforandroid.domain.AgentMode
 import com.cursorforandroid.domain.Capabilities
 import com.cursorforandroid.domain.DraftImage
+import com.cursorforandroid.domain.DraftModel
 import com.cursorforandroid.domain.McpServer
 import com.cursorforandroid.domain.ModelChoice
 import com.cursorforandroid.ui.components.PendingAttachment
@@ -70,6 +71,7 @@ sealed interface OutgoingStatus {
  *
  * @param onBusy the documented run request refused the message as busy: it goes to a queue, as the composer would
  *   have sent it had it known — decided by [OutgoingSends], since no composer need be open by then.
+ * @param onAccepted the server has the message: what it consumed of the chat's draft is settled, composer open or not.
  */
 class OutgoingMessages(
     private val agentId: String,
@@ -77,6 +79,7 @@ class OutgoingMessages(
     private val conversations: ConversationRepository,
     private val uploads: AttachmentUploads,
     private val onBusy: (Draft) -> Unit,
+    private val onAccepted: (Draft) -> Unit = {},
 ) {
     /** What the composer held when send was tapped. [text] is what the message says; [typed] what the user wrote (an attachment-only message says what it carries). */
     class Draft(
@@ -235,6 +238,7 @@ class OutgoingMessages(
                     synchronized(lock) { outgoing.remove(id) }
                     _statuses.update { it - id }
                     uploads.forget(fileIds)
+                    onAccepted(message.draft)
                     listener?.onSent(message)
                 },
                 onFailure = { t ->
@@ -306,8 +310,14 @@ class OutgoingSends(
 ) {
     private val perChat = ConcurrentHashMap<String, OutgoingMessages>()
 
-    fun forAgent(agentId: String): OutgoingMessages =
-        perChat.getOrPut(agentId) { OutgoingMessages(agentId, scope, conversations, uploads, onBusy = { draft -> refusedAsBusy(agentId, draft) }) }
+    fun forAgent(agentId: String): OutgoingMessages = perChat.getOrPut(agentId) {
+        OutgoingMessages(
+            agentId, scope, conversations, uploads,
+            onBusy = { draft -> refusedAsBusy(agentId, draft) },
+            // The server keeps the model a message switched to for the runs after it: the draft's pick is spent.
+            onAccepted = { draft -> draft.override?.let { followUps.spendDraftModel(agentId, DraftModel(it.model.id, it.params, it.label)) } },
+        )
+    }
 
     /**
      * The account is gone (a sign-out): every send under way is cancelled — and has stopped, by the time this returns,
