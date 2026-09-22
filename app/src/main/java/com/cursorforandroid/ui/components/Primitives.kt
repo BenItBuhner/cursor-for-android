@@ -110,7 +110,8 @@ fun Modifier.pressable(onClick: () -> Unit, shape: Shape, enabled: Boolean = tru
 
 /**
  * Cursor's icon button: no fill, no border, a ~14px glyph at 66 % (`--cursor-icon-secondary`). Nothing is painted
- * until pressed, when the 32dp box shows a soft rounded highlight; touches are accepted over 44dp.
+ * until pressed, when the 32dp box shows a soft rounded highlight; touches are accepted over 44dp, or over
+ * [touchHeight] vertically in a row shorter than the target (see [ChatHeader]).
  */
 @Composable
 fun FlatIconButton(
@@ -122,18 +123,19 @@ fun FlatIconButton(
     iconSize: Dp = CursorDimens.headerIcon,
     tint: Color = CursorTheme.colors.iconSecondary,
     enabled: Boolean = true,
+    touchHeight: Dp = CursorDimens.touchTarget,
 ) {
     // The label sits on the control that takes the tap, not on the glyph: inside a tappable row the glyph's own node
     // would merge into the row's, and the button would read as part of the row rather than as one of its own.
-    TouchTarget(size = size, touchSize = CursorDimens.touchTarget, shape = CursorTheme.shapes.lg, onClick = onClick, enabled = enabled, modifier = modifier, contentDescription = contentDescription) {
+    TouchTarget(size = size, touchSize = CursorDimens.touchTarget, touchHeight = touchHeight, shape = CursorTheme.shapes.lg, onClick = onClick, enabled = enabled, modifier = modifier, contentDescription = contentDescription) {
         Icon(icon, null, tint = if (enabled) tint else tint.copy(alpha = tint.alpha * 0.4f), modifier = Modifier.size(iconSize))
     }
 }
 
 /**
- * A control that occupies [size] in the layout but accepts touches over [touchSize]: the larger hit layer uses
- * `requiredSize`, so it overflows the visual box symmetrically without changing measured bounds. The press
- * ripple stays on the visual box. [contentDescription] names the control itself (the hit layer), so it stays a
+ * A control that occupies [size] in the layout but accepts touches over [touchSize] ([touchHeight] tall): the larger
+ * hit layer uses `requiredSize`, so it overflows the visual box symmetrically without changing measured bounds. The
+ * press ripple stays on the visual box. [contentDescription] names the control itself (the hit layer), so it stays a
  * node of its own wherever it sits.
  */
 @Composable
@@ -146,13 +148,14 @@ fun TouchTarget(
     enabled: Boolean = true,
     role: Role? = Role.Button,
     contentDescription: String? = null,
+    touchHeight: Dp = touchSize,
     content: @Composable () -> Unit,
 ) {
     val interaction = remember { MutableInteractionSource() }
     Box(modifier.size(size), contentAlignment = Alignment.Center) {
         Box(
             Modifier
-                .requiredSize(maxOf(size, touchSize))
+                .requiredSize(width = maxOf(size, touchSize), height = maxOf(size, touchHeight))
                 .then(if (contentDescription != null) Modifier.semantics { this.contentDescription = contentDescription } else Modifier)
                 .clickable(interactionSource = interaction, indication = null, enabled = enabled, role = role, onClick = onClick),
         )

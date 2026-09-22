@@ -69,8 +69,8 @@ import com.cursorforandroid.domain.StorePath
 import com.cursorforandroid.ui.agents.MenuItem
 import com.cursorforandroid.ui.agents.RenameChatDialog
 import com.cursorforandroid.ui.agents.SnoozeChatDialog
+import com.cursorforandroid.ui.components.ChatHeader
 import com.cursorforandroid.ui.components.ComposerBox
-import com.cursorforandroid.ui.components.CursorHeader
 import com.cursorforandroid.ui.components.CursorIcons
 import com.cursorforandroid.ui.components.FlatIconButton
 import com.cursorforandroid.ui.components.LocalMarkdownMedia
@@ -116,8 +116,8 @@ internal fun ConversationState.showsWorkingRow(): Boolean {
 }
 
 /**
- * One chat: header with the agent's name and repo · branch (and a button to its pull request once it has one), the
- * transcript, and the follow-up composer.
+ * One chat: a header of controls alone (back, its pull request once it has one, the panel, the menu; the agent's name
+ * is the header's accessibility label and the panel's header), the transcript, and the follow-up composer.
  *
  * The transcript is a bottom-anchored (`reverseLayout`) list, which is what keeps it stable while a run streams: the
  * newest item grows upward from the bottom edge without moving anything the reader is looking at, and a reader who
@@ -354,26 +354,26 @@ fun ConversationScreen(
         },
     ) {
     Column(Modifier.fillMaxSize().background(colors.canvas)) {
-        CursorHeader(
-            title = agent?.name ?: "Chat",
-            subtitle = agent?.let { a -> listOfNotNull(a.repoShortName, a.branchName).joinToString(" · ").ifBlank { null } },
+        val touchHeight = CursorDimens.minTouchTarget
+        ChatHeader(
+            label = agent?.name ?: "Chat",
             leading = {
                 when {
-                    onBack != null -> FlatIconButton(CursorIcons.ChevronLeft, "Back", onClick = onBack)
-                    onOpenSidebar != null -> FlatIconButton(CursorIcons.Sidebar, "Open sidebar", onClick = onOpenSidebar)
+                    onBack != null -> FlatIconButton(CursorIcons.ChevronLeft, "Back", onClick = onBack, touchHeight = touchHeight)
+                    onOpenSidebar != null -> FlatIconButton(CursorIcons.Sidebar, "Open sidebar", onClick = onOpenSidebar, touchHeight = touchHeight)
                 }
             },
             trailing = {
-                // The pull request lives here and nowhere else in the chat: its own button beside the menu, in the same
-                // green glyph the list rows use for it. It is the one thing a reader most often leaves the chat for, and
-                // the header stays in reach however long the transcript gets. The subtitle already names the branch.
+                // The pull request lives here and nowhere else in the chat: its own button beside the panel's, in the
+                // same green glyph the list rows use for it. It is the one thing a reader most often leaves the chat
+                // for, and the header stays in reach however long the transcript gets. The panel's header names the branch.
                 agent?.prUrl?.let { prUrl ->
-                    FlatIconButton(CursorIcons.GitPullRequest, "Open pull request", tint = colors.gitAdded, onClick = { uriHandler.openUri(prUrl) })
+                    FlatIconButton(CursorIcons.GitPullRequest, "Open pull request", tint = colors.gitAdded, onClick = { uriHandler.openUri(prUrl) }, touchHeight = touchHeight)
                 }
                 // The panel's button: the sidebar glyph mirrored, for the sheet that comes in from the other side.
-                FlatIconButton(CursorIcons.Sidebar, "Open panel", onClick = { scope.launch { panelState.open() } }, modifier = Modifier.scale(scaleX = -1f, scaleY = 1f))
+                FlatIconButton(CursorIcons.Sidebar, "Open panel", onClick = { scope.launch { panelState.open() } }, modifier = Modifier.scale(scaleX = -1f, scaleY = 1f), touchHeight = touchHeight)
                 Box {
-                    FlatIconButton(CursorIcons.More, "More", onClick = { menuOpen = true })
+                    FlatIconButton(CursorIcons.More, "More", onClick = { menuOpen = true }, touchHeight = touchHeight)
                     DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }, containerColor = colors.elevated, shape = CursorTheme.shapes.lg) {
                         MenuItem(if (isPinned) "Unpin" else "Pin", CursorIcons.Pin) { menuOpen = false; viewModel.togglePinned() }
                         // The public API has no rename; the demo renames its in-memory row, Extended mode the account's.
