@@ -16,6 +16,7 @@ import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -38,10 +39,13 @@ import com.cursorforandroid.ui.agents.MenuItem
 import com.cursorforandroid.ui.components.CursorIcons
 import com.cursorforandroid.ui.components.FlatIconButton
 import com.cursorforandroid.ui.components.GroupLabel
+import com.cursorforandroid.ui.components.LocalRunStopConfirmation
 import com.cursorforandroid.ui.components.Pill
 import com.cursorforandroid.ui.components.ProjectGlyph
+import com.cursorforandroid.ui.components.RunInterruption
 import com.cursorforandroid.ui.components.SpinnerRing
 import com.cursorforandroid.ui.components.StateGlyph
+import com.cursorforandroid.ui.components.askOrRun
 import com.cursorforandroid.ui.components.pressable
 import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
@@ -196,6 +200,9 @@ internal fun WorkerRow(
     val agent = worker.agent
     val row = AgentListOrganizer.toRow(agent, local, nowMillis)
     var menuOpen by rememberSaveable { mutableStateOf(false) }
+    // Pause and Stop ask first while Settings › Confirm before stopping is on; the question goes with the run.
+    val confirmation = LocalRunStopConfirmation.current
+    LaunchedEffect(agent.isRunning) { if (!agent.isRunning) confirmation?.dismissFor(agent.id) }
     val detail = buildList {
         worker.spawnKind?.let { add(it.label) }
         agent.branchName?.let { add(it) } ?: agent.repoShortName?.let { add(it) }
@@ -229,10 +236,10 @@ internal fun WorkerRow(
                 MenuItem("Open and message", CursorIcons.ChevronRight) { menuOpen = false; actions.onOpenAgent(agent) }
                 if (actionsAvailable) {
                     if (agent.isRunning) MenuItem("Steer\u2026", CursorIcons.Target) { menuOpen = false; actions.onSteer(agent) }
-                    if (agent.isRunning) MenuItem("Pause", CursorIcons.Pause) { menuOpen = false; actions.onPause(agent.id) }
+                    if (agent.isRunning) MenuItem("Pause", CursorIcons.Pause) { menuOpen = false; confirmation.askOrRun(RunInterruption.Pause, agent.id) { actions.onPause(agent.id) } }
                     MenuItem("Resume", CursorIcons.Play) { menuOpen = false; actions.onResume(agent.id) }
                 }
-                if (agent.isRunning) MenuItem("Stop", CursorIcons.Stop) { menuOpen = false; actions.onStop(agent.id) }
+                if (agent.isRunning) MenuItem("Stop", CursorIcons.Stop) { menuOpen = false; confirmation.askOrRun(RunInterruption.Stop, agent.id) { actions.onStop(agent.id) } }
                 if (actionsAvailable) {
                     MenuItem("Move under another Project\u2026", CursorIcons.Layers) { menuOpen = false; actions.onMove(agent) }
                     MenuItem("Release from the Project", CursorIcons.ExternalLink, tint = colors.red) { menuOpen = false; actions.onRelease(agent.id) }

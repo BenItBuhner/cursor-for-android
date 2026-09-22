@@ -74,7 +74,11 @@ import com.cursorforandroid.ui.components.CursorHeader
 import com.cursorforandroid.ui.components.CursorIcons
 import com.cursorforandroid.ui.components.FlatIconButton
 import com.cursorforandroid.ui.components.LocalMarkdownMedia
+import com.cursorforandroid.ui.components.LocalRunStopConfirmation
 import com.cursorforandroid.ui.components.MarkdownMediaContext
+import com.cursorforandroid.ui.components.RunInterruption
+import com.cursorforandroid.ui.components.RunStopDialog
+import com.cursorforandroid.ui.components.rememberRunStopConfirmation
 import com.cursorforandroid.ui.components.ShimmerText
 import com.cursorforandroid.ui.components.SpinnerRing
 import com.cursorforandroid.ui.components.cursorSurface
@@ -220,6 +224,9 @@ fun ConversationScreen(
     var modelSheet by rememberSaveable { mutableStateOf(false) }
     var renameOpen by rememberSaveable { mutableStateOf(false) }
     var snoozeOpen by rememberSaveable { mutableStateOf(false) }
+    // Every tap here that would stop, pause or interrupt the run asks first while the setting is on (see
+    // RunStopConfirmation): the composer's Stop, the menu's, the queues' Send now, the panel's controls.
+    val stopConfirmation = rememberRunStopConfirmation(graph.prefs)
     val uriHandler = LocalUriHandler.current
     val clipboard = LocalClipboardManager.current
 
@@ -245,6 +252,7 @@ fun ConversationScreen(
     // writes. Both come presented, a turn at a time, off the main thread (see [TranscriptPresenter]).
     val items = presentedTranscript.items
     val isActive = conversation.runStatus?.isActive == true || conversation.isStreaming
+    LaunchedEffect(isActive) { if (!isActive) stopConfirmation.dismissFor(agentId) }
     // The notices among the rows the reader has put away for this chat (see NoticeCard.dismissKey, NoticeDismissals) are left out.
     val rows = remember(presentedTranscript, hiddenNotices) {
         val closed = NoticeDismissals.inlineKeys(hiddenNotices)
@@ -340,7 +348,7 @@ fun ConversationScreen(
         panelContent = {
             // The panel's figures — generated images, recordings, artifacts — resolve through the same media context and
             // open into the same viewer as the transcript's, among the same pages.
-            CompositionLocalProvider(LocalMarkdownMedia provides markdownMedia, LocalPanelGraph provides graph) {
+            CompositionLocalProvider(LocalMarkdownMedia provides markdownMedia, LocalPanelGraph provides graph, LocalRunStopConfirmation provides stopConfirmation) {
                 ConversationPanel(panel, panelActions, onClose = { scope.launch { panelState.close() } })
             }
         },
@@ -385,7 +393,7 @@ fun ConversationScreen(
                             MenuItem("View desktop", CursorIcons.Eye) { menuOpen = false; panelActions.openDesktop(viewOnly = true) }
                             MenuItem("Take control of desktop", CursorIcons.Desktop) { menuOpen = false; panelActions.openDesktop(viewOnly = false) }
                         }
-                        if (isActive) MenuItem("Stop", CursorIcons.Stop) { menuOpen = false; viewModel.cancelRun() }
+                        if (isActive) MenuItem("Stop", CursorIcons.Stop) { menuOpen = false; stopConfirmation.ask(RunInterruption.Stop, agentId, viewModel::cancelRun) }
                         if (agent?.isArchived != true) {
                             if (isSnoozed) {
                                 MenuItem("Unsnooze", CursorIcons.Clock) { menuOpen = false; viewModel.unsnooze() }
@@ -558,7 +566,10 @@ fun ConversationScreen(
                     queue = queue,
                     thumbnails = thumbnails,
                     onEdit = { viewModel.editQueued(it.id) },
-                    onSteer = { viewModel.steerQueued(it.id) },
+                    // Sent now while a turn is under way, a message cancels that turn for it.
+                    onSteer = { item ->
+                        if (isActive) stopConfirmation.ask(RunInterruption.SendNow, agentId) { viewModel.steerQueued(item.id) } else viewModel.steerQueued(item.id)
+                    },
                     onRemove = { viewModel.removeQueued(it.id) },
                     modifier = Modifier.widthIn(max = CursorDimens.composerMaxWidth).padding(bottom = 4.dp),
                 )
@@ -567,7 +578,10 @@ fun ConversationScreen(
                 AccountQueueRows(
                     queue = controls.queue,
                     inFlightIds = controls.inFlightQueueIds,
-                    onSendNow = { viewModel.queueSendNow(it.id) },
+                    // `SubmitPendingFollowupNow` sends the message in place of the turn under way.
+                    onSendNow = { item ->
+                        if (isActive) stopConfirmation.ask(RunInterruption.SendNow, agentId) { viewModel.queueSendNow(item.id) } else viewModel.queueSendNow(item.id)
+                    },
                     onRemove = { viewModel.queueDelete(it.id) },
                     onUpdate = { item, text -> viewModel.queueUpdate(item.id, text) },
                     onEditing = { item, editing -> viewModel.queueMarkEditing(item.id, editing) },
@@ -591,7 +605,7 @@ fun ConversationScreen(
                 // Free the moment send is tapped: the message, its files' uploads and its send are the transcript's from then on.
                 canSend = (draft.isNotBlank() || attachments.isNotEmpty() || files.isNotEmpty()) && !archived,
                 isRunning = isActive,
-                onStop = viewModel::cancelRun,
+                onStop = { stopConfirmation.ask(RunInterruption.Stop, agentId, viewModel::cancelRun) },
                 plusMenu = plusMenu,
                 commands = commands,
                 attachments = attachments,
@@ -666,6 +680,7 @@ fun ConversationScreen(
             onDismiss = { snoozeOpen = false },
         )
     }
+    RunStopDialog(stopConfirmation)
 }
 
 /** How far (px) the newest item may be scrolled past before the reader counts as having left the bottom. */
