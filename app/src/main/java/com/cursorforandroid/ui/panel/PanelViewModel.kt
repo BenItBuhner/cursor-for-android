@@ -5,7 +5,9 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.cursorforandroid.AppGraph
 import com.cursorforandroid.data.api.userMessage
+import com.cursorforandroid.data.repo.AgentFileRepository
 import com.cursorforandroid.data.repo.DesktopOpen
+import com.cursorforandroid.data.repo.FileRead
 import com.cursorforandroid.data.repo.PullRequestLoad
 import com.cursorforandroid.data.repo.VmRead
 import com.cursorforandroid.domain.Agent
@@ -83,7 +85,18 @@ data class RepoBrowserState(
 sealed interface FileView {
     val path: String
     data class Loading(override val path: String) : FileView
-    data class Failed(override val path: String, val message: String) : FileView
+    /**
+     * Nothing could be shown: [title] why, [message] what it means, [asked] the request refused and what came back;
+     * [retryable] offers Retry, [wakeable] waking the agent's machine first.
+     */
+    data class Failed(
+        override val path: String,
+        val message: String,
+        val title: String = "Couldn't open this file",
+        val asked: String? = null,
+        val retryable: Boolean = false,
+        val wakeable: Boolean = false,
+    ) : FileView
     data class Repository(val file: RepoFile) : FileView { override val path: String get() = file.path }
     data class Transcript(val content: ToolPayload.FileContent) : FileView { override val path: String get() = content.path }
     data class Changes(val change: TranscriptContent.FileChange) : FileView { override val path: String get() = change.path }
@@ -92,6 +105,9 @@ sealed interface FileView {
     /** One file of the branch's diff against its base (`GetBackgroundComposerDiffDetails`): its patch, or the file as it now stands. */
     data class BranchDiff(val file: AgentDiffFile) : FileView { override val path: String get() = file.path }
 }
+
+/** The title of a file the transcript names and nothing here can read. */
+private const val NO_COPY = "The transcript carried no copy of this file"
 
 /** Where the Files › Workspace tab stands: the directory on screen, and the tree it walks (read once, whole). */
 data class WorkspaceBrowserState(
@@ -447,17 +463,55 @@ class PanelViewModel(private val graph: AppGraph, val agentId: String) : ViewMod
 
     /** Reads [path] off the agent's VM (`ReadBinaryFile`) into the viewer. */
     fun openWorkspaceFile(path: String) {
+        reopen = { openWorkspaceFile(path) }
         fileJob?.cancel()
         browser.update { it.copy(file = FileView.Loading(path)) }
         fileJob = viewModelScope.launch {
-            val read = graph.workspace.file(agentId, path)
+            val read = graph.workspace.file(agentId, path, force = true)
             browser.update { b ->
                 if (b.file?.path != path) return@update b
                 b.copy(
                     file = when (read) {
                         is VmRead.Loaded -> FileView.Workspace(read.value)
                         is VmRead.NotAvailable -> FileView.Failed(path, read.reason)
-                        is VmRead.Failed -> FileView.Failed(path, read.message)
+                        is VmRead.Failed -> FileView.Failed(path, read.message, asked = read.asked, retryable = true)
+                    },
+                )
+            }
+        }
+    }
+
+    /** What the viewer's Retry asks again: the last open, with the agent's machine woken first when [wake]. */
+    private var reopen: ((wake: Boolean) -> Unit)? = null
+
+    fun retryFile(wake: Boolean) {
+        reopen?.invoke(wake)
+    }
+
+    /**
+     * Reads [path] — named by a tool call, anywhere on the agent's machine — the way the transcript's links do (see
+     * [com.cursorforandroid.data.repo.AgentFileRepository]): off the VM, as the path it is; the repository at the
+     * agent's branch only for a file of the repository. What stops it is named: the machine asleep (with Wake), gone
+     * with the chat, the file not there, the request refused and what came back.
+     */
+    private fun readAgentFile(path: String, wake: Boolean) {
+        reopen = { again -> readAgentFile(path, again) }
+        fileJob?.cancel()
+        browser.update { it.copy(file = FileView.Loading(path)) }
+        fileJob = viewModelScope.launch {
+            val read = graph.agentFileReads.read(agentId, path, force = true, wake = wake)
+            browser.update { b ->
+                if (b.file?.path != path) return@update b
+                b.copy(
+                    file = when (read) {
+                        is FileRead.Loaded -> if (read.source == FileRead.Source.Repository) FileView.Repository(read.file) else FileView.Workspace(read.file)
+                        is FileRead.NotReadable -> FileView.Failed(path, read.reason, title = NO_COPY)
+                        is FileRead.Failed -> when (read.reason) {
+                            FileRead.Reason.MachineAsleep -> FileView.Failed(path, "Wake it and the file is read again.", title = "The agent's machine is asleep", asked = read.asked, retryable = true, wakeable = true)
+                            FileRead.Reason.MachineGone -> FileView.Failed(path, "The chat expired or was archived, and its VM went with it; only what the transcript carried can be shown.", title = "The agent's machine is gone", asked = read.asked)
+                            FileRead.Reason.NotFound -> FileView.Failed(path, "It was moved or deleted, or went with a machine that was replaced.", title = "The agent's machine has no such file", asked = read.asked, retryable = true)
+                            FileRead.Reason.Other -> FileView.Failed(path, read.message, asked = read.asked, retryable = read.retryable)
+                        }
                     },
                 )
             }
@@ -551,7 +605,9 @@ class PanelViewModel(private val graph: AppGraph, val agentId: String) : ViewMod
     private fun <T> VmRead<T>.toLoad(): RemoteLoad<T> = when (this) {
         is VmRead.Loaded -> RemoteLoad.Loaded(value)
         is VmRead.NotAvailable -> RemoteLoad.Unsupported(reason)
-        is VmRead.Failed -> RemoteLoad.Failed(message, retryable = !endpointChanged)
+        // The request and its answer under the words, as the transcript's notices print them; Retry always, since a
+        // refusal this build reads as a removal has been a missing file before (Bennett's 2026-09-22 frame).
+        is VmRead.Failed -> RemoteLoad.Failed(listOfNotNull(message, asked?.let { "Asked: $it" }).joinToString("\n"))
     }
 
     // -- the repository browser --------------------------------------------------------------------------------------
@@ -597,6 +653,7 @@ class PanelViewModel(private val graph: AppGraph, val agentId: String) : ViewMod
 
     /** Opens [path] of the repository at the agent's branch in the viewer. */
     fun openRepoFile(path: String) {
+        reopen = { openRepoFile(path) }
         val current = state.value.browser
         val repoUrl = current.repoUrl ?: return
         fileJob?.cancel()
@@ -608,7 +665,7 @@ class PanelViewModel(private val graph: AppGraph, val agentId: String) : ViewMod
                 b.copy(
                     file = result.fold(
                         onSuccess = { contents -> if (contents is RepoContents.File) FileView.Repository(contents.file) else FileView.Failed(path, "$path is a directory.") },
-                        onFailure = { FileView.Failed(path, graph.reviews.describe(it)) },
+                        onFailure = { FileView.Failed(path, graph.reviews.describe(it), retryable = true) },
                     ),
                 )
             }
@@ -617,19 +674,26 @@ class PanelViewModel(private val graph: AppGraph, val agentId: String) : ViewMod
 
     /**
      * Opens a file the agent touched: the text a tool call carried when there is one (a read shows what the agent
-     * saw, a write what it left), its diffs when it was only edited, else the file from the repository.
+     * saw, a write what it left), its diffs when it was only edited, else — with the agent's machine readable
+     * (Extended mode) — the file read off it wherever it is, `/tmp` as much as the workspace; else, for a file of
+     * the repository, the repository at the agent's branch. A picture, a recording or a sound never gets here: its
+     * row opens the media viewer.
      */
     fun openTouched(path: String) {
-        val content = state.value.content
+        val current = state.value
+        val content = current.content
         val change = content.changes.firstOrNull { it.path == path }
         val written = change?.contentAfter
         val read = readOf(path)
+        val inRepository = AgentFileRepository.isInWorkspace(path, null)
         when {
             written != null -> browser.update { it.copy(file = FileView.Transcript(written)) }
             change != null && change.diffs.isNotEmpty() -> browser.update { it.copy(file = FileView.Changes(change)) }
             read != null -> browser.update { it.copy(file = FileView.Transcript(read)) }
-            state.value.browser.canBrowse && !state.value.isDemo -> openRepoFile(path)
-            else -> browser.update { it.copy(file = FileView.Failed(path, "The stream carried no copy of this file, and the repository cannot be browsed from here.")) }
+            current.capabilities.workspaceFiles && !current.isDemo -> readAgentFile(path, wake = false)
+            inRepository && current.browser.canBrowse && !current.isDemo -> openRepoFile(AgentFileRepository.relativeGuess(path))
+            inRepository -> browser.update { it.copy(file = FileView.Failed(path, "The repository can't be browsed from here, and reading the agent's workspace needs Extended mode.", title = NO_COPY)) }
+            else -> browser.update { it.copy(file = FileView.Failed(path, AgentFileRepository.outsideNeedsExtended(path), title = NO_COPY)) }
         }
     }
 

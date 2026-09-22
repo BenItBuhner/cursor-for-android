@@ -133,6 +133,7 @@ fun ImageBlock(src: String, alt: String?, modifier: Modifier = Modifier, heightC
         val maxHeight = heightCap ?: mediaMaxHeight()
         val request = inlineDecodeBounds()
         var attempt by remember(ref) { mutableIntStateOf(0) }
+        var wake by remember(ref) { mutableStateOf(false) }
         var state by remember(ref) { mutableStateOf<ImageLoad>(ImageLoad.Loading) }
 
         // Keyed on the artifact, not on the measured width: the column is re-measured whenever the device is
@@ -146,15 +147,17 @@ fun ImageBlock(src: String, alt: String?, modifier: Modifier = Modifier, heightC
             }
             state = ImageLoad.Loading
             state = try {
-                ImageLoad.Ready(media.loader.image(ref, request.width, request.height).asImageBitmap())
+                ImageLoad.Ready(media.loader.image(ref, request.width, request.height, wake = wake).asImageBitmap())
             } catch (t: Throwable) {
                 if (t is CancellationException) throw t
                 ImageLoad.Failed(MediaLoader.problemOf(t))
+            } finally {
+                wake = false
             }
         }
 
         when (val s = state) {
-            ImageLoad.Loading -> MediaPlaceholder(Modifier.fillMaxWidth().height(PlaceholderHeight), "Loading image")
+            ImageLoad.Loading -> MediaPlaceholder(Modifier.fillMaxWidth().height(PlaceholderHeight), if (wake) "Waking the agent's machine" else "Loading image")
             is ImageLoad.Failed -> if (ref is MediaRef.Store) {
                 // The store answered nothing for it: the card still opens the Project, and a tap on Retry asks again.
                 StoreFileCard(ref, alt, CursorIcons.Image, title = s.problem.title, onRetry = { attempt++ })
@@ -166,6 +169,7 @@ fun ImageBlock(src: String, alt: String?, modifier: Modifier = Modifier, heightC
                     entry = MediaEntry(src, MediaEntry.Kind.Image, caption = alt),
                     detail = alt ?: ref.label,
                     onRetry = if (s.problem.retryable) ({ attempt++ }) else null,
+                    onWake = if (s.problem.wakeable) ({ wake = true; attempt++ }) else null,
                 )
             }
             is ImageLoad.Ready -> {
@@ -385,6 +389,7 @@ internal fun MediaProblemRow(
     detail: String?,
     onRetry: (() -> Unit)?,
     modifier: Modifier = Modifier,
+    onWake: (() -> Unit)? = null,
 ) {
     val media = LocalMarkdownMedia.current
     val context = LocalContext.current
@@ -395,6 +400,7 @@ internal fun MediaProblemRow(
         problem !is MediaProblem.LfsPointer && !(problem is MediaProblem.NotMedia && problem.actual == FileFormat.HTML)
     var notice by remember(ref) { mutableStateOf<String?>(null) }
     val actions = buildList {
+        onWake?.let { add("Wake the machine" to it) }
         browserUrl?.let { url -> add("Open in browser" to { if (runCatching { uriHandler.openUri(url) }.isFailure) notice = "Nothing on this device opens links." }) }
         if (elsewhere && media != null) {
             add(
@@ -411,6 +417,7 @@ internal fun MediaProblemRow(
         detail = listOfNotNull(notice ?: problem.detail, detail).joinToString(" · ").ifBlank { null },
         onRetry = onRetry,
         actions = actions,
+        asked = problem.asked,
         modifier = modifier.testTag("media-problem"),
     )
 }
@@ -468,6 +475,8 @@ private fun MediaErrorRow(
     onRetry: (() -> Unit)?,
     modifier: Modifier = Modifier,
     actions: List<Pair<String, () -> Unit>> = emptyList(),
+    /** The request a refusal answered and what came back, under the reason: which call it was, from a screenshot. */
+    asked: String? = null,
 ) {
     val colors = CursorTheme.colors
     val shape = CursorTheme.shapes.lg
@@ -486,6 +495,7 @@ private fun MediaErrorRow(
                 if (!detail.isNullOrBlank()) {
                     Text(detail, style = CursorTheme.typography.code, color = colors.textQuaternary, maxLines = 2, overflow = TextOverflow.Ellipsis)
                 }
+                asked?.let { Text("Asked: $it", style = CursorTheme.typography.code, color = colors.textQuaternary, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.testTag("media-problem-asked")) }
             }
             if (onRetry != null) {
                 Spacer(Modifier.width(8.dp))

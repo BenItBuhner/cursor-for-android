@@ -629,7 +629,9 @@ private fun ToolOutputView(call: ToolCall, output: ToolOutput, modifier: Modifie
         Column(Modifier.padding(horizontal = 10.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             output.input?.let { input ->
                 val text = if (call.kind == ToolKind.Shell) input.trim().lines().joinToString("\n") { "\$ $it" } else input.trim()
-                Text(text, style = type.code, color = colors.textPrimary)
+                // A read's, an edit's or a write's path, shown whole here, opens the file like the row's name does.
+                val opener = call.openablePath?.takeIf { it == text }?.let { rememberFileOpener(it, call) }
+                Text(text, style = type.code, color = colors.textPrimary, modifier = if (opener != null) Modifier.fileLink(opener) else Modifier)
             }
             output.output?.let { text ->
                 if (output.input != null) HairlineDivider()

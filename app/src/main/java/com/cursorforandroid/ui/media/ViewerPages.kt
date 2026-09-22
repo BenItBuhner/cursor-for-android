@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.pager.PagerState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.Icon
@@ -23,6 +24,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
@@ -43,7 +45,6 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.CanvasDrawScope
 import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.vector.rememberVectorPainter
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -51,7 +52,6 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
@@ -62,10 +62,13 @@ import com.cursorforandroid.data.media.MediaLoader
 import com.cursorforandroid.data.media.MediaProblem
 import com.cursorforandroid.domain.FileFormat
 import com.cursorforandroid.domain.MediaRef
+import com.cursorforandroid.domain.NoticeTone
 import com.cursorforandroid.ui.components.CursorIcons
 import com.cursorforandroid.ui.components.SpinnerRing
 import com.cursorforandroid.ui.components.boundedPixels
 import com.cursorforandroid.ui.components.pressable
+import com.cursorforandroid.ui.conversation.LoadNoticeCard
+import com.cursorforandroid.ui.conversation.NoticeAction
 import com.cursorforandroid.ui.theme.CursorTheme
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -85,6 +88,18 @@ internal class PagePresentation(initial: ImageBitmap?) {
     var loaded by mutableStateOf(false)
     /** Why the page has nothing to show, in the reader's words; null while it loads or once it shows. */
     var problem by mutableStateOf<MediaProblem?>(null)
+    /** Asks of the page's picture so far: Retry and Wake count one up, and the decode is asked for again. */
+    var attempt by mutableIntStateOf(0)
+        private set
+    /** The agent's machine is being woken for this page's read; the spinner says so. */
+    var waking by mutableStateOf(false)
+
+    /** Reads the picture again, first waking the agent's machine when [wake]. */
+    fun retry(wake: Boolean) {
+        problem = null
+        waking = wake
+        attempt++
+    }
     /** The rect the picture rests in, in the page's (and so the viewer's) coordinates. */
     var fitted by mutableStateOf(Rect.Zero)
     val zoom = ZoomState()
@@ -141,9 +156,10 @@ internal fun ImagePage(
     val zoom = presentation.zoom
     val density = LocalDensity.current
 
-    LaunchedEffect(ref, viewport) {
+    LaunchedEffect(ref, viewport, presentation.attempt) {
         if (viewport.width <= 0 || viewport.height <= 0) return@LaunchedEffect
         val target = boundedPixels(viewport.width, viewport.height)
+        val wake = presentation.waking
         // A decode that already reaches the viewport on either axis is as sharp as the fit can show; a rotation that
         // turns a portrait viewport into a landscape one asks for the wider decode a wide picture then needs.
         val have = presentation.bitmap
@@ -155,7 +171,7 @@ internal fun ImagePage(
         // A page opened from a row with no picture of its own (a file's name, a chip) has nothing to swap: its decode
         // lands as soon as it can, and the transform carries it out of the row from that frame on.
         if (presentation.bitmap != null || page != session.initialIndex) snapshotFlow { state.phase }.first { it != MediaViewerState.Phase.Opening }
-        if (presentation.bitmap == null) {
+        if (presentation.bitmap == null && !wake) {
             // A quick small decode to stand in until the full one lands; its failure is the full one's to report.
             try {
                 presentation.offer(environment.loader.image(ref, target.width / 3, target.height / 3).asImageBitmap())
@@ -164,11 +180,13 @@ internal fun ImagePage(
             }
         }
         try {
-            presentation.offer(environment.loader.image(ref, target.width, target.height).asImageBitmap())
+            presentation.offer(environment.loader.image(ref, target.width, target.height, wake = wake).asImageBitmap())
             presentation.loaded = true
         } catch (t: Throwable) {
             if (t is CancellationException) throw t
             if (presentation.bitmap == null) presentation.problem = MediaLoader.problemOf(t)
+        } finally {
+            presentation.waking = false
         }
     }
     // The page on screen reports its zoom to the viewer's state, where the chrome and the tests read it. A page
@@ -220,8 +238,8 @@ internal fun ImagePage(
                         .testTag("viewer-image-$page"),
                 )
             }
-            presentation.problem != null -> PageProblem(presentation.problem!!, ref, entry, environment)
-            else -> SpinnerRing(size = 20.dp, color = Color.White.copy(alpha = 0.7f))
+            presentation.problem != null -> PageProblem(presentation.problem!!, ref, entry, environment, onRetry = presentation::retry)
+            else -> PageSpinner(waking = presentation.waking)
         }
     }
 }
@@ -326,8 +344,8 @@ internal fun VideoPage(
             }
             val problem = playback?.error?.let { MediaProblem.Failed(it, retryable = false) } ?: urlProblem
             when {
-                problem != null -> PageProblem(problem, ref, entry, environment, Modifier.align(Alignment.Center))
-                playback == null && url == null -> SpinnerRing(size = 20.dp, color = Color.White.copy(alpha = 0.7f), modifier = Modifier.align(Alignment.Center))
+                problem != null -> PageProblem(problem, ref, entry, environment, Modifier.align(Alignment.Center), onRetry = source::retry.takeIf { urlProblem != null && playback?.error == null })
+                playback == null && url == null -> PageSpinner(waking = source.waking, modifier = Modifier.align(Alignment.Center))
                 playback != null && !playback.isPlaying && !playback.isBuffering && state.phase == MediaViewerState.Phase.Open -> {
                     // Paused, not started, or ended: the play disc in the middle, the poster card's own control scaled up.
                     Box(
@@ -354,6 +372,16 @@ internal fun VideoPage(
 internal class PageSource {
     var url by mutableStateOf<String?>(null)
     var problem by mutableStateOf<MediaProblem?>(null)
+    var attempt by mutableIntStateOf(0)
+        private set
+    var waking by mutableStateOf(false)
+
+    /** Resolves the source again, first waking the agent's machine when [wake]. */
+    fun retry(wake: Boolean) {
+        problem = null
+        waking = wake
+        attempt++
+    }
 }
 
 /**
@@ -375,12 +403,14 @@ internal fun rememberPagePlayback(
     val context = LocalContext.current
     val playerFactory = LocalVideoPlayerFactory.current
     val source = remember(ref) { PageSource() }
-    LaunchedEffect(ref) {
+    LaunchedEffect(ref, source.attempt) {
         try {
-            source.url = environment.loader.playbackUrl(ref)
+            source.url = environment.loader.playbackUrl(ref, wake = source.waking)
         } catch (t: Throwable) {
             if (t is CancellationException) throw t
             source.problem = MediaLoader.problemOf(t)
+        } finally {
+            source.waking = false
         }
     }
     val autoplay = session.autoplay && page == session.initialIndex
@@ -489,7 +519,7 @@ internal fun AudioPage(
             }
         }
         if (problem != null) {
-            PageProblem(problem, ref, entry, environment, Modifier.align(Alignment.BottomCenter).padding(bottom = 140.dp))
+            PageProblem(problem, ref, entry, environment, Modifier.align(Alignment.BottomCenter).padding(bottom = 140.dp), onRetry = source::retry.takeIf { source.problem != null && playback?.error == null })
         }
     }
 }
@@ -538,39 +568,46 @@ private fun rememberAudioArtwork(sizePx: Int): ImageBitmap {
  * Why a page has nothing to show — in the reader's words, never a decoder's — and what can still be done with the
  * file: the browser, where there is a page for it, or another app on the device.
  */
+/**
+ * Why a page has nothing to show, as the app's compact notice says anything that went wrong (the transcript's
+ * record notice, the queue's cards): the reason as its title, what it means under it, the request that was refused
+ * and what came back (`Asked: POST /…/ReadBinaryFile → HTTP 404 not_found`) so the next screenshot names the call,
+ * and the ways on — waking the agent's machine, Retry, the browser, another app. It used to be a bare sentence on
+ * black with no way on (Bennett's 2026-09-22 frame: "Cursor changed a private endpoint…" and nothing else).
+ */
 @Composable
-internal fun PageProblem(problem: MediaProblem, ref: MediaRef, entry: MediaEntry, environment: PageEnvironment, modifier: Modifier = Modifier) {
+internal fun PageProblem(
+    problem: MediaProblem,
+    ref: MediaRef,
+    entry: MediaEntry,
+    environment: PageEnvironment,
+    modifier: Modifier = Modifier,
+    onRetry: ((wake: Boolean) -> Unit)? = null,
+) {
     val browserUrl by produceState<String?>(null, ref) { value = environment.loader.browserUrl(ref) }
     val elsewhere = problem.openable && problem !is MediaProblem.NotReadable && problem !is MediaProblem.Failed &&
         !(problem is MediaProblem.NotMedia && problem.actual == FileFormat.HTML) && problem !is MediaProblem.LfsPointer
-    Column(modifier.padding(horizontal = 32.dp).testTag("viewer-error"), horizontalAlignment = Alignment.CenterHorizontally) {
-        Icon(CursorIcons.Warning, null, tint = Color.White.copy(alpha = 0.75f), modifier = Modifier.size(18.dp))
-        Text(problem.title, style = CursorTheme.typography.base, color = Color.White.copy(alpha = 0.85f), textAlign = TextAlign.Center, modifier = Modifier.padding(top = 8.dp).testTag("viewer-error-title"))
-        problem.detail?.let { Text(it, style = CursorTheme.typography.small, color = Color.White.copy(alpha = 0.6f), textAlign = TextAlign.Center, modifier = Modifier.padding(top = 4.dp)) }
-        val url = browserUrl
-        if (url != null || elsewhere) {
-            Row(Modifier.padding(top = 14.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                if (url != null) ViewerPill("Open in browser", CursorIcons.ExternalLink, "viewer-open-browser") { environment.onOpenInBrowser(url) }
-                if (elsewhere) ViewerPill("Open with\u2026", CursorIcons.Share, "viewer-open-elsewhere") { environment.onOpenElsewhere(ref, entry) }
-            }
+    val detail = listOfNotNull(problem.detail, problem.asked?.let { "Asked: $it" }).joinToString("\n").ifEmpty { null }
+    val tone = when (problem) {
+        is MediaProblem.MachineAsleep, is MediaProblem.NotReadable, is MediaProblem.Unsupported, is MediaProblem.LfsPointer -> NoticeTone.Warning
+        else -> NoticeTone.Error
+    }
+    Box(modifier.padding(horizontal = 20.dp).widthIn(max = 440.dp).testTag("viewer-error")) {
+        LoadNoticeCard(title = problem.title, detail = detail, tone = tone, docked = false, titleTag = "viewer-error-title") {
+            if (onRetry != null && problem.wakeable) NoticeAction("Wake the machine", { onRetry(true) }, Modifier.testTag("viewer-wake"))
+            if (onRetry != null && problem.retryable) NoticeAction("Retry", { onRetry(false) }, Modifier.testTag("viewer-retry"))
+            browserUrl?.let { url -> NoticeAction("Open in browser", { environment.onOpenInBrowser(url) }, Modifier.testTag("viewer-open-browser")) }
+            if (elsewhere) NoticeAction("Open with\u2026", { environment.onOpenElsewhere(ref, entry) }, Modifier.testTag("viewer-open-elsewhere"))
         }
     }
 }
 
+/** A page's wait: the ring, and while the agent's machine is being woken, the words for why it is a long one. */
 @Composable
-private fun ViewerPill(label: String, icon: ImageVector, tag: String, onClick: () -> Unit) {
-    val shape = CursorTheme.shapes.full
-    Row(
-        Modifier
-            .background(Color.White.copy(alpha = 0.14f), shape)
-            .pressable(onClick, shape)
-            .padding(horizontal = 12.dp, vertical = 7.dp)
-            .testTag(tag),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Icon(icon, null, tint = Color.White, modifier = Modifier.size(13.dp))
-        Spacer(Modifier.width(6.dp))
-        Text(label, style = CursorTheme.typography.small, color = Color.White)
+private fun PageSpinner(waking: Boolean, modifier: Modifier = Modifier) {
+    Column(modifier, horizontalAlignment = Alignment.CenterHorizontally) {
+        SpinnerRing(size = 20.dp, color = Color.White.copy(alpha = 0.7f))
+        if (waking) Text("Waking the agent's machine\u2026", style = CursorTheme.typography.small, color = Color.White.copy(alpha = 0.7f), modifier = Modifier.padding(top = 10.dp).testTag("viewer-waking"))
     }
 }
 
