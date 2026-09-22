@@ -50,10 +50,10 @@ import java.util.TimeZone
  * A chat's follow-up composer reopened in a new process, after Claude Fable 5.1 was picked at 300K context and low
  * effort, the Plan pill put on, and a line typed:
  *
- *  - before (`143`): the draft as 0.3.61 kept it — the text alone, which is all it wrote — restored: the text is back,
+ *  - before (`181`): the draft as 0.3.61 kept it — the text alone, which is all it wrote — restored: the text is back,
  *    the chip has gone back to the chat's model and the pill is gone (Bennett's report);
- *  - after (`144`): the draft as it is kept now, restored: text, pill and model;
- *  - after, the picker (`145`): the model sheet opened on the restored pick, its Context and Effort where they were left.
+ *  - after (`182`): the draft as it is kept now, restored: text, pill and model;
+ *  - after, the picker (`183`): the model sheet opened on the restored pick, its Context and Effort where they were left.
  *
  * Driven through the real composer over a signed-in account (the demo keeps nothing on disk). Written to
  * `screenshots/`; CI compares them pixel for pixel.
@@ -161,7 +161,7 @@ class DraftRestoreScreenshotTest {
 
         show(process())
         waitForText("Auto")
-        capture("143_draft_restore_before")
+        capture("181_draft_restore_before")
     }
 
     @Test
@@ -171,11 +171,11 @@ class DraftRestoreScreenshotTest {
         show(process())
         waitForText("Claude Fable 5.1")
         waitForText("Plan")
-        capture("144_draft_restore_after")
+        capture("182_draft_restore_after")
 
         compose.onNodeWithText("Claude Fable 5.1").performClick()
         waitForText("Effort")
-        capture("145_draft_restore_after_picker")
+        capture("183_draft_restore_after_picker")
     }
 
     private companion object {
