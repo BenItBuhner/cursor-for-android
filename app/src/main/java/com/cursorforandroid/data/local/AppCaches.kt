@@ -166,6 +166,10 @@ data class CachedLocalPrompt(
     val reply: V0ConversationMessageDto? = null,
     /** The prompt was steered into [run] under way: shown after this many of the run's rows (see `ConversationRepository.LocalPrompt.steeredAfter`). */
     val steeredAfter: Int? = null,
+    /** The run [run] waits behind, the account having named [run] mid-turn (see `ConversationRepository.LocalPrompt.waitsBehind`). */
+    val waitsBehind: String? = null,
+    /** The account's id for the message, by which the card leaves the account's row out while the transcript shows it waiting. */
+    val followupId: String? = null,
 )
 
 /**

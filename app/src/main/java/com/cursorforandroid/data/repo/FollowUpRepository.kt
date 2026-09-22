@@ -878,16 +878,18 @@ class FollowUpRepository(
                             if (generation.get() != startedIn) return
                             handed.fold(
                                 onSuccess = { (runId, followupId) ->
-                                    e.attempt(item, VIA_ACCOUNT, if (runId == null) "queued-on-account" else "accepted", runId)
+                                    // A run named behind a turn under way has not started: the message is queued all the same.
+                                    val queued = runId == null || conversations.waitsBehindTurn(e.agentId, runId)
+                                    e.attempt(item, VIA_ACCOUNT, if (runId == null) "queued-on-account" else if (queued) "queued-behind-turn" else "accepted", runId)
                                     runId?.let { e.acceptedId(it) }
                                     e.update { copy(queue = queue.filterNot { it.id == item.id }) }
                                     e.scheduleSave()
-                                    if (runId == null) {
+                                    if (queued) {
                                         // The account holds it now, under its followup id: the transcript files it
                                         // under the run the account starts on it (see ConversationRepository.expectDelivery)
-                                        // — the card above the composer showing it meanwhile — and is read again for
-                                        // the turn the account is on.
-                                        conversations.expectDelivery(e.agentId, item.previewText, item.images.map { it.image }, followupId = followupId)
+                                        // — the card above the composer showing it meanwhile, or a Project's transcript
+                                        // under the run named for it — and is read again for the turn the account is on.
+                                        conversations.expectDelivery(e.agentId, item.previewText, item.images.map { it.image }, followupId = followupId, runId = runId)
                                         conversations.reload(e.agentId)
                                     }
                                     return

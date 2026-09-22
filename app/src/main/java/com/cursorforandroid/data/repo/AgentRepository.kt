@@ -1967,13 +1967,15 @@ class AgentRepository(
      * documented API cannot carry (see `SteeringApi.addFollowup`). [send] answers with the id of the run the account
      * started, or null when it named none; the row is updated the way [followUp] updates it, the run stamped now
      * since the account reports no record for it. Null from [send] is success with no run to stream: the caller
-     * reloads the chat instead.
+     * reloads the chat instead. A message [queued] behind a turn under way — asked with the run the account named,
+     * once it has answered — leaves the row on that turn, its run and its status: the account has started nothing.
      */
     suspend fun followUpVia(
         agentId: String,
         modelId: String? = null,
         modelParams: List<ModelParam> = emptyList(),
         modelDisplayName: String? = null,
+        queued: (runId: String?) -> Boolean = { false },
         send: suspend () -> String?,
     ): Result<RunDto?> = runCatching {
         val startedIn = token()
@@ -1981,10 +1983,14 @@ class AgentRepository(
         val now = AppClock.now()
         val stamp = Instant.ofEpochMilli(now).toString()
         val run = runId?.let { RunDto(id = it, agentId = agentId, status = RunStatus.CREATING.name, createdAt = stamp, updatedAt = stamp) }
+        val behind = queued(runId)
         patch(agentId, startedIn) { current ->
-            current.switchedTo(modelId, modelParams, modelDisplayName)
-                .copy(runStatus = RunStatus.CREATING, latestRunId = run?.id ?: current.latestRunId, lifecycle = AgentLifecycle.ACTIVE)
-                .touched(now)
+            val switched = current.switchedTo(modelId, modelParams, modelDisplayName)
+            if (behind) {
+                switched.copy(lifecycle = AgentLifecycle.ACTIVE).touched(now)
+            } else {
+                switched.copy(runStatus = RunStatus.CREATING, latestRunId = run?.id ?: current.latestRunId, lifecycle = AgentLifecycle.ACTIVE).touched(now)
+            }
         }
         run
     }
