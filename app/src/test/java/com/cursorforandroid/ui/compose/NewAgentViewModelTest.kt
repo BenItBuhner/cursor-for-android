@@ -19,6 +19,7 @@ import com.cursorforandroid.domain.UserMessage
 import com.cursorforandroid.ui.agents.DraftRow
 import com.cursorforandroid.ui.components.PendingAttachment
 import com.cursorforandroid.util.AppClock
+import com.cursorforandroid.util.HeldDispatcher
 import com.cursorforandroid.util.MainDispatcherRule
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -27,6 +28,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
@@ -682,6 +684,38 @@ class NewAgentViewModelTest {
         awaitUntil { accepted(id) }
         awaitUntil { onDisk().isEmpty() }
         assertThat(loaded().state.value.prompt).isEmpty()
+    }
+
+    /**
+     * Emptying the composer removes its draft; that removal is the composer's own and does not come back to it as the
+     * sidebar's "deleted", which empties a composer onto a new draft. #292's CI caught the notice handled after the
+     * reader had typed again: the words wiped and nothing saved in their place. Forced here: the composer's own thread
+     * is held from the emptying until the words typed after it have been saved, then let go.
+     */
+    @Test
+    fun `words typed right after emptying the composer stay, however late it hears of the draft it emptied`() = runBlocking<Unit> {
+        val vm = loaded(draftSaveDelayMs = 20)
+        vm.setPrompt("Half a thought")
+        awaitUntil { onDisk().isNotEmpty() }
+        val id = vm.draftId.value
+        val composerThread = HeldDispatcher()
+        try {
+            composerThread.hold = true
+            mainDispatcher.set(composerThread.dispatcher)
+            vm.setPrompt("")
+            awaitUntil { onDisk().isEmpty() }
+            vm.setPrompt("Half a thought, and the rest")
+            awaitUntil { onDisk().any { it.prompt == "Half a thought, and the rest" } }
+            composerThread.release()
+            delay(200)
+            // The words stay on screen, in the draft that was open, and that draft is the one on disk.
+            assertThat(vm.state.value.prompt).isEqualTo("Half a thought, and the rest")
+            assertThat(vm.draftId.value).isEqualTo(id)
+            assertThat(onDisk().map { it.id to it.prompt }).containsExactly(id to "Half a thought, and the rest")
+        } finally {
+            mainDispatcher.set(UnconfinedTestDispatcher())
+            composerThread.close()
+        }
     }
 
     /**

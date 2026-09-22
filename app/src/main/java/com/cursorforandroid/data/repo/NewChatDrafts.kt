@@ -146,10 +146,14 @@ class NewChatDrafts(
         return store.write(kept)
     }
 
-    /** Deletes draft [id], on disk too, and tells a composer that has it open. */
-    suspend fun remove(id: String) {
+    /**
+     * Deletes draft [id], on disk too, and tells a composer that has it open — unless [byComposer]: the composer emptied
+     * it itself, and a "deleted" heard back from here would empty it again onto a new draft, taking whatever had been
+     * typed into it since.
+     */
+    suspend fun remove(id: String, byComposer: Boolean = false) {
         _state.update { s -> s.copy(drafts = s.drafts.filterNot { it.id == id }) }
-        _requests.tryEmit(Request.Deleted(id))
+        if (!byComposer) _requests.tryEmit(Request.Deleted(id))
         store.delete(id)
     }
 
