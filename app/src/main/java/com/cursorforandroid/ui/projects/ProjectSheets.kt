@@ -39,6 +39,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
@@ -46,6 +48,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.cursorforandroid.domain.Agent
 import com.cursorforandroid.domain.ProjectAppearance
+import com.cursorforandroid.domain.PromptFile
 import com.cursorforandroid.ui.components.CursorButton
 import com.cursorforandroid.ui.components.CursorIcons
 import com.cursorforandroid.ui.components.CursorSheet
@@ -55,9 +58,11 @@ import com.cursorforandroid.ui.components.pressable
 import com.cursorforandroid.ui.home.SheetRow
 import com.cursorforandroid.ui.home.SheetSearchField
 import com.cursorforandroid.ui.icons.ProjectIcons
+import com.cursorforandroid.ui.media.FileHandoff
 import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.ui.theme.ProjectPalette
+import java.io.File
 
 /** Which of the Project screen's sheets is open; a `Serializable`, so `rememberSaveable` keeps it up across a rotation. */
 sealed interface ProjectSheet : java.io.Serializable {
@@ -302,16 +307,31 @@ internal fun IconCell(candidate: String, selected: Boolean, tone: Color, onPick:
     }
 }
 
-/** A file of the Project's shared context, as text. */
+/** A file of the Project's shared context, as text — or, for a document that is not text, named and handed to another app. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun ContextFileSheet(file: OpenContextFile, onDismiss: () -> Unit) {
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
+    val context = LocalContext.current
     CursorSheet(onDismiss = onDismiss) { _ ->
         SheetHeader(file.entry.name)
         Text(file.entry.relativePath, style = type.tiny, color = colors.textQuaternary, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(horizontal = 20.dp))
         HairlineDivider(Modifier.padding(horizontal = 20.dp, vertical = 8.dp))
+        val kept = file.keptPath
+        if (kept != null) {
+            var notice by remember(kept) { mutableStateOf<String?>(null) }
+            val mime = file.format?.mimeType ?: PromptFile.OCTET_STREAM
+            Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp).padding(bottom = 20.dp).testTag("context-binary")) {
+                Text(listOfNotNull(file.format?.label ?: "Binary file", file.entry.sizeBytes?.let { PromptFile.formatSize(it) }).joinToString(" \u00B7 "), style = type.base, color = colors.textSecondary)
+                Text(notice ?: "This app shows no page for it; open it in another app.", style = type.small, color = colors.textQuaternary, modifier = Modifier.padding(top = 2.dp))
+                Row(Modifier.padding(top = 10.dp), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                    Text("Open with\u2026", style = type.small, color = colors.link, modifier = Modifier.pressable({ FileHandoff.open(context, File(kept), file.entry.name, mime).onFailure { notice = it.message } }, CursorTheme.shapes.base).padding(vertical = 3.dp))
+                    Text("Share", style = type.small, color = colors.link, modifier = Modifier.pressable({ FileHandoff.share(context, File(kept), file.entry.name, mime).onFailure { notice = it.message } }, CursorTheme.shapes.base).padding(vertical = 3.dp))
+                }
+            }
+            return@CursorSheet
+        }
         SelectionContainer {
             Text(
                 file.text.ifBlank { "(empty file)" },

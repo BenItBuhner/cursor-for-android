@@ -749,6 +749,7 @@ private fun ArtifactRow(artifact: Artifact, onOpen: () -> Unit) {
         icon = when (artifact.kind) {
             Artifact.Kind.Image -> CursorIcons.Image
             Artifact.Kind.Video -> CursorIcons.Video
+            Artifact.Kind.Audio -> CursorIcons.Music
             Artifact.Kind.Markdown, Artifact.Kind.Text -> CursorIcons.Book
             Artifact.Kind.Other -> CursorIcons.File
         },

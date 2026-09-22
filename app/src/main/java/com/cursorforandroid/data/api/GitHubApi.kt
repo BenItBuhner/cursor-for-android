@@ -9,6 +9,7 @@ import com.cursorforandroid.domain.PullRequestDetails
 import com.cursorforandroid.domain.PullRequestState
 import com.cursorforandroid.domain.RepoContents
 import com.cursorforandroid.domain.RepoEntry
+import com.cursorforandroid.domain.FileBytes
 import com.cursorforandroid.domain.RepoFile
 import com.cursorforandroid.domain.Review
 import com.cursorforandroid.domain.ReviewComment
@@ -191,8 +192,10 @@ class GitHubApi(
 
     /**
      * What sits at [path] of the repository at [ref] (`contents/{path}?ref=`): a directory's entries, or a file with
-     * its bytes (GitHub inlines files up to 1 MiB as base64; larger ones come back without `content` and are refused
-     * here rather than shown empty).
+     * its bytes. GitHub inlines files up to 1 MiB as base64; a larger one comes back without `content` and is read
+     * from its `download_url` instead (a phone's screenshot is often over the line), up to [MAX_RAW_BYTES]. A file
+     * kept with Git LFS answers its pointer either way; for a public repository the object itself is read from
+     * GitHub's media host.
      */
     suspend fun contents(repo: GitHubRepo, path: String, ref: String?): RepoContents {
         val clean = path.trim().trim('/')
@@ -212,12 +215,32 @@ class GitHubApi(
                 val dto = CursorJson.decodeFromJsonElement(ContentsEntryDto.serializer(), element)
                 if (dto.type == "dir") return RepoContents.Directory(clean, emptyList())
                 val encoded = dto.content?.takeIf { it.isNotBlank() }
-                    ?: throw GitHubApiException(413, "${dto.name.ifBlank { "This file" }} is too large for GitHub to send inline.")
-                val bytes = runCatching { Base64.getMimeDecoder().decode(encoded) }.getOrElse { throw IOException("GitHub sent a file that could not be decoded.", it) }
-                RepoContents.File(RepoFile(dto.path.ifBlank { clean }, bytes, dto.size ?: bytes.size.toLong(), dto.sha, dto.downloadUrl))
+                val inline = encoded?.let { runCatching { Base64.getMimeDecoder().decode(it) }.getOrElse { e -> throw IOException("GitHub sent a file that could not be decoded.", e) } }
+                val bytes = inline
+                    ?: dto.downloadUrl?.takeIf { (dto.size ?: 0L) <= MAX_RAW_BYTES }?.let { raw(it) }
+                    ?: throw GitHubApiException(413, "${dto.name.ifBlank { "This file" }} is too large for GitHub to send.")
+                val file = (FileBytes.of(bytes, dto.name) as? FileBytes.LfsPointer)?.let { lfs(repo, ref, clean) } ?: bytes
+                RepoContents.File(RepoFile(dto.path.ifBlank { clean }, file, if (file === bytes) dto.size ?: bytes.size.toLong() else file.size.toLong(), dto.sha, dto.downloadUrl))
             }
             else -> throw IOException("GitHub sent an answer that could not be read.")
         }
+    }
+
+    /** The bytes at a `download_url` (raw.githubusercontent.com, a token in its query for a private repository). */
+    private suspend fun raw(url: String): ByteArray? {
+        val request = Request.Builder().url(url).get().build()
+        return client.newCall(request).await().use { response ->
+            if (!response.isSuccessful) return@use null
+            response.body?.bytes()
+        }
+    }
+
+    /** The object a Git LFS pointer stands for, from GitHub's media host (public repositories); null when it will not serve it. */
+    private suspend fun lfs(repo: GitHubRepo, ref: String?, path: String): ByteArray? {
+        val at = ref?.trim()?.takeIf { it.isNotEmpty() } ?: "HEAD"
+        val encoded = path.split('/').filter { it.isNotEmpty() }.joinToString("/") { encode(it) }
+        val refPath = at.split('/').filter { it.isNotEmpty() }.joinToString("/") { encode(it) }
+        return raw("https://media.githubusercontent.com/media/${repo.owner}/${repo.name}/$refPath/$encoded")?.takeIf { FileBytes.of(it) !is FileBytes.LfsPointer }
     }
 
     private fun millis(iso: String?): Long? = iso?.takeIf { it.isNotBlank() }?.let { runCatching { Instant.parse(it).toEpochMilli() }.getOrNull() }
@@ -357,6 +380,8 @@ class GitHubApi(
     )
 
     companion object {
+        /** The largest file read past the inline limit: a screenshot or a recording, not a release asset. */
+        const val MAX_RAW_BYTES = 48L * 1024 * 1024
         const val BASE_URL = "https://api.github.com/"
         const val API_VERSION = "2022-11-28"
         /** GitHub's maximum page; one page is what the panel shows, and every page is a request against the hourly budget. */

@@ -19,6 +19,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -33,8 +34,10 @@ import com.cursorforandroid.domain.Agent
 import com.cursorforandroid.domain.AgentIndicator
 import com.cursorforandroid.domain.AgentListOrganizer
 import com.cursorforandroid.domain.ContextEntry
+import com.cursorforandroid.domain.FileFormat
 import com.cursorforandroid.domain.LocalAgentState
 import com.cursorforandroid.domain.ProjectWorker
+import com.cursorforandroid.domain.StorePath
 import com.cursorforandroid.ui.agents.MenuItem
 import com.cursorforandroid.ui.components.CursorIcons
 import com.cursorforandroid.ui.components.FlatIconButton
@@ -47,6 +50,10 @@ import com.cursorforandroid.ui.components.SpinnerRing
 import com.cursorforandroid.ui.components.StateGlyph
 import com.cursorforandroid.ui.components.askOrRun
 import com.cursorforandroid.ui.components.pressable
+import com.cursorforandroid.ui.media.LocalMediaViewer
+import com.cursorforandroid.ui.media.MediaEntry
+import com.cursorforandroid.ui.media.rememberThumbnailSlot
+import com.cursorforandroid.ui.media.thumbnailSlot
 import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.util.TimeFormat
@@ -97,7 +104,7 @@ internal fun ProjectSectionBody(
         }
 
         SectionLabel("Context")
-        ContextItems(state.context, busy, actions)
+        ContextItems(state.projectId, state.context, busy, actions)
 
         ActionRow(CursorIcons.Refresh, "Refresh", "Re-read the primaries and the account's memberships", enabled = !busy, onClick = actions.onRefresh, modifier = Modifier.testTag("project-refresh"))
     }
@@ -156,9 +163,13 @@ private fun ProjectSummary(state: ProjectViewState, nowMillis: Long, onEditAppea
     }
 }
 
-/** The Project's shared context (Agent Store), by state: an offer to open it, its listing, or a named reason it is not there. */
+/**
+ * The Project's shared context (Agent Store), by state: an offer to open it, its listing, or a named reason it is not
+ * there. A picture, a recording or a sound in the listing opens the media viewer out of its row, among the folder's
+ * other media, read through the store's presigned bytes — never its text read, which carries a string.
+ */
 @Composable
-private fun ContextItems(context: ContextState, busy: Boolean, actions: ProjectActions) {
+private fun ContextItems(projectId: String, context: ContextState, busy: Boolean, actions: ProjectActions) {
     when (context) {
         ContextState.Idle -> ActionRow(CursorIcons.Folder, "Show shared context", "The files this Project's agents share", enabled = !busy, onClick = { actions.onLoadContext("") }, modifier = Modifier.testTag("project-context-open"))
         ContextState.Loading -> LoadingRow("Reading the Project's context\u2026")
@@ -170,8 +181,18 @@ private fun ContextItems(context: ContextState, busy: Boolean, actions: ProjectA
                 ActionRow(CursorIcons.ChevronLeft, path, "Back to the folder above", enabled = true, onClick = actions.onContextUp)
             }
             if (context.context.entries.isEmpty()) EmptyRow("This folder is empty.")
+            val viewer = LocalMediaViewer.current
+            val folderMedia = remember(context.context.entries, projectId) { contextMedia(projectId, context.context.entries) }
             context.context.entries.forEach { entry ->
-                ContextRow(entry, onClick = { if (entry.isDirectory) actions.onLoadContext(entry.relativePath) else actions.onOpenContextFile(entry) })
+                val media = folderMedia.firstOrNull { it.fileName == entry.name && !entry.isDirectory }
+                if (media != null && viewer != null) {
+                    val slot = rememberThumbnailSlot(media.src, CursorTheme.shapes.base, crop = true)
+                    ContextRow(entry, Modifier.thumbnailSlot(slot)) {
+                        viewer.open(projectId, folderMedia, media.src, slot, fallback = media, autoplay = media.isPlayable)
+                    }
+                } else {
+                    ContextRow(entry, onClick = { if (entry.isDirectory) actions.onLoadContext(entry.relativePath) else actions.onOpenContextFile(entry) })
+                }
             }
         }
     }
@@ -276,11 +297,12 @@ internal fun AgentLine(agent: Agent, local: LocalAgentState, nowMillis: Long, su
 }
 
 @Composable
-private fun ContextRow(entry: ContextEntry, onClick: () -> Unit) {
+private fun ContextRow(entry: ContextEntry, modifier: Modifier = Modifier, onClick: () -> Unit) {
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
+    val format = if (entry.isDirectory) null else FileFormat.ofName(entry.name)
     Row(
-        Modifier
+        modifier
             .fillMaxWidth()
             .padding(horizontal = CursorDimens.selectionInset)
             .pressable(onClick, CursorTheme.shapes.base)
@@ -289,12 +311,30 @@ private fun ContextRow(entry: ContextEntry, onClick: () -> Unit) {
             .testTag("project-context-entry"),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Icon(if (entry.isDirectory) CursorIcons.Folder else CursorIcons.File, null, tint = colors.iconSecondary, modifier = Modifier.size(16.dp))
+        Icon(
+            when {
+                entry.isDirectory -> CursorIcons.Folder
+                format?.isImage == true -> CursorIcons.Image
+                format?.isVideo == true -> CursorIcons.Video
+                format?.isAudio == true -> CursorIcons.Music
+                else -> CursorIcons.File
+            },
+            null,
+            tint = colors.iconSecondary,
+            modifier = Modifier.size(16.dp),
+        )
         Spacer(Modifier.width(12.dp))
         Text(entry.name, style = type.row, color = colors.textPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
         entry.sizeBytes?.takeIf { !entry.isDirectory }?.let { Text(formatBytes(it), style = type.small, color = colors.textQuaternary) }
         if (entry.isDirectory) Icon(CursorIcons.ChevronRight, null, tint = colors.iconQuaternary, modifier = Modifier.size(14.dp))
     }
+}
+
+/** The folder's pictures, recordings and sounds, as the viewer pages through them: by their store path, in listing order. */
+internal fun contextMedia(projectId: String, entries: List<ContextEntry>): List<MediaEntry> = entries.mapNotNull { entry ->
+    if (entry.isDirectory) return@mapNotNull null
+    val kind = MediaEntry.kindOf(FileFormat.ofName(entry.name)) ?: return@mapNotNull null
+    MediaEntry(StorePath(projectId, entry.relativePath.trimStart('/')).text, kind, fileName = entry.name)
 }
 
 @Composable

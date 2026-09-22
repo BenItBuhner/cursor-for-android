@@ -127,10 +127,14 @@ private fun rememberOpenInViewer(attachment: MessageAttachment, slot: ThumbnailS
         if (viewer == null) {
             false
         } else {
-            val kind = if (attachment.kind == PromptFileKind.Video) MediaEntry.Kind.Video else MediaEntry.Kind.Image
+            val kind = when (attachment.kind) {
+                PromptFileKind.Video -> MediaEntry.Kind.Video
+                PromptFileKind.Audio -> MediaEntry.Kind.Audio
+                else -> MediaEntry.Kind.Image
+            }
             val fallback = MediaEntry(attachment.src, kind, fileName = attachment.name ?: attachment.path.substringAfterLast('/'), mimeType = attachment.mimeType)
             media?.onBeforeOpen?.invoke()
-            viewer.open(media?.agentId, media?.entries?.invoke().orEmpty(), attachment.src, slot, seen = seen(), fallback = fallback, autoplay = kind == MediaEntry.Kind.Video)
+            viewer.open(media?.agentId, media?.entries?.invoke().orEmpty(), attachment.src, slot, seen = seen(), fallback = fallback, autoplay = kind != MediaEntry.Kind.Image)
             true
         }
     }
@@ -150,8 +154,8 @@ internal fun AttachmentFileCard(attachment: MessageAttachment, alpha: Float = 1f
     val name = attachment.name ?: "Document"
     val kind = attachment.kind
     var missing by remember(attachment.path) { mutableStateOf(false) }
-    // A picture or a recording opens in the viewer, out of this card; the viewer says so itself when the copy is gone.
-    val viewable = kind == PromptFileKind.Image || kind == PromptFileKind.Video
+    // A picture, a recording or a sound opens in the viewer, out of this card; the viewer says so itself when the copy is gone.
+    val viewable = kind == PromptFileKind.Image || kind == PromptFileKind.Video || kind == PromptFileKind.Audio
     val slot = rememberThumbnailSlot(attachment.src, shape, crop = true)
     val openInViewer = rememberOpenInViewer(attachment, slot) { null }
     Row(

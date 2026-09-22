@@ -2,6 +2,7 @@ package com.cursorforandroid.ui.components
 
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
@@ -13,6 +14,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
@@ -21,7 +23,9 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
@@ -33,6 +37,7 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.testTag
@@ -46,17 +51,20 @@ import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.isFinite
 import androidx.compose.ui.unit.sp
-import com.cursorforandroid.data.api.userMessage
 import com.cursorforandroid.data.media.MediaLoader
+import com.cursorforandroid.data.media.MediaProblem
+import com.cursorforandroid.domain.FileFormat
 import com.cursorforandroid.domain.MediaRef
 import com.cursorforandroid.domain.StorePath
 import com.cursorforandroid.ui.media.LocalMediaViewer
+import com.cursorforandroid.ui.media.MediaActions
 import com.cursorforandroid.ui.media.MediaEntry
 import com.cursorforandroid.ui.media.rememberThumbnailSlot
 import com.cursorforandroid.ui.media.thumbnailSlot
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.util.TimeFormat
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.launch
 import kotlin.math.sqrt
 
 /**
@@ -94,7 +102,7 @@ private const val VIDEO_DEFAULT_ASPECT = 16f / 9f
 private sealed interface ImageLoad {
     data object Loading : ImageLoad
     data class Ready(val bitmap: ImageBitmap) : ImageLoad
-    data class Failed(val title: String, val retryable: Boolean) : ImageLoad
+    data class Failed(val problem: MediaProblem) : ImageLoad
 }
 
 @Composable
@@ -133,7 +141,7 @@ fun ImageBlock(src: String, alt: String?, modifier: Modifier = Modifier, heightC
         // layout fits it to whatever width it ends up with.
         LaunchedEffect(ref, attempt) {
             if (media == null || ref is MediaRef.Unavailable) {
-                state = ImageLoad.Failed("Image isn't available", retryable = false)
+                state = ImageLoad.Failed(MediaProblem.NotReadable("Image isn't available", null))
                 return@LaunchedEffect
             }
             state = ImageLoad.Loading
@@ -141,7 +149,7 @@ fun ImageBlock(src: String, alt: String?, modifier: Modifier = Modifier, heightC
                 ImageLoad.Ready(media.loader.image(ref, request.width, request.height).asImageBitmap())
             } catch (t: Throwable) {
                 if (t is CancellationException) throw t
-                ImageLoad.Failed(if (ref is MediaRef.Store) t.userMessage().takeIf { it.isNotBlank() } ?: "Couldn't load image" else "Couldn't load image", retryable = true)
+                ImageLoad.Failed(MediaLoader.problemOf(t))
             }
         }
 
@@ -149,13 +157,15 @@ fun ImageBlock(src: String, alt: String?, modifier: Modifier = Modifier, heightC
             ImageLoad.Loading -> MediaPlaceholder(Modifier.fillMaxWidth().height(PlaceholderHeight), "Loading image")
             is ImageLoad.Failed -> if (ref is MediaRef.Store) {
                 // The store answered nothing for it: the card still opens the Project, and a tap on Retry asks again.
-                StoreFileCard(ref, alt, CursorIcons.Image, title = s.title, onRetry = { attempt++ })
+                StoreFileCard(ref, alt, CursorIcons.Image, title = s.problem.title, onRetry = { attempt++ })
             } else {
-                MediaErrorRow(
+                MediaProblemRow(
                     icon = CursorIcons.Image,
-                    title = s.title,
+                    problem = s.problem,
+                    ref = ref,
+                    entry = MediaEntry(src, MediaEntry.Kind.Image, caption = alt),
                     detail = alt ?: ref.label,
-                    onRetry = if (s.retryable) ({ attempt++ }) else null,
+                    onRetry = if (s.problem.retryable) ({ attempt++ }) else null,
                 )
             }
             is ImageLoad.Ready -> {
@@ -210,12 +220,17 @@ fun VideoBlock(src: String, poster: String?, modifier: Modifier = Modifier, heig
     val colors = CursorTheme.colors
     val shape = CursorTheme.shapes.lg
 
+    val audio = FileFormat.ofName(src)?.isAudio == true
     if (ref is MediaRef.Store && (media == null || !media.canReadStores)) {
-        StoreFileCard(ref, null, CursorIcons.Video, modifier)
+        StoreFileCard(ref, null, if (audio) CursorIcons.Music else CursorIcons.Video, modifier)
         return
     }
     if (media == null || ref is MediaRef.Unavailable || ref is MediaRef.Inline) {
-        MediaErrorRow(icon = CursorIcons.Video, title = "Video isn't available", detail = ref.label, onRetry = null, modifier = modifier)
+        MediaErrorRow(icon = if (audio) CursorIcons.Music else CursorIcons.Video, title = if (audio) "Sound isn't available" else "Video isn't available", detail = ref.label, onRetry = null, modifier = modifier)
+        return
+    }
+    if (audio) {
+        AudioChip(src, ref.label, subtitle = FileFormat.ofName(src)?.label ?: "Audio", modifier = modifier)
         return
     }
     val loader = media.loader
@@ -356,30 +371,133 @@ internal fun StoreFileCard(
     }
 }
 
-/** Compact card for a figure that cannot be shown: what it was, why, and a retry when one makes sense. */
+/**
+ * A figure that cannot be drawn, named by its [problem] — never a decoder's words — with what can still be done:
+ * Retry when asking again could help, the browser when the file has a page there, another app on the device when
+ * this one cannot draw the format.
+ */
 @Composable
-private fun MediaErrorRow(icon: ImageVector, title: String, detail: String?, onRetry: (() -> Unit)?, modifier: Modifier = Modifier) {
+internal fun MediaProblemRow(
+    icon: ImageVector,
+    problem: MediaProblem,
+    ref: MediaRef,
+    entry: MediaEntry,
+    detail: String?,
+    onRetry: (() -> Unit)?,
+    modifier: Modifier = Modifier,
+) {
+    val media = LocalMarkdownMedia.current
+    val context = LocalContext.current
+    val uriHandler = LocalUriHandler.current
+    val scope = rememberCoroutineScope()
+    val browserUrl by produceState<String?>(null, ref, media) { value = media?.loader?.browserUrl(ref) }
+    val elsewhere = media != null && problem.openable && problem !is MediaProblem.NotReadable && problem !is MediaProblem.Failed &&
+        problem !is MediaProblem.LfsPointer && !(problem is MediaProblem.NotMedia && problem.actual == FileFormat.HTML)
+    var notice by remember(ref) { mutableStateOf<String?>(null) }
+    val actions = buildList {
+        browserUrl?.let { url -> add("Open in browser" to { if (runCatching { uriHandler.openUri(url) }.isFailure) notice = "Nothing on this device opens links." }) }
+        if (elsewhere && media != null) {
+            add(
+                "Open with\u2026" to {
+                    scope.launch { MediaActions(context, media.loader).openWith(ref, entry).onFailure { notice = MediaLoader.problemOf(it).title } }
+                    Unit
+                },
+            )
+        }
+    }
+    MediaErrorRow(
+        icon = icon,
+        title = problem.title,
+        detail = listOfNotNull(notice ?: problem.detail, detail).joinToString(" · ").ifBlank { null },
+        onRetry = onRetry,
+        actions = actions,
+        modifier = modifier.testTag("media-problem"),
+    )
+}
+
+/**
+ * A sound in a reply, a file card or a panel row: its note glyph, its name and what it is, as a chip. Tapping opens
+ * the media viewer on it, playing, grown out of this chip — the same transform a figure opens with.
+ */
+@Composable
+internal fun AudioChip(src: String, name: String, subtitle: String?, modifier: Modifier = Modifier, entries: (() -> List<MediaEntry>)? = null) {
+    val media = LocalMarkdownMedia.current
+    val viewer = LocalMediaViewer.current
     val colors = CursorTheme.colors
     val shape = CursorTheme.shapes.lg
+    val slot = rememberThumbnailSlot(src, shape, crop = true)
     Row(
         modifier
-            .fillMaxWidth()
+            .thumbnailSlot(slot)
+            .widthIn(min = 180.dp, max = 360.dp)
             .cursorSurface(colors.fillFaint, colors.strokeSubtle, shape)
-            .then(if (onRetry != null) Modifier.pressable(onRetry, shape) else Modifier)
+            .pressable(
+                {
+                    if (viewer != null) {
+                        media?.onBeforeOpen?.invoke()
+                        viewer.open(media?.agentId, (entries ?: media?.entries)?.invoke().orEmpty(), src, slot, fallback = MediaEntry(src, MediaEntry.Kind.Audio, fileName = name), autoplay = true)
+                    }
+                },
+                shape,
+                role = Role.Button,
+            )
+            .semantics { contentDescription = "Play $name" }
+            .testTag("audio-chip")
             .padding(horizontal = 10.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Icon(icon, null, tint = colors.iconTertiary, modifier = Modifier.size(16.dp))
+        Box(Modifier.size(30.dp).background(colors.fill, CircleShape), contentAlignment = Alignment.Center) {
+            Icon(CursorIcons.Play, null, tint = colors.iconSecondary, modifier = Modifier.size(14.dp).padding(start = 1.dp))
+        }
+        Spacer(Modifier.width(10.dp))
+        Column(Modifier.weight(1f, fill = false)) {
+            Text(name, style = CursorTheme.typography.base, color = colors.textSecondary, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            subtitle?.let { Text(it, style = CursorTheme.typography.small, color = colors.textQuaternary, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+        }
         Spacer(Modifier.width(8.dp))
-        Column(Modifier.weight(1f)) {
-            Text(title, style = CursorTheme.typography.base, color = colors.textSecondary)
-            if (!detail.isNullOrBlank()) {
-                Text(detail, style = CursorTheme.typography.code, color = colors.textQuaternary, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        Icon(CursorIcons.Music, null, tint = colors.iconTertiary, modifier = Modifier.size(16.dp))
+    }
+}
+
+/** Compact card for a figure that cannot be shown: what it was, why, a retry when one makes sense, and [actions] under it. */
+@Composable
+private fun MediaErrorRow(
+    icon: ImageVector,
+    title: String,
+    detail: String?,
+    onRetry: (() -> Unit)?,
+    modifier: Modifier = Modifier,
+    actions: List<Pair<String, () -> Unit>> = emptyList(),
+) {
+    val colors = CursorTheme.colors
+    val shape = CursorTheme.shapes.lg
+    Column(
+        modifier
+            .fillMaxWidth()
+            .cursorSurface(colors.fillFaint, colors.strokeSubtle, shape)
+            .then(if (onRetry != null && actions.isEmpty()) Modifier.pressable(onRetry, shape) else Modifier)
+            .padding(horizontal = 10.dp, vertical = 8.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(icon, null, tint = colors.iconTertiary, modifier = Modifier.size(16.dp))
+            Spacer(Modifier.width(8.dp))
+            Column(Modifier.weight(1f)) {
+                Text(title, style = CursorTheme.typography.base, color = colors.textSecondary)
+                if (!detail.isNullOrBlank()) {
+                    Text(detail, style = CursorTheme.typography.code, color = colors.textQuaternary, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                }
+            }
+            if (onRetry != null) {
+                Spacer(Modifier.width(8.dp))
+                Text("Retry", style = CursorTheme.typography.small, color = colors.link, modifier = if (actions.isEmpty()) Modifier else Modifier.pressable(onRetry, CursorTheme.shapes.base).padding(4.dp))
             }
         }
-        if (onRetry != null) {
-            Spacer(Modifier.width(8.dp))
-            Text("Retry", style = CursorTheme.typography.small, color = colors.link)
+        if (actions.isNotEmpty()) {
+            Row(Modifier.padding(start = 24.dp, top = 4.dp), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                actions.forEach { (label, action) ->
+                    Text(label, style = CursorTheme.typography.small, color = colors.link, modifier = Modifier.pressable(action, CursorTheme.shapes.base).padding(vertical = 3.dp).testTag("media-action"))
+                }
+            }
         }
     }
 }

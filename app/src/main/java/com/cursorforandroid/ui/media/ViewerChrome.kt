@@ -34,6 +34,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.cursorforandroid.ui.components.CursorIcons
 import com.cursorforandroid.ui.components.FlatIconButton
+import com.cursorforandroid.ui.components.pressable
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.util.TimeFormat
 
@@ -93,7 +94,7 @@ internal fun ViewerBottomBar(entry: MediaEntry, playback: VideoPlayback?, muted:
             .testTag("viewer-bottom-bar"),
     ) {
         if (playback != null) {
-            VideoControls(playback, muted, onMute, onInteract, Modifier.padding(horizontal = 8.dp))
+            VideoControls(playback, muted, onMute, onInteract, Modifier.padding(horizontal = 8.dp), showSpeed = entry.isAudio)
         }
         Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp).padding(top = if (playback != null) 4.dp else 0.dp, bottom = 16.dp)) {
             Text(
@@ -104,15 +105,15 @@ internal fun ViewerBottomBar(entry: MediaEntry, playback: VideoPlayback?, muted:
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.testTag("viewer-caption"),
             )
-            val detail = listOfNotNull(entry.fileName.takeIf { it != entry.title }, if (entry.isVideo) "Video" else "Image").joinToString(" · ")
+            val detail = listOfNotNull(entry.fileName.takeIf { it != entry.title }, entry.kindLabel).joinToString(" · ")
             Text(detail, style = CursorTheme.typography.small, color = Color.White.copy(alpha = 0.65f), maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 2.dp))
         }
     }
 }
 
-/** Play or pause, the elapsed time, the scrubber, the length, and the sound: one row over a recording. */
+/** Play or pause, the elapsed time, the scrubber, the length, the speed for a sound, and the sound: one row over a recording. */
 @Composable
-internal fun VideoControls(playback: VideoPlayback, muted: Boolean, onMute: (Boolean) -> Unit, onInteract: () -> Unit, modifier: Modifier = Modifier) {
+internal fun VideoControls(playback: VideoPlayback, muted: Boolean, onMute: (Boolean) -> Unit, onInteract: () -> Unit, modifier: Modifier = Modifier, showSpeed: Boolean = false) {
     val type = CursorTheme.typography
     val duration = playback.durationMs
     Row(modifier.fillMaxWidth().height(44.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -142,6 +143,20 @@ internal fun VideoControls(playback: VideoPlayback, muted: Boolean, onMute: (Boo
             modifier = Modifier.weight(1f).padding(horizontal = 8.dp).testTag("viewer-scrubber"),
         )
         Text(TimeFormat.clock(duration), style = type.code, color = Color.White.copy(alpha = 0.6f), modifier = Modifier.width(44.dp).testTag("viewer-duration"))
+        if (showSpeed) {
+            Text(
+                VideoPlayback.speedLabel(playback.speed),
+                style = type.small,
+                color = Color.White,
+                textAlign = TextAlign.Center,
+                modifier = Modifier
+                    .width(44.dp)
+                    .pressable({ playback.cycleSpeed(); onInteract() }, CursorTheme.shapes.full)
+                    .padding(vertical = 8.dp)
+                    .semantics { contentDescription = "Playback speed ${VideoPlayback.speedLabel(playback.speed)}" }
+                    .testTag("viewer-speed"),
+            )
+        }
         FlatIconButton(
             icon = if (muted) CursorIcons.VolumeOff else CursorIcons.Volume,
             contentDescription = if (muted) "Unmute" else "Mute",
