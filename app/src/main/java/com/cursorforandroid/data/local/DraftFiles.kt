@@ -45,10 +45,13 @@ internal object DraftFiles {
         atomic.finishWrite(out)
     }
 
-    /** [target]'s text, or null when there is none. A write that never finished is not read: its previous copy is. */
+    /**
+     * [target]'s text, or null when there is none. A write that never finished is not read: its previous copy is.
+     * Read directly rather than through [AtomicFile.openRead], which deletes a write in progress beside the record.
+     */
     fun read(target: File): String? {
         if (!target.isFile) return null
-        return AtomicFile(target).readFully().toString(Charsets.UTF_8)
+        return target.readText(Charsets.UTF_8)
     }
 
     /**

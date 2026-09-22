@@ -101,6 +101,24 @@ class DraftFilesTest {
         assertThat(DraftFiles.ownerKey(CursorUser("Cursor", null, null, null, null))).isNull()
     }
 
+    /**
+     * Reading must change nothing: `AtomicFile.openRead` deletes a write in progress beside the record, and a read
+     * that met a save half-way through then threw that save away — the flake this pins.
+     */
+    @Test
+    fun `reading a record while a write is under way beside it leaves the write to land`() {
+        val target = File(filesDir, "draft/composer.json")
+        DraftFiles.write(target, "first")
+        val atomic = androidx.core.util.AtomicFile(target)
+        val out = atomic.startWrite()
+        out.write("second".toByteArray())
+
+        assertThat(DraftFiles.read(target)).isEqualTo("first")
+        atomic.finishWrite(out)
+
+        assertThat(DraftFiles.read(target)).isEqualTo("second")
+    }
+
     @Test
     fun `a record is replaced whole and a write that never finished leaves the previous one readable`() {
         val target = File(filesDir, "draft/composer.json")
