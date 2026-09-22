@@ -628,6 +628,31 @@ class NewAgentViewModelTest {
         assertThat(listed(vm).map { it.title }).containsExactly("Second idea")
     }
 
+    /**
+     * After a process death with a chat on top, the New Chat pane's view model is created only when the pane is first
+     * shown — after the tap on the draft that asked for it. The ask waits for the composer and is answered by it.
+     */
+    @Test
+    fun `a draft asked for before the composer exists opens in it when it starts`() = runBlocking {
+        val vm = loadedWithAgents(draftSaveDelayMs = 20)
+        vm.selectRepo(vm.repo("cursor-for-android"))
+        vm.setPrompt("Asked for from the drawer")
+        awaitUntil { onDisk().isNotEmpty() }
+        val id = vm.draftId.value
+
+        val next = process()
+        runBlocking { next.newChatDrafts.load() }
+        next.newChatDrafts.request(NewChatDrafts.Request.Open(id))
+        val revived = loaded(draftSaveDelayMs = 20, graph = next)
+
+        val state = withTimeout(10_000) { revived.state.first { it.prompt.isNotEmpty() && it.selectedRepo != null } }
+        assertThat(state.prompt).isEqualTo("Asked for from the drawer")
+        assertThat(state.selectedRepo?.shortName).isEqualTo("cursor-for-android")
+        assertThat(revived.draftId.value).isEqualTo(id)
+        // Answered once: a composer started after it opens fresh.
+        assertThat(next.newChatDrafts.takePending()).isNull()
+    }
+
     @Test
     fun `deleting the draft the composer has open empties the composer onto a new one`() = runBlocking {
         val vm = loaded(draftSaveDelayMs = 20)

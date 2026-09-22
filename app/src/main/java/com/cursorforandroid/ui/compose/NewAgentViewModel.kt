@@ -252,8 +252,6 @@ class NewAgentViewModel(
                 _state.update { it.withPickerLists().withModelSelection() }
             }
         }
-        // The sidebar's asks — open a draft, start afresh, a draft deleted or back from a failed launch — in order.
-        viewModelScope.launch { drafts.requests.collect { handle(it) } }
         viewModelScope.launch {
             drafts.load()
             val loaded = graph.prefs.composerDefaults.first()
@@ -265,10 +263,15 @@ class NewAgentViewModel(
             _state.update {
                 it.copy(autoCreatePr = loaded.autoCreatePr, ref = loaded.ref.orEmpty(), selectedDevice = loaded.env, repoFollowsDevice = !loaded.env.isCloud, isLoadingDevices = true).withPickerLists()
             }
-            // The draft this composer had open when its process was ended stands over the last launch's choices: the
-            // repository and model it was written against are resolved by the loaders below, as remembered ones are.
-            // One sent meanwhile is the chat's now, and the composer starts a draft of its own.
-            val resumed = resume?.let(drafts::record)
+            // The draft this composer had open when its process was ended — or one the sidebar asked for before this
+            // composer existed — stands over the last launch's choices: the repository and model it was written
+            // against are resolved by the loaders below, as remembered ones are. One sent meanwhile is the chat's
+            // now, and the composer starts a draft of its own.
+            // The sidebar's asks — open a draft, start afresh, a draft deleted or back from a failed launch — in order,
+            // from here: one heard earlier would have been undone by the defaults just applied.
+            launch { drafts.requests.collect { handle(it) } }
+            val asked = (drafts.takePending() as? NewChatDrafts.Request.Open)?.id
+            val resumed = (asked ?: resume)?.let(drafts::record)
             when {
                 resumed == null -> Unit
                 resumed.launchedAs != null -> draftMutex.withLock { switchTo(newDraftId()) }
@@ -430,6 +433,7 @@ class NewAgentViewModel(
 
     /** What the sidebar asks: see [NewChatDrafts.Request]. */
     private suspend fun handle(request: NewChatDrafts.Request) {
+        if (request is NewChatDrafts.Request.Open || request is NewChatDrafts.Request.Fresh) drafts.takePending()
         when (request) {
             is NewChatDrafts.Request.Open -> {
                 if (request.id == _draftId.value) return

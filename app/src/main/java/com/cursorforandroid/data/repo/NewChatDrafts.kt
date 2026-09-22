@@ -116,9 +116,19 @@ class NewChatDrafts(
     /** The draft [agentId] was sent from, while the server has yet to take it. */
     fun launchedAs(agentId: String): DraftStore.Record? = _state.value.drafts.firstOrNull { it.launchedAs == agentId }
 
+    /**
+     * The rail's last open or fresh ask, until a composer takes it: the New Chat pane's view model is created only when
+     * the pane is first shown, which after a process death with a chat on top is after the tap that asked for it.
+     */
+    @Volatile private var pending: Request? = null
+
     fun request(request: Request) {
+        if (request is Request.Open || request is Request.Fresh) pending = request
         _requests.tryEmit(request)
     }
+
+    /** Takes the rail's pending ask (see [pending]); a composer calls it as it starts and as it answers one. */
+    fun takePending(): Request? = pending.also { pending = null }
 
     /** The composer has [id] open now (or none). */
     fun setOpen(id: String?) {
@@ -166,6 +176,7 @@ class NewChatDrafts(
     /** The account has signed out: nothing of its drafts stays in memory, and the next account's are read afresh. */
     fun reset() {
         closed = true
+        pending = null
         generation.incrementAndGet()
         work.cancel()
         work = workScope()
