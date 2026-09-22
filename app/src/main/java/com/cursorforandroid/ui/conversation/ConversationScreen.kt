@@ -295,8 +295,8 @@ fun ConversationScreen(
     }
 
     // The right-side panel: the chat's files, changes, pull request, media, artifacts and usage, read off the same
-    // repositories as the transcript plus the documented reads only it needs. Opened by the header button or a swipe
-    // in from the end edge; it is per chat, like the view model behind it.
+    // repositories as the transcript plus the documented reads only it needs. Opened by the header button or a drag
+    // toward the start edge across the chat; it is per chat, like the view model behind it.
     val panelViewModel: PanelViewModel = viewModel(key = "panel-$agentId", factory = PanelViewModel.Factory(graph, agentId))
     val panelState = rememberSidePanelState()
     val panel by panelViewModel.state.collectAsStateWithLifecycle()
