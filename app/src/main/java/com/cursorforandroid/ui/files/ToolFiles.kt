@@ -65,7 +65,7 @@ class FileOpener(val slot: ThumbnailSlot?, val open: () -> Unit, val label: Stri
 
 /** The opener for [path] as named by [call] (null for a hit), or null when nothing here can open it. */
 @Composable
-fun rememberFileOpener(path: String, call: ToolCall? = null, line: Int? = null): FileOpener? {
+fun rememberFileOpener(path: String, call: ToolCall? = null, line: Int? = null, carried: String? = null): FileOpener? {
     val controls = LocalTranscriptControls.current
     val viewer = LocalMediaViewer.current
     val media = LocalMarkdownMedia.current
@@ -74,7 +74,7 @@ fun rememberFileOpener(path: String, call: ToolCall? = null, line: Int? = null):
     val name = ToolNames.basename(path)
     if (kind != null && viewer != null && media != null) {
         // A picture the read carried is what the agent saw; otherwise the path itself, read where the file is.
-        val src = (call?.payload as? ToolPayload.ReadMedia)?.src ?: path
+        val src = carried ?: (call?.payload as? ToolPayload.ReadMedia)?.src ?: path
         val slot = rememberThumbnailSlot(src, CursorTheme.shapes.base, crop = true)
         val entry = MediaEntry(src, kind, fileName = name, mimeType = format?.mimeType)
         return FileOpener(slot, { viewer.open(media.agentId, listOf(entry), src, slot, fallback = entry, autoplay = entry.isPlayable) }, "Open $name")

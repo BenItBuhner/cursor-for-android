@@ -64,7 +64,7 @@ fun ConversationPanel(
     // runs edge to edge behind them.
     Column(modifier.fillMaxSize().panelInsetPadding().testTag("conversation-panel")) {
         if (file != null) {
-            FileViewerScreen(file, onBack = actions::closeFile, onOpenUrl = actions::openUrl)
+            FileViewerScreen(file, onBack = actions::closeFile, onOpenUrl = actions::openUrl, onRetry = actions::retryFile)
             return@Column
         }
         // The same header every pane wears: it pads for the status bar on its own, and finds it already consumed here.
@@ -145,6 +145,7 @@ fun rememberPanelActions(
             override fun openTouched(path: String) = viewModel.openTouched(path)
             override fun openChange(change: TranscriptContent.FileChange) = viewModel.openChange(change)
             override fun closeFile() = viewModel.closeFile()
+            override fun retryFile(wake: Boolean) = viewModel.retryFile(wake)
             override fun openUrl(url: String) {
                 runCatching { uriHandler.openUri(url) }.onFailure { onToast("Nothing on this device can open that link.") }
             }

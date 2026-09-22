@@ -55,6 +55,7 @@ import com.cursorforandroid.domain.FileBytes
 import com.cursorforandroid.domain.FileFormat
 import com.cursorforandroid.domain.FileOpenRequest
 import com.cursorforandroid.domain.MediaKind
+import com.cursorforandroid.domain.NoticeTone
 import com.cursorforandroid.domain.PromptFile
 import com.cursorforandroid.domain.ToolKind
 import com.cursorforandroid.domain.ToolNames
@@ -67,7 +68,10 @@ import com.cursorforandroid.ui.components.HairlineDivider
 import com.cursorforandroid.ui.components.SpinnerRing
 import com.cursorforandroid.ui.components.pressable
 import com.cursorforandroid.ui.conversation.DiffBlock
+import com.cursorforandroid.ui.conversation.LoadNoticeCard
+import com.cursorforandroid.ui.conversation.NoticeAction
 import com.cursorforandroid.ui.media.FileHandoff
+import com.cursorforandroid.ui.media.MediaEntry
 import com.cursorforandroid.ui.theme.CursorTheme
 import kotlinx.coroutines.CancellationException
 import java.io.File
@@ -99,7 +103,23 @@ sealed interface FullFile {
     /** A file that is not text — a PDF, an archive — kept on the device ([keptPath]) to hand to another app. */
     data class Binary(val format: FileFormat?, val sizeBytes: Long, val keptPath: String, val source: String) : FullFile
 
-    data class Failed(val message: String, val retryable: Boolean, val webUrl: String? = null) : FullFile
+    /** The bytes are a picture, a recording or a sound whatever the name said: the media viewer's, kept at [src]. */
+    data class Media(val src: String, val kind: MediaEntry.Kind, val format: FileFormat) : FullFile
+
+    /**
+     * Nothing could be had: [title] why, [detail] what it means, [asked] the request refused and what came back;
+     * [wakeable] when the agent's machine is asleep and waking it is the way on.
+     */
+    data class Failed(
+        val title: String,
+        val retryable: Boolean,
+        val webUrl: String? = null,
+        val detail: String? = null,
+        val asked: String? = null,
+        val wakeable: Boolean = false,
+    ) : FullFile {
+        val message: String get() = listOfNotNull(title, detail).joinToString(" ")
+    }
 }
 
 /**
@@ -114,7 +134,7 @@ class FullFileResolver(
     private val workspaceReadable: suspend () -> Boolean,
     private val keep: suspend (ByteArray, String) -> String,
 ) {
-    suspend fun resolve(agentId: String, request: FileOpenRequest, carried: CarriedFile, force: Boolean = false): FullFile {
+    suspend fun resolve(agentId: String, request: FileOpenRequest, carried: CarriedFile, force: Boolean = false, wake: Boolean = false): FullFile {
         val content = carried.content
         val fromEdit = carried.tappedKind == ToolKind.Edit
         val changed = carried.tappedDiff?.let { DiffLines.changedLines(it.diff) }.orEmpty()
@@ -125,9 +145,9 @@ class FullFileResolver(
         if (content != null && content.isWhole && !fromEdit) {
             return FullFile.Text(content.content, sourceOf(content), highlighted = request.line?.let(::setOf).orEmpty(), scrollTo = request.line)
         }
-        var readFailure: String? = null
+        var readFailure: FileRead.Failed? = null
         if (files != null && workspaceReadable()) {
-            when (val read = files.read(agentId, request.path, force)) {
+            when (val read = files.read(agentId, request.path, force || wake, wake)) {
                 is FileRead.Loaded -> {
                     val marked = when {
                         request.line != null -> setOf(request.line)
@@ -138,10 +158,11 @@ class FullFileResolver(
                     return shown(read.file.bytes, read.file.name, read.file.sizeBytes, "${read.source.label}, as it is now", marked, request.line ?: marked.minOrNull(), webUrl)
                 }
                 is FileRead.NotReadable -> Unit
-                is FileRead.Failed -> readFailure = read.message
+                is FileRead.Failed -> readFailure = read
             }
         }
-        val missing = readFailure ?: NEEDS_EXTENDED
+        val needsExtended = if (AgentFileRepository.isInWorkspace(request.path, null)) NEEDS_EXTENDED else AgentFileRepository.outsideNeedsExtended(request.path)
+        val missing = readFailure?.message ?: needsExtended
         return when {
             content != null && !fromEdit -> FullFile.Text(
                 content.content,
@@ -154,8 +175,15 @@ class FullFileResolver(
             )
             carried.tappedDiff != null || carried.diffs.isNotEmpty() -> FullFile.Diff(listOfNotNull(carried.tappedDiff).ifEmpty { carried.diffs }, missing, webUrl)
             content != null -> FullFile.Text(content.content, sourceOf(content), firstLine = content.startLine ?: 1, notice = missing, webUrl = webUrl)
-            else -> FullFile.Failed(readFailure ?: "The transcript carried no copy of this file. $NEEDS_EXTENDED", retryable = readFailure != null, webUrl = webUrl)
+            else -> readFailure?.let(::failedOf)?.copy(webUrl = webUrl) ?: FullFile.Failed("The transcript carried no copy of this file", retryable = false, webUrl = webUrl, detail = needsExtended)
         }
+    }
+
+    private fun failedOf(read: FileRead.Failed): FullFile.Failed = when (read.reason) {
+        FileRead.Reason.MachineAsleep -> FullFile.Failed("The agent's machine is asleep", retryable = true, detail = "Wake it and the file is read again.", asked = read.asked, wakeable = true)
+        FileRead.Reason.MachineGone -> FullFile.Failed("The agent's machine is gone", retryable = false, detail = "The chat expired or was archived, and its VM went with it; only what the transcript carried can be shown.", asked = read.asked)
+        FileRead.Reason.NotFound -> FullFile.Failed("The agent's machine has no such file", retryable = true, detail = "It was moved or deleted, or went with a machine that was replaced.", asked = read.asked)
+        FileRead.Reason.Other -> FullFile.Failed("Couldn't read this file", retryable = true, detail = read.message, asked = read.asked)
     }
 
     private suspend fun shown(bytes: ByteArray, name: String, size: Long, source: String, marked: Set<Int>, scrollTo: Int?, webUrl: String?): FullFile {
@@ -163,6 +191,9 @@ class FullFileResolver(
         val plain = read as? FileBytes.Plain
         val isText = plain != null && (plain.format?.kind == MediaKind.Text || plain.format == null && FileBytes.looksLikeText(plain.bytes))
         if (isText) return FullFile.Text(bytes.toString(Charsets.UTF_8), source, highlighted = marked, scrollTo = scrollTo, webUrl = webUrl)
+        val format = plain?.format
+        val kind = MediaEntry.kindOf(format)
+        if (format != null && kind != null) return FullFile.Media(keep(plain.bytes, name), kind, format)
         return FullFile.Binary(plain?.format, size, keep(plain?.bytes ?: bytes, name).removePrefix("file://"), source)
     }
 
@@ -185,11 +216,14 @@ class FullFileResolver(
 
 /** The full-file viewer, full screen in its own window over the chat; back and the arrow close it. */
 @Composable
-fun FullFileDialog(request: FileOpenRequest, load: suspend (force: Boolean) -> FullFile, onClose: () -> Unit) {
+fun FullFileDialog(request: FileOpenRequest, load: suspend (FileLoad) -> FullFile, onClose: () -> Unit, onOpenMedia: ((MediaEntry) -> Unit)? = null) {
     Dialog(onDismissRequest = onClose, properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
-        FullFileScreen(request, load, onClose)
+        FullFileScreen(request, load, onClose, onOpenMedia = onOpenMedia)
     }
 }
+
+/** One ask of the viewer's file: [force] past the caches (a Retry), [wake] the agent's machine first. */
+data class FileLoad(val force: Boolean = false, val wake: Boolean = false)
 
 /**
  * A file a tool call named, whole: its name, where the text is from, Copy and Share in the header; then the text in
@@ -198,20 +232,33 @@ fun FullFileDialog(request: FileOpenRequest, load: suspend (force: Boolean) -> F
  * past the part the transcript carried — is said in a line above it, with the file on its host.
  */
 @Composable
-fun FullFileScreen(request: FileOpenRequest, load: suspend (force: Boolean) -> FullFile, onClose: () -> Unit, modifier: Modifier = Modifier) {
+fun FullFileScreen(
+    request: FileOpenRequest,
+    load: suspend (FileLoad) -> FullFile,
+    onClose: () -> Unit,
+    modifier: Modifier = Modifier,
+    onOpenMedia: ((MediaEntry) -> Unit)? = null,
+) {
     val colors = CursorTheme.colors
     val context = LocalContext.current
     val clipboard = LocalClipboardManager.current
     var attempt by remember(request) { mutableIntStateOf(0) }
+    var wake by remember(request) { mutableStateOf(false) }
     var file by remember(request) { mutableStateOf<FullFile>(FullFile.Loading) }
     LaunchedEffect(request, attempt) {
         file = FullFile.Loading
         file = try {
-            load(attempt > 0)
+            load(FileLoad(force = attempt > 0, wake = wake))
         } catch (t: Throwable) {
             if (t is CancellationException) throw t
             FullFile.Failed(MediaLoader.problemOf(t).title, retryable = true)
+        } finally {
+            wake = false
         }
+    }
+    val media = file as? FullFile.Media
+    LaunchedEffect(media) {
+        if (media != null && onOpenMedia != null) onOpenMedia(MediaEntry(media.src, media.kind, fileName = ToolNames.basename(request.path), mimeType = media.format.mimeType))
     }
     BackHandler(onBack = onClose)
     val name = ToolNames.basename(request.path)
@@ -236,7 +283,7 @@ fun FullFileScreen(request: FileOpenRequest, load: suspend (force: Boolean) -> F
             FullFile.Loading -> Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
                 SpinnerRing(size = 13.dp)
                 Spacer(Modifier.width(9.dp))
-                Text("Reading ${request.path}\u2026", style = CursorTheme.typography.base, color = colors.textQuaternary)
+                Text(if (wake) "Waking the agent's machine\u2026" else "Reading ${request.path}\u2026", style = CursorTheme.typography.base, color = colors.textQuaternary)
             }
             is FullFile.Text -> {
                 shown.notice?.let { Notice(it, shown.webUrl) }
@@ -249,15 +296,25 @@ fun FullFileScreen(request: FileOpenRequest, load: suspend (force: Boolean) -> F
                 }
             }
             is FullFile.Binary -> BinaryRow(shown, name)
-            is FullFile.Failed -> Column(Modifier.fillMaxWidth().padding(16.dp).testTag("full-file-failed"), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(CursorIcons.Warning, null, tint = colors.orange, modifier = Modifier.size(15.dp))
-                    Spacer(Modifier.width(8.dp))
-                    Text(shown.message, style = CursorTheme.typography.base, color = colors.textSecondary)
-                }
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    if (shown.retryable) CursorButton("Retry", onClick = { attempt++ })
-                    shown.webUrl?.let { url -> OpenOnHost(url) }
+            is FullFile.Media -> Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                SpinnerRing(size = 13.dp)
+                Spacer(Modifier.width(9.dp))
+                Text("Opening ${shown.format.label}\u2026", style = CursorTheme.typography.base, color = colors.textQuaternary)
+            }
+            is FullFile.Failed -> {
+                val uriHandler = LocalUriHandler.current
+                val detail = listOfNotNull(shown.detail, shown.asked?.let { "Asked: $it" }).joinToString("\n").ifEmpty { null }
+                LoadNoticeCard(
+                    title = shown.title,
+                    detail = detail,
+                    tone = if (shown.wakeable) NoticeTone.Warning else NoticeTone.Error,
+                    docked = false,
+                    titleTag = "full-file-failed-title",
+                    modifier = Modifier.padding(12.dp).testTag("full-file-failed"),
+                ) {
+                    if (shown.wakeable) NoticeAction("Wake the machine", { wake = true; attempt++ }, Modifier.testTag("full-file-wake"))
+                    if (shown.retryable) NoticeAction("Retry", { attempt++ }, Modifier.testTag("full-file-retry"))
+                    shown.webUrl?.let { url -> NoticeAction("Open on the host", { runCatching { uriHandler.openUri(url) } }) }
                 }
             }
         }
@@ -265,7 +322,7 @@ fun FullFileScreen(request: FileOpenRequest, load: suspend (force: Boolean) -> F
 }
 
 private fun subtitleOf(file: FullFile, path: String): String = when (file) {
-    FullFile.Loading, is FullFile.Failed -> path
+    FullFile.Loading, is FullFile.Failed, is FullFile.Media -> path
     is FullFile.Text -> listOfNotNull(
         file.source,
         if (file.firstLine > 1) "lines ${file.firstLine}\u2013${file.firstLine + file.lines.size - 1}" else "${file.lines.size} ${if (file.lines.size == 1) "line" else "lines"}",

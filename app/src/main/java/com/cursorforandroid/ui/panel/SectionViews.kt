@@ -20,6 +20,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -42,6 +43,7 @@ import com.cursorforandroid.domain.ChangedFileStatus
 import com.cursorforandroid.domain.CheckConclusion
 import com.cursorforandroid.domain.CheckRun
 import com.cursorforandroid.domain.EnvType
+import com.cursorforandroid.domain.FileFormat
 import com.cursorforandroid.domain.PullRequestView
 import com.cursorforandroid.domain.RepoEntry
 import com.cursorforandroid.domain.ReviewVerdict
@@ -66,6 +68,8 @@ import com.cursorforandroid.ui.components.pressable
 import com.cursorforandroid.ui.conversation.DiffBlock
 import com.cursorforandroid.ui.conversation.LineCounts
 import com.cursorforandroid.ui.conversation.QuestionCard
+import com.cursorforandroid.ui.files.rememberFileOpener
+import com.cursorforandroid.ui.media.thumbnailSlot
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.util.TimeFormat
 
@@ -571,21 +575,27 @@ private fun TouchedFiles(state: PanelState, actions: PanelActions) {
     }
     val colors = CursorTheme.colors
     touched.forEach { file ->
-        PanelRow(
-            title = file.name,
-            icon = CursorIcons.File,
-            iconTint = if (file.wasChanged) colors.gitModified else colors.iconTertiary,
-            subtitle = file.path.takeIf { it != file.name },
-            trailing = {
-                Text(
-                    file.kinds.joinToString(", ") { it.name },
-                    style = CursorTheme.typography.small,
-                    color = colors.textQuaternary,
-                )
-            },
-            onClick = { actions.openTouched(file.path) },
-            modifier = Modifier.testTag("touched-file"),
-        )
+        key(file.path) {
+            // A picture, a recording or a sound opens the media viewer — the read's own picture first, else the file
+            // read off the agent's machine — never the text viewer (Bennett's 2026-09-22 frames of /tmp/*.jpg).
+            val media = FileFormat.ofName(file.path)?.isMedia == true
+            val opener = if (media) rememberFileOpener(file.path, carried = file.carried) else null
+            PanelRow(
+                title = file.name,
+                icon = if (media) CursorIcons.Image else CursorIcons.File,
+                iconTint = if (file.wasChanged) colors.gitModified else colors.iconTertiary,
+                subtitle = file.path.takeIf { it != file.name },
+                trailing = {
+                    Text(
+                        file.kinds.joinToString(", ") { it.name },
+                        style = CursorTheme.typography.small,
+                        color = colors.textQuaternary,
+                    )
+                },
+                onClick = opener?.open ?: { actions.openTouched(file.path) },
+                modifier = Modifier.testTag("touched-file").then(opener?.slot?.let { Modifier.thumbnailSlot(it) } ?: Modifier),
+            )
+        }
     }
 }
 

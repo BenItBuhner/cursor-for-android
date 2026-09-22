@@ -39,6 +39,7 @@ import com.cursorforandroid.data.media.MediaProblem
 import com.cursorforandroid.domain.FileBytes
 import com.cursorforandroid.domain.FileFormat
 import com.cursorforandroid.domain.MediaKind
+import com.cursorforandroid.domain.NoticeTone
 import com.cursorforandroid.domain.PromptFile
 import com.cursorforandroid.domain.RepoFile
 import com.cursorforandroid.domain.ToolNames
@@ -57,6 +58,8 @@ import com.cursorforandroid.ui.components.VideoBlock
 import com.cursorforandroid.ui.components.pressable
 import com.cursorforandroid.ui.conversation.DiffBlock
 import com.cursorforandroid.ui.conversation.LineCounts
+import com.cursorforandroid.ui.conversation.LoadNoticeCard
+import com.cursorforandroid.ui.conversation.NoticeAction
 import com.cursorforandroid.ui.media.FileHandoff
 import com.cursorforandroid.ui.theme.CursorTheme
 import kotlinx.coroutines.launch
@@ -68,7 +71,7 @@ import java.io.File
  * reason it could not be shown.
  */
 @Composable
-internal fun FileViewerScreen(view: FileView, onBack: () -> Unit, onOpenUrl: (String) -> Unit, modifier: Modifier = Modifier) {
+internal fun FileViewerScreen(view: FileView, onBack: () -> Unit, onOpenUrl: (String) -> Unit, modifier: Modifier = Modifier, onRetry: ((wake: Boolean) -> Unit)? = null) {
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
     Column(modifier.fillMaxSize().testTag("file-viewer")) {
@@ -91,7 +94,17 @@ internal fun FileViewerScreen(view: FileView, onBack: () -> Unit, onOpenUrl: (St
                 Spacer(Modifier.width(9.dp))
                 Text("Loading…", style = type.base, color = colors.textQuaternary)
             }
-            is FileView.Failed -> StateRow(CursorIcons.Warning, "Couldn't open this file", view.message, tint = colors.red)
+            is FileView.Failed -> LoadNoticeCard(
+                title = view.title,
+                detail = listOfNotNull(view.message, view.asked?.let { "Asked: $it" }).joinToString("\n"),
+                tone = if (view.wakeable) NoticeTone.Warning else NoticeTone.Error,
+                docked = false,
+                titleTag = "file-viewer-failed-title",
+                modifier = Modifier.padding(12.dp).testTag("file-viewer-failed"),
+            ) {
+                if (onRetry != null && view.wakeable) NoticeAction("Wake the machine", { onRetry(true) }, Modifier.testTag("file-viewer-wake"))
+                if (onRetry != null && view.retryable) NoticeAction("Retry", { onRetry(false) }, Modifier.testTag("file-viewer-retry"))
+            }
             is FileView.Transcript -> TextFile(view.content.content, view.content.truncated)
             is FileView.Changes -> LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 items(view.change.diffs) { diff -> DiffBlock(diff, showHeader = false) }

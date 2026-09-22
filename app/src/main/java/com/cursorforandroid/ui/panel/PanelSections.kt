@@ -55,6 +55,8 @@ interface PanelActions {
     fun openTouched(path: String)
     fun openChange(change: TranscriptContent.FileChange)
     fun closeFile()
+    /** Asks the viewer's file again after a failure, waking the agent's machine first when [wake]. */
+    fun retryFile(wake: Boolean) = Unit
     fun openUrl(url: String)
     fun copyText(text: String, confirmation: String = "Copied")
     fun shareText(text: String)

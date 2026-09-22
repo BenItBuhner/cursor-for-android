@@ -96,6 +96,7 @@ import com.cursorforandroid.ui.compose.rememberComposerMenuActions
 import com.cursorforandroid.ui.files.FileOpenRequestSaver
 import com.cursorforandroid.ui.files.FullFileDialog
 import com.cursorforandroid.ui.files.FullFileResolver
+import com.cursorforandroid.ui.media.LocalMediaViewer
 import com.cursorforandroid.ui.home.ModelSheet
 import com.cursorforandroid.ui.media.ConversationMedia
 import com.cursorforandroid.ui.home.NoModelRow
@@ -669,10 +670,13 @@ fun ConversationScreen(
 
     openFile?.let { request ->
         val resolver = remember(graph) { FullFileResolver.of(graph.agentFileReads, { graph.extendedMode.capabilities().workspaceFiles && !graph.session.isDemo }, graph.media) }
+        val viewer = LocalMediaViewer.current
         FullFileDialog(
             request,
-            load = { force -> resolver.resolve(agentId, request, CarriedFile.of(latestItems.value, request.path, request.callId), force) },
+            load = { ask -> resolver.resolve(agentId, request, CarriedFile.of(latestItems.value, request.path, request.callId), ask.force, ask.wake) },
             onClose = { openFile = null },
+            // Bytes that turned out to be a picture, a recording or a sound are the media viewer's, never a text screen's.
+            onOpenMedia = viewer?.let { v -> { entry -> openFile = null; v.open(agentId, listOf(entry), entry.src, null, fallback = entry, autoplay = entry.isPlayable) } },
         )
     }
 

@@ -105,17 +105,23 @@ class WorkspaceRepositoryTest {
     }
 
     @Test
-    fun `failures are named, a method Cursor no longer offers as an endpoint change, and none is remembered`() = runBlocking<Unit> {
+    fun `failures are named, a missing file apart from a method Cursor no longer offers, and none is remembered`() = runBlocking<Unit> {
         val repo = repo()
 
-        failure = ConnectRpcException(404, "unimplemented", "Error")
-        assertThat(repo.tree("bc-1")).isEqualTo(VmRead.Failed(WorkspaceRepository.ENDPOINT_CHANGED, endpointChanged = true))
-        failure = ConnectRpcException(200, "not_found", "no such file")
-        assertThat((repo.file("bc-1", "x") as VmRead.Failed).message).contains("no such file any more")
+        failure = ConnectRpcException(404, "unimplemented", "Error", path = "/aiserver.v1.BackgroundComposerService/ListWorkspaceFiles")
+        val removed = repo.tree("bc-1") as VmRead.Failed
+        assertThat(removed.message).isEqualTo(WorkspaceRepository.ENDPOINT_CHANGED)
+        assertThat(removed.endpointChanged).isTrue()
+        assertThat(removed.asked).isEqualTo("POST /aiserver.v1.BackgroundComposerService/ListWorkspaceFiles → HTTP 404 unimplemented \"Error\"")
+        // Connect answers not_found on HTTP 404: a missing file, not a method Cursor took away.
+        failure = ConnectRpcException(404, "not_found", "File not found")
+        val missing = repo.file("bc-1", "x") as VmRead.Failed
+        assertThat(missing.message).isEqualTo(WorkspaceRepository.NO_SUCH_FILE)
+        assertThat(missing.endpointChanged).isFalse()
         failure = ConnectRpcException(200, "failed_precondition", "pod hibernated")
-        assertThat((repo.diff("bc-1") as VmRead.Failed).message).contains("isn't running")
+        assertThat((repo.diff("bc-1") as VmRead.Failed).let { it.kind to it.message }).isEqualTo(VmRead.FailureKind.MachineAsleep to WorkspaceRepository.MACHINE_ASLEEP)
         failure = SessionUnavailableException("off", SessionUnavailableException.EXTENDED_MODE_OFF)
-        assertThat(repo.tree("bc-1")).isEqualTo(VmRead.Failed(WorkspaceRepository.NEEDS_EXTENDED_MODE))
+        assertThat(repo.tree("bc-1")).isEqualTo(VmRead.Failed(WorkspaceRepository.NEEDS_EXTENDED_MODE, kind = VmRead.FailureKind.NeedsExtendedMode))
         failure = IOException("timeout")
         assertThat(repo.tree("bc-1")).isInstanceOf(VmRead.Failed::class.java)
         // Nothing failed was cached: the next read after the failure goes out again.
