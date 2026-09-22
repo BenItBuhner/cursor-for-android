@@ -182,6 +182,17 @@ class FaultServer(
         data class Silence(val processed: Boolean = false) : Fault
         /** A stream that delivers [events] frames past the resume position and then closes without `done`. */
         data class StreamCut(val events: Int) : Fault
+
+        /**
+         * The request is processed at once and its answer held on its way back until [release]: a reply exactly as
+         * slow as the test needs, where a round trip set long enough stood in for one — and slowed every other request
+         * the server met meanwhile, the queue's poll among them (#281's CI, `QueuedMessagePlacementTest`).
+         */
+        class Held : Fault {
+            private val gate = java.util.concurrent.CountDownLatch(1)
+            fun release() = gate.countDown()
+            internal fun await() = gate.await(HOLD_CEILING_S, TimeUnit.SECONDS)
+        }
     }
 
     fun start(): FaultServer {
@@ -372,8 +383,16 @@ class FaultServer(
             is Fault.LostReply -> MockResponse().setSocketPolicy(SocketPolicy.DISCONNECT_AFTER_REQUEST)
             Fault.TruncatedBody -> answer.setSocketPolicy(SocketPolicy.DISCONNECT_DURING_RESPONSE_BODY).withWeather()
             is Fault.Silence -> MockResponse().setSocketPolicy(SocketPolicy.NO_RESPONSE)
+            is Fault.Held -> {
+                held += fault
+                fault.await()
+                answer.withWeather()
+            }
         }
     }
+
+    /** The replies held back by [Fault.Held], let go on [close] so a test that failed before its release does not wedge the shutdown. */
+    private val held = CopyOnWriteArrayList<Fault.Held>()
 
     private fun createRun(agentId: String, request: RecordedRequest, processed: Boolean): MockResponse {
         val body = CursorJson.decodeFromString(CreateRunRequestDto.serializer(), request.body.readUtf8())
@@ -701,9 +720,14 @@ class FaultServer(
     private fun json(code: Int, body: String): MockResponse = MockResponse().setResponseCode(code).setHeader("Content-Type", "application/json").setBody(body)
     private fun quote(text: String): String = CursorJson.encodeToString(String.serializer(), text)
 
-    override fun close() = server.shutdown()
+    override fun close() {
+        held.forEach { it.release() }
+        server.shutdown()
+    }
 
     companion object {
+        /** The longest a [Fault.Held] reply waits for its release: past any test's own wait, short of wedging the run. */
+        const val HOLD_CEILING_S = 60L
         /** The account service the record RPCs belong to (see `HeadlessConversationApi.SERVICE`). */
         const val RECORD_SERVICE = "aiserver.v1.BackgroundComposerService"
         /** The server's own words for the removed unary, lowerCamel as its handler names it (Bennett's phone, 2026-09-21). */
