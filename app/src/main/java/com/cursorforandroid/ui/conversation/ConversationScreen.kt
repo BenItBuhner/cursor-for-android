@@ -66,6 +66,7 @@ import com.cursorforandroid.domain.TranscriptRow
 import com.cursorforandroid.domain.DesktopEligibility
 import com.cursorforandroid.domain.EnvType
 import com.cursorforandroid.share.ShareTarget
+import com.cursorforandroid.domain.QueuePlacement
 import com.cursorforandroid.domain.RunStatus
 import com.cursorforandroid.domain.StorePath
 import com.cursorforandroid.ui.agents.MenuItem
@@ -118,6 +119,18 @@ import kotlinx.coroutines.launch
 internal fun ConversationState.showsWorkingRow(): Boolean {
     val active = runStatus?.isActive == true || isStreaming
     return active && (isReconnecting || items.lastOrNull().let { it !is AssistantMessage || !it.isStreaming })
+}
+
+/**
+ * The working row's words. "Starting…" is a run the account has started and that is still booting; a message waiting
+ * for the turn under way to end has no run started yet, and says so (Bennett's frame of 2026-09-22 19:42: his message
+ * to a Project's busy coordinator under "Starting…" while that turn ran on).
+ */
+internal fun ConversationState.workingCaption(): String = when {
+    queuedBehindTurn -> QueuePlacement.QUEUED_BEHIND_TURN
+    runStatus == RunStatus.CREATING -> "Starting…"
+    isReconnecting -> "Reconnecting…"
+    else -> "Working…"
 }
 
 /**
@@ -443,13 +456,8 @@ fun ConversationScreen(
                             // A dropped connection is not the run's problem: the agent keeps working while the stream
                             // is re-established, so the caption keeps shimmering and only its wording says what is
                             // going on. The caption is the whole indicator, as in the web chat: no glyph beside it.
-                            val caption = when {
-                                conversation.runStatus == RunStatus.CREATING -> "Starting…"
-                                conversation.isReconnecting -> "Reconnecting…"
-                                else -> "Working…"
-                            }
                             Box(paneWidth) {
-                                ShimmerText(caption, style = type.base)
+                                ShimmerText(conversation.workingCaption(), style = type.base)
                             }
                         }
                     }
