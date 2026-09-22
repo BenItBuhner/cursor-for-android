@@ -130,7 +130,7 @@ class WhatsNewScreenshotTest {
     @Test
     @Config(sdk = [35], qualifiers = "w411dp-h914dp-notnight-420dpi")
     fun pageLight() {
-        page(ThemeMode.Light, "147_whats_new_page_light")
+        page(ThemeMode.Light, "164_whats_new_page_light")
     }
 
     private fun page(mode: ThemeMode, frame: String) {

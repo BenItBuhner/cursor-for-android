@@ -153,7 +153,7 @@ class SettingsScreenshotTest {
     @Test
     @Config(sdk = [35], qualifiers = "w411dp-h1260dp-notnight-420dpi")
     fun settingsEssentialsLight() {
-        essentials(ThemeMode.Light, "143_settings_essentials_light")
+        essentials(ThemeMode.Light, "160_settings_essentials_light")
     }
 
     private fun essentials(mode: ThemeMode, frame: String) {
@@ -221,7 +221,7 @@ class SettingsScreenshotTest {
         composeSettings()
         openAccountSheet()
         compose.onNodeWithText("Manage API keys").assertIsDisplayed()
-        capture("144_settings_account_sheet")
+        capture("161_settings_account_sheet")
     }
 
     @Test
@@ -230,7 +230,7 @@ class SettingsScreenshotTest {
         composeSettings(ThemeMode.Light)
         openAccountSheet()
         compose.onNodeWithText("Manage API keys").assertIsDisplayed()
-        capture("145_settings_account_sheet_light")
+        capture("162_settings_account_sheet_light")
     }
 
     /**
@@ -264,7 +264,7 @@ class SettingsScreenshotTest {
         openDebugSheet()
         compose.onNodeWithText("Cloud Agents v1 · v0 transcript").assertIsDisplayed()
         compose.onNode(hasTestTag(SendDiagnosticsCopy.TAG) and hasText(ExtendedModeCopy.NEEDS_MODE)).assertIsDisplayed().assertIsNotEnabled()
-        capture("146_settings_debug_sheet_light")
+        capture("163_settings_debug_sheet_light")
     }
 
     private companion object {
