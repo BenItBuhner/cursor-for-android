@@ -8,13 +8,17 @@ import java.io.IOException
  * Why a picture, a recording or a sound could not be shown, in the words the row or the viewer page says it with —
  * never a decoder's own ("BitmapFactory returned a null bitmap … not encoded as a valid image format"), which is
  * what the viewer used to print. [title] is the row's first line, [detail] its second; [retryable] offers Retry,
- * and [openable] says the file itself can still be handed to the browser or another app.
+ * and [openable] says the file itself can still be handed to the browser or another app. [asked] is the request a
+ * refusal answered, as sent and as received (`POST /…/ReadBinaryFile → HTTP 404 not_found "…"`), so the next
+ * screenshot says which call it was; [wakeable] offers to wake the agent's machine first.
  */
 sealed interface MediaProblem {
     val title: String
     val detail: String?
     val retryable: Boolean get() = false
     val openable: Boolean get() = true
+    val asked: String? get() = null
+    val wakeable: Boolean get() = false
 
     /** A format this device's decoders do not draw: HEIC before Android 9, AVIF before 12, TIFF anywhere. */
     data class Unsupported(val format: FileFormat) : MediaProblem {
@@ -52,7 +56,28 @@ sealed interface MediaProblem {
     data class NotReadable(override val title: String, override val detail: String?) : MediaProblem
 
     /** The read was made and failed: the network, a refusal, a file gone. */
-    data class Failed(override val title: String, override val detail: String? = null, override val retryable: Boolean = true) : MediaProblem
+    data class Failed(
+        override val title: String,
+        override val detail: String? = null,
+        override val retryable: Boolean = true,
+        override val asked: String? = null,
+    ) : MediaProblem
+
+    /** The agent's machine is not running: waking it (`WakeBackgroundComposer`) and reading again is the way on. */
+    data class MachineAsleep(override val asked: String? = null) : MediaProblem {
+        override val title: String get() = "The agent's machine is asleep"
+        override val detail: String get() = "Wake it and the file is read again."
+        override val retryable: Boolean get() = true
+        override val openable: Boolean get() = false
+        override val wakeable: Boolean get() = true
+    }
+
+    /** The chat is over and its machine with it: nothing but what the transcript carried is left to show. */
+    data class MachineGone(override val asked: String? = null) : MediaProblem {
+        override val title: String get() = "The agent's machine is gone"
+        override val detail: String get() = "The chat expired or was archived, and its VM went with it; only what the transcript carried can be shown."
+        override val openable: Boolean get() = false
+    }
 
     companion object {
         /** What a format that sniffed as an image but did not decode means on this device. */

@@ -75,12 +75,15 @@ class MediaLoader(
 
     private val posters = LruCache<String, VideoPoster>(12)
 
-    /** Decodes [ref] to fit within [maxWidthPx] x [maxHeightPx] (downsampling only, never upscaling). */
-    suspend fun image(ref: MediaRef, maxWidthPx: Int, maxHeightPx: Int): Bitmap = onMain { named { decodeImage(ref, maxWidthPx, maxHeightPx) } }
+    /**
+     * Decodes [ref] to fit within [maxWidthPx] x [maxHeightPx] (downsampling only, never upscaling). With [wake], a
+     * file of the agent's machine found asleep is read again once the machine is woken (see [AgentFileRepository.read]).
+     */
+    suspend fun image(ref: MediaRef, maxWidthPx: Int, maxHeightPx: Int, wake: Boolean = false): Bitmap = onMain { named { decodeImage(ref, maxWidthPx, maxHeightPx, wake) } }
 
-    private suspend fun decodeImage(ref: MediaRef, maxWidthPx: Int, maxHeightPx: Int): Bitmap = when (ref) {
+    private suspend fun decodeImage(ref: MediaRef, maxWidthPx: Int, maxHeightPx: Int, wake: Boolean): Bitmap = when (ref) {
         is MediaRef.Remote, is MediaRef.Artifact -> decodeUrl(ref, maxWidthPx, maxHeightPx)
-        else -> decodeBytes(ref, bytesFor(ref), maxWidthPx, maxHeightPx)
+        else -> decodeBytes(ref, bytesFor(ref, wake), maxWidthPx, maxHeightPx)
     }
 
     private suspend fun decodeUrl(ref: MediaRef, maxWidthPx: Int, maxHeightPx: Int): Bitmap {
@@ -121,15 +124,15 @@ class MediaLoader(
     }
 
     /** The URL ExoPlayer should open for a video or a sound; resolved at play time so it is never an expired one. */
-    suspend fun playbackUrl(ref: MediaRef): String = onMain { named { resolvePlaybackUrl(ref) } }
+    suspend fun playbackUrl(ref: MediaRef, wake: Boolean = false): String = onMain { named { resolvePlaybackUrl(ref, wake) } }
 
-    private suspend fun resolvePlaybackUrl(ref: MediaRef): String = when (ref) {
+    private suspend fun resolvePlaybackUrl(ref: MediaRef, wake: Boolean = false): String = when (ref) {
         is MediaRef.Remote -> RemoteUrls.fetchable(ref.url)
         is MediaRef.Artifact -> artifacts.downloadUrl(ref.agentId, ref.path)
         is MediaRef.Store -> storeUrl(ref)
         is MediaRef.Local -> "file://${ref.path}"
         // The workspace hands out bytes, not a URL: they are kept as a file of the cache and played from there.
-        is MediaRef.Workspace -> "file://${materialize(ref, ref.label).absolutePath}"
+        is MediaRef.Workspace -> "file://${materialize(ref, ref.label, wake).absolutePath}"
         is MediaRef.Inline -> throw MediaProblemException(MediaProblem.NotReadable("Embedded recordings aren't supported", null))
         is MediaRef.Unavailable -> throw MediaProblemException(MediaProblem.NotReadable("This file isn't available", unavailableDetail(ref)))
     }
@@ -189,7 +192,7 @@ class MediaLoader(
         }
     }
 
-    private suspend fun materialize(ref: MediaRef, fileName: String): File = withContext(Dispatchers.IO) {
+    private suspend fun materialize(ref: MediaRef, fileName: String, wake: Boolean = false): File = withContext(Dispatchers.IO) {
         val dir = File(context.cacheDir, MEDIA_DIR).apply { mkdirs() }
         val target = File(dir, "${ref.cacheKey.hashCode().toUInt().toString(16)}-${safeName(fileName)}")
         if (target.isFile && target.length() > 0L) return@withContext target
@@ -199,7 +202,7 @@ class MediaLoader(
                 is MediaRef.Local -> File(ref.path).takeIf { it.isFile }?.copyTo(partial, overwrite = true) ?: throw MediaProblemException(MediaProblem.NotReadable("This file is no longer on this device", null))
                 is MediaRef.Inline -> partial.writeBytes(ref.bytes)
                 is MediaRef.Store -> partial.writeBytes(storeReads().readBytes(ref))
-                is MediaRef.Workspace -> partial.writeBytes(unwrappedFile(workspaceBytes(ref), ref.label))
+                is MediaRef.Workspace -> partial.writeBytes(unwrappedFile(workspaceBytes(ref, wake), ref.label))
                 is MediaRef.Remote, is MediaRef.Artifact -> download(resolvePlaybackUrl(ref), partial)
                 is MediaRef.Unavailable -> throw MediaProblemException(MediaProblem.NotReadable("This file isn't available", unavailableDetail(ref)))
             }
@@ -291,7 +294,7 @@ class MediaLoader(
         else -> error("Not a URL: $ref")
     }
 
-    private suspend fun bytesFor(ref: MediaRef): ByteArray = when (ref) {
+    private suspend fun bytesFor(ref: MediaRef, wake: Boolean = false): ByteArray = when (ref) {
         // Bytes, fetched and kept by the repository (its own disk cache, a dead URL asked for again), decoded like
         // an inline image: the same path as a file of this device, and one the JVM test renderer can take.
         is MediaRef.Store -> storeReads().readBytes(ref)
@@ -301,17 +304,18 @@ class MediaLoader(
             File(ref.path).takeIf { it.isFile }?.readBytes() ?: throw MediaProblemException(MediaProblem.NotReadable("This file is no longer on this device", null))
         }
         is MediaRef.Inline -> ref.bytes
-        is MediaRef.Workspace -> workspaceBytes(ref)
+        is MediaRef.Workspace -> workspaceBytes(ref, wake)
         is MediaRef.Unavailable -> throw MediaProblemException(MediaProblem.NotReadable("This image isn't available", unavailableDetail(ref)))
         is MediaRef.Remote, is MediaRef.Artifact -> error("Fetched by URL: $ref")
     }
 
-    private suspend fun workspaceBytes(ref: MediaRef.Workspace): ByteArray {
-        val reads = files() ?: throw MediaProblemException(MediaProblem.NotReadable(IN_WORKSPACE, null))
-        return when (val read = reads.read(ref.agentId, ref.path)) {
+    private suspend fun workspaceBytes(ref: MediaRef.Workspace, wake: Boolean = false): ByteArray {
+        val where = if (AgentFileRepository.isInWorkspace(ref.path, null)) IN_WORKSPACE else ON_MACHINE
+        val reads = files() ?: throw MediaProblemException(MediaProblem.NotReadable(where, null))
+        return when (val read = reads.read(ref.agentId, ref.path, force = wake, wake = wake)) {
             is FileRead.Loaded -> read.file.bytes
-            is FileRead.NotReadable -> throw MediaProblemException(MediaProblem.NotReadable(IN_WORKSPACE, read.reason))
-            is FileRead.Failed -> throw MediaProblemException(MediaProblem.Failed(read.message, retryable = read.retryable))
+            is FileRead.NotReadable -> throw MediaProblemException(MediaProblem.NotReadable(where, read.reason))
+            is FileRead.Failed -> throw MediaProblemException(problemOf(read))
         }
     }
 
@@ -382,6 +386,15 @@ class MediaLoader(
         private const val MAX_DIAGNOSE_BYTES = 24 * 1024 * 1024
         private val STALE_URL_CODES = setOf(400, 401, 403, 404)
         private const val IN_WORKSPACE = "In the agent's workspace"
+        private const val ON_MACHINE = "On the agent's machine"
+
+        /** A failed read of a file of the agent's machine or repository, in the words the row or the viewer page says it with. */
+        fun problemOf(read: FileRead.Failed): MediaProblem = when (read.reason) {
+            FileRead.Reason.MachineAsleep -> MediaProblem.MachineAsleep(read.asked)
+            FileRead.Reason.MachineGone -> MediaProblem.MachineGone(read.asked)
+            FileRead.Reason.NotFound -> MediaProblem.Failed("The agent's machine has no such file", "It was moved or deleted, or went with a machine that was replaced.", asked = read.asked)
+            FileRead.Reason.Other -> MediaProblem.Failed("Couldn't read this file", read.message, retryable = read.retryable, asked = read.asked)
+        }
 
         private fun safeName(fileName: String): String = fileName.replace(Regex("""[^A-Za-z0-9._-]"""), "_").ifBlank { "media" }
 
