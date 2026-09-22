@@ -49,6 +49,7 @@ import com.cursorforandroid.ui.components.ShimmerText
 import com.cursorforandroid.ui.components.VideoBlock
 import com.cursorforandroid.ui.components.cursorSurface
 import com.cursorforandroid.ui.components.pressable
+import com.cursorforandroid.ui.components.stylusWriting
 import com.cursorforandroid.ui.files.FileHitsList
 import com.cursorforandroid.ui.files.rememberFileOpener
 import com.cursorforandroid.ui.theme.CursorTheme
@@ -382,6 +383,7 @@ private fun AnswerField(value: String, onValueChange: (String) -> Unit, placehol
         cursorBrush = SolidColor(colors.textPrimary),
         modifier = Modifier
             .fillMaxWidth()
+            .stylusWriting(enabled = enabled)
             .cursorSurface(colors.fill, colors.strokeSubtle, shape)
             .padding(horizontal = 10.dp, vertical = 7.dp)
             .semantics { contentDescription = placeholder }

@@ -81,6 +81,7 @@ import com.cursorforandroid.ui.components.AttachmentCounts
 import com.cursorforandroid.ui.components.rememberFilePicker
 import com.cursorforandroid.ui.components.rememberMediaPicker
 import com.cursorforandroid.ui.components.scrollEdgeFade
+import com.cursorforandroid.ui.components.stylusWriting
 import com.cursorforandroid.share.ShareTarget
 import com.cursorforandroid.ui.compose.NewAgentUiState
 import com.cursorforandroid.ui.compose.NewAgentViewModel
@@ -528,6 +529,7 @@ internal fun SheetSearchField(value: String, onValueChange: (String) -> Unit, pl
         Modifier
             .fillMaxWidth()
             .padding(horizontal = 12.dp)
+            .stylusWriting()
             .background(colors.fillFaint, shape)
             .border(CursorDimens.hairline, colors.strokeSubtle, shape)
             .height(38.dp)
