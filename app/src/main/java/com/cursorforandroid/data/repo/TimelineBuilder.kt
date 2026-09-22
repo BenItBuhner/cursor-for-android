@@ -96,7 +96,9 @@ object TimelineBuilder {
         fun closeRun(run: RunDto, replies: List<TimelineItem>) {
             val trace = traces[run.id]
             if (trace != null) {
-                items += if (run.id in partial) withReplies(trace, replies) else trace
+                // A story that ended before the run did takes the transcript's reply for the run — else, the transcript
+                // not caught up yet, the one the run's record ended on (see [recordReply]).
+                items += if (run.id in partial) withReplies(trace, replies.ifEmpty { if (trace.none { it is RunFooter }) recordReply(run) else emptyList() }) else trace
                 // A whole trace ends on its own footer. The story a stream told before it broke does not: the run
                 // that ended meanwhile (by its record) gets the record's footer under it, like a run without a trace.
                 if (!run.statusEnum().isActive && items.none { it is RunFooter && it.runId == run.id }) items += footer(run)
@@ -132,6 +134,17 @@ object TimelineBuilder {
             }
         }
         return items.withUniqueIds()
+    }
+
+    /**
+     * The final reply a run over by its record ended on (its `result`), for a story its stream told before it broke:
+     * the words the stream never delivered, until the transcript has them — as [LiveRun] places them when the hub
+     * settles a run off its record. Nothing for a run still going, nor for a failure, whose text is its footer's reason.
+     */
+    fun recordReply(run: RunDto): List<TimelineItem> {
+        val status = run.statusEnum()
+        if (status.isActive || status == RunStatus.ERROR) return emptyList()
+        return listOfNotNull(run.result?.takeIf { it.isNotBlank() }?.let { AssistantMessage("res-${run.id}", it) })
     }
 
     /**

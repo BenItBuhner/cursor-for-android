@@ -376,17 +376,15 @@ class QueuedMessagePlacementTest {
         assertThat(bubble.attachments.map { it.isFile }).containsExactly(false, true).inOrder()
         assertThat(state.queuePlacement.waiting).isEmpty()
         // The send, the composer's way (the bubble stays up on a failure), on a slow link: the account takes the
-        // message at once, its reply is three seconds coming back. The link is quick again the moment the request has
-        // landed, so the queue read that follows names the message while the bubble still stands.
-        val addsBefore = server.requests(Route.QueueAdd).size
-        server.rttMillis = 3_000L..3_000L
+        // message at once, and its reply is held on the way back until the queue read that follows has named the
+        // message while the bubble still stands.
+        val reply = Fault.Held()
+        server.script(Route.QueueAdd, reply)
         val send = async {
             rig.conversations.sendStagedVia(agentId, staged, followupId = followupId, discardOnFailure = false) {
                 rig.steering.sendFollowup(agentId, AccountFollowup(text = MESSAGE, followupId = followupId)).getOrThrow()
             }.getOrThrow()
         }
-        rig.awaitUntilOr(10_000, "the request to land") { server.requests(Route.QueueAdd).size > addsBefore }
-        server.rttMillis = 150L..350L
         rig.awaitUntilOr(10_000, "the list to name it") { rig.steering.state(agentId).value.queue.any { it.id == followupId } }
         // The bubble is the message's place: the list names it, the card does not show it.
         assertThat(send.isActive).isTrue()
@@ -394,6 +392,7 @@ class QueuedMessagePlacementTest {
         assertThat(inFlight.items.any { it is UserMessage && it.text == MESSAGE }).isTrue()
         assertThat(inFlight.queuePlacement.shownIds).containsExactly(followupId)
         assertThat(rig.steering.state(agentId).value.placed(inFlight.queuePlacement).queue).isEmpty()
+        reply.release()
         send.await()
         // Queued: in the same frame the bubble is down and the card has the message — with what it carries.
         val queued = state
@@ -471,8 +470,8 @@ class QueuedMessagePlacementTest {
      */
     @Test
     fun `a message the account starts the run on at once is never on the card beside its bubble, before or after the reply`() = runBlocking<Unit> {
-        // The account's list names a started message for six seconds; the app polls every second.
-        server.queueLagMs = 6_000L
+        // The account's list names a started message until the test lets it go; the app polls every second.
+        server.queueLagMs = Long.MAX_VALUE / 4
         val rig = rig(pollMs = 1_000L)
         rig.open()
         // The turn ends: the chat is idle, as it was under both of Bennett's frames ("Worked 55s", "Worked 59s").
@@ -484,17 +483,15 @@ class QueuedMessagePlacementTest {
         val spec = PromptFile(ByteArray(1_024) { 0x25 }, "Q3-billing-spec.pdf", "application/pdf")
         val staged = rig.conversations.stageFollowUp(agentId, MESSAGE, images = listOf(picture), files = listOf(spec))
         assertThat(state.items.filterIsInstance<UserMessage>().single { it.text == MESSAGE }.attachments).hasSize(2)
-        // The send on a slow link: the account takes the message and starts the run at once, its reply three seconds
-        // coming back; quick again once the request has landed, so the poll's read lands inside the round trip.
-        val addsBefore = server.requests(Route.QueueAdd).size
-        server.rttMillis = 3_000L..3_000L
+        // The send on a slow link: the account takes the message and starts the run at once, and its reply is held on
+        // the way back until the poll's read, landing inside the round trip, has named the message.
+        val reply = Fault.Held()
+        server.script(Route.QueueAdd, reply)
         val send = async {
             rig.conversations.sendStagedVia(agentId, staged, followupId = followupId, discardOnFailure = false) {
                 rig.steering.sendFollowup(agentId, AccountFollowup(text = MESSAGE, followupId = followupId)).getOrThrow()
             }.getOrThrow()
         }
-        rig.awaitUntilOr(10_000, "the request to land") { server.requests(Route.QueueAdd).size > addsBefore }
-        server.rttMillis = 150L..350L
         rig.awaitUntilOr(10_000, "the list to name it") { rig.steering.state(agentId).value.queue.any { it.id == followupId } }
         // Before the reply: the bubble stands, pending; the list names the message; the card does not show it.
         assertThat(send.isActive).isTrue()
@@ -502,6 +499,7 @@ class QueuedMessagePlacementTest {
         assertThat(inFlight.items.filterIsInstance<UserMessage>().single { it.text == MESSAGE }.isPending).isTrue()
         assertThat(inFlight.queuePlacement.shownIds).containsExactly(followupId)
         assertThat(rig.steering.state(agentId).value.placed(inFlight.queuePlacement).queue).isEmpty()
+        reply.release()
         send.await()
         val run = server.delivered.single { it.first == followupId }.second
         // After the reply: the bubble is the run's — filed, no longer pending, its attachments moved under the run —
@@ -516,6 +514,7 @@ class QueuedMessagePlacementTest {
         assertThat(message.attachments.map { it.isFile }).containsExactly(false, true).inOrder()
         message.attachments.forEach { assertThat(File(it.path).parentFile?.name).isEqualTo(run) }
         // The list lets it go; the card is empty on its own account, the message once in the transcript.
+        server.queueLagMs = 0L
         rig.awaitUntilOr(20_000, "the list to let it go") { rig.steering.state(agentId).value.queue.none { it.id == followupId } }
         rig.awaitUntilOr(10_000, "the delivery confirmed") { state.queuePlacement.deliveredIds.isEmpty() }
         delay(1_200)
