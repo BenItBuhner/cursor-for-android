@@ -38,7 +38,7 @@ enum class RunInterruption(val title: String, val detail: String, val confirm: S
 object RunStopCopy {
     const val KEEP_RUNNING = "Keep running"
     const val SETTING_TITLE = "Confirm before stopping"
-    const val SETTING_DETAIL = "Ask before Stop, Pause or Send now interrupts a running agent."
+    const val SETTING_DETAIL = "Ask before Stop, Pause or Send now interrupts a run."
 }
 
 object RunStopTags {

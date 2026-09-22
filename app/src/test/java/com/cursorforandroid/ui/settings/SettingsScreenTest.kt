@@ -6,14 +6,21 @@ import androidx.activity.ComponentActivity
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertHasClickAction
 import androidx.compose.ui.test.assertHasNoClickAction
+import androidx.compose.ui.test.assertIsOff
+import androidx.compose.ui.test.assertIsOn
+import androidx.compose.ui.test.hasAnyAncestor
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.isOff
+import androidx.compose.ui.test.isOn
+import androidx.compose.ui.test.isToggleable
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.longClick
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTouchInput
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -22,9 +29,11 @@ import com.cursorforandroid.BuildConfig
 import com.cursorforandroid.data.local.PreferencesStore
 import com.cursorforandroid.data.update.WhatsNewFixtures
 import com.cursorforandroid.domain.CursorUser
+import com.cursorforandroid.ui.components.RunStopCopy
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.ui.theme.ThemeMode
 import com.google.common.truth.Truth.assertThat
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import org.junit.Before
 import org.junit.Rule
@@ -81,10 +90,10 @@ class SettingsScreenTest {
     fun `the list is the essentials in order, and none of what was cut`() {
         composeSettings(isDemo = false)
 
-        // Account, with the way out of it, first; then appearance, notifications, the Extended mode switch, the
-        // version with its updater and the crash report consent; the one-line disclaimer last.
+        // Account, with the way out of it, first; then appearance, whether stopping asks first, notifications, the
+        // Extended mode switch, the version with its updater and the crash report consent; the one-line disclaimer last.
         val order = listOf(
-            SettingsCopy.GROUP_ACCOUNT, SettingsCopy.SIGN_OUT, SettingsCopy.GROUP_APPEARANCE, SettingsCopy.GROUP_NOTIFICATIONS,
+            SettingsCopy.GROUP_ACCOUNT, SettingsCopy.SIGN_OUT, SettingsCopy.GROUP_APPEARANCE, SettingsCopy.GROUP_CHATS, RunStopCopy.SETTING_TITLE, SettingsCopy.GROUP_NOTIFICATIONS,
             ExtendedModeCopy.SETTING_TITLE, SettingsCopy.GROUP_UPDATES, "Version ${BuildConfig.VERSION_NAME}", CrashReportCopy.TITLE, SettingsCopy.DISCLAIMER,
         )
         val tops = order.map(::top)
@@ -133,7 +142,7 @@ class SettingsScreenTest {
         assertThat(top("Version $version")).isLessThan(top(title))
         assertThat(top(title)).isLessThan(top("Automatic updates"))
 
-        compose.onNodeWithTag(SettingsTags.WHATS_NEW_ROW).assertHasClickAction().performClick()
+        compose.onNodeWithTag(SettingsTags.WHATS_NEW_ROW).assertHasClickAction().performScrollTo().performClick()
         assertThat(opened).isEqualTo(1)
 
         // Opening the page reads the notes (the page does that); here the read is what the row follows.
@@ -156,6 +165,31 @@ class SettingsScreenTest {
         assertThat(top(SettingsCopy.GROUP_NOTIFICATIONS)).isLessThan(top(SettingsCopy.GROUP_UPDATES))
     }
 
+    private fun confirmStopSwitch() = compose.onNode(isToggleable() and hasAnyAncestor(hasTestTag(SettingsTags.CONFIRM_STOP)))
+
+    @Test
+    fun `Confirm before stopping reads on for an install upgraded from a build without it, and a tap turns it off`() {
+        // What an earlier build leaves behind: its own settings written, this one never.
+        runBlocking {
+            graph.prefs.setLiveNotifications(false)
+            graph.prefs.setOledBlack(true)
+        }
+        composeSettings(isDemo = false)
+
+        compose.onNodeWithText(RunStopCopy.SETTING_DETAIL).assertExists()
+        compose.waitUntil(10_000) { compose.onAllNodes(isOn() and hasAnyAncestor(hasTestTag(SettingsTags.CONFIRM_STOP))).fetchSemanticsNodes().isNotEmpty() }
+        confirmStopSwitch().assertIsOn()
+        // The earlier build's own values were read from the same file.
+        compose.onNode(isToggleable() and hasAnyAncestor(hasText("Live notifications"))).assertIsOff()
+
+        compose.onNodeWithTag(SettingsTags.CONFIRM_STOP).performClick()
+        compose.waitUntil(10_000) { compose.onAllNodes(isOff() and hasAnyAncestor(hasTestTag(SettingsTags.CONFIRM_STOP))).fetchSemanticsNodes().isNotEmpty() }
+        assertThat(runBlocking { graph.prefs.confirmStop.first() }).isFalse()
+        // A device preference: a sign-out leaves it as the user set it.
+        runBlocking { graph.prefs.clearSession() }
+        assertThat(runBlocking { graph.prefs.confirmStop.first() }).isFalse()
+    }
+
     @Test
     fun `the account row opens onto the key`() {
         composeSettings(isDemo = false)
@@ -169,7 +203,8 @@ class SettingsScreenTest {
     @Test
     fun `a long press on the version row opens the debug sheet where the exports still work, and a tap does not`() {
         composeSettings(isDemo = false)
-        val version = compose.onNodeWithTag(SettingsTags.VERSION_ROW)
+        // Below the fold on a phone: a touch lands only on a row that is on screen.
+        val version = compose.onNodeWithTag(SettingsTags.VERSION_ROW).performScrollTo()
 
         version.performClick()
         compose.waitForIdle()
