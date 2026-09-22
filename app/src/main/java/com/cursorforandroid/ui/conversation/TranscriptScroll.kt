@@ -146,6 +146,8 @@ internal class TranscriptScroll(val list: LazyListState, private val followingSt
     /** The item's index counted from the top, whichever order the list is in: what accessibility services are given. */
     fun topDownIndex(key: Any): Int = composedOrder?.index(key, following = false) ?: -1
 
+    val itemCount: Int get() = composedOrder?.size ?: 0
+
     suspend fun scrollToTopDown(index: Int) {
         val order = composedOrder ?: return
         list.scrollToItem(if (composedFollowing) order.size - 1 - index else index)
@@ -307,7 +309,12 @@ internal fun Modifier.readerScrolling(scroll: TranscriptScroll): Modifier {
         .semantics {
             verticalScrollAxisRange = axis
             indexForKey { key -> scroll.topDownIndex(key) }
-            scrollToIndex { index -> scope.launch { scroll.scrollToTopDown(index) }; true }
+            scrollToIndex { index ->
+                val count = scroll.itemCount
+                require(index in 0 until count) { "Can't scroll to index $index, it is out of bounds [0, $count)" }
+                scope.launch { scroll.scrollToTopDown(index) }
+                true
+            }
         }
         .overscroll(overscroll)
         .scrollable(screen, Orientation.Vertical, overscrollEffect = overscroll, reverseDirection = true)
