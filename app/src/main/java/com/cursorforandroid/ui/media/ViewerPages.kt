@@ -4,11 +4,15 @@ import android.view.TextureView
 import androidx.compose.animation.core.withInfiniteAnimationFrameMillis
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.pager.PagerState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.Icon
@@ -16,9 +20,11 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
@@ -26,12 +32,19 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.drawscope.CanvasDrawScope
+import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.graphics.vector.rememberVectorPainter
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -40,12 +53,14 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.toSize
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.compose.LifecycleResumeEffect
-import com.cursorforandroid.data.api.userMessage
 import com.cursorforandroid.data.media.MediaLoader
+import com.cursorforandroid.data.media.MediaProblem
+import com.cursorforandroid.domain.FileFormat
 import com.cursorforandroid.domain.MediaRef
 import com.cursorforandroid.ui.components.CursorIcons
 import com.cursorforandroid.ui.components.SpinnerRing
@@ -68,7 +83,8 @@ internal class PagePresentation(initial: ImageBitmap?) {
         private set
     /** The full-size decode has landed; a smaller offer no longer replaces it. */
     var loaded by mutableStateOf(false)
-    var error by mutableStateOf<String?>(null)
+    /** Why the page has nothing to show, in the reader's words; null while it loads or once it shows. */
+    var problem by mutableStateOf<MediaProblem?>(null)
     /** The rect the picture rests in, in the page's (and so the viewer's) coordinates. */
     var fitted by mutableStateOf(Rect.Zero)
     val zoom = ZoomState()
@@ -96,6 +112,9 @@ internal class PageEnvironment(
     val scope: CoroutineScope,
     val onTap: () -> Unit,
     val onDismiss: (velocityY: Float) -> Unit,
+    /** Hands the file of a page that cannot show it to the browser, or to another app, from the page's own row. */
+    val onOpenInBrowser: (url: String) -> Unit = {},
+    val onOpenElsewhere: (MediaRef, MediaEntry) -> Unit = { _, _ -> },
 ) {
     /** Whether [page] is anywhere in the pager's viewport, however little of it. */
     fun isVisible(page: Int): Boolean = pagerState.layoutInfo.visiblePagesInfo.any { it.index == page }
@@ -133,7 +152,9 @@ internal fun ImagePage(
         // mid-animation — on the page opening, or on a neighbour no one can see yet — for a difference no one sees
         // at that size, the thumbnail's own decode being bounded by the screen's short edge already. The decodes
         // are asked for only once the page has landed, and the pager's neighbours have the swipe's time to arrive.
-        snapshotFlow { state.phase }.first { it != MediaViewerState.Phase.Opening }
+        // A page opened from a row with no picture of its own (a file's name, a chip) has nothing to swap: its decode
+        // lands as soon as it can, and the transform carries it out of the row from that frame on.
+        if (presentation.bitmap != null || page != session.initialIndex) snapshotFlow { state.phase }.first { it != MediaViewerState.Phase.Opening }
         if (presentation.bitmap == null) {
             // A quick small decode to stand in until the full one lands; its failure is the full one's to report.
             try {
@@ -147,7 +168,7 @@ internal fun ImagePage(
             presentation.loaded = true
         } catch (t: Throwable) {
             if (t is CancellationException) throw t
-            if (presentation.bitmap == null) presentation.error = t.userMessage().takeIf { it.isNotBlank() } ?: "Couldn't load this image."
+            if (presentation.bitmap == null) presentation.problem = MediaLoader.problemOf(t)
         }
     }
     // The page on screen reports its zoom to the viewer's state, where the chrome and the tests read it. A page
@@ -199,13 +220,7 @@ internal fun ImagePage(
                         .testTag("viewer-image-$page"),
                 )
             }
-            presentation.error != null -> Text(
-                presentation.error!!,
-                style = CursorTheme.typography.base,
-                color = Color.White.copy(alpha = 0.75f),
-                textAlign = TextAlign.Center,
-                modifier = Modifier.padding(32.dp).testTag("viewer-error"),
-            )
+            presentation.problem != null -> PageProblem(presentation.problem!!, ref, entry, environment)
             else -> SpinnerRing(size = 20.dp, color = Color.White.copy(alpha = 0.7f))
         }
     }
@@ -246,53 +261,18 @@ internal fun VideoPage(
     viewport: IntSize,
     isCurrent: Boolean,
 ) {
-    val context = LocalContext.current
     val density = LocalDensity.current
     val ref = remember(entry.src, session.agentId) { MediaRef.parse(entry.src, session.agentId) }
-    val playerFactory = LocalVideoPlayerFactory.current
-    var url by remember(ref) { mutableStateOf<String?>(null) }
-    var urlError by remember(ref) { mutableStateOf<String?>(null) }
-
     LaunchedEffect(ref, viewport) {
         if (presentation.bitmap == null && viewport.width > 0) {
             val maxPx = maxOf(viewport.width, viewport.height)
             runCatching { environment.loader.videoPoster(ref, maxPx) }.getOrNull()?.frame?.let { presentation.offer(it.asImageBitmap()) }
         }
     }
-    LaunchedEffect(ref) {
-        try {
-            url = environment.loader.playbackUrl(ref)
-        } catch (t: Throwable) {
-            if (t is CancellationException) throw t
-            urlError = t.userMessage().takeIf { it.isNotBlank() } ?: "This video isn't available."
-        }
-    }
-    // The player is this page's while it is the one on screen; the first page of a tapped recording starts playing.
-    val autoplay = session.autoplay && page == session.initialIndex
-    DisposableEffect(url, isCurrent) {
-        val playbackUrl = url
-        if (playbackUrl == null || !isCurrent) return@DisposableEffect onDispose { }
-        val playback = VideoPlayback(playerFactory(context))
-        playback.load(playbackUrl, playWhenReady = autoplay && state.phase != MediaViewerState.Phase.Closing, muted = state.muted)
-        presentation.playback = playback
-        onDispose {
-            presentation.playback = null
-            playback.release()
-        }
-    }
+    val source = rememberPagePlayback(state, session, ref, page, presentation, environment, isCurrent)
+    val url = source.url
+    val urlProblem = source.problem
     val playback = presentation.playback
-    LaunchedEffect(playback, state.muted) { playback?.setMuted(state.muted) }
-    LaunchedEffect(playback, playback?.isPlaying) {
-        val live = playback ?: return@LaunchedEffect
-        // An infinite-animation frame wait: it runs while the recording plays, and a test's clock does not wait on it.
-        while (live.isPlaying) {
-            live.tick()
-            withInfiniteAnimationFrameMillis { }
-        }
-    }
-    LifecycleResumeEffect(playback) {
-        onPauseOrDispose { playback?.pause() }
-    }
 
     LaunchedEffect(isCurrent) {
         if (isCurrent) {
@@ -344,12 +324,9 @@ internal fun VideoPage(
             if (poster != null && playback?.firstFrameRendered != true) {
                 Image(poster, contentDescription = null, contentScale = ContentScale.Fit, modifier = Modifier.fillMaxSize().testTag("viewer-video-poster"))
             }
-            val message = playback?.error ?: urlError
+            val problem = playback?.error?.let { MediaProblem.Failed(it, retryable = false) } ?: urlProblem
             when {
-                message != null -> Column(Modifier.align(Alignment.Center).padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                    Icon(CursorIcons.Warning, null, tint = Color.White.copy(alpha = 0.75f), modifier = Modifier.size(18.dp))
-                    Text(message, style = CursorTheme.typography.base, color = Color.White.copy(alpha = 0.8f), textAlign = TextAlign.Center, modifier = Modifier.padding(top = 8.dp).testTag("viewer-error"))
-                }
+                problem != null -> PageProblem(problem, ref, entry, environment, Modifier.align(Alignment.Center))
                 playback == null && url == null -> SpinnerRing(size = 20.dp, color = Color.White.copy(alpha = 0.7f), modifier = Modifier.align(Alignment.Center))
                 playback != null && !playback.isPlaying && !playback.isBuffering && state.phase == MediaViewerState.Phase.Open -> {
                     // Paused, not started, or ended: the play disc in the middle, the poster card's own control scaled up.
@@ -371,3 +348,235 @@ internal fun VideoPage(
         }
     }
 }
+
+/** Where a playable page's source stands: the URL once resolved, or why it cannot be had. */
+@Stable
+internal class PageSource {
+    var url by mutableStateOf<String?>(null)
+    var problem by mutableStateOf<MediaProblem?>(null)
+}
+
+/**
+ * The player of a recording's or a sound's page: its URL resolved once (never an expired one), a player that exists
+ * only while this is the page on screen — a swipe away releases it, a swipe back prepares it again — started on
+ * the page a tap opened, pausing whenever the screen does, sampled once a frame while it plays, and following the
+ * viewer's mute. What it plays is on [PagePresentation.playback]; the source's state is returned.
+ */
+@Composable
+internal fun rememberPagePlayback(
+    state: MediaViewerState,
+    session: MediaViewerState.Session,
+    ref: MediaRef,
+    page: Int,
+    presentation: PagePresentation,
+    environment: PageEnvironment,
+    isCurrent: Boolean,
+): PageSource {
+    val context = LocalContext.current
+    val playerFactory = LocalVideoPlayerFactory.current
+    val source = remember(ref) { PageSource() }
+    LaunchedEffect(ref) {
+        try {
+            source.url = environment.loader.playbackUrl(ref)
+        } catch (t: Throwable) {
+            if (t is CancellationException) throw t
+            source.problem = MediaLoader.problemOf(t)
+        }
+    }
+    val autoplay = session.autoplay && page == session.initialIndex
+    DisposableEffect(source.url, isCurrent) {
+        val playbackUrl = source.url
+        if (playbackUrl == null || !isCurrent) return@DisposableEffect onDispose { }
+        val playback = VideoPlayback(playerFactory(context))
+        playback.load(playbackUrl, playWhenReady = autoplay && state.phase != MediaViewerState.Phase.Closing, muted = state.muted)
+        presentation.playback = playback
+        onDispose {
+            presentation.playback = null
+            playback.release()
+        }
+    }
+    val playback = presentation.playback
+    LaunchedEffect(playback, state.muted) { playback?.setMuted(state.muted) }
+    LaunchedEffect(playback, playback?.isPlaying) {
+        val live = playback ?: return@LaunchedEffect
+        // An infinite-animation frame wait: it runs while the file plays, and a test's clock does not wait on it.
+        while (live.isPlaying) {
+            live.tick()
+            withInfiniteAnimationFrameMillis { }
+        }
+    }
+    LifecycleResumeEffect(playback) {
+        onPauseOrDispose { playback?.pause() }
+    }
+    return source
+}
+
+/**
+ * A sound: its card — the same picture the transform carries out of the row or chip it was opened from, so the
+ * sound opens like a figure does — with the play disc over it while it is paused, and the controls (play, the
+ * scrubber, elapsed and total, speed, mute) in the chrome under it. Dismissed like any page: a drag down, back,
+ * the X. No background playback: leaving the page or the screen pauses it.
+ */
+@Composable
+internal fun AudioPage(
+    state: MediaViewerState,
+    session: MediaViewerState.Session,
+    entry: MediaEntry,
+    page: Int,
+    presentation: PagePresentation,
+    environment: PageEnvironment,
+    viewport: IntSize,
+    isCurrent: Boolean,
+) {
+    val density = LocalDensity.current
+    val ref = remember(entry.src, session.agentId) { MediaRef.parse(entry.src, session.agentId) }
+    val maxCardPx = with(density) { AudioCardMax.roundToPx() }
+    val cardPx = (minOf(viewport.width, viewport.height) * AudioCardShare).toInt().coerceIn(1, maxCardPx.coerceAtLeast(1))
+    val artwork = rememberAudioArtwork(cardPx)
+    // Offered before the frame draws: the open transform carries this picture from its first frame.
+    SideEffect { presentation.offer(artwork) }
+    val source = rememberPagePlayback(state, session, ref, page, presentation, environment, isCurrent)
+    val playback = presentation.playback
+    LaunchedEffect(isCurrent) {
+        if (isCurrent) {
+            state.zoomScale = 1f
+            state.zoomPan = Offset.Zero
+            snapshotFlow { presentation.imageSize }.collect { state.currentDecodeSize = it }
+        }
+    }
+    val fitted = ViewerGeometry.fitted(viewport.toSize(), artwork.width, artwork.height).let { box ->
+        // No bigger than the card itself: a sound is a card, not a picture to enlarge to the screen.
+        ViewerGeometry.rectAround(box.center, minOf(box.width, artwork.width.toFloat()), minOf(box.height, artwork.height.toFloat()))
+    }
+    LaunchedEffect(fitted) {
+        presentation.fitted = fitted
+        if (isCurrent) environment.dismiss.viewport = viewport.toSize()
+    }
+    val enabled = rememberUpdatedState(isCurrent && state.phase == MediaViewerState.Phase.Open)
+    val gestures = Modifier.viewerGestures(
+        zoom = null,
+        dismiss = environment.dismiss,
+        handover = null,
+        scope = environment.scope,
+        enabled = enabled,
+        onTap = environment.onTap,
+        onDismiss = environment.onDismiss,
+    )
+    val problem = playback?.error?.let { MediaProblem.Failed(it, retryable = false) } ?: source.problem
+    Box(
+        Modifier
+            .fillMaxSize()
+            .clipToBounds()
+            .then(gestures)
+            .semantics { contentDescription = "Audio: ${entry.title}" }
+            .testTag("viewer-page-$page"),
+        contentAlignment = Alignment.Center,
+    ) {
+        Box(
+            Modifier
+                .size(with(density) { fitted.width.toDp() }, with(density) { fitted.height.toDp() })
+                .pageTransform(state, page, zoom = null, dismiss = environment.dismiss, isCurrent = isCurrent),
+            contentAlignment = Alignment.Center,
+        ) {
+            Image(artwork, contentDescription = null, contentScale = ContentScale.Fit, modifier = Modifier.fillMaxSize().testTag("viewer-audio-card"))
+            // Under the note: the disc while paused, a ring while it loads.
+            val under = Modifier.align(Alignment.BottomCenter).padding(bottom = with(density) { (fitted.height * 0.1f).toDp() })
+            when {
+                problem != null -> Unit
+                playback == null -> SpinnerRing(size = 20.dp, color = Color.White.copy(alpha = 0.7f), modifier = under.padding(bottom = 22.dp))
+                playback.isBuffering -> SpinnerRing(size = 24.dp, color = Color.White.copy(alpha = 0.8f), modifier = under.padding(bottom = 20.dp))
+                !playback.isPlaying && state.phase == MediaViewerState.Phase.Open -> PlayDisc(playback, under)
+            }
+        }
+        if (problem != null) {
+            PageProblem(problem, ref, entry, environment, Modifier.align(Alignment.BottomCenter).padding(bottom = 140.dp))
+        }
+    }
+}
+
+/** The play disc in the middle of a paused page: the poster card's own control, scaled up. */
+@Composable
+private fun PlayDisc(playback: VideoPlayback, modifier: Modifier = Modifier) {
+    Box(
+        modifier
+            .size(64.dp)
+            .background(Color.Black.copy(alpha = 0.45f), CircleShape)
+            .pressable({ playback.togglePlay() }, CircleShape)
+            .semantics { contentDescription = if (playback.isEnded) "Replay" else "Play" }
+            .testTag("viewer-play"),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(if (playback.isEnded) CursorIcons.Refresh else CursorIcons.Play, null, tint = Color.White, modifier = Modifier.size(30.dp).padding(start = if (playback.isEnded) 0.dp else 3.dp))
+    }
+}
+
+/**
+ * The picture a sound stands as: a square card on the elevated grey, a faint disc and the note glyph in the middle,
+ * drawn once per size. The same pixels are the page and the transform's, so the card that lands is the one that flew.
+ */
+@Composable
+private fun rememberAudioArtwork(sizePx: Int): ImageBitmap {
+    val density = LocalDensity.current
+    val glyph = rememberVectorPainter(CursorIcons.Music)
+    return remember(sizePx, glyph, density) {
+        val side = sizePx.coerceAtLeast(1)
+        val bitmap = ImageBitmap(side, side)
+        CanvasDrawScope().draw(density, LayoutDirection.Ltr, androidx.compose.ui.graphics.Canvas(bitmap), Size(side.toFloat(), side.toFloat())) {
+            drawRoundRect(AudioCardFill, cornerRadius = CornerRadius(side * 0.08f))
+            val glyphCenter = androidx.compose.ui.geometry.Offset(side / 2f, side * AudioGlyphAt)
+            drawCircle(Color.White.copy(alpha = 0.05f), radius = side * 0.22f, center = glyphCenter)
+            val glyphSize = side * 0.22f
+            translate(left = glyphCenter.x - glyphSize / 2f, top = glyphCenter.y - glyphSize / 2f) {
+                with(glyph) { draw(Size(glyphSize, glyphSize), alpha = 0.9f, colorFilter = ColorFilter.tint(Color.White)) }
+            }
+        }
+        bitmap
+    }
+}
+
+/**
+ * Why a page has nothing to show — in the reader's words, never a decoder's — and what can still be done with the
+ * file: the browser, where there is a page for it, or another app on the device.
+ */
+@Composable
+internal fun PageProblem(problem: MediaProblem, ref: MediaRef, entry: MediaEntry, environment: PageEnvironment, modifier: Modifier = Modifier) {
+    val browserUrl by produceState<String?>(null, ref) { value = environment.loader.browserUrl(ref) }
+    val elsewhere = problem.openable && problem !is MediaProblem.NotReadable && problem !is MediaProblem.Failed &&
+        !(problem is MediaProblem.NotMedia && problem.actual == FileFormat.HTML) && problem !is MediaProblem.LfsPointer
+    Column(modifier.padding(horizontal = 32.dp).testTag("viewer-error"), horizontalAlignment = Alignment.CenterHorizontally) {
+        Icon(CursorIcons.Warning, null, tint = Color.White.copy(alpha = 0.75f), modifier = Modifier.size(18.dp))
+        Text(problem.title, style = CursorTheme.typography.base, color = Color.White.copy(alpha = 0.85f), textAlign = TextAlign.Center, modifier = Modifier.padding(top = 8.dp).testTag("viewer-error-title"))
+        problem.detail?.let { Text(it, style = CursorTheme.typography.small, color = Color.White.copy(alpha = 0.6f), textAlign = TextAlign.Center, modifier = Modifier.padding(top = 4.dp)) }
+        val url = browserUrl
+        if (url != null || elsewhere) {
+            Row(Modifier.padding(top = 14.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (url != null) ViewerPill("Open in browser", CursorIcons.ExternalLink, "viewer-open-browser") { environment.onOpenInBrowser(url) }
+                if (elsewhere) ViewerPill("Open with\u2026", CursorIcons.Share, "viewer-open-elsewhere") { environment.onOpenElsewhere(ref, entry) }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ViewerPill(label: String, icon: ImageVector, tag: String, onClick: () -> Unit) {
+    val shape = CursorTheme.shapes.full
+    Row(
+        Modifier
+            .background(Color.White.copy(alpha = 0.14f), shape)
+            .pressable(onClick, shape)
+            .padding(horizontal = 12.dp, vertical = 7.dp)
+            .testTag(tag),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(icon, null, tint = Color.White, modifier = Modifier.size(13.dp))
+        Spacer(Modifier.width(6.dp))
+        Text(label, style = CursorTheme.typography.small, color = Color.White)
+    }
+}
+
+/** Where the note sits on the card, as a share of its height: above the middle, the play disc below it. */
+private const val AudioGlyphAt = 0.4f
+/** A sound's card: this share of the viewport's short edge, and never more than [AudioCardMax]. */
+private const val AudioCardShare = 0.62f
+private val AudioCardMax = 320.dp
+private val AudioCardFill = Color(0xFF262626)

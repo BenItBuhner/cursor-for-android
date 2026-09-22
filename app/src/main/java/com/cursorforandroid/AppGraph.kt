@@ -72,6 +72,7 @@ import com.cursorforandroid.data.local.PreferencesStore
 import com.cursorforandroid.data.local.SecureKeyStore
 import com.cursorforandroid.data.media.MediaLoader
 import com.cursorforandroid.data.repo.AgentRepository
+import com.cursorforandroid.data.repo.AgentFileRepository
 import com.cursorforandroid.data.repo.ArtifactRepository
 import com.cursorforandroid.data.repo.AttachmentUploads
 import com.cursorforandroid.data.repo.CatalogRepository
@@ -355,6 +356,16 @@ class AppGraph(
     /** The agent's workspace tree, its files and its branch diff, behind the `workspaceFiles` and `diffDetails` capabilities. */
     private val lazyWorkspace = lazy { WorkspaceRepository(files = agentFiles, diffs = agentFiles, capabilities = capabilities, isDemo = { session.isDemo }) }
     val workspace: WorkspaceRepository get() = lazyWorkspace.value
+
+    /** A file by the path the agent names it with: its workspace (Extended), else its repository at its branch. */
+    private val lazyAgentFileReads = lazy {
+        AgentFileRepository(
+            workspace = workspace,
+            repository = { repoUrl, ref, path -> reviews.contents(repoUrl, ref, path) },
+            agent = { id -> agents.agent(id) },
+        )
+    }
+    val agentFileReads: AgentFileRepository get() = lazyAgentFileReads.value
 
     /**
      * The panel's Remote section: a Remote Control chat's machine from the documented fleet endpoint in either mode,
@@ -728,7 +739,7 @@ class AppGraph(
     }
     val storeFiles: StoreFileRepository get() = lazyStoreFiles.value
 
-    private val lazyMedia = lazy { MediaLoader(app, lazyMediaClient.value, artifacts) { storeFiles } }
+    private val lazyMedia = lazy { MediaLoader(app, lazyMediaClient.value, artifacts, stores = { storeFiles }, files = { agentFileReads }) }
     val media: MediaLoader get() = lazyMedia.value
 
     private val lazyRunMonitor = lazy {

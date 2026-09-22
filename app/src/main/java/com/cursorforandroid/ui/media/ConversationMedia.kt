@@ -4,6 +4,8 @@ import com.cursorforandroid.domain.ActivityGroup
 import com.cursorforandroid.domain.Artifact
 import com.cursorforandroid.domain.ArtifactPaths
 import com.cursorforandroid.domain.AssistantMessage
+import com.cursorforandroid.domain.FileFormat
+import com.cursorforandroid.domain.MediaKind
 import com.cursorforandroid.domain.MessageAttachment
 import com.cursorforandroid.domain.PromptFileKind
 import com.cursorforandroid.domain.TimelineItem
@@ -29,12 +31,32 @@ data class MediaEntry(
     /** A recording's length, when the transcript already knows it; the player reports it otherwise. */
     val durationMs: Long? = null,
 ) {
-    enum class Kind { Image, Video }
+    enum class Kind { Image, Video, Audio }
 
     val isVideo: Boolean get() = kind == Kind.Video
+    val isAudio: Boolean get() = kind == Kind.Audio
+    /** A recording or a sound: the page has a player, the chrome its controls. */
+    val isPlayable: Boolean get() = kind == Kind.Video || kind == Kind.Audio
+
+    /** "Image", "Video" or "Audio", for the caption's second line. */
+    val kindLabel: String get() = when (kind) {
+        Kind.Image -> "Image"
+        Kind.Video -> "Video"
+        Kind.Audio -> "Audio"
+    }
 
     /** What the viewer titles the page with: the caption if there is one, else the file's name. */
     val title: String get() = caption?.takeIf { it.isNotBlank() } ?: fileName
+
+    companion object {
+        /** The viewer's kind for a file of [format], or null when the viewer has no page for it. */
+        fun kindOf(format: FileFormat?): Kind? = when (format?.kind) {
+            MediaKind.Image -> Kind.Image
+            MediaKind.Video -> Kind.Video
+            MediaKind.Audio -> Kind.Audio
+            else -> null
+        }
+    }
 }
 
 /**
@@ -68,6 +90,7 @@ object ConversationMedia {
             when (artifact.kind) {
                 Artifact.Kind.Image -> collector.add(MediaEntry(artifact.vmPath, MediaEntry.Kind.Image, fileName = artifact.name))
                 Artifact.Kind.Video -> collector.add(MediaEntry(artifact.vmPath, MediaEntry.Kind.Video, fileName = artifact.name))
+                Artifact.Kind.Audio -> collector.add(MediaEntry(artifact.vmPath, MediaEntry.Kind.Audio, fileName = artifact.name))
                 else -> Unit
             }
         }
@@ -89,6 +112,7 @@ object ConversationMedia {
                 !attachment.isFile -> add(MediaEntry(src, MediaEntry.Kind.Image, mimeType = attachment.mimeType, fileName = ArtifactPaths.fileName(attachment.path)))
                 attachment.kind == PromptFileKind.Image -> add(MediaEntry(src, MediaEntry.Kind.Image, fileName = attachment.name ?: ArtifactPaths.fileName(attachment.path), mimeType = attachment.mimeType))
                 attachment.kind == PromptFileKind.Video -> add(MediaEntry(src, MediaEntry.Kind.Video, fileName = attachment.name ?: ArtifactPaths.fileName(attachment.path), mimeType = attachment.mimeType))
+                attachment.kind == PromptFileKind.Audio -> add(MediaEntry(src, MediaEntry.Kind.Audio, fileName = attachment.name ?: ArtifactPaths.fileName(attachment.path), mimeType = attachment.mimeType))
             }
         }
 
@@ -102,7 +126,7 @@ object ConversationMedia {
             blocks.forEach { block ->
                 when (block) {
                     is MdBlock.Image -> add(MediaEntry(block.src, MediaEntry.Kind.Image, caption = block.alt))
-                    is MdBlock.Video -> add(MediaEntry(block.src, MediaEntry.Kind.Video))
+                    is MdBlock.Video -> add(MediaEntry(block.src, if (FileFormat.ofName(block.src)?.isAudio == true) MediaEntry.Kind.Audio else MediaEntry.Kind.Video))
                     is MdBlock.Quote -> blocks(block.blocks)
                     is MdBlock.Bullets -> block.items.forEach { blocks(it.blocks) }
                     else -> Unit
@@ -112,5 +136,5 @@ object ConversationMedia {
     }
 
     /** A reply with none of these has no figure to find; the parse is skipped for it. */
-    private val MEDIA_HINT = Regex("""<img\b|<video\b|!\[""", RegexOption.IGNORE_CASE)
+    private val MEDIA_HINT = Regex("""<img\b|<video\b|<audio\b|!\[""", RegexOption.IGNORE_CASE)
 }

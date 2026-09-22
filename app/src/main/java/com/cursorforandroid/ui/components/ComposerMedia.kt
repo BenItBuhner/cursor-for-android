@@ -88,6 +88,9 @@ class ComposerMediaItem(
         fun of(file: PendingFile, upload: FileUploadState?): ComposerMediaItem =
             ComposerMediaItem(file.id, file.file.bytes, file.file.mimeType, name = file.file.name, thumbnail = file.thumbnail, isVideo = file.isVideo, durationMs = file.durationMs, upload = upload)
     }
+
+    /** A sound picked as a file: a chip, opening the viewer's player. */
+    val isAudio: Boolean get() = !isVideo && mimeType.startsWith("audio/", ignoreCase = true)
 }
 
 /**
@@ -330,7 +333,7 @@ internal fun rememberOpenComposerMedia(
                 runCatching { previews.ensure(item.id, item.mimeType, item.bytes) }
                 keyboard?.hide()
                 focus.clearFocus(force = true)
-                viewer.open(agentId, entries, src, slot = slot, seen = item.thumbnail, fallback = item.entry(previews), autoplay = item.isVideo)
+                viewer.open(agentId, entries, src, slot = slot, seen = item.thumbnail, fallback = item.entry(previews), autoplay = item.isVideo || item.isAudio)
             }
         }
     }
@@ -339,7 +342,11 @@ internal fun rememberOpenComposerMedia(
 /** The viewer's page for one of the composer's media: titled by the file's name, or "Pasted image" for a picture that has none. */
 internal fun ComposerMediaItem.entry(previews: ComposerMediaPreviews): MediaEntry = MediaEntry(
     src = previews.src(id, mimeType),
-    kind = if (isVideo) MediaEntry.Kind.Video else MediaEntry.Kind.Image,
+    kind = when {
+        isVideo -> MediaEntry.Kind.Video
+        isAudio -> MediaEntry.Kind.Audio
+        else -> MediaEntry.Kind.Image
+    },
     caption = if (name == null) PASTED_IMAGE else null,
     fileName = name ?: PASTED_IMAGE,
     mimeType = mimeType,

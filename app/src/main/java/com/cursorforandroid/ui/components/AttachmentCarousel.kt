@@ -18,6 +18,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.cursorforandroid.data.media.MediaLoader
+import com.cursorforandroid.domain.PromptFileKind
 import java.io.File
 
 /**
@@ -104,7 +105,16 @@ fun ComposerAttachments(
             )
         }
         items(files.filterNot { it.isMedia }, key = { "file:${it.id}" }) { file ->
-            FileChip(file, upload = uploads[file.id], onRemove = { onRemoveFile(file) }, onRetry = onRetryFile?.let { retry -> { retry(file) } })
+            // A sound stays a chip, and opens the viewer's player out of it.
+            val sound = remember(file) { if (file.file.kind == PromptFileKind.Audio) ComposerMediaItem.of(file, null) else null }
+            FileChip(
+                file,
+                upload = uploads[file.id],
+                onRemove = { onRemoveFile(file) },
+                onRetry = onRetryFile?.let { retry -> { retry(file) } },
+                onOpen = sound?.let { item -> { slot -> open(item, slot) } },
+                openSrc = sound?.let { previews.src(it.id, it.mimeType) },
+            )
         }
     }
 }

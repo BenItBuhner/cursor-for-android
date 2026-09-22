@@ -6,13 +6,18 @@ import androidx.lifecycle.viewModelScope
 import com.cursorforandroid.AppGraph
 import com.cursorforandroid.data.api.WorkerLaunch
 import com.cursorforandroid.data.api.userMessage
+import com.cursorforandroid.data.media.MediaLoader
 import com.cursorforandroid.data.repo.ContextState
 import com.cursorforandroid.data.repo.ProjectViewState
 import com.cursorforandroid.domain.Agent
 import com.cursorforandroid.domain.AgentScope
 import com.cursorforandroid.domain.ContextEntry
+import com.cursorforandroid.domain.FileFormat
+import com.cursorforandroid.domain.MediaKind
+import com.cursorforandroid.domain.MediaRef
 import com.cursorforandroid.domain.ProjectAppearance
 import com.cursorforandroid.util.AppClock
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -21,8 +26,11 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
-/** A file of the Project's shared context, opened in the viewer. */
-data class OpenContextFile(val entry: ContextEntry, val text: String)
+/**
+ * A file of the Project's shared context, opened in the sheet: its text, or — for a document that is not text, a PDF
+ * or an archive — the copy of its bytes kept on the device ([keptPath]), which the sheet hands to another app.
+ */
+data class OpenContextFile(val entry: ContextEntry, val text: String, val keptPath: String? = null, val format: FileFormat? = null)
 
 /**
  * One Project's view: what the repository derives from the agent list and the account, and the coordinator's
@@ -105,9 +113,18 @@ class ProjectViewModel(private val graph: AppGraph, val projectId: String) : Vie
 
     fun openContextFile(entry: ContextEntry) = viewModelScope.launch {
         busy.value = true
-        graph.projects.readContextFile(projectId, entry)
-            .onSuccess { openFile.value = OpenContextFile(entry, it) }
-            .onFailure { message.value = it.userMessage() }
+        val format = FileFormat.ofName(entry.name)
+        if (format != null && format.kind != MediaKind.Text) {
+            // Bytes, never the text read (`ReadAgentStoreFile` carries a string): the presigned read the store's own mount makes.
+            val ref = MediaRef.Store(projectId, entry.relativePath.trimStart('/'))
+            runCatching { graph.media.keep(graph.storeFiles.readBytes(ref), entry.name) }
+                .onSuccess { openFile.value = OpenContextFile(entry, "", keptPath = it.removePrefix("file://"), format = format) }
+                .onFailure { if (it is CancellationException) throw it else message.value = MediaLoader.problemOf(it).title }
+        } else {
+            graph.projects.readContextFile(projectId, entry)
+                .onSuccess { openFile.value = OpenContextFile(entry, it) }
+                .onFailure { message.value = it.userMessage() }
+        }
         busy.value = false
     }
 

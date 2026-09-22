@@ -54,6 +54,7 @@ import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.paneTitle
@@ -260,7 +261,8 @@ private fun MediaViewerOverlay(state: MediaViewerState, session: MediaViewerStat
     val rtl = LocalLayoutDirection.current == LayoutDirection.Rtl
     val minFlingPx = with(LocalDensity.current) { PageFlingVelocity.toPx() }
     val handover = remember(pagerState, rtl, minFlingPx) { PagerHandover(pagerState, reverse = !rtl, minFlingVelocityPx = minFlingPx) }
-    val environment = remember(loader, dismiss, scope, pagerState, handover) {
+    val uriHandler = LocalUriHandler.current
+    val environment = remember(loader, dismiss, scope, pagerState, handover, actions, uriHandler) {
         PageEnvironment(
             loader = loader,
             dismiss = dismiss,
@@ -272,10 +274,12 @@ private fun MediaViewerOverlay(state: MediaViewerState, session: MediaViewerStat
                 interactions++
             },
             onDismiss = { state.close() },
+            onOpenInBrowser = { url -> if (runCatching { uriHandler.openUri(url) }.isFailure) notice = "Nothing on this device opens links." },
+            onOpenElsewhere = { ref, entry -> scope.launch { actions.openWith(ref, entry).onFailure { notice = MediaLoader.problemOf(it).title } } },
         )
     }
     val current = state.current
-    val currentPlayback = currentPresentation()?.playback.takeIf { current?.isVideo == true }
+    val currentPlayback = currentPresentation()?.playback.takeIf { current?.isPlayable == true }
 
     Box(
         Modifier
@@ -315,6 +319,7 @@ private fun MediaViewerOverlay(state: MediaViewerState, session: MediaViewerStat
             when (entry.kind) {
                 MediaEntry.Kind.Image -> ImagePage(state, session, entry, page, presentation, environment, viewport, isCurrent)
                 MediaEntry.Kind.Video -> VideoPage(state, session, entry, page, presentation, environment, viewport, isCurrent)
+                MediaEntry.Kind.Audio -> AudioPage(state, session, entry, page, presentation, environment, viewport, isCurrent)
             }
         }
         // The chrome: composed on the open's first frame, so that its arrival costs the landing frame nothing, but
@@ -335,7 +340,7 @@ private fun MediaViewerOverlay(state: MediaViewerState, session: MediaViewerStat
                     val ref = remember(current.src, session.agentId) { MediaRef.parse(current.src, session.agentId) }
                     fun run(block: suspend () -> Result<String?>) {
                         interactions++
-                        scope.launch { block().fold(onSuccess = { it?.let { message -> notice = message } }, onFailure = { notice = it.message ?: "That didn't work." }) }
+                        scope.launch { block().fold(onSuccess = { it?.let { message -> notice = message } }, onFailure = { notice = MediaLoader.problemOf(it).title }) }
                     }
                     ViewerTopBar(
                         index = state.currentIndex,
@@ -344,7 +349,7 @@ private fun MediaViewerOverlay(state: MediaViewerState, session: MediaViewerStat
                         onClose = { state.close() },
                         onShare = { run { actions.share(ref, current).map { null } } },
                         onSave = if (MediaActions.canSave) ({ run { actions.save(ref, current).map { it } } }) else null,
-                        onOpenWith = if (current.isVideo) ({ run { actions.openWith(ref, current).map { null } } }) else null,
+                        onOpenWith = if (current.isPlayable) ({ run { actions.openWith(ref, current).map { null } } }) else null,
                         modifier = Modifier.align(Alignment.TopCenter),
                     )
                     ViewerBottomBar(

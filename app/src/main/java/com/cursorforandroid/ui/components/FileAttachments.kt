@@ -39,6 +39,9 @@ import com.cursorforandroid.data.repo.AttachmentUploads
 import com.cursorforandroid.domain.PromptFile
 import com.cursorforandroid.domain.PromptFileKind
 import com.cursorforandroid.domain.PromptImage
+import com.cursorforandroid.ui.media.ThumbnailSlot
+import com.cursorforandroid.ui.media.rememberThumbnailSlot
+import com.cursorforandroid.ui.media.thumbnailSlot
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.util.ioThenMain
 import kotlinx.coroutines.launch
@@ -329,10 +332,19 @@ fun PromptFileKind.icon(): ImageVector = when (this) {
  * file at rest; a file that did not get up shows a warning and a retry of the upload.
  */
 @Composable
-internal fun FileChip(file: PendingFile, upload: FileUploadState?, onRemove: () -> Unit, onRetry: (() -> Unit)?) {
+internal fun FileChip(
+    file: PendingFile,
+    upload: FileUploadState?,
+    onRemove: () -> Unit,
+    onRetry: (() -> Unit)?,
+    /** A sound: a tap on the chip opens the media viewer on it, out of the chip; [openSrc] is the reference it opens under. */
+    onOpen: ((ThumbnailSlot) -> Unit)? = null,
+    openSrc: String? = null,
+) {
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
     val kind = file.file.kind
+    val slot = openSrc?.let { rememberThumbnailSlot(it, CursorTheme.shapes.lg, crop = true) }
     val size = PromptFile.formatSize(file.file.sizeBytes.toLong())
     // At rest — nothing known of an upload, or one that is done — the chip is the file: glyph or thumbnail, kind, size.
     val atRest = upload == null || upload.done
@@ -344,8 +356,10 @@ internal fun FileChip(file: PendingFile, upload: FileUploadState?, onRemove: () 
     }
     Row(
         Modifier
+            .then(if (slot != null) Modifier.thumbnailSlot(slot) else Modifier)
             .widthIn(max = ChipMaxWidth)
             .cursorSurface(colors.fill, colors.stroke, CursorTheme.shapes.lg)
+            .then(if (onOpen != null && slot != null) Modifier.pressable({ onOpen(slot) }, CursorTheme.shapes.lg) else Modifier)
             .heightIn(min = ChipHeight)
             .padding(start = 8.dp, end = 4.dp)
             .testTag("file-chip")

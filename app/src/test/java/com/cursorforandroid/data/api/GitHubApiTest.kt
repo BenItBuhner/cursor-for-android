@@ -23,11 +23,36 @@ class GitHubApiTest {
     @Before
     fun setUp() {
         server.start()
-        gitHub = GitHubApi(OkHttpClient(), baseUrl = server.url("/").toString(), now = { now })
+        gitHub = GitHubApi(OkHttpClient(), baseUrl = server.url("/").toString(), now = { now }, mediaBaseUrl = server.url("/media/").toString())
     }
 
     @After
     fun tearDown() = server.shutdown()
+
+    @Test
+    fun `a file over GitHub's inline limit is read from its download URL`() = runBlocking<Unit> {
+        val raw = server.url("/raw/acme/app/cursor/shots/screenshots/big.png").toString()
+        server.enqueue(MockResponse().setBody("""{"type":"file","name":"big.png","path":"screenshots/big.png","size":1500000,"content":"","encoding":"none","download_url":"$raw"}"""))
+        val png = byteArrayOf(0x89.toByte(), 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A) + ByteArray(64)
+        server.enqueue(MockResponse().setBody(okio.Buffer().write(png)))
+        val contents = gitHub.contents(GitHubRepo("acme", "app"), "screenshots/big.png", "cursor/shots") as com.cursorforandroid.domain.RepoContents.File
+        assertThat(contents.file.bytes).isEqualTo(png)
+        server.takeRequest()
+        assertThat(server.takeRequest().path).isEqualTo("/raw/acme/app/cursor/shots/screenshots/big.png")
+    }
+
+    @Test
+    fun `a file kept with Git LFS is read from GitHub's media host, its branch's slashes kept`() = runBlocking<Unit> {
+        val pointer = "version https://git-lfs.github.com/spec/v1\noid sha256:abc\nsize 1200\n"
+        val encoded = java.util.Base64.getEncoder().encodeToString(pointer.toByteArray())
+        server.enqueue(MockResponse().setBody("""{"type":"file","name":"shot.png","path":"screenshots/shot.png","size":${pointer.length},"content":"$encoded","encoding":"base64"}"""))
+        val png = byteArrayOf(0x89.toByte(), 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A) + ByteArray(32)
+        server.enqueue(MockResponse().setBody(okio.Buffer().write(png)))
+        val contents = gitHub.contents(GitHubRepo("acme", "app"), "screenshots/shot.png", "cursor/shots") as com.cursorforandroid.domain.RepoContents.File
+        assertThat(contents.file.bytes).isEqualTo(png)
+        server.takeRequest()
+        assertThat(server.takeRequest().path).isEqualTo("/media/acme/app/cursor/shots/screenshots/shot.png")
+    }
 
     @Test
     fun `repository and pull request URLs are recognised in the forms the API and git use, and nothing else`() {

@@ -50,6 +50,7 @@ import com.cursorforandroid.domain.TokenUsage
 import com.cursorforandroid.domain.ToolNames
 import com.cursorforandroid.domain.ToolPayload
 import com.cursorforandroid.domain.TranscriptContent
+import com.cursorforandroid.ui.components.AudioChip
 import com.cursorforandroid.ui.components.CursorButton
 import com.cursorforandroid.ui.components.CursorIcons
 import com.cursorforandroid.ui.components.ImageBlock
@@ -668,6 +669,7 @@ internal fun mediaTiles(state: PanelState): List<MediaTile> {
         when (artifact.kind) {
             Artifact.Kind.Image -> tiles += MediaTile.Image(artifact.vmPath, artifact.name, "Artifact")
             Artifact.Kind.Video -> tiles += MediaTile.Video(artifact.vmPath, artifact.name, "Artifact")
+            Artifact.Kind.Audio -> tiles += MediaTile.Audio(artifact.vmPath, artifact.name, "Artifact")
             else -> Unit
         }
     }
@@ -680,7 +682,7 @@ internal fun mediaTiles(state: PanelState): List<MediaTile> {
 
 /** The artifacts that are not pictures or recordings — notes, logs, anything else the agent published — listed under the gallery. */
 internal fun artifactFiles(state: PanelState): List<Artifact> =
-    state.artifacts.valueOrNull.orEmpty().filter { it.kind != Artifact.Kind.Image && it.kind != Artifact.Kind.Video }
+    state.artifacts.valueOrNull.orEmpty().filter { it.kind != Artifact.Kind.Image && it.kind != Artifact.Kind.Video && it.kind != Artifact.Kind.Audio }
 
 /** How tall a gallery tile may be: a portrait screenshot is shrunk to it rather than taking the panel over. */
 private val MediaTileHeight = 180.dp
@@ -691,6 +693,7 @@ internal sealed interface MediaTile {
     val kind: String
     data class Image(override val src: String, override val caption: String, override val kind: String) : MediaTile
     data class Video(override val src: String, override val caption: String, override val kind: String) : MediaTile
+    data class Audio(override val src: String, override val caption: String, override val kind: String) : MediaTile
 }
 
 /**
@@ -715,6 +718,7 @@ internal fun ArtifactsSection(state: PanelState, actions: PanelActions) {
                             when (tile) {
                                 is MediaTile.Image -> ImageBlock(tile.src, alt = tile.caption, heightCap = MediaTileHeight)
                                 is MediaTile.Video -> VideoBlock(tile.src, poster = null, heightCap = MediaTileHeight)
+                                is MediaTile.Audio -> AudioChip(tile.src, tile.caption, subtitle = null, modifier = Modifier.fillMaxWidth())
                             }
                             Text(tile.caption, style = type.small, color = colors.textSecondary, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 4.dp))
                             Text(tile.kind, style = type.tiny, color = colors.textQuaternary, maxLines = 1)
@@ -749,6 +753,7 @@ private fun ArtifactRow(artifact: Artifact, onOpen: () -> Unit) {
         icon = when (artifact.kind) {
             Artifact.Kind.Image -> CursorIcons.Image
             Artifact.Kind.Video -> CursorIcons.Video
+            Artifact.Kind.Audio -> CursorIcons.Music
             Artifact.Kind.Markdown, Artifact.Kind.Text -> CursorIcons.Book
             Artifact.Kind.Other -> CursorIcons.File
         },

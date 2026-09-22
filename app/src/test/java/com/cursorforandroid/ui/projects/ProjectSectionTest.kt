@@ -29,6 +29,7 @@ import com.cursorforandroid.domain.ContextEntry
 import com.cursorforandroid.domain.EnvType
 import com.cursorforandroid.domain.GitBranch
 import com.cursorforandroid.domain.LocalAgentState
+import com.cursorforandroid.domain.MediaRef
 import com.cursorforandroid.domain.ProjectAppearance
 import com.cursorforandroid.domain.ProjectContext
 import com.cursorforandroid.domain.ProjectWorker
@@ -40,6 +41,9 @@ import com.cursorforandroid.ui.components.RunInterruption
 import com.cursorforandroid.ui.components.RunStopDialog
 import com.cursorforandroid.ui.components.RunStopTags
 import com.cursorforandroid.ui.components.rememberRunStopConfirmation
+import com.cursorforandroid.ui.media.LocalMediaViewer
+import com.cursorforandroid.ui.media.MediaEntry
+import com.cursorforandroid.ui.media.MediaViewerState
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.ui.theme.ThemeMode
 import com.google.common.truth.Truth.assertThat
@@ -220,6 +224,42 @@ class ProjectSectionTest {
         compose.onNodeWithText("This folder is empty.").assertIsDisplayed()
         compose.onNodeWithText("docs").performClick()
         assertThat(tapped).contains("context-up")
+    }
+
+    @Test
+    fun `a picture, a recording or a sound in the context opens the media viewer out of its row, never the text read`() {
+        val entries = listOf(
+            ContextEntry("media/board.png", isDirectory = false, sizeBytes = 120_000L),
+            ContextEntry("media/walkthrough.mp4", isDirectory = false),
+            ContextEntry("media/standup.m4a", isDirectory = false),
+            ContextEntry("notes.md", isDirectory = false),
+        )
+        val viewer = MediaViewerState(null)
+        current = state(actionsAvailable = true, context = ContextState.Loaded(ProjectContext("st-1", entries, relativePath = "")))
+        compose.setContent {
+            CursorTheme(mode = ThemeMode.Dark) {
+                CompositionLocalProvider(LocalMediaViewer provides viewer) {
+                    ProjectSectionBody(state = current, local = LocalAgentState(), busy = false, actions = actions(), nowMillis = now)
+                }
+            }
+        }
+
+        compose.onNodeWithText("standup.m4a").performClick()
+        compose.waitForIdle()
+        // The sound opened in the viewer, out of its row, among the folder's media, by its store path; no text read was asked for.
+        val session = viewer.session!!
+        assertThat(session.agentId).isEqualTo("bc-p")
+        assertThat(session.entries.map { it.src }).containsExactly("/cursor/stores/bc-p/media/board.png", "/cursor/stores/bc-p/media/walkthrough.mp4", "/cursor/stores/bc-p/media/standup.m4a").inOrder()
+        assertThat(session.entries.map { it.kind }).containsExactly(MediaEntry.Kind.Image, MediaEntry.Kind.Video, MediaEntry.Kind.Audio).inOrder()
+        assertThat(viewer.currentSrc).isEqualTo("/cursor/stores/bc-p/media/standup.m4a")
+        assertThat(session.origin).isNotNull()
+        assertThat(session.autoplay).isTrue()
+        assertThat(MediaRef.parse(viewer.currentSrc!!, session.agentId)).isEqualTo(MediaRef.Store("bc-p", "media/standup.m4a"))
+        assertThat(tapped.filter { it.startsWith("file:") }).isEmpty()
+
+        // A document still goes to the sheet.
+        compose.onNodeWithText("notes.md").performClick()
+        assertThat(tapped).contains("file:notes.md")
     }
 
     @Test

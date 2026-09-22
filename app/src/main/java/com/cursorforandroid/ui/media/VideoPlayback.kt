@@ -3,6 +3,7 @@ package com.cursorforandroid.ui.media
 import android.content.Context
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -13,6 +14,7 @@ import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
+import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.Player
 import androidx.media3.common.VideoSize
 import androidx.media3.exoplayer.ExoPlayer
@@ -30,9 +32,9 @@ private fun defaultVideoPlayer(context: Context): Player = ExoPlayer.Builder(con
     .build()
 
 /**
- * A recording's playback as the page and the chrome read it: the [player] wrapped with snapshot state for what it
- * reports, so the controls recompose on what changes and nothing polls the player from the composition. The
- * position is sampled once a frame while playing ([tick]).
+ * A recording's or a sound's playback as the page and the chrome read it: the [player] wrapped with snapshot state
+ * for what it reports, so the controls recompose on what changes and nothing polls the player from the composition.
+ * The position is sampled once a frame while playing ([tick]).
  */
 @Stable
 class VideoPlayback(val player: Player) : Player.Listener {
@@ -55,6 +57,9 @@ class VideoPlayback(val player: Player) : Player.Listener {
         private set
     /** The reader is dragging the scrubber: the thumb follows the finger, not the player, until it is let go. */
     var scrubbingToMs by mutableStateOf<Long?>(null)
+        private set
+    /** The rate it plays at: 1 unless the reader picked another ([cycleSpeed]). */
+    var speed by mutableFloatStateOf(player.playbackParameters.speed)
         private set
 
     val isEnded: Boolean get() = playbackState == Player.STATE_ENDED
@@ -93,6 +98,13 @@ class VideoPlayback(val player: Player) : Player.Listener {
 
     fun setMuted(muted: Boolean) {
         player.volume = if (muted) 0f else 1f
+    }
+
+    /** The next of [SPEEDS] after the one it plays at, round to the start again. */
+    fun cycleSpeed() {
+        val next = SPEEDS[(SPEEDS.indexOfFirst { it == speed } + 1).mod(SPEEDS.size)]
+        player.setPlaybackSpeed(next)
+        speed = next
     }
 
     fun scrubTo(fraction: Float) {
@@ -143,12 +155,31 @@ class VideoPlayback(val player: Player) : Player.Listener {
         firstFrameRendered = true
     }
 
-    override fun onPlayerError(error: PlaybackException) {
-        this.error = "Couldn't play this video."
+    override fun onPlaybackParametersChanged(playbackParameters: PlaybackParameters) {
+        speed = playbackParameters.speed
     }
 
-    private companion object {
-        fun VideoSize.toIntSize(): IntSize =
+    override fun onPlayerError(error: PlaybackException) {
+        this.error = when (error.errorCode) {
+            PlaybackException.ERROR_CODE_PARSING_CONTAINER_UNSUPPORTED,
+            PlaybackException.ERROR_CODE_DECODING_FORMAT_UNSUPPORTED,
+            PlaybackException.ERROR_CODE_DECODING_FORMAT_EXCEEDS_CAPABILITIES,
+            -> "This format doesn't play on this device."
+            PlaybackException.ERROR_CODE_PARSING_CONTAINER_MALFORMED, PlaybackException.ERROR_CODE_PARSING_MANIFEST_MALFORMED -> "This file couldn't be read; it may be damaged or cut short."
+            PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS, PlaybackException.ERROR_CODE_IO_FILE_NOT_FOUND -> "The file isn't there any more."
+            PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED, PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT -> "The file couldn't be fetched. Check your connection."
+            else -> "Couldn't play this file."
+        }
+    }
+
+    companion object {
+        /** The rates the speed button steps through. */
+        val SPEEDS = listOf(1f, 1.5f, 2f, 0.75f)
+
+        /** "1×", "1.5×", "0.75×": a rate as the button shows it. */
+        fun speedLabel(speed: Float): String = (if (speed == speed.toInt().toFloat()) speed.toInt().toString() else speed.toString()) + "\u00D7"
+
+        private fun VideoSize.toIntSize(): IntSize =
             if (width > 0 && height > 0) IntSize((width * pixelWidthHeightRatio).toInt().coerceAtLeast(1), height) else IntSize.Zero
     }
 }
