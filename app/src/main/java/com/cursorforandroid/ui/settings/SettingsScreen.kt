@@ -70,6 +70,7 @@ import com.cursorforandroid.ui.components.CursorSheet
 import com.cursorforandroid.ui.components.CursorToggle
 import com.cursorforandroid.ui.components.FlatIconButton
 import com.cursorforandroid.ui.components.HairlineDivider
+import com.cursorforandroid.ui.components.RunStopCopy
 import com.cursorforandroid.ui.components.SheetHeader
 import com.cursorforandroid.ui.components.pressable
 import com.cursorforandroid.ui.theme.CursorDimens
@@ -84,6 +85,7 @@ import java.util.Locale
 object SettingsCopy {
     const val GROUP_ACCOUNT = "Account"
     const val GROUP_APPEARANCE = "Appearance"
+    const val GROUP_CHATS = "Chats"
     const val GROUP_NOTIFICATIONS = "Notifications"
     const val GROUP_UPDATES = "Version and updates"
     const val SIGN_OUT = "Sign out"
@@ -110,13 +112,15 @@ object SettingsTags {
     const val VERSION_ROW = "settings_version"
     const val WHATS_NEW_ROW = "settings_whats_new"
     const val DEBUG_SHEET = "settings_debug_sheet"
+    const val CONFIRM_STOP = "settings_confirm_stop"
 }
 
 /**
  * Settings in the desktop settings-page idiom: 12sp group labels, bordered cards of rows. The list is the essentials
- * and nothing else — the account and the way out of it, appearance, notifications, the Extended mode switch, the
- * version with its updater and the crash report consent, one line of disclaimer. What the account's key is and
- * where to manage it sits behind a tap on the account row; the diagnostics exports, the About links and the credits
+ * and nothing else — the account and the way out of it, appearance, whether stopping a run asks first,
+ * notifications, the Extended mode switch, the version with its updater and the crash report consent, one line of
+ * disclaimer. What the account's key is and where to manage it sits behind a tap on the account row; the
+ * diagnostics exports, the About links and the credits
  * sit behind a long press on the version row ([SettingsDebugSheet]), where support can ask for them.
  */
 @Composable
@@ -199,6 +203,11 @@ fun SettingsScreen(
                         onCheckedChange = { scope.launch { graph.prefs.setOledBlack(it) } },
                     )
                 }
+            }
+
+            Group(SettingsCopy.GROUP_CHATS)
+            CursorCard(Modifier.fillMaxWidth().widthIn(max = 640.dp)) {
+                ConfirmStopRow(graph)
             }
 
             Group(SettingsCopy.GROUP_NOTIFICATIONS)
@@ -376,6 +385,24 @@ private fun NotificationRows(graph: AppGraph) {
         checked = project.notifyProjectMembers,
         onCheckedChange = { scope.launch { graph.prefs.setNotifyProjectMembers(it) } },
         tag = "notif-project-members",
+    )
+}
+
+/**
+ * Whether Stop — and Pause, and Send now while a turn is under way — asks "Stop the agent?" first (see
+ * `RunStopConfirmation`). On by default, upgrades included.
+ */
+@Composable
+private fun ConfirmStopRow(graph: AppGraph) {
+    val scope = rememberCoroutineScope()
+    // On the main dispatcher for the reason the Extended mode switch is (see SettingsScreen).
+    val enabled by graph.prefs.confirmStop.collectAsStateWithLifecycle(initialValue = true, context = Dispatchers.Main.immediate)
+    ToggleRow(
+        title = RunStopCopy.SETTING_TITLE,
+        subtitle = RunStopCopy.SETTING_DETAIL,
+        checked = enabled,
+        onCheckedChange = { scope.launch { graph.prefs.setConfirmStop(it) } },
+        tag = SettingsTags.CONFIRM_STOP,
     )
 }
 

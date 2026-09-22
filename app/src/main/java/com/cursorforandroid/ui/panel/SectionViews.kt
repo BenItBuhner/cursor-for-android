@@ -53,10 +53,13 @@ import com.cursorforandroid.domain.TranscriptContent
 import com.cursorforandroid.ui.components.CursorButton
 import com.cursorforandroid.ui.components.CursorIcons
 import com.cursorforandroid.ui.components.ImageBlock
+import com.cursorforandroid.ui.components.LocalRunStopConfirmation
 import com.cursorforandroid.ui.components.MarkdownText
 import com.cursorforandroid.ui.components.Pill
 import com.cursorforandroid.ui.components.PullRequestPill
+import com.cursorforandroid.ui.components.RunInterruption
 import com.cursorforandroid.ui.components.VideoBlock
+import com.cursorforandroid.ui.components.askOrRun
 import com.cursorforandroid.ui.components.cursorSurface
 import com.cursorforandroid.ui.components.pressable
 import com.cursorforandroid.ui.conversation.DiffBlock
@@ -158,12 +161,14 @@ private fun MachineFact(state: PanelState, actions: PanelActions) {
 
 /**
  * Pause or resume the turn (`PauseBackgroundComposer` / `ResumeBackgroundComposer`), stop it (the documented cancel)
- * and wake the machine (`WakeBackgroundComposer`); each says when it is on its way.
+ * and wake the machine (`WakeBackgroundComposer`); each says when it is on its way. Pause and Stop ask first while
+ * Settings › Confirm before stopping is on, as the composer's Stop does.
  */
 @Composable
 internal fun RunControlsRow(state: PanelState, actions: PanelActions, modifier: Modifier = Modifier) {
     val controls = state.controls
     val running = state.isRunning
+    val confirmation = LocalRunStopConfirmation.current
     Row(
         modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp).testTag("run-controls"),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -172,9 +177,9 @@ internal fun RunControlsRow(state: PanelState, actions: PanelActions, modifier: 
         if (controls.isPaused == true) {
             ControlButton("Resume", CursorIcons.Play, busy = controls.isBusy("resume"), onClick = actions::resumeRun)
         } else {
-            ControlButton("Pause", CursorIcons.Pause, busy = controls.isBusy("pause"), enabled = running, onClick = actions::pauseRun)
+            ControlButton("Pause", CursorIcons.Pause, busy = controls.isBusy("pause"), enabled = running, onClick = { confirmation.askOrRun(RunInterruption.Pause, state.agentId, actions::pauseRun) })
         }
-        if (running) ControlButton("Stop", CursorIcons.Stop, onClick = actions::stopRun)
+        if (running) ControlButton("Stop", CursorIcons.Stop, onClick = { confirmation.askOrRun(RunInterruption.Stop, state.agentId, actions::stopRun) })
         ControlButton("Wake", CursorIcons.Lightning, busy = controls.isBusy("wake"), enabled = !running, onClick = actions::wake)
     }
 }

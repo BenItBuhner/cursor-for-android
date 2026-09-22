@@ -1,5 +1,6 @@
 package com.cursorforandroid.ui.panel
 
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -15,15 +16,23 @@ import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollToNode
+import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.cursorforandroid.data.local.PreferencesStore
 import com.cursorforandroid.domain.Capabilities
 import com.cursorforandroid.domain.ConversationControls
 import com.cursorforandroid.domain.QueueLoad
 import com.cursorforandroid.domain.RunStatus
 import com.cursorforandroid.domain.ToolPayload
+import com.cursorforandroid.ui.components.LocalRunStopConfirmation
+import com.cursorforandroid.ui.components.RunInterruption
+import com.cursorforandroid.ui.components.RunStopDialog
+import com.cursorforandroid.ui.components.RunStopTags
+import com.cursorforandroid.ui.components.rememberRunStopConfirmation
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.ui.theme.ThemeMode
 import com.google.common.truth.Truth.assertThat
+import kotlinx.coroutines.runBlocking
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -85,6 +94,61 @@ class PanelControlsTest {
         assertThat(compose.onAllNodesWithTag("control-Stop").fetchSemanticsNodes()).isEmpty()
         compose.onAllNodesWithTag("control-Wake")[0].assertIsEnabled().performClick()
         assertThat(asked).contains("wake")
+    }
+
+    /** The panel as the chat hosts it: under the screen's stop confirmation, with its dialog. */
+    private fun showConfirming(prefs: PreferencesStore) {
+        compose.setContent {
+            CursorTheme(mode = ThemeMode.Dark) {
+                val confirmation = rememberRunStopConfirmation(prefs)
+                CompositionLocalProvider(LocalRunStopConfirmation provides confirmation) {
+                    ConversationPanel(state, actions, onClose = {})
+                }
+                RunStopDialog(confirmation)
+            }
+        }
+    }
+
+    private fun dialogShown() = compose.onAllNodes(hasTestTag(RunStopTags.DIALOG)).fetchSemanticsNodes().isNotEmpty()
+
+    @Test
+    fun `with Confirm before stopping on, Pause and Stop ask first and act only on the dialog's answer`() {
+        showConfirming(PreferencesStore(ApplicationProvider.getApplicationContext()))
+        scrollTo("run-controls")
+
+        compose.onAllNodesWithTag("control-Stop")[0].performClick()
+        compose.waitUntil(10_000) { dialogShown() }
+        compose.onNodeWithText(RunInterruption.Stop.title).assertIsDisplayed()
+        compose.onNodeWithTag(RunStopTags.KEEP_RUNNING).performClick()
+        compose.waitUntil(10_000) { !dialogShown() }
+        assertThat(asked).doesNotContain("stop")
+
+        compose.onAllNodesWithTag("control-Pause")[0].performClick()
+        compose.waitUntil(10_000) { dialogShown() }
+        compose.onNodeWithText(RunInterruption.Pause.title).assertIsDisplayed()
+        compose.onNode(hasTestTag(RunStopTags.CONFIRM) and hasText(RunInterruption.Pause.confirm)).performClick()
+        compose.waitUntil(10_000) { !dialogShown() }
+        assertThat(asked).contains("pause")
+
+        compose.onAllNodesWithTag("control-Stop")[0].performClick()
+        compose.waitUntil(10_000) { dialogShown() }
+        compose.onNodeWithTag(RunStopTags.CONFIRM).performClick()
+        compose.waitUntil(10_000) { !dialogShown() }
+        assertThat(asked.filter { it == "stop" || it == "pause" }).containsExactly("pause", "stop").inOrder()
+    }
+
+    @Test
+    fun `with Confirm before stopping off, Pause and Stop act at once`() {
+        val prefs = PreferencesStore(ApplicationProvider.getApplicationContext())
+        runBlocking { prefs.setConfirmStop(false) }
+        showConfirming(prefs)
+        scrollTo("run-controls")
+
+        compose.onAllNodesWithTag("control-Pause")[0].performClick()
+        compose.onAllNodesWithTag("control-Stop")[0].performClick()
+        compose.waitUntil(10_000) { "stop" in asked }
+        assertThat(asked).containsAtLeast("pause", "stop").inOrder()
+        assertThat(dialogShown()).isFalse()
     }
 
     @Test
