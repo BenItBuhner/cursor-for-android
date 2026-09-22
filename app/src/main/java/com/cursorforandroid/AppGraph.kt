@@ -87,6 +87,7 @@ import com.cursorforandroid.data.repo.GeneratedImageStore
 import com.cursorforandroid.data.repo.GitHubPullRequestSource
 import com.cursorforandroid.data.repo.LiveRunHub
 import com.cursorforandroid.data.repo.Onboarding
+import com.cursorforandroid.data.repo.NewChatDrafts
 import com.cursorforandroid.data.repo.PinRepository
 import com.cursorforandroid.data.repo.ProjectEditor
 import com.cursorforandroid.data.repo.ProjectRepository
@@ -208,12 +209,17 @@ class AppGraph(
     private val lazyAttachments = lazy { AttachmentStore(app) }
     val attachments: AttachmentStore get() = lazyAttachments.value
 
-    /** The New Chat composer's unsent draft, so a process death does not lose what was typed. */
+    /** The New Chat composer's unsent drafts on disk, so a process death does not lose what was typed. */
     private val lazyDrafts = lazy { DraftStore(app) }
     val drafts: DraftStore get() = lazyDrafts.value
 
     /** The directories unsent drafts are kept in, as a sign-out parks them (see [DraftFiles.park]). */
-    private val draftRoots = listOf(DraftFiles.Root(FollowUpStore.ROOT, entryWise = true), DraftFiles.Root(DraftStore.ROOT, entryWise = false))
+    private val draftRoots = listOf(
+        DraftFiles.Root(FollowUpStore.ROOT, entryWise = true),
+        DraftFiles.Root(DraftStore.ROOT, entryWise = true),
+        // 0.3.61's single New Chat draft, until a listing has brought it in.
+        DraftFiles.Root(DraftStore.LEGACY_ROOT, entryWise = false),
+    )
 
     /**
      * Who the drafts on disk belong to, as a sign-out parks them: the account signed in, else the one last cached; an
@@ -241,6 +247,7 @@ class AppGraph(
     /** The app has left the screen: every draft still waiting for its debounce is written now. */
     fun flushDrafts() {
         if (lazyFollowUps.isInitialized()) followUps.flushAll()
+        if (lazyNewChatDrafts.isInitialized()) newChatDrafts.flush()
     }
 
     /** The account's API: one client, with the SSE stream sharing its dispatcher and connection pool. */
@@ -635,6 +642,10 @@ class AppGraph(
     private val lazyLauncher = lazy { ChatLauncher(conversations) }
     val launcher: ChatLauncher get() = lazyLauncher.value
 
+    /** The new chats written and not sent: the sidebar's drafts, and the one the New Chat composer has open. */
+    private val lazyNewChatDrafts = lazy { NewChatDrafts(drafts, agents, launcher) }
+    val newChatDrafts: NewChatDrafts get() = lazyNewChatDrafts.value
+
     /**
      * The messages on their way out of each chat's composer, in a scope no screen owns: a send tapped just before the
      * chat was left finishes all the same, and its bubble keeps its status for the next visit (see [OutgoingSends]).
@@ -811,6 +822,7 @@ class AppGraph(
             // written before the saves are stopped.
             val owner = draftOwner()
             if (owner != null && lazyFollowUps.isInitialized()) followUps.saveAll()
+            if (owner != null && lazyNewChatDrafts.isInitialized()) newChatDrafts.saveOpen()
             // The choice the account owed goes with it (its stored flag is among the session keys cleared below).
             onboarding.signedOut()
             // Cancelling a write does not stop it: the caches are closed first so nothing this account still has in
@@ -825,6 +837,7 @@ class AppGraph(
             if (lazyLiveRuns.isInitialized()) liveRuns.resetAll()
             if (lazyConversations.isInitialized()) conversations.resetAll()
             if (lazyFollowUps.isInitialized()) followUps.resetAll()
+            if (lazyNewChatDrafts.isInitialized()) newChatDrafts.reset()
             // Sends and uploads on their way out for this account stop here, before the composer's stores are wiped.
             if (lazyOutgoing.isInitialized()) outgoing.resetAll()
             if (lazyAttachmentUploads.isInitialized()) attachmentUploads.resetAll()
@@ -903,6 +916,7 @@ class AppGraph(
         get() = mapOf(
             "attachments" to lazyAttachments,
             "drafts" to lazyDrafts,
+            "newChatDrafts" to lazyNewChatDrafts,
             "realBackend" to realParts,
             "demoBackend" to demoParts,
             "accountClient" to lazyAccountClient,

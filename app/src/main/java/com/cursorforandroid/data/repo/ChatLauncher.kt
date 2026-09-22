@@ -33,8 +33,18 @@ class ChatLauncher(
     // No replay: a failure with no composer left to come back to (the session was signed out) is rightly dropped.
     private val _failures = MutableSharedFlow<FailedLaunch>(extraBufferCapacity = 16)
 
-    /** Launches that did not go through, as they fail. The composer takes the draft back; the shell leaves the chat. */
+    /** Launches that did not go through, as they fail. The draft comes back (see `NewChatDrafts`); the shell leaves the chat. */
     val failures: SharedFlow<FailedLaunch> = _failures.asSharedFlow()
+
+    private val _accepted = MutableSharedFlow<String>(extraBufferCapacity = 16)
+
+    /** The chats the server has created, by the id they were launched under: their drafts are spent. */
+    val accepted: SharedFlow<String> = _accepted.asSharedFlow()
+
+    private val inFlight = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+
+    /** True while [agentId]'s launch is waiting for the server's answer. */
+    fun isLaunching(agentId: String): Boolean = agentId in inFlight
 
     /**
      * Starts the chat and returns once it is on screen under its prompt — before the server has answered — or once the
@@ -44,11 +54,19 @@ class ChatLauncher(
     suspend fun launch(request: LaunchRequest, modelDisplayName: String?, nonce: String) {
         val agentId = requireNotNull(request.agentId) { "A launch needs the client-minted agent id the chat is shown under." }
         val staged = CompletableDeferred<Unit>()
+        inFlight += agentId
         scope.launch {
-            conversations.launch(request, modelDisplayName, onStaged = { staged.complete(Unit) }).onFailure { t ->
-                _failures.emit(FailedLaunch(agentId, request, nonce, if (t is LaunchCancelledException) null else t.userMessage()))
-            }
+            conversations.launch(request, modelDisplayName, onStaged = { staged.complete(Unit) })
+                .onSuccess {
+                    inFlight -= agentId
+                    _accepted.emit(agentId)
+                }
+                .onFailure { t ->
+                    inFlight -= agentId
+                    _failures.emit(FailedLaunch(agentId, request, nonce, if (t is LaunchCancelledException) null else t.userMessage()))
+                }
         }.invokeOnCompletion {
+            inFlight -= agentId
             // Refused before the chat was shown (the same chat is already being started), or the scope is gone: either
             // way the caller is not left waiting.
             staged.complete(Unit)

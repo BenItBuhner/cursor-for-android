@@ -11,10 +11,12 @@ import com.cursorforandroid.data.demo.DemoBackendFactory
 import com.cursorforandroid.data.repo.CursorBackend
 import com.cursorforandroid.data.repo.LaunchIdempotency
 import com.cursorforandroid.data.repo.LaunchRequest
+import com.cursorforandroid.data.repo.NewChatDrafts
 import com.cursorforandroid.domain.DeviceTarget
 import com.cursorforandroid.domain.PromptImage
 import com.cursorforandroid.domain.RunStatus
 import com.cursorforandroid.domain.UserMessage
+import com.cursorforandroid.ui.agents.DraftRow
 import com.cursorforandroid.ui.components.PendingAttachment
 import com.cursorforandroid.util.AppClock
 import com.cursorforandroid.util.MainDispatcherRule
@@ -22,6 +24,7 @@ import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import org.junit.Before
@@ -52,7 +55,13 @@ class NewAgentViewModelTest {
 
     @Before
     fun setUp() {
-        // The demo's own catalogue and data, with the requests it is sent recorded.
+        graph = process()
+        // Shared Robolectric prefs outlive a single test; a previous pick must not look like this install's default.
+        runBlocking { graph.prefs.rememberModel(null) }
+    }
+
+    /** A process on this test's disk: the demo's own catalogue and data, with the requests it is sent recorded. */
+    private fun process(): AppGraph {
         val (demoApi, demoStreamer) = DemoBackendFactory.create()
         val api = object : CursorApi by demoApi {
             override suspend fun createAgent(body: CreateAgentRequestDto): CreateAgentResponseDto {
@@ -60,20 +69,17 @@ class NewAgentViewModelTest {
                 return demoApi.createAgent(body)
             }
         }
-        graph = AppGraph(
+        val graph = AppGraph(
             ApplicationProvider.getApplicationContext<Context>(),
             demo = CursorBackend(api, demoStreamer, isDemo = true),
         )
-        runBlocking {
-            graph.session.enterDemo()
-            // Shared Robolectric prefs outlive a single test; a previous pick must not look like this install's default.
-            graph.prefs.rememberModel(null)
-        }
+        runBlocking { graph.session.enterDemo() }
+        return graph
     }
 
 
-    private fun loaded(draftSaveDelayMs: Long = 400L): NewAgentViewModel {
-        val vm = NewAgentViewModel(graph, draftSaveDelayMs)
+    private fun loaded(draftSaveDelayMs: Long = 400L, graph: AppGraph = this.graph, resume: String? = null): NewAgentViewModel {
+        val vm = NewAgentViewModel(graph, draftSaveDelayMs, resume = resume)
         runBlocking { withTimeout(10_000) { vm.state.first { it.models.isNotEmpty() && !it.isLoadingRepos && !it.isLoadingDevices } } }
         return vm
     }
@@ -175,46 +181,55 @@ class NewAgentViewModelTest {
         awaitUntil { accepted(id) }
     }
 
+    /** The sidebar's drafts, as the shell lists them while the New Chat pane is on screen with [vm] in it. */
+    private fun listed(vm: NewAgentViewModel) = DraftRow.listed(graph.newChatDrafts.state.value.drafts, open = vm.draftId.value)
+
     @Test
-    fun `a draft that comes back does not overwrite what is being written, and waits for the composer to be free`() = runBlocking {
-        val vm = loaded()
+    fun `a draft that comes back does not overwrite what is being written, and waits in the sidebar`() = runBlocking<Unit> {
+        val vm = loaded(draftSaveDelayMs = 20)
         val id = vm.launchAndWait("Do the thing")
         vm.setPrompt("Then do the other th")
         graph.conversations.attach(id)
         assertThat(graph.conversations.cancelActiveRun(id).isSuccess).isTrue()
         awaitUntil { graph.agents.agent(id) == null }
 
-        // The launch is gone, and given time to reach the composer it still leaves what the user is writing alone.
+        // The launch is gone, and given time to reach the composer it still leaves what the user is writing alone:
+        // the draft it went out from is back in the sidebar instead.
+        awaitUntil { listed(vm).any { it.title == "Do the thing" } }
         delay(300)
         assertThat(vm.state.value.prompt).isEqualTo("Then do the other th")
         vm.setPrompt("Then do the other thing")
 
-        // Sent, the composer clears — and the returned draft takes it at once, ready to be sent again.
+        // Sent, the composer clears; the returned draft stays where it waits until it is asked for.
         var second: String? = null
         vm.launch(onOpen = { second = it })
-        awaitUntil { second != null && !vm.state.value.isLaunching && vm.state.value.prompt == "Do the thing" }
+        awaitUntil { second != null && !vm.state.value.isLaunching }
         assertThat(second).isNotEqualTo(id)
-        assertThat(vm.state.value.error).isNull()
-        assertThat(vm.state.value.canLaunch).isTrue()
         awaitUntil { accepted(second!!) }
-        assertThat(vm.state.value.prompt).isEqualTo("Do the thing")
+        assertThat(vm.state.value.prompt).isEmpty()
         assertThat(graph.conversations.state(second!!).value.items.filterIsInstance<UserMessage>().single().text).isEqualTo("Then do the other thing")
+        assertThat(listed(vm).map { it.title }).containsExactly("Do the thing")
     }
 
     @Test
-    fun `clearing the composer lets a waiting draft back in`() = runBlocking {
-        val vm = loaded()
+    fun `a returned draft opens from the sidebar and, sent again unchanged, is the same chat`() = runBlocking {
+        val vm = loaded(draftSaveDelayMs = 20)
         val id = vm.launchAndWait("Do the thing")
         vm.setPrompt("Something else")
         graph.conversations.attach(id)
         assertThat(graph.conversations.cancelActiveRun(id).isSuccess).isTrue()
-        awaitUntil { graph.agents.agent(id) == null }
-        delay(300)
-        assertThat(vm.state.value.prompt).isEqualTo("Something else")
+        awaitUntil { listed(vm).any { it.title == "Do the thing" } }
 
-        vm.setPrompt("")
+        val returned = listed(vm).single { it.title == "Do the thing" }
+        graph.newChatDrafts.request(NewChatDrafts.Request.Open(returned.id))
         awaitUntil { vm.state.value.prompt == "Do the thing" }
         assertThat(vm.state.value.error).isNull()
+        // What the composer held is a draft of its own now.
+        awaitUntil { listed(vm).map { it.title } == listOf("Something else") }
+
+        assertThat(vm.launchAndWait("Do the thing")).isEqualTo(id)
+        awaitUntil { accepted(id) }
+        awaitUntil { listed(vm).map { it.title } == listOf("Something else") }
     }
 
     /** Nothing picked here, nothing launched from here, no chat of the account's to read: the configured default, Auto. */
@@ -457,36 +472,60 @@ class NewAgentViewModelTest {
         assertThat(loaded().state.value.ref).isEqualTo("main")
     }
 
+    /** The drafts on disk, as a new process reads them. */
+    private suspend fun onDisk() = graph.drafts.list()
+
     /**
-     * The navigation stack survives being killed for memory but the composer's view model does not, so what was
-     * typed is on disk — images included, by reference — together with the nonce the draft was going to go out
-     * under. A draft sent after a restart is therefore the same chat the interrupted attempt would have created.
+     * The composer as the phone leaves it: a repository and branch on a team pool, a model with its variant, plan
+     * mode, the PR switch, a line and an image. Written as the app leaves the screen.
      */
-    @Test
-    fun `a draft outlives the process that was typing it, images and chat id included`() = runBlocking {
-        val bytes = byteArrayOf(1, 2, 3, 4, 5)
-        val vm = loadedWithAgents(draftSaveDelayMs = 20)
+    private fun writeEverything(vm: NewAgentViewModel, bytes: ByteArray) {
+        vm.selectDevice(DeviceTarget.pool("gpu"))
         vm.selectRepo(vm.repo("cursor-for-android"))
         vm.setRef("cursor/cli-exploration-9c1d")
-        vm.selectModel(vm.state.value.models.first { it.id == "composer-2.5" }, null)
+        val grok = vm.state.value.models.first { it.id == "cursor-grok-4.6" }
+        vm.selectModel(grok, grok.variantWithParams(mapOf("effort" to "medium", "fast" to "false")))
         vm.setPlanMode(true)
         vm.setAutoCreatePr(true)
         vm.setPrompt("Half a thought")
         vm.addAttachments(listOf(PendingAttachment("picked-1", PromptImage(bytes, "image/png"), null)))
-        awaitUntil { graph.drafts.read()?.images?.size == 1 }
-        val saved = graph.drafts.read()!!
-        assertThat(saved.prompt).isEqualTo("Half a thought")
+    }
 
-        // The process is killed; the composer opens again on the same disk.
-        val revived = loaded(draftSaveDelayMs = 20)
-        val state = withTimeout(10_000) { revived.state.first { it.prompt.isNotEmpty() && it.models.isNotEmpty() && it.selectedRepo != null } }
-        assertThat(state.attachments.single().image.bytes).isEqualTo(bytes)
-        assertThat(state.attachments.single().image.mimeType).isEqualTo("image/png")
-        assertThat(state.selectedRepo?.shortName).isEqualTo("cursor-for-android")
-        assertThat(state.ref).isEqualTo("cursor/cli-exploration-9c1d")
-        assertThat(state.selectedModel?.id).isEqualTo("composer-2.5")
-        assertThat(state.planMode).isTrue()
-        assertThat(state.autoCreatePr).isTrue()
+    private fun NewAgentUiState.assertEverything(bytes: ByteArray) {
+        assertThat(prompt).isEqualTo("Half a thought")
+        assertThat(attachments.single().image.bytes).isEqualTo(bytes)
+        assertThat(attachments.single().image.mimeType).isEqualTo("image/png")
+        assertThat(selectedDevice).isEqualTo(DeviceTarget.pool("gpu"))
+        assertThat(selectedRepo?.shortName).isEqualTo("cursor-for-android")
+        assertThat(ref).isEqualTo("cursor/cli-exploration-9c1d")
+        assertThat(selectedModel?.id).isEqualTo("cursor-grok-4.6")
+        assertThat(selectedVariant?.params?.associate { it.id to it.value }).containsExactly("effort", "medium", "fast", "false")
+        assertThat(planMode).isTrue()
+        assertThat(autoCreatePr).isTrue()
+    }
+
+    /**
+     * The navigation stack survives being killed for memory but the composer's view model does not: the screen keeps
+     * which draft was open, and what was typed is on disk — images included, by reference — with the device, the model
+     * and its parameters, and the nonce it was going to go out under. Sent after the restart, it is the same chat the
+     * interrupted attempt would have created.
+     */
+    @Test
+    fun `a draft outlives the process that was typing it, device, model and chat id included`() = runBlocking {
+        val bytes = byteArrayOf(1, 2, 3, 4, 5)
+        val vm = loadedWithAgents(draftSaveDelayMs = 20)
+        writeEverything(vm, bytes)
+        awaitUntil { onDisk().singleOrNull()?.images?.size == 1 }
+        val saved = onDisk().single()
+        assertThat(saved.id).isEqualTo(vm.draftId.value)
+
+        // The process is killed; the composer opens again, in a new process on the same disk, on the draft it had open.
+        val next = process()
+        runBlocking { next.agents.refresh() }
+        val revived = loaded(draftSaveDelayMs = 20, graph = next, resume = saved.id)
+        val state = withTimeout(10_000) { revived.state.first { it.prompt.isNotEmpty() && it.selectedRepo != null && it.selectedModel?.id == "cursor-grok-4.6" } }
+        state.assertEverything(bytes)
+        assertThat(revived.draftId.value).isEqualTo(saved.id)
 
         var opened: String? = null
         revived.launch(onOpen = { opened = it })
@@ -497,29 +536,166 @@ class NewAgentViewModelTest {
                 images = listOf(PromptImage(bytes, "image/png")),
                 repoUrl = state.selectedRepo!!.url,
                 ref = "cursor/cli-exploration-9c1d",
-                modelId = "composer-2.5",
+                modelId = "cursor-grok-4.6",
                 modelParams = state.selectedVariant!!.params,
                 autoCreatePr = true,
                 planMode = true,
+                env = DeviceTarget.pool("gpu"),
             ),
             saved.nonce,
         )
         assertThat(opened).isEqualTo(expected)
     }
 
+    /**
+     * The app closed and started afresh: the composer is a new one, and what was left in the old one is a draft in
+     * the sidebar, which opens with everything it was written with.
+     */
+    @Test
+    fun `an app started afresh opens a fresh composer, and the draft left in the last one opens from the sidebar whole`() = runBlocking {
+        val bytes = byteArrayOf(7, 7, 7)
+        val vm = loadedWithAgents(draftSaveDelayMs = 20)
+        writeEverything(vm, bytes)
+        awaitUntil { onDisk().singleOrNull()?.images?.size == 1 }
+
+        val next = process()
+        runBlocking { next.agents.refresh() }
+        val fresh = loaded(draftSaveDelayMs = 20, graph = next)
+        assertThat(fresh.state.value.prompt).isEmpty()
+        val rows = DraftRow.listed(next.newChatDrafts.state.value.drafts, open = fresh.draftId.value)
+        assertThat(rows.map { it.title }).containsExactly("Half a thought")
+        assertThat(rows.single().repoShortName).isEqualTo("cursor-for-android")
+
+        next.newChatDrafts.request(NewChatDrafts.Request.Open(rows.single().id))
+        val state = withTimeout(10_000) { fresh.state.first { it.prompt.isNotEmpty() && it.attachments.isNotEmpty() } }
+        state.assertEverything(bytes)
+    }
+
+    /** 0.3.61 wrote a restored draft's model back as "never picked" on its first save: the next restart lost it. */
+    @Test
+    fun `a model picked for a draft survives one restart after another`() = runBlocking {
+        val vm = loadedWithAgents(draftSaveDelayMs = 20)
+        val grok = vm.state.value.models.first { it.id == "cursor-grok-4.6" }
+        vm.selectModel(grok, grok.variantWithParams(mapOf("effort" to "low", "fast" to "true")))
+        vm.setPrompt("Keep my model")
+        awaitUntil { onDisk().singleOrNull()?.modelChosen == true }
+        // Meanwhile a conversation's pick becomes the new-chat default: it must not stand in for the draft's own.
+        graph.prefs.rememberModel("composer-2.5", mapOf("fast" to "false"), AppClock.now() + 60_000)
+        val id = vm.draftId.value
+
+        var next = process()
+        repeat(2) {
+            val revived = loaded(draftSaveDelayMs = 20, graph = next, resume = id)
+            val state = withTimeout(10_000) { revived.state.first { it.prompt == "Keep my model" && it.selectedModel?.id == "cursor-grok-4.6" } }
+            assertThat(state.selectedVariant?.params?.associate { it.id to it.value }).containsExactly("effort", "low", "fast", "true")
+            // Written into once more, as a restored draft is.
+            revived.setPrompt("Keep my model ")
+            revived.setPrompt("Keep my model")
+            awaitUntil { next.drafts.list().single().modelChosen && next.drafts.list().single().modelId == "cursor-grok-4.6" }
+            next = process()
+        }
+    }
+
+    @Test
+    fun `starting a new chat keeps the one being written as a draft, and several drafts are kept side by side`() = runBlocking<Unit> {
+        val vm = loadedWithAgents(draftSaveDelayMs = 20)
+        vm.selectRepo(vm.repo("cursor-for-android"))
+        vm.setPrompt("First idea")
+        val first = vm.draftId.value
+
+        graph.newChatDrafts.request(NewChatDrafts.Request.Fresh)
+        awaitUntil { vm.draftId.value != first && vm.state.value.prompt.isEmpty() }
+        vm.setPrompt("Second idea")
+        val second = vm.draftId.value
+        graph.newChatDrafts.request(NewChatDrafts.Request.Fresh)
+        awaitUntil { vm.draftId.value != second && vm.state.value.prompt.isEmpty() }
+
+        awaitUntil { listed(vm).size == 2 }
+        // Most recent first.
+        assertThat(listed(vm).map { it.title }).containsExactly("Second idea", "First idea").inOrder()
+        assertThat(onDisk().map { it.id }).containsExactly(first, second)
+
+        // An empty composer asked for a fresh one stays as it is.
+        val empty = vm.draftId.value
+        graph.newChatDrafts.request(NewChatDrafts.Request.Fresh)
+        delay(200)
+        assertThat(vm.draftId.value).isEqualTo(empty)
+
+        // Opening one puts it back and leaves the other alone.
+        graph.newChatDrafts.request(NewChatDrafts.Request.Open(first))
+        awaitUntil { vm.state.value.prompt == "First idea" }
+        assertThat(vm.state.value.selectedRepo?.shortName).isEqualTo("cursor-for-android")
+        assertThat(listed(vm).map { it.title }).containsExactly("Second idea")
+    }
+
+    @Test
+    fun `deleting the draft the composer has open empties the composer onto a new one`() = runBlocking {
+        val vm = loaded(draftSaveDelayMs = 20)
+        vm.setPrompt("Never mind")
+        awaitUntil { onDisk().isNotEmpty() }
+        val id = vm.draftId.value
+
+        graph.newChatDrafts.remove(id)
+
+        awaitUntil { vm.state.value.prompt.isEmpty() && vm.draftId.value != id }
+        assertThat(onDisk()).isEmpty()
+        delay(200)
+        assertThat(onDisk()).isEmpty()
+    }
+
     @Test
     fun `a composer that has been emptied, or sent, leaves no draft behind`() = runBlocking {
         val vm = loaded(draftSaveDelayMs = 20)
         vm.setPrompt("Half a thought")
-        awaitUntil { graph.drafts.read() != null }
+        awaitUntil { onDisk().isNotEmpty() }
         vm.setPrompt("")
-        awaitUntil { graph.drafts.read() == null }
+        awaitUntil { onDisk().isEmpty() }
 
         vm.setPrompt("Half a thought")
-        awaitUntil { graph.drafts.read() != null }
-        vm.launchAndWait("Half a thought")
-        awaitUntil { graph.drafts.read() == null }
+        awaitUntil { onDisk().isNotEmpty() }
+        val id = vm.launchAndWait("Half a thought")
+        awaitUntil { accepted(id) }
+        awaitUntil { onDisk().isEmpty() }
         assertThat(loaded().state.value.prompt).isEmpty()
+    }
+
+    /**
+     * Sending a draft that was listed in the sidebar: by the time the chat is on screen — the moment the shell lists
+     * the draft again, as the New Chat pane is no longer on top — the chat's row is in the list and the draft is not,
+     * and at no point from then on are both listed. Once the server has the chat the draft is gone from disk too.
+     */
+    @Test
+    fun `sending a draft turns it into the chat, whose row is listed as the draft leaves and never beside it`() = runBlocking {
+        val vm = loaded(draftSaveDelayMs = 20)
+        vm.setPrompt("Parked idea")
+        graph.newChatDrafts.request(NewChatDrafts.Request.Fresh)
+        awaitUntil { vm.state.value.prompt.isEmpty() }
+        val parked = listed(vm).single()
+        graph.newChatDrafts.request(NewChatDrafts.Request.Open(parked.id))
+        awaitUntil { vm.state.value.prompt == "Parked idea" }
+
+        // Every state of the two lists from here, as the sidebar would read them with a chat on top.
+        val both = CopyOnWriteArrayList<String>()
+        var agentId: String? = null
+        val watch = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Unconfined).launch {
+            kotlinx.coroutines.flow.combine(graph.newChatDrafts.state, graph.agents.state) { d, a -> d to a }.collect { (d, a) ->
+                val draftListed = DraftRow.listed(d.drafts, open = null).any { it.id == parked.id }
+                val chatListed = agentId?.let { id -> a.agents.any { it.id == id } } == true
+                if (draftListed && chatListed) both += "draft and chat at once"
+            }
+        }
+        var atOpen: Pair<Boolean, Boolean>? = null
+        vm.launch(onOpen = { id ->
+            agentId = id
+            atOpen = DraftRow.listed(graph.newChatDrafts.state.value.drafts, open = null).any { it.id == parked.id } to (graph.agents.agent(id) != null)
+        })
+        awaitUntil { agentId != null }
+        assertThat(atOpen).isEqualTo(false to true)
+        awaitUntil { accepted(agentId!!) }
+        awaitUntil { onDisk().none { it.id == parked.id } }
+        watch.cancel()
+        assertThat(both).isEmpty()
+        assertThat(graph.newChatDrafts.record(parked.id)).isNull()
     }
 
     @Test

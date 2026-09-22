@@ -30,6 +30,7 @@ import androidx.lifecycle.compose.LifecycleStartEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.cursorforandroid.AppGraph
+import com.cursorforandroid.data.repo.NewChatDrafts
 import com.cursorforandroid.domain.AgentRow
 import com.cursorforandroid.domain.CursorUser
 import com.cursorforandroid.domain.UpdateState
@@ -37,6 +38,7 @@ import com.cursorforandroid.notifications.NotificationPermissionPrompt
 import com.cursorforandroid.ui.agents.AgentListUiState
 import com.cursorforandroid.ui.agents.AgentRowActions
 import com.cursorforandroid.ui.agents.AgentsViewModel
+import com.cursorforandroid.ui.agents.DraftRow
 import com.cursorforandroid.ui.agents.Sidebar
 import com.cursorforandroid.ui.agents.SidebarCallbacks
 import com.cursorforandroid.ui.agents.SidebarDestination
@@ -164,6 +166,18 @@ internal fun AppShell(
         stack.resetTo(screen)
     }
 
+    /** "New chat": a fresh composer; what the composer held stays in the sidebar as a draft. */
+    fun startNewChat() {
+        graph.newChatDrafts.request(NewChatDrafts.Request.Fresh)
+        navigateTop(Screen.Home)
+    }
+
+    /** A draft's row: the New Chat composer opens it, with everything it was written with. */
+    fun openDraft(row: DraftRow) {
+        graph.newChatDrafts.request(NewChatDrafts.Request.Open(row.id))
+        navigateTop(Screen.Home)
+    }
+
     /** The What's new page, over whatever is on top — Settings' row or the sidebar's card is where it was asked for. */
     fun openWhatsNew() {
         closeDrawer()
@@ -188,13 +202,18 @@ internal fun AppShell(
             onDeepLinkConsumed()
         }
     }
-    // The widget's "+": the New Chat pane, as the sidebar's "+" reaches it.
+    // The widget's "+": a fresh New Chat pane, as the sidebar's "+" reaches it.
     LaunchedEffect(newChatRequested) {
         if (newChatRequested) {
-            navigateTop(Screen.Home)
+            startNewChat()
             onNewChatConsumed()
         }
     }
+    LaunchedEffect(Unit) { graph.newChatDrafts.load() }
+    val draftsState by graph.newChatDrafts.state.collectAsStateWithLifecycle()
+    val openDraftId by graph.newChatDrafts.open.collectAsStateWithLifecycle()
+    // The draft open in the New Chat pane is the one being written while the pane is on screen; left, it is listed.
+    val draftRows = remember(draftsState, openDraftId, topScreen) { DraftRow.listed(draftsState.drafts, open = openDraftId.takeIf { topScreen == Screen.Home }) }
     // Coming back to the foreground (runs that finished meanwhile would otherwise stay "Working" until a manual
     // refresh), and signing in again: the view model is activity-scoped, so its init refresh ran for the previous
     // session, whose list sign-out cleared.
@@ -272,8 +291,9 @@ internal fun AppShell(
             whatsNewHint = whatsNewHint,
             extendedMode = extendedMode && !isDemo,
             onQueryChange = agentsViewModel::setQuery,
+            drafts = draftRows,
             callbacks = SidebarCallbacks(
-                onNewChat = { navigateTop(Screen.Home) },
+                onNewChat = ::startNewChat,
                 onSettings = { navigateTop(Screen.Settings) },
                 onWhatsNew = ::openWhatsNew,
                 onCustomize = { customizeOpen = true },
@@ -285,6 +305,8 @@ internal fun AppShell(
                 onSectionCollapsed = agentsViewModel::setSectionCollapsed,
                 onVisibleRows = agentsViewModel::rowsVisible,
                 onRetryLoadMore = { agentsViewModel.retryLoadMore() },
+                onOpenDraft = ::openDraft,
+                onDeleteDraft = { row -> scope.launch { graph.newChatDrafts.remove(row.id) } },
             ),
             modifier = modifier,
         )

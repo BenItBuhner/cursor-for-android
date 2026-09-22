@@ -106,6 +106,10 @@ data class SidebarCallbacks(
     val onWhatsNew: () -> Unit = {},
     /** The tail's Retry after a page failed: the same page, asked for again (see `AgentsViewModel.retryLoadMore`). */
     val onRetryLoadMore: () -> Unit = {},
+    /** A draft's row was tapped: it opens in the New Chat composer. */
+    val onOpenDraft: (DraftRow) -> Unit = {},
+    /** A draft's row menu asked for it to be deleted. */
+    val onDeleteDraft: (DraftRow) -> Unit = {},
 )
 
 /** Test tags for the card slot above the account footer: one card at a time, the update's or the notes'. */
@@ -141,6 +145,8 @@ fun Sidebar(
     whatsNewHint: String? = null,
     /** Extended mode is on: the account footer says so, quietly, for as long as it is. */
     extendedMode: Boolean = false,
+    /** New chats written and not sent, most recent first: listed above every group (see [DraftRow.listed]). */
+    drafts: List<DraftRow> = emptyList(),
 ) {
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
@@ -200,7 +206,9 @@ fun Sidebar(
             // Rows dissolve at the top and bottom of the pane while more of the list sits past that edge; there is no
             // rule above the footer, the fade is what separates the two.
             val listState = rememberLazyListState()
-            KeepAtTop(listState, sidebarTopKey(state))
+            // A search reaches the drafts too, by what was written in them.
+            val shownDrafts = if (query.isBlank()) drafts else drafts.filter { it.title.contains(query.trim(), ignoreCase = true) }
+            KeepAtTop(listState, sidebarTopKey(state, shownDrafts))
             // The list holds the newest agents; the pages behind them are fetched as the reader nears its end. In
             // the sidebar that is the last row being within a few of the bottom, whatever filter is on: with a
             // narrow filter the loaded pages may match little, and the ones behind them are where more matches are.
@@ -211,9 +219,9 @@ fun Sidebar(
             val tail = state.tail
             val lastGroupFolded = state.sections.lastOrNull()?.let { query.isBlank() && it.key in state.collapsedSections } == true
             val autoLoad = tail == SidebarTail.More && !lastGroupFolded
-            // The rows on screen, reported as the list settles: their keys are `<section>:<agent id>`.
+            // The rows on screen, reported as the list settles: their keys are `<section>:<agent id>`; a draft is no agent.
             LaunchedEffect(listState) {
-                snapshotFlow { listState.layoutInfo.visibleItemsInfo.mapNotNull { (it.key as? String)?.takeIf { key -> key.contains(':') && !key.startsWith("hdr-") }?.substringAfterLast(':') } }
+                snapshotFlow { listState.layoutInfo.visibleItemsInfo.mapNotNull { (it.key as? String)?.takeIf { key -> key.contains(':') && !key.startsWith("hdr-") && !key.startsWith(DRAFT_KEY_PREFIX) }?.substringAfterLast(':') } }
                     .distinctUntilChanged()
                     .collect { callbacks.onVisibleRows(it) }
             }
@@ -223,6 +231,17 @@ fun Sidebar(
                     .collect { (lastVisible, total) -> if (total > 0 && lastVisible >= total - MoreAgentsPrefetchRows) callbacks.onLoadMore() }
             }
             LazyColumn(Modifier.fillMaxSize().scrollEdgeFade(listState), state = listState, contentPadding = PaddingValues(top = 2.dp, bottom = 12.dp)) {
+                // The drafts lead the list, above every group, each a chat that has not been sent yet.
+                items(shownDrafts, key = { DRAFT_KEY_PREFIX + it.id }) { row ->
+                    DraftRowItem(
+                        row = row,
+                        prefs = state.prefs,
+                        onOpen = callbacks.onOpenDraft,
+                        onDelete = callbacks.onDeleteDraft,
+                        modifier = Modifier.animateItem().padding(vertical = CursorDimens.sidebarRowGap / 2),
+                        nowMillis = state.nowMillis,
+                    )
+                }
                 if (!state.hasLoaded && state.sections.isEmpty()) {
                     item("loading") { Text("Loading chats…", style = type.small, color = colors.textQuaternary, modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) }
                 }
@@ -333,12 +352,16 @@ internal fun KeepAtTop(listState: LazyListState, topKey: Any?) {
 }
 
 /** The key of the row that leads the sidebar's list as it is composed below — what [KeepAtTop] watches. */
-internal fun sidebarTopKey(state: AgentListUiState): String? = when {
+internal fun sidebarTopKey(state: AgentListUiState, drafts: List<DraftRow> = emptyList()): String? = when {
+    drafts.isNotEmpty() -> DRAFT_KEY_PREFIX + drafts.first().id
     !state.hasLoaded && state.sections.isEmpty() -> "loading"
     state.hasLoaded && state.sections.isEmpty() -> "empty"
     state.error != null -> "error"
     else -> state.sections.firstOrNull()?.let { "hdr-${it.key}" }
 }
+
+/** The lead of a draft row's key in the sidebar's list: never read as an agent's (see `onVisibleRows`). */
+private const val DRAFT_KEY_PREFIX = "draft:"
 
 /** The one line the Projects group carries without Extended mode: what the list can and cannot tell about workers. */
 const val PROJECTS_DEFAULT_MODE_NOTICE = "Project workers appear as plain chats without Extended mode"
