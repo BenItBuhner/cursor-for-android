@@ -9,9 +9,9 @@ import com.cursorforandroid.data.local.DraftStore
 import com.cursorforandroid.data.local.PreferencesStore.ComposerDefaults
 import com.cursorforandroid.data.repo.AgentRepository
 import com.cursorforandroid.data.repo.AttachmentUploads
-import com.cursorforandroid.data.repo.FailedLaunch
 import com.cursorforandroid.data.repo.LaunchIdempotency
 import com.cursorforandroid.data.repo.LaunchRequest
+import com.cursorforandroid.data.repo.NewChatDrafts
 import com.cursorforandroid.data.repo.SlashScope
 import com.cursorforandroid.domain.AccountModel
 import com.cursorforandroid.domain.Agent
@@ -146,8 +146,10 @@ data class NewAgentUiState(
         }
     /** The device's repository as a picker entry — the catalogue's own row for it when the catalogue lists it. */
     val deviceRepository: Repository? get() = deviceRepoUrl?.let { url -> repositories.firstOrNull { it.isAt(url) } ?: Repository(url) }
+    /** Something written or attached: what makes the composer's contents a draft worth keeping. */
+    val hasContent: Boolean get() = prompt.isNotBlank() || attachments.isNotEmpty() || files.isNotEmpty()
     /** Nothing written, nothing attached and nothing on its way out: a draft that comes back may take the composer. */
-    val isFree: Boolean get() = prompt.isBlank() && attachments.isEmpty() && files.isEmpty() && !isLaunching
+    val isFree: Boolean get() = !hasContent && !isLaunching
 
     companion object {
         /** The web composer's name for a chat with no repository: the source the Agents Window offers beside the repositories. */
@@ -155,14 +157,32 @@ data class NewAgentUiState(
     }
 }
 
+/**
+ * The New Chat composer. What it holds is a draft ([DraftStore.Record], kept by [NewChatDrafts]): written as it
+ * changes, listed in the sidebar once the composer is left, opened again from there with everything it was written
+ * with — text, attachments, repository and branch, device, the model with every parameter, the switches. One draft is
+ * open at a time ([draftId]); opening another, or starting afresh, leaves the one before as it was.
+ */
 class NewAgentViewModel(
     private val graph: AppGraph,
     /** How long typing settles before the draft is written to disk; shortened in tests. */
     private val draftSaveDelayMs: Long = DRAFT_SAVE_DELAY_MS,
+    /**
+     * The draft this composer had open when its process was ended, as the screen saved it: opened again rather than a
+     * fresh one. Null — a first open, or the app started afresh — begins a new draft, the others waiting in the sidebar.
+     */
+    private val resume: String? = null,
+    /** Which composer writes the drafts ([DraftStore.ORIGIN_COMPOSER] here; the quick composer names itself). */
+    private val origin: String = DraftStore.ORIGIN_COMPOSER,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(NewAgentUiState())
     val state: StateFlow<NewAgentUiState> = _state.asStateFlow()
+
+    private val _draftId = MutableStateFlow(resume ?: newDraftId())
+
+    /** The draft this composer has open; the screen keeps it across a process death (see [resume]). */
+    val draftId: StateFlow<String> = _draftId.asStateFlow()
 
     /**
      * What `/` offers for the selected repository and branch. The catalog follows the selection: the saved (or
@@ -198,29 +218,30 @@ class NewAgentViewModel(
     private data class RepoChoice(val repoUrl: String?, val noRepo: Boolean, val ref: String)
 
     /**
-     * Rotated once a draft has been handed over, so an identical prompt sent again on purpose gets its own agent. A
-     * draft that comes back from a failed launch brings the nonce it went out under (see [takeBack]).
+     * The draft's own, kept with it: rotated when a new draft begins, so an identical prompt sent again on purpose gets
+     * its own agent, and brought back with a draft that is opened again — a failed launch's included (see [adopt]).
      */
     private var launchNonce: String = LaunchIdempotency.newNonce()
 
-    /**
-     * Drafts whose launch failed while something else was being written here, oldest first. Each comes back the
-     * moment the composer is free — sent, or cleared — rather than over what the user is writing.
-     */
-    private val waiting = ArrayDeque<ReturnedDraft>()
+    /** When the open draft was first written; null until it has been. */
+    private var createdAtMillis: Long? = null
 
     /** The agent list as last published; the branch picker's contents are derived from it (see [KnownBranches]). */
     private var agents: List<Agent> = emptyList()
     /** Live workers and pools from the fleet endpoints; merged with [agents] for the device picker. */
     private var liveDevices: List<DeviceOption> = emptyList()
 
-    /** Where each attachment's bytes already are on disk, by attachment id, so a save rewrites none of them. */
+    /** Where each attachment's bytes already are in the open draft's directory, by attachment id, so a save rewrites none of them. */
     @Volatile private var savedImages: Map<String, DraftStore.Image> = emptyMap()
     @Volatile private var savedFiles: Map<String, DraftStore.StoredFile> = emptyMap()
-    /** One writer at a time, so a save that was already under way cannot land on top of a clear. */
+    /** One writer at a time, so a save that was already under way cannot land on top of a clear or a switch of draft. */
     private val draftMutex = Mutex()
+    private val drafts: NewChatDrafts get() = graph.newChatDrafts
+    private val draftSave: suspend () -> Unit = { save() }
 
     init {
+        drafts.setOpen(_draftId.value)
+        drafts.composerSave = draftSave
         viewModelScope.launch {
             // The list is already on screen (restored from disk, then refreshed) by the time the composer shows, and
             // every later page, launch or finished run may teach the picker a branch.
@@ -231,12 +252,9 @@ class NewAgentViewModel(
                 _state.update { it.withPickerLists().withModelSelection() }
             }
         }
-        // Whichever composer is showing takes a failed launch's draft back: the one that sent it may be long gone.
-        viewModelScope.launch { graph.launcher.failures.collect { takeBack(it) } }
         viewModelScope.launch {
-            // What was left unsent takes precedence over the last launch's choices: the repository and model it was
-            // written against are resolved by the loaders below, exactly as remembered ones are.
-            val loaded = restore() ?: graph.prefs.composerDefaults.first()
+            drafts.load()
+            val loaded = graph.prefs.composerDefaults.first()
             defaults = loaded
             // Cloud comes back to the repository last launched there; before any launch on Cloud, to the last launch's.
             cloudRepo = RepoChoice(loaded.cloudRepoUrl ?: loaded.repoUrl, noRepo = false, ref = if (loaded.cloudRepoUrl == null || loaded.cloudRepoUrl == loaded.repoUrl) loaded.ref.orEmpty() else "")
@@ -244,6 +262,20 @@ class NewAgentViewModel(
             // A machine restored from the last launch brings its repository with it once the device list says which.
             _state.update {
                 it.copy(autoCreatePr = loaded.autoCreatePr, ref = loaded.ref.orEmpty(), selectedDevice = loaded.env, repoFollowsDevice = !loaded.env.isCloud, isLoadingDevices = true).withPickerLists()
+            }
+            // The draft this composer had open when its process was ended — or one the sidebar asked for before this
+            // composer existed — stands over the last launch's choices: the repository and model it was written
+            // against are resolved by the loaders below, as remembered ones are. One sent meanwhile is the chat's
+            // now, and the composer starts a draft of its own.
+            // The sidebar's asks — open a draft, start afresh, a draft deleted or back from a failed launch — in order,
+            // from here: one heard earlier would have been undone by the defaults just applied.
+            launch { drafts.requests.collect { handle(it) } }
+            val asked = (drafts.takePending() as? NewChatDrafts.Request.Open)?.id
+            val resumed = (asked ?: resume)?.let(drafts::record)
+            when {
+                resumed == null -> Unit
+                resumed.launchedAs != null -> draftMutex.withLock { switchTo(newDraftId()) }
+                else -> draftMutex.withLock { adopt(resumed) }
             }
             // Both catalogs were saved by the previous session: they are adopted below before either network call
             // is made, and the fetches only revalidate them.
@@ -293,86 +325,174 @@ class NewAgentViewModel(
     }
 
     /**
-     * The draft left over from a process that was killed, as the defaults to open on. Its images come back with it;
-     * so does the nonce it was going to go out under, so sending it now still adopts anything the interrupted attempt
-     * managed to create.
+     * Puts [record] in the composer: its text, its images and files (read back from its directory; a file whose upload
+     * had completed comes back with its reference and is not uploaded again), the repository and branch, the device,
+     * the model with the parameters it was written with, the switches, and the nonce it would have gone out under — so
+     * sending it now still adopts anything an interrupted attempt created. Called with [draftMutex] held.
      */
-    private suspend fun restore(): ComposerDefaults? {
-        val draft = graph.drafts.read() ?: return null
-        val images = draft.images.mapNotNull { stored -> graph.drafts.readImage(stored)?.let { stored to it } }
+    private suspend fun adopt(record: DraftStore.Record) {
+        val images = record.images.mapNotNull { stored -> graph.drafts.readImage(record.id, stored)?.let { stored to it } }
         // Decodes a bitmap per image, so not on the main thread.
         val attachments = withContext(Dispatchers.IO) { images.map { (stored, image) -> stored to PendingAttachment.of(image) } }
-        savedImages = attachments.associate { (stored, attachment) -> attachment.id to stored }
         // An image file's chip thumbnail is decoded on the way back, off the main thread like the strip's.
-        val files = withContext(Dispatchers.IO) { draft.files.mapNotNull { stored -> graph.drafts.readFile(stored)?.let { stored to PendingFile.of(it) } } }
+        val files = withContext(Dispatchers.IO) { record.files.mapNotNull { stored -> graph.drafts.readFile(record.id, stored)?.let { stored to PendingFile.of(it) } } }
+        switchTo(record.id)
+        savedImages = attachments.associate { (stored, attachment) -> attachment.id to stored }
         savedFiles = files.associate { (stored, file) -> file.id to stored }
-        // A file that came back with its reference is up already; one without goes up now.
+        createdAtMillis = record.createdAtMillis
+        launchNonce = record.nonce.ifBlank { LaunchIdempotency.newNonce() }
         files.forEach { (_, file) -> graph.attachmentUploads.start(file.id, file.file) }
-        if (draft.nonce.isNotBlank()) launchNonce = draft.nonce
-        _state.update {
-            it.copy(
-                prompt = draft.prompt,
+        // A model picked for the draft is the draft's, re-resolved by id once the list is here; a default is derived afresh.
+        modelPicked = record.modelChosen
+        _state.update { s ->
+            val repo = s.withRepoChoice(RepoChoice(record.repoUrl.takeUnless { record.noRepo }, record.noRepo, record.ref))
+            repo.copy(
+                prompt = record.prompt,
                 attachments = attachments.map { (_, attachment) -> attachment },
                 files = files.map { (_, file) -> file },
-                noRepo = draft.noRepo,
-                planMode = draft.planMode,
-            ).withExclusiveModes()
+                autoCreatePr = record.autoCreatePr,
+                planMode = record.planMode,
+                // A draft 0.3.61 kept never said where it would run: it opens on the last launch's device, as it did.
+                selectedDevice = record.device ?: s.selectedDevice,
+                // The draft's repository and device were chosen together: the repository is the draft's, whatever the device pins.
+                repoFollowsDevice = if (record.device != null) false else s.repoFollowsDevice,
+                error = record.error,
+            ).withDraftModel(record).withExclusiveModes().withPickerLists().withModelSelection(settleOnAuto = false)
         }
-        val saved = graph.prefs.composerDefaults.first()
-        return ComposerDefaults(
-            repoUrl = draft.repoUrl,
-            ref = draft.ref,
-            modelId = draft.modelId,
-            modelParams = draft.modelParams,
-            autoCreatePr = draft.autoCreatePr,
-            modelChosen = draft.modelChosen,
-            // The draft records what was typed, not where it would run: the device stays the last launch's.
-            env = saved.env,
-            cloudRepoUrl = saved.cloudRepoUrl,
-            // A draft being restored is as fresh as now: its model stands over the account's newest chat's.
-            modelChosenAtMillis = if (draft.modelChosen) AppClock.now() else 0L,
-        )
     }
 
-    /** What is on screen, as the draft it would be restored from; an empty composer has no draft to keep. */
-    private suspend fun save() = draftMutex.withLock {
-        val s = _state.value
-        if (s.prompt.isBlank() && s.attachments.isEmpty() && s.files.isEmpty()) {
-            if (savedImages.isNotEmpty() || savedFiles.isNotEmpty() || graph.drafts.read() != null) {
-                savedImages = emptyMap()
-                savedFiles = emptyMap()
-                graph.drafts.clear()
-            }
-            return@withLock
-        }
-        val stored = s.attachments.mapNotNull { a -> (savedImages[a.id] ?: graph.drafts.writeImage(a.image))?.let { a.id to it } }
-        savedImages = stored.toMap()
-        // A file already on disk is not written again; its record takes the reference its upload has settled on since.
-        val storedFiles = s.files.mapNotNull { f -> (savedFiles[f.id]?.withRef(f.file.upload) ?: graph.drafts.writeFile(f.file))?.let { f.id to it } }
-        savedFiles = storedFiles.toMap()
-        graph.drafts.write(
-            DraftStore.Draft(
-                prompt = s.prompt,
-                images = stored.map { it.second },
-                files = storedFiles.map { it.second },
-                repoUrl = if (s.noRepo) null else s.selectedRepo?.url,
-                noRepo = s.noRepo,
-                ref = s.ref,
-                modelId = s.selectedModel?.id,
-                modelParams = s.selectedVariant?.params?.associate { it.id to it.value } ?: emptyMap(),
-                // A model picked here comes back as the draft's; a default does not, and is derived afresh.
-                modelChosen = modelPicked,
-                autoCreatePr = s.autoCreatePr,
-                planMode = s.planMode,
-                nonce = launchNonce,
-            ),
-        )
+    /**
+     * The draft's model as the selection, until the list says more: the list's own entry when it has the model, else a
+     * stand-in with the id, the name and the parameters, which [withModelSelection] resolves by id when the list comes.
+     */
+    private fun NewAgentUiState.withDraftModel(record: DraftStore.Record): NewAgentUiState {
+        if (!record.modelChosen) return this
+        val id = record.modelId ?: return copy(selectedModel = models.autoOption() ?: models.firstOrNull(), selectedVariant = (models.autoOption() ?: models.firstOrNull())?.defaultVariant)
+        val listed = models.named(id)
+        val model = listed ?: ModelOption(id, record.modelLabel ?: id)
+        val variant = listed?.variantNearest(record.modelParams) ?: ModelVariant(record.modelLabel ?: id, record.modelParams, isDefault = false)
+        return copy(selectedModel = model, selectedVariant = variant)
     }
 
-    private suspend fun forgetDraft() = draftMutex.withLock {
+    /** The composer's open draft is [id] from now: what is on disk for it is its own, nothing of the previous one's. */
+    private fun switchTo(id: String) {
+        _draftId.value = id
+        drafts.setOpen(id)
         savedImages = emptyMap()
         savedFiles = emptyMap()
-        graph.drafts.clear()
+        createdAtMillis = null
+    }
+
+    /**
+     * What is on screen, as the draft it would be opened from. An emptied composer has no draft to keep: the user has
+     * cleared it. A draft that has not changed is not written again, so opening one does not make it the newest.
+     */
+    private suspend fun save() = draftMutex.withLock {
+        val s = _state.value
+        val id = _draftId.value
+        val existing = drafts.record(id)
+        if (!s.hasContent) {
+            savedImages = emptyMap()
+            savedFiles = emptyMap()
+            if (existing != null && existing.launchedAs == null) drafts.remove(id)
+            return@withLock
+        }
+        val stored = s.attachments.mapNotNull { a -> (savedImages[a.id] ?: graph.drafts.writeImage(id, a.image))?.let { a.id to it } }
+        savedImages = stored.toMap()
+        // A file already on disk is not written again; its record takes the reference its upload has settled on since.
+        val storedFiles = s.files.mapNotNull { f -> (savedFiles[f.id]?.withRef(f.file.upload) ?: graph.drafts.writeFile(id, f.file))?.let { f.id to it } }
+        savedFiles = storedFiles.toMap()
+        val now = AppClock.now()
+        val record = DraftStore.Record(
+            id = id,
+            createdAtMillis = createdAtMillis ?: existing?.createdAtMillis ?: now,
+            updatedAtMillis = now,
+            origin = existing?.origin ?: origin,
+            prompt = s.prompt,
+            images = stored.map { it.second },
+            files = storedFiles.map { it.second },
+            repoUrl = if (s.noRepo) null else s.selectedRepo?.url,
+            noRepo = s.noRepo,
+            ref = s.ref,
+            device = s.selectedDevice,
+            modelId = s.selectedModel?.id,
+            modelParams = s.selectedVariant?.params.orEmpty(),
+            modelLabel = s.selectedModel?.displayName,
+            // A model picked here comes back as the draft's; a default does not, and is derived afresh.
+            modelChosen = modelPicked,
+            autoCreatePr = s.autoCreatePr,
+            planMode = s.planMode,
+            nonce = launchNonce,
+            launchedAs = existing?.launchedAs,
+        )
+        // Written into since its launch came back: the reason goes with the change; unchanged, it stays.
+        if (record.sameContentAs(existing?.copy(error = null))) return@withLock
+        createdAtMillis = record.createdAtMillis
+        drafts.save(record)
+    }
+
+    /** What the sidebar asks: see [NewChatDrafts.Request]. */
+    private suspend fun handle(request: NewChatDrafts.Request) {
+        if (request is NewChatDrafts.Request.Open || request is NewChatDrafts.Request.Fresh) drafts.takePending()
+        when (request) {
+            is NewChatDrafts.Request.Open -> {
+                if (request.id == _draftId.value) return
+                val record = drafts.record(request.id)?.takeIf { it.launchedAs == null } ?: return
+                save()
+                draftMutex.withLock { adopt(record) }
+            }
+            NewChatDrafts.Request.Fresh -> if (_state.value.hasContent) startFresh()
+            is NewChatDrafts.Request.Deleted -> if (request.id == _draftId.value) letGo()
+            // A launch that came back is taken up by a composer with nothing in it; otherwise it waits in the sidebar.
+            is NewChatDrafts.Request.Returned -> {
+                if (!_state.value.isFree) return
+                val record = drafts.record(request.id) ?: return
+                draftMutex.withLock { adopt(record) }
+            }
+        }
+    }
+
+    /**
+     * A fresh composer, on the last launch's choices, as a cold start opens one; what it held stays a draft of its own
+     * in the sidebar.
+     */
+    private suspend fun startFresh() {
+        save()
+        val saved = graph.prefs.composerDefaults.first()
+        draftMutex.withLock {
+            switchTo(newDraftId())
+            launchNonce = LaunchIdempotency.newNonce()
+            modelPicked = false
+            defaults = saved
+            _state.update { s ->
+                val base = s.copy(
+                    prompt = "",
+                    attachments = emptyList(),
+                    files = emptyList(),
+                    error = null,
+                    planMode = false,
+                    autoCreatePr = saved.autoCreatePr,
+                    selectedDevice = saved.env,
+                    repoFollowsDevice = !saved.env.isCloud,
+                )
+                val repo = saved.repoUrl?.let { base.withRepoChoice(RepoChoice(it, noRepo = false, ref = saved.ref.orEmpty())) } ?: base
+                repo.withPickerLists().withModelSelection()
+            }
+        }
+    }
+
+    /** The open draft was deleted from the sidebar: the composer is emptied onto a new draft, its choices kept. */
+    private suspend fun letGo() = draftMutex.withLock {
+        _state.value.files.forEach { graph.attachmentUploads.cancel(it.id) }
+        switchTo(newDraftId())
+        launchNonce = LaunchIdempotency.newNonce()
+        _state.update { it.copy(prompt = "", attachments = emptyList(), files = emptyList(), error = null) }
+    }
+
+    override fun onCleared() {
+        if (drafts.composerSave === draftSave) drafts.composerSave = null
+        if (drafts.open.value == _draftId.value) drafts.setOpen(null)
+        super.onCleared()
     }
 
     /** Everything the draft is written from: what is on screen changes constantly, this only when the draft does. */
@@ -384,6 +504,7 @@ class NewAgentViewModel(
         selectedRepo?.url,
         noRepo,
         ref,
+        selectedDevice,
         selectedModel?.id,
         selectedVariant?.params?.map { it.id to it.value },
         autoCreatePr,
@@ -548,10 +669,7 @@ class NewAgentViewModel(
         return copy(selectedModel = resolved.choice.model, selectedVariant = resolved.choice.variant)
     }
 
-    fun setPrompt(value: String) {
-        _state.update { it.copy(prompt = value, error = null).withExclusiveModes() }
-        restoreWaitingIfFree()
-    }
+    fun setPrompt(value: String) = _state.update { it.copy(prompt = value, error = null).withExclusiveModes() }
     fun addAttachments(items: List<PendingAttachment>) = _state.update { it.copy(attachments = (it.attachments + items).take(PromptImage.MAX_COUNT), error = null) }
     /**
      * Drops a share into this composer: the incoming text is appended under whatever is already written, images
@@ -565,10 +683,7 @@ class NewAgentViewModel(
             error = warning,
         ).withExclusiveModes()
     }
-    fun removeAttachment(item: PendingAttachment) {
-        _state.update { s -> s.copy(attachments = s.attachments.filterNot { it.id == item.id }) }
-        restoreWaitingIfFree()
-    }
+    fun removeAttachment(item: PendingAttachment) = _state.update { s -> s.copy(attachments = s.attachments.filterNot { it.id == item.id }) }
     /** Files of any type from the document picker (Extended mode); refused with a word when the mode is off. */
     fun addFiles(items: List<PendingFile>) {
         if (items.isEmpty()) return
@@ -585,7 +700,6 @@ class NewAgentViewModel(
     fun removeFile(item: PendingFile) {
         _state.update { s -> s.copy(files = s.files.filterNot { it.id == item.id }) }
         graph.attachmentUploads.cancel(item.id)
-        restoreWaitingIfFree()
     }
     /** A file whose upload failed: the upload alone is tried again, in its chip. */
     fun retryFile(item: PendingFile) {
@@ -669,7 +783,8 @@ class NewAgentViewModel(
      * answered — and the composer is clear from that moment on: the request completes in the launcher
      * ([com.cursorforandroid.data.repo.ChatLauncher]), on its own, so coming back here, or starting another chat,
      * meets an empty composer whatever the server has yet to say. Should the launch fail, or be stopped from the chat,
-     * the draft comes back here (see [takeBack]).
+     * the draft comes back: into this composer if nothing has been written in it since, else to the sidebar, with the
+     * reason and the nonce it went out under, so an unchanged retry keeps the chat's id (see [handle]).
      */
     fun launch(onOpen: (agentId: String) -> Unit) {
         val s = _state.value
@@ -714,10 +829,20 @@ class NewAgentViewModel(
             // created instead of launching a duplicate. It is also what the chat is shown under before the server answers.
             val agentId = withContext(Dispatchers.Default) { LaunchIdempotency.agentId(draft, nonce) }
             val request = draft.copy(agentId = agentId)
+            // The draft is filed as it goes out and is the chat's from here: out of the sidebar before the chat's row
+            // is listed, deleted once the server has it, back — with the reason — if the launch does not go through.
+            // The composer moves on to a draft of its own in the same step as it empties, so nothing of this one's
+            // can be saved again under the next.
+            save()
+            drafts.markLaunched(_draftId.value, agentId)
+            draftMutex.withLock {
+                switchTo(newDraftId())
+                _state.update { it.copy(prompt = "", attachments = emptyList(), files = emptyList()) }
+            }
             graph.launcher.launch(request, s.modelLabel, nonce)
             onOpen(agentId)
-            // The draft is on its way, whatever becomes of it: the next one gets its own id, and the choices this one
-            // was made with are what the composer restores next time. Only once they are saved does it report itself free.
+            // The next draft gets its own id, and the choices this one was made with are what the composer restores
+            // next time. Only once they are saved does it report itself free.
             launchNonce = LaunchIdempotency.newNonce()
             val now = AppClock.now()
             val params = request.modelParams.associate { p: ModelParam -> p.id to p.value }
@@ -743,91 +868,20 @@ class NewAgentViewModel(
                 cloudRepoUrl = if (request.env.isCloud) request.repoUrl else defaults?.cloudRepoUrl,
                 modelChosenAtMillis = now,
             )
-            _state.update { it.copy(isLaunching = false, prompt = "", attachments = emptyList(), files = emptyList()) }
+            _state.update { it.copy(isLaunching = false) }
             // The files are the launch's now, by their references; a launch that fails brings them back with those.
             graph.attachmentUploads.forget(s.files.map { it.id })
-            // The draft is the launcher's now; what is kept on disk is whatever is written next.
-            forgetDraft()
-            restoreWaitingIfFree()
         }
     }
 
-    /**
-     * A launch did not go through: its draft comes back here to be sent again — with the reason, unless the chat was
-     * stopped on purpose — and, under the nonce it went out with, an unchanged retry keeps the chat's id. A composer
-     * already being written into is not overwritten: the draft waits, and comes back the moment the composer is free.
-     */
-    private suspend fun takeBack(failed: FailedLaunch) {
-        val images = failed.request.images
-        // The strip's thumbnails are decoded off the main thread, as they were when the images were picked.
-        val attachments = if (images.isEmpty()) emptyList() else withContext(Dispatchers.IO) { images.map(PendingAttachment::of) }
-        val files = if (failed.request.files.isEmpty()) emptyList() else withContext(Dispatchers.IO) { failed.request.files.map { PendingFile.of(it) } }
-        waiting += ReturnedDraft(failed, attachments, files)
-        restoreWaitingIfFree()
-    }
-
-    private fun restoreWaitingIfFree() {
-        if (waiting.isEmpty() || !_state.value.isFree) return
-        val draft = waiting.removeFirst()
-        launchNonce = draft.failed.nonce
-        // A model the list has, or a launch that sent none: the pick is settled, and a list arriving later
-        // re-resolves it rather than the remembered one.
-        if (_state.value.resolvesModelOf(draft.failed.request)) modelPicked = true
-        _state.update { it.restored(draft) }
-        // The files come back with the references they went out under, so they are up from the start; one that
-        // went out inline, or whose upload the account has since let go, goes up again.
-        draft.files.forEach { graph.attachmentUploads.start(it.id, it.file) }
-    }
-
-    /**
-     * The composer as it was when [draft] went out — its text, its images, the choices it was made with — and why it
-     * is back. A repository or model the lists no longer offer leaves the current pick; the saved defaults, recorded
-     * when the draft was sent, restore it when the list next arrives.
-     */
-    private fun NewAgentUiState.restored(draft: ReturnedDraft): NewAgentUiState {
-        val request = draft.failed.request
-        val repo = request.repoUrl?.let { url -> repositories.firstOrNull { it.url == url } }
-        val model = modelFor(request)
-        val modelResolved = resolvesModelOf(request)
-        // A launch that sent no model was going to run on Auto; that is what comes back checked.
-        val auto = models.autoOption() ?: models.firstOrNull()
-        return copy(
-            // A prompt the launch wrote for an attachment-only draft comes back as the empty field it was typed as.
-            prompt = if (draft.files.isNotEmpty() && request.prompt == attachmentOnlyText(request.images.size, request.files.size)) "" else request.prompt,
-            attachments = draft.attachments,
-            files = draft.files,
-            error = draft.failed.reason,
-            noRepo = request.repoUrl == null,
-            selectedRepo = repo ?: selectedRepo,
-            ref = request.ref ?: "",
-            selectedModel = if (modelResolved) model ?: auto else selectedModel,
-            selectedVariant = when {
-                !modelResolved -> selectedVariant
-                model != null -> model.variantWithParams(request.modelParams.associate { it.id to it.value }) ?: model.defaultVariant
-                else -> auto?.defaultVariant
-            },
-            autoCreatePr = request.autoCreatePr,
-            planMode = request.planMode,
-            selectedDevice = request.env,
-            // The draft's repository and device went out together: the repository is the draft's, whatever the device pins.
-            repoFollowsDevice = false,
-        ).withExclusiveModes().withPickerLists()
-    }
-
-    private fun NewAgentUiState.modelFor(request: LaunchRequest): ModelOption? = request.modelId?.let { id -> models.firstOrNull { it.id == id } }
-
-    /** True when [request]'s model is one the current list has, or the launch sent none, so the composer can show it as picked. */
-    private fun NewAgentUiState.resolvesModelOf(request: LaunchRequest): Boolean = request.modelId == null || modelFor(request) != null
-
-    /** A failed launch's draft with its images and files ready for the strip again. */
-    private class ReturnedDraft(val failed: FailedLaunch, val attachments: List<PendingAttachment>, val files: List<PendingFile> = emptyList())
-
-    class Factory(private val graph: AppGraph) : ViewModelProvider.Factory {
+    class Factory(private val graph: AppGraph, private val resume: String? = null) : ViewModelProvider.Factory {
         @Suppress("UNCHECKED_CAST")
-        override fun <T : ViewModel> create(modelClass: Class<T>): T = NewAgentViewModel(graph) as T
+        override fun <T : ViewModel> create(modelClass: Class<T>): T = NewAgentViewModel(graph, resume = resume) as T
     }
 
     private companion object {
         const val DRAFT_SAVE_DELAY_MS = 400L
+
+        fun newDraftId(): String = "draft-" + java.util.UUID.randomUUID()
     }
 }

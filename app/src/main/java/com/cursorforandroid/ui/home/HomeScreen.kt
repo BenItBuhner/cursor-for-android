@@ -109,7 +109,12 @@ fun HomeScreen(
     rowActions: AgentRowActions,
     modifier: Modifier = Modifier,
 ) {
-    val viewModel: NewAgentViewModel = viewModel(factory = NewAgentViewModel.Factory(graph))
+    // The draft open here is kept with the screen's saved state: a process ended under the composer opens it again,
+    // while an app started afresh begins a new one, the others waiting in the sidebar.
+    var openDraft by rememberSaveable { mutableStateOf<String?>(null) }
+    val viewModel: NewAgentViewModel = viewModel(factory = NewAgentViewModel.Factory(graph, resume = openDraft))
+    val draftId by viewModel.draftId.collectAsStateWithLifecycle()
+    LaunchedEffect(draftId) { openDraft = draftId }
     val state by viewModel.state.collectAsStateWithLifecycle()
     val commands by viewModel.commands.collectAsStateWithLifecycle()
     val colors = CursorTheme.colors
