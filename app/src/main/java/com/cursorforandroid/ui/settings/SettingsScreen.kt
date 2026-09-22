@@ -87,7 +87,7 @@ object SettingsCopy {
     const val GROUP_CHATS = "Chats"
     const val GROUP_NOTIFICATIONS = "Notifications"
     const val UNREAD_THIS_PHONE = "Unread only for chats from this phone"
-    const val UNREAD_THIS_PHONE_DETAIL = "Chats started elsewhere show no unread dot until you open them here."
+    const val UNREAD_THIS_PHONE_DETAIL = "Chats from elsewhere show as read until opened here."
     const val GROUP_UPDATES = "Version and updates"
     const val SIGN_OUT = "Sign out"
     const val LEAVE_DEMO = "Leave demo"

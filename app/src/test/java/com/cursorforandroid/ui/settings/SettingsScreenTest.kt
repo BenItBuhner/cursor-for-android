@@ -18,6 +18,7 @@ import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTouchInput
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -138,7 +139,7 @@ class SettingsScreenTest {
         assertThat(top("Version $version")).isLessThan(top(title))
         assertThat(top(title)).isLessThan(top("Automatic updates"))
 
-        compose.onNodeWithTag(SettingsTags.WHATS_NEW_ROW).assertHasClickAction().performClick()
+        compose.onNodeWithTag(SettingsTags.WHATS_NEW_ROW).performScrollTo().assertHasClickAction().performClick()
         assertThat(opened).isEqualTo(1)
 
         // Opening the page reads the notes (the page does that); here the read is what the row follows.
@@ -195,7 +196,8 @@ class SettingsScreenTest {
     @Test
     fun `a long press on the version row opens the debug sheet where the exports still work, and a tap does not`() {
         composeSettings(isDemo = false)
-        val version = compose.onNodeWithTag(SettingsTags.VERSION_ROW)
+        // Below the fold on this screen: a touch lands only on a row that is on it.
+        val version = compose.onNodeWithTag(SettingsTags.VERSION_ROW).performScrollTo()
 
         version.performClick()
         compose.waitForIdle()
