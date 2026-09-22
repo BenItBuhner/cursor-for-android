@@ -96,7 +96,7 @@ class TmpImageOpenScreenshotTest {
     }
 
     @OptIn(ExperimentalMaterial3Api::class)
-    private fun open(loader: MediaLoader, call: ToolCall, until: String) {
+    private fun open(loader: MediaLoader, call: ToolCall, until: String, ready: (MediaViewerState) -> Boolean = { true }) {
         val state = MediaViewerState(null)
         compose.setContent {
             CursorTheme(mode = ThemeMode.Dark) {
@@ -113,7 +113,7 @@ class TmpImageOpenScreenshotTest {
         compose.onNodeWithTag("file-link").performClick()
         compose.waitUntil(30_000) {
             compose.waitForIdle()
-            state.phase == MediaViewerState.Phase.Open && compose.onAllNodes(hasTestTag(until)).fetchSemanticsNodes().isNotEmpty()
+            state.phase == MediaViewerState.Phase.Open && compose.onAllNodes(hasTestTag(until)).fetchSemanticsNodes().isNotEmpty() && ready(state)
         }
     }
 
@@ -124,7 +124,10 @@ class TmpImageOpenScreenshotTest {
     @Test
     fun tmpPictureTheReadCarried() {
         val picture = ViewerFixtures.png("reel_frames_s.png", 960, 540, 0xFF2E4A62.toInt())
-        open(loader(Machine({ null })), readOf("/tmp/reel_frames_s.jpg", ToolPayload.ReadMedia("/tmp/reel_frames_s.jpg", picture, "image/png")), until = "viewer-image-0")
+        // The quick third-size decode stands in first; the frame is the full one, whichever lands by the capture.
+        open(loader(Machine({ null })), readOf("/tmp/reel_frames_s.jpg", ToolPayload.ReadMedia("/tmp/reel_frames_s.jpg", picture, "image/png")), until = "viewer-image-0") {
+            it.currentDecodeSize.width == 960
+        }
         capture("190_tmp_image_viewer_carried")
     }
 
