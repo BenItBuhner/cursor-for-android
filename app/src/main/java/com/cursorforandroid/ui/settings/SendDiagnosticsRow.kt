@@ -57,7 +57,7 @@ fun SendDiagnosticsRow(graph: AppGraph, enabled: Boolean = true, send: (suspend 
 
 object SendDiagnosticsCopy {
     const val TITLE = "Send to the Cursor for Android Project"
-    const val SUBTITLE = "Writes both exports to the Project's Context."
+    const val SUBTITLE = "Writes both exports to its shared context."
     const val SENT = "Sent to the Project: "
     const val FAILED = "Not sent: "
     const val TAG = "send-diagnostics"

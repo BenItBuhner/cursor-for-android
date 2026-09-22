@@ -546,10 +546,13 @@ private fun CrashReportRows(graph: AppGraph) {
     )
 }
 
-/** Settings copy for the crash report consent, shared with its test. The consent says what leaves the device, in one line. */
+/**
+ * Settings copy for the crash report consent, shared with its test. The line under the title is what a report never
+ * carries (see `CrashReporting`): who the user is, anything they wrote or read, any key.
+ */
 internal object CrashReportCopy {
     const val TITLE = "Send crash reports"
-    const val DETAIL = "Sends only the crash, app version and phone model."
+    const val DETAIL = "Never your account, chats or keys."
     const val UNAVAILABLE = "Not available in this build."
 }
 
