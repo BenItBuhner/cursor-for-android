@@ -2,6 +2,7 @@ package com.cursorforandroid.ui.conversation
 
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Paint
 import androidx.activity.ComponentActivity
@@ -10,19 +11,16 @@ import androidx.compose.material3.LocalRippleConfiguration
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
-import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.semantics.SemanticsNode
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.SemanticsMatcher
-import androidx.compose.ui.test.captureToImage
 import androidx.compose.ui.test.hasAnyAncestor
 import androidx.compose.ui.test.hasContentDescription
 import androidx.compose.ui.test.hasScrollToIndexAction
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
-import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.test.performSemanticsAction
@@ -46,6 +44,8 @@ import com.cursorforandroid.domain.UserMessage
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.ui.theme.ThemeMode
 import com.cursorforandroid.util.AppClock
+import com.github.takahirom.roborazzi.RoborazziOptions
+import com.github.takahirom.roborazzi.captureScreenRoboImage
 import com.google.common.truth.Truth.assertThat
 import com.google.common.truth.Truth.assertWithMessage
 import java.io.File
@@ -458,7 +458,8 @@ class TranscriptScrollPinningTest {
 
     /**
      * Captures frames of the screen while [block] runs and, when `SCROLL_PIN_FRAMES` names a file, writes them there as
-     * one strip, a guide line across each at the first visible row's top. Nothing is captured otherwise.
+     * one strip, a guide line across each at the first visible row's top. Nothing is captured otherwise. The frames
+     * are Roborazzi's, so the strip is drawn under `recordRoborazziDebug`.
      */
     private fun framesOf(title: String, block: (frame: (label: String, guide: Float) -> Unit) -> Unit) {
         val out = System.getenv("SCROLL_PIN_FRAMES")?.takeIf { it.isNotBlank() }?.let(::File)
@@ -466,7 +467,11 @@ class TranscriptScrollPinningTest {
         var guideY = 0f
         block { label, guide ->
             guideY = guide
-            if (out != null) frames += label to compose.onRoot().captureToImage().asAndroidBitmap().copy(Bitmap.Config.ARGB_8888, false)
+            if (out != null) {
+                val file = File.createTempFile("scroll-pin-frame", ".png").apply { deleteOnExit() }
+                captureScreenRoboImage(file.path, RoborazziOptions())
+                frames += label to checkNotNull(BitmapFactory.decodeFile(file.path)) { "no frame captured: run under recordRoborazziDebug" }
+            }
         }
         if (out == null || frames.isEmpty()) return
         val scale = 0.5f
