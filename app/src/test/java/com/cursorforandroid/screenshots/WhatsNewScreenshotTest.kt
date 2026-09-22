@@ -112,8 +112,8 @@ class WhatsNewScreenshotTest {
     }
 
     @Composable
-    private fun Scene(content: @Composable () -> Unit) {
-        CursorTheme(mode = ThemeMode.Dark) {
+    private fun Scene(mode: ThemeMode = ThemeMode.Dark, content: @Composable () -> Unit) {
+        CursorTheme(mode = mode) {
             // Ripples on API 31+ animate a noise "sparkle", so a frame caught mid-fade is never reproducible.
             CompositionLocalProvider(LocalRippleConfiguration provides null) {
                 Box(Modifier.fillMaxSize()) { content() }
@@ -124,14 +124,24 @@ class WhatsNewScreenshotTest {
     /** The page: header, notes, footer. */
     @Test
     fun page() {
+        page(ThemeMode.Dark, "90_whats_new_page")
+    }
+
+    @Test
+    @Config(sdk = [35], qualifiers = "w411dp-h914dp-notnight-420dpi")
+    fun pageLight() {
+        page(ThemeMode.Light, "147_whats_new_page_light")
+    }
+
+    private fun page(mode: ThemeMode, frame: String) {
         val graph = graph(WhatsNewFixtures.VERSION)
-        compose.setContent { Scene { WhatsNewScreen(graph = graph, onBack = {}) } }
+        compose.setContent { Scene(mode) { WhatsNewScreen(graph = graph, onBack = {}) } }
         compose.waitUntil(30_000) { compose.onAllNodes(hasTestTag(WhatsNewTags.NOTES)).fetchSemanticsNodes().isNotEmpty() }
         compose.onNodeWithText(WhatsNewCopy.title(WhatsNewFixtures.VERSION)).assertIsDisplayed()
         compose.onNodeWithText("Released Jan 14").assertIsDisplayed()
         compose.onNodeWithText("Goals").assertIsDisplayed()
         compose.onNodeWithTag(WhatsNewTags.DONE).assertIsDisplayed()
-        capture("90_whats_new_page")
+        capture(frame)
     }
 
     /** Settings, at the Version and updates card: the row directly beneath the version and its Check for updates. */

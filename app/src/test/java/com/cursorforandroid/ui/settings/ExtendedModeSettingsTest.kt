@@ -12,6 +12,8 @@ import androidx.compose.ui.test.assertIsOff
 import androidx.compose.ui.test.assertIsOn
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.isOff
+import androidx.compose.ui.test.isOn
 import androidx.compose.ui.test.isToggleable
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithTag
@@ -56,7 +58,7 @@ class ExtendedModeSettingsTest {
             // The screen collects the mode once and hands it down; here the card stands alone, so it collects itself,
             // on the main dispatcher as the screen does (see SettingsScreen).
             val enabled by graph.extendedMode.enabled.collectAsStateWithLifecycle(initialValue = false, context = Dispatchers.Main.immediate)
-            CursorTheme(mode = ThemeMode.Dark) { Column { ExtendedModeRows(graph, enabled = enabled) } }
+            CursorTheme(mode = ThemeMode.Dark) { Column { ExtendedModeRow(graph, enabled = enabled) } }
         }
     }
 
@@ -64,9 +66,14 @@ class ExtendedModeSettingsTest {
 
     private fun enabled() = runBlocking { graph.extendedMode.isEnabled() }
 
+    private val toggle get() = compose.onNode(isToggleable() and hasTestTag(ExtendedModeTags.TOGGLE))
+
+    private fun switchReads(on: Boolean) = compose.onAllNodes(isToggleable() and hasTestTag(ExtendedModeTags.TOGGLE) and if (on) isOn() else isOff()).fetchSemanticsNodes().isNotEmpty()
+
     @Test
     fun `turning it on the first time shows the warning, which cannot be skipped and enables nothing until it is accepted`() {
-        compose.onNodeWithText(ExtendedModeCopy.SETTING_OFF).assertIsDisplayed()
+        compose.onNodeWithText(ExtendedModeCopy.SETTING_DETAIL).assertIsDisplayed()
+        toggle.assertIsOff()
 
         compose.onNodeWithTag(ExtendedModeTags.TOGGLE).performClick()
         compose.waitUntil(10_000) { dialogShown() }
@@ -95,37 +102,40 @@ class ExtendedModeSettingsTest {
         compose.waitUntil(10_000) { enabled() }
         compose.waitUntil(10_000) { !dialogShown() }
         assertThat(runBlocking { graph.extendedMode.acknowledgedAt.first() }).isNotNull()
-        compose.waitUntil(10_000) { compose.onAllNodes(hasText(ExtendedModeCopy.SETTING_ON)).fetchSemanticsNodes().isNotEmpty() }
-        compose.onNode(isToggleable() and hasTestTag(ExtendedModeTags.TOGGLE)).assertIsOn()
+        compose.waitUntil(10_000) { switchReads(on = true) }
+        toggle.assertIsOn()
     }
 
     @Test
     fun `the section is the one switch, off or on, with nothing listed under it`() {
         fun assertToggleAlone() {
-            // One switch in the section, and none of what used to sit under it: no acknowledgment date, no note, no
-            // pin sync option or its status — the pins follow the mode itself.
+            // One switch, one line under it whichever way it is, and none of what used to sit under it: no
+            // acknowledgment date, no note, no pin sync option or its status — the pins follow the mode itself — and
+            // no transcript engine, which is a setting of its own beside this one.
             compose.onAllNodes(isToggleable()).assertCountEquals(1)
-            listOf("Warning acknowledged", "Sync pinned chats", "Last synced", "undocumented Cursor endpoints. They are in effect").forEach { removed ->
-                compose.onAllNodes(hasText(removed, substring = true)).assertCountEquals(0)
+            compose.onNodeWithText(ExtendedModeCopy.SETTING_DETAIL).assertIsDisplayed()
+            listOf(
+                "Warning acknowledged", "Sync pinned chats", "Last synced", "undocumented Cursor endpoints. They are in effect",
+                "Transcript engine", ExtendedModeCopy.ENGINE_TITLE, "Stable", "Beta", "Off.", "On.",
+            ).forEach { removed ->
+                compose.onAllNodes(hasText(removed, substring = true, ignoreCase = true)).assertCountEquals(0)
             }
         }
 
-        compose.onNodeWithText(ExtendedModeCopy.SETTING_OFF).assertIsDisplayed()
+        toggle.assertIsOff()
         assertToggleAlone()
 
         runBlocking {
             graph.extendedMode.acknowledge()
             graph.extendedMode.enable()
         }
-        compose.waitUntil(10_000) { compose.onAllNodes(hasText(ExtendedModeCopy.SETTING_ON)).fetchSemanticsNodes().isNotEmpty() }
-        compose.onNode(isToggleable() and hasTestTag(ExtendedModeTags.TOGGLE)).assertIsOn()
+        compose.waitUntil(10_000) { switchReads(on = true) }
         assertToggleAlone()
 
         // Off again, from the row itself: the row is the switch.
         compose.onNodeWithText(ExtendedModeCopy.SETTING_TITLE).performClick()
         compose.waitUntil(10_000) { !enabled() }
-        compose.waitUntil(10_000) { compose.onAllNodes(hasText(ExtendedModeCopy.SETTING_OFF)).fetchSemanticsNodes().isNotEmpty() }
-        compose.onNode(isToggleable() and hasTestTag(ExtendedModeTags.TOGGLE)).assertIsOff()
+        compose.waitUntil(10_000) { switchReads(on = false) }
         assertToggleAlone()
     }
 
@@ -143,7 +153,7 @@ class ExtendedModeSettingsTest {
             graph.extendedMode.acknowledge()
             graph.extendedMode.enable()
         }
-        compose.waitUntil(10_000) { compose.onAllNodes(hasText(ExtendedModeCopy.SETTING_ON)).fetchSemanticsNodes().isNotEmpty() }
+        compose.waitUntil(10_000) { switchReads(on = true) }
 
         compose.onNodeWithTag(ExtendedModeTags.TOGGLE).performClick()
         compose.waitUntil(10_000) { !enabled() }
