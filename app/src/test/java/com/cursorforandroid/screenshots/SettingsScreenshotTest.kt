@@ -130,7 +130,7 @@ class SettingsScreenshotTest {
 
     /** The whole list at once, on a canvas tall enough to hold it: the account first and the disclaimer last. */
     @Test
-    @Config(sdk = [35], qualifiers = "w411dp-h1260dp-night-420dpi")
+    @Config(sdk = [35], qualifiers = "w411dp-h1360dp-night-420dpi")
     fun settingsEssentials() {
         composeSettings()
         compose.onNodeWithText(SettingsCopy.GROUP_ACCOUNT).assertIsDisplayed()
