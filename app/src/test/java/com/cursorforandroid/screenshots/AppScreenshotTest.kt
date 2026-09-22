@@ -19,6 +19,7 @@ import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.isOn
+import androidx.compose.ui.test.isSelected
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onFirst
@@ -160,6 +161,11 @@ class AppScreenshotTest {
 
     private fun waitForText(text: String, timeoutMillis: Long = 20_000) {
         compose.waitUntil(timeoutMillis) { compose.onAllNodes(hasText(text, substring = true)).fetchSemanticsNodes().isNotEmpty() }
+    }
+
+    /** Until Settings' theme row [label] reads as the chosen one: the screen has recomposed from the preference. */
+    private fun waitForTheme(label: String) {
+        compose.waitUntil(20_000) { compose.onAllNodes(hasText(label) and isSelected()).fetchSemanticsNodes().isNotEmpty() }
     }
 
     /**
@@ -344,7 +350,7 @@ class AppScreenshotTest {
         compose.onNodeWithText("Demo User").performClick()
         waitForText("Appearance")
         compose.onNodeWithText("Cursor Dark").performClick()
-        waitForText("True-black surfaces instead of Cursor Dark's charcoal.")
+        waitForTheme("Cursor Dark")
         compose.waitForIdle()
         compose.onNodeWithContentDescription("Back").performClick()
 
@@ -468,9 +474,9 @@ class AppScreenshotTest {
         compose.onNodeWithText("Demo User").performClick()
         waitForText("Appearance")
         compose.onNodeWithText("Cursor Dark").performClick()
-        // The preference is one thing, the screen having recomposed from it another: wait for the copy that only the
-        // dark theme shows, or a slow runner captures "Match system" still checked.
-        waitForText("True-black surfaces instead of Cursor Dark's charcoal.")
+        // The preference is one thing, the screen having recomposed from it another: wait for the row to read chosen,
+        // or a slow runner captures "Match system" still checked.
+        waitForTheme("Cursor Dark")
         capture("20_settings_dark")
         compose.onNodeWithText("OLED black").performClick()
         // The switch in the OLED row (its row merges the label into its semantics) reads on once the screen has caught up.

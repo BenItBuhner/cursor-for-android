@@ -8,14 +8,15 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.hasTestTag
+import androidx.compose.ui.test.hasText
 import com.google.common.truth.Truth.assertThat
 import com.cursorforandroid.domain.TranscriptEngine
-import androidx.compose.ui.test.onAllNodesWithText
-import androidx.compose.ui.test.assertCountEquals
+import androidx.compose.ui.test.assertIsEnabled
+import androidx.compose.ui.test.assertIsNotEnabled
+import androidx.compose.ui.test.assertIsOff
 import androidx.compose.ui.test.performClick
-import androidx.compose.ui.test.isSelected
-import androidx.compose.ui.test.assertIsNotSelected
-import androidx.compose.ui.test.assertIsSelected
+import androidx.compose.ui.test.isNotEnabled
+import androidx.compose.ui.test.isOff
 import androidx.compose.ui.test.isOn
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithTag
@@ -30,6 +31,7 @@ import com.cursorforandroid.domain.CursorUser
 import com.cursorforandroid.ui.settings.ExtendedModeCopy
 import com.cursorforandroid.ui.settings.ExtendedModeTags
 import com.cursorforandroid.ui.settings.ProjectDiagnosticsCopy
+import com.cursorforandroid.ui.settings.SendDiagnosticsCopy
 import com.cursorforandroid.ui.settings.SettingsCopy
 import com.cursorforandroid.ui.settings.SettingsDebugCopy
 import com.cursorforandroid.ui.settings.SettingsScreen
@@ -57,10 +59,11 @@ import java.util.TimeZone
 
 /**
  * Settings on a signed-in install — the demo walkthrough in [AppScreenshotTest] never shows the account's own rows
- * or the Extended mode section. Four frames: the whole list on one tall canvas, so its structure reads in one
- * image; the bottom of the page with the mode off and with it on (the section is the one switch either way); and
- * the debug sheet a long press on the version row opens, with the exports, About and the credits that left the
- * list. Same device qualifiers as [AppScreenshotTest], but for the tall frame.
+ * or the Advanced section. The whole list on one tall canvas, dark and light, so its structure reads in one image;
+ * the bottom of the page with Extended mode off (the transcript engine beside it dimmed, with the reason) and on
+ * (the engine live, Stable), and with Beta chosen; the account sheet, dark and light; and the debug sheet a long
+ * press on the version row opens, with the exports, About and the credits that left the list, dark and light. Same
+ * device qualifiers as [AppScreenshotTest], but for the tall frames.
  */
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalRoborazziApi::class)
 @RunWith(AndroidJUnit4::class)
@@ -97,9 +100,9 @@ class SettingsScreenshotTest {
         captureScreenRoboImage(File(outDir, "$name.png").path, RoborazziOptions())
     }
 
-    private fun composeSettings() {
+    private fun composeSettings(mode: ThemeMode = ThemeMode.Dark) {
         compose.setContent {
-            CursorTheme(mode = ThemeMode.Dark) {
+            CursorTheme(mode = mode) {
                 // Ripples on API 31+ animate a noise "sparkle", so a frame caught mid-fade is never reproducible.
                 CompositionLocalProvider(LocalRippleConfiguration provides null) {
                     SettingsScreen(graph = graph, user = USER, isDemo = false, onOpenSidebar = null, onBack = {})
@@ -122,6 +125,18 @@ class SettingsScreenshotTest {
 
     private fun modeReadsOn() = compose.onAllNodes(isOn() and hasTestTag(ExtendedModeTags.TOGGLE)).fetchSemanticsNodes().isNotEmpty()
 
+    private fun openDebugSheet() {
+        compose.onNodeWithTag(SettingsTags.VERSION_ROW).performSemanticsAction(SemanticsActions.OnLongClick)
+        compose.waitUntil(30_000) { compose.onAllNodes(hasTestTag(SettingsTags.DEBUG_SHEET)).fetchSemanticsNodes().isNotEmpty() }
+        compose.waitForIdle()
+    }
+
+    private fun openAccountSheet() {
+        compose.onNodeWithTag(SettingsTags.ACCOUNT_ROW).performClick()
+        compose.waitUntil(30_000) { compose.onAllNodes(hasTestTag(SettingsTags.ACCOUNT_SHEET)).fetchSemanticsNodes().isNotEmpty() }
+        compose.waitForIdle()
+    }
+
     /** The bottom of the page: the Extended mode section, the version with its updater and the crash report consent, the disclaimer. */
     private fun scrollToBottom() {
         compose.onNodeWithText(SettingsCopy.DISCLAIMER).performScrollTo()
@@ -132,19 +147,33 @@ class SettingsScreenshotTest {
     @Test
     @Config(sdk = [35], qualifiers = "w411dp-h1360dp-night-420dpi")
     fun settingsEssentials() {
-        composeSettings()
+        essentials(ThemeMode.Dark, "65_settings_essentials")
+    }
+
+    @Test
+    @Config(sdk = [35], qualifiers = "w411dp-h1360dp-notnight-420dpi")
+    fun settingsEssentialsLight() {
+        essentials(ThemeMode.Light, "160_settings_essentials_light")
+    }
+
+    private fun essentials(mode: ThemeMode, frame: String) {
+        composeSettings(mode)
         compose.onNodeWithText(SettingsCopy.GROUP_ACCOUNT).assertIsDisplayed()
         compose.onNodeWithText(SettingsCopy.SIGN_OUT).assertIsDisplayed()
-        compose.onNodeWithText(ExtendedModeCopy.SETTING_OFF).assertIsDisplayed()
+        compose.onNode(hasTestTag(ExtendedModeTags.TOGGLE) and isOff()).assertIsDisplayed()
+        compose.onNode(hasTestTag(ExtendedModeTags.ENGINE_TOGGLE) and isNotEnabled()).assertIsDisplayed()
         compose.onNodeWithText(SettingsCopy.DISCLAIMER).assertIsDisplayed()
-        capture("65_settings_essentials")
+        capture(frame)
     }
 
     @Test
     fun extendedModeOff() {
         composeSettings()
         scrollToBottom()
-        compose.onNodeWithText(ExtendedModeCopy.SETTING_OFF).assertIsDisplayed()
+        compose.onNode(hasTestTag(ExtendedModeTags.TOGGLE) and isOff()).assertIsDisplayed()
+        // The engine beside the switch, dimmed, saying why it does nothing yet.
+        compose.onNodeWithText(ExtendedModeCopy.NEEDS_MODE).assertIsDisplayed()
+        compose.onNodeWithTag(ExtendedModeTags.ENGINE_TOGGLE).assertIsNotEnabled()
         capture("66_settings_extended_off")
     }
 
@@ -154,39 +183,54 @@ class SettingsScreenshotTest {
         composeSettings()
         compose.waitUntil(30_000) { modeReadsOn() }
         scrollToBottom()
-        compose.onNodeWithText(ExtendedModeCopy.SETTING_ON).assertIsDisplayed()
-        // The transcript engine under the switch, Stable chosen — the default, for every install.
-        compose.onNodeWithText(ExtendedModeCopy.ENGINE_TITLE).assertIsDisplayed()
-        compose.onNodeWithTag(ExtendedModeTags.ENGINE_STABLE).assertIsSelected()
-        compose.onNodeWithTag(ExtendedModeTags.ENGINE_BETA).assertIsNotSelected()
-        compose.onNodeWithText(ExtendedModeCopy.ENGINE_STABLE_DETAIL).assertIsDisplayed()
-        compose.onNodeWithText(ExtendedModeCopy.ENGINE_BETA_DETAIL).assertIsDisplayed()
+        // The transcript engine beside the switch, off — Stable, the default for every install.
+        compose.onNodeWithText(ExtendedModeCopy.ENGINE_DETAIL).assertIsDisplayed()
+        compose.onNodeWithTag(ExtendedModeTags.ENGINE_TOGGLE).assertIsEnabled().assertIsOff()
+        assertThat(runBlocking { graph.extendedMode.engine() }).isEqualTo(TranscriptEngine.STABLE)
         capture("67_settings_extended_on")
     }
 
-    /** Beta chosen: the tap writes the setting, the check moves, and the footnote says when it takes effect. */
+    /** Beta chosen: the flip writes the setting and the switch reads on. */
     @Test
     fun transcriptEngineBeta() {
         turnExtendedModeOn()
         composeSettings()
         compose.waitUntil(30_000) { modeReadsOn() }
         scrollToBottom()
-        compose.onNodeWithTag(ExtendedModeTags.ENGINE_BETA).performClick()
-        compose.waitUntil(10_000) { compose.onAllNodes(isSelected() and hasTestTag(ExtendedModeTags.ENGINE_BETA)).fetchSemanticsNodes().isNotEmpty() }
-        compose.onNodeWithTag(ExtendedModeTags.ENGINE_STABLE).assertIsNotSelected()
-        compose.onNodeWithText(ExtendedModeCopy.ENGINE_FOOTNOTE).assertIsDisplayed()
+        compose.onNodeWithText(ExtendedModeCopy.ENGINE_TITLE).performClick()
+        compose.waitUntil(10_000) { compose.onAllNodes(isOn() and hasTestTag(ExtendedModeTags.ENGINE_TOGGLE)).fetchSemanticsNodes().isNotEmpty() }
         assertThat(runBlocking { graph.extendedMode.engine() }).isEqualTo(TranscriptEngine.BETA)
         assertThat(runBlocking { graph.extendedMode.capabilities() }.accountTranscript).isTrue()
         capture("123_settings_transcript_engine_beta")
     }
 
-    /** With the mode off the engine chooses nothing, and the rows are not shown. */
+    /** With the mode off the engine chooses nothing: its switch is shown, dimmed, and a tap on it changes nothing. */
     @Test
-    fun transcriptEngineHiddenWithModeOff() {
+    fun transcriptEngineInertWithModeOff() {
         composeSettings()
         scrollToBottom()
-        compose.onAllNodesWithText(ExtendedModeCopy.ENGINE_TITLE).assertCountEquals(0)
+        compose.onNodeWithText(ExtendedModeCopy.ENGINE_TITLE).performClick()
+        compose.waitForIdle()
+        assertThat(runBlocking { graph.extendedMode.engine() }).isEqualTo(TranscriptEngine.STABLE)
         assertThat(runBlocking { graph.extendedMode.capabilities() }.accountTranscript).isFalse()
+    }
+
+    /** The account row's sheet: how the key is kept and the pages where it and the agents are managed. */
+    @Test
+    fun accountSheet() {
+        composeSettings()
+        openAccountSheet()
+        compose.onNodeWithText("Manage API keys").assertIsDisplayed()
+        capture("161_settings_account_sheet")
+    }
+
+    @Test
+    @Config(sdk = [35], qualifiers = "w411dp-h914dp-notnight-420dpi")
+    fun accountSheetLight() {
+        composeSettings(ThemeMode.Light)
+        openAccountSheet()
+        compose.onNodeWithText("Manage API keys").assertIsDisplayed()
+        capture("162_settings_account_sheet_light")
     }
 
     /**
@@ -203,13 +247,24 @@ class SettingsScreenshotTest {
         composeSettings()
         compose.waitUntil(30_000) { modeReadsOn() }
         scrollToBottom()
-        compose.onNodeWithTag(SettingsTags.VERSION_ROW).performSemanticsAction(SemanticsActions.OnLongClick)
-        compose.waitUntil(30_000) { compose.onAllNodes(hasTestTag(SettingsTags.DEBUG_SHEET)).fetchSemanticsNodes().isNotEmpty() }
-        compose.waitForIdle()
+        openDebugSheet()
         compose.onNodeWithText("Cloud Agents v1 · v0 transcript · Cursor account service").assertIsDisplayed()
         compose.onNodeWithText(SettingsDebugCopy.TITLE).assertIsDisplayed()
         compose.onNodeWithText(ProjectDiagnosticsCopy.TITLE).assertIsDisplayed()
+        compose.onNodeWithTag(SendDiagnosticsCopy.TAG).assertIsEnabled()
         capture("68_settings_debug_sheet")
+    }
+
+    /** Light, with the mode off: sending to the Project is the one row that needs the mode, dimmed with the reason. */
+    @Test
+    @Config(sdk = [35], qualifiers = "w411dp-h914dp-notnight-420dpi")
+    fun debugSheetLight() {
+        composeSettings(ThemeMode.Light)
+        scrollToBottom()
+        openDebugSheet()
+        compose.onNodeWithText("Cloud Agents v1 · v0 transcript").assertIsDisplayed()
+        compose.onNode(hasTestTag(SendDiagnosticsCopy.TAG) and hasText(ExtendedModeCopy.NEEDS_MODE)).assertIsDisplayed().assertIsNotEnabled()
+        capture("163_settings_debug_sheet_light")
     }
 
     private companion object {

@@ -91,12 +91,13 @@ class SettingsScreenTest {
         composeSettings(isDemo = false)
 
         // Account, with the way out of it, first; then appearance, the chats (whether stopping asks first, which chats
-        // may show as unread), notifications, the Extended mode switch, the version with its updater and the crash
-        // report consent; the one-line disclaimer last.
+        // may show as unread), notifications, Extended mode and beside it the transcript engine, the version with its
+        // updater and the crash report consent; the one-line disclaimer last.
         val order = listOf(
             SettingsCopy.GROUP_ACCOUNT, SettingsCopy.SIGN_OUT, SettingsCopy.GROUP_APPEARANCE, SettingsCopy.GROUP_CHATS, RunStopCopy.SETTING_TITLE,
             SettingsCopy.UNREAD_THIS_PHONE, SettingsCopy.GROUP_NOTIFICATIONS,
-            ExtendedModeCopy.SETTING_TITLE, SettingsCopy.GROUP_UPDATES, "Version ${BuildConfig.VERSION_NAME}", CrashReportCopy.TITLE, SettingsCopy.DISCLAIMER,
+            SettingsCopy.GROUP_ADVANCED, ExtendedModeCopy.SETTING_TITLE, ExtendedModeCopy.ENGINE_TITLE,
+            SettingsCopy.GROUP_UPDATES, "Version ${BuildConfig.VERSION_NAME}", CrashReportCopy.TITLE, SettingsCopy.DISCLAIMER,
         )
         val tops = order.map(::top)
         assertThat(tops).isInOrder()
@@ -104,17 +105,21 @@ class SettingsScreenTest {
         // The essentials themselves.
         listOf("Match system", "Cursor Dark", "Cursor Light", "OLED black", "Live notifications", "Check for updates", "Automatic updates", "Include pre-releases")
             .forEach { compose.onNodeWithText(it).assertExists() }
-        listOf("notif-count-project-agents", "notif-project-coordinators", "notif-project-members", ExtendedModeTags.TOGGLE, SettingsTags.VERSION_ROW, SettingsTags.SIGN_OUT)
+        listOf("notif-count-project-agents", "notif-project-coordinators", "notif-project-members", ExtendedModeTags.TOGGLE, ExtendedModeTags.ENGINE_TOGGLE, SettingsTags.VERSION_ROW, SettingsTags.SIGN_OUT)
             .forEach { compose.onNodeWithTag(it).assertExists() }
 
         // The key details wait behind the account row; the acknowledgment, the pin sync and its status are gone
-        // with the mode following the switch alone; the exports, About and the credits wait behind the version row.
+        // with the mode following the switch alone; the exports, About and the credits wait behind the version row;
+        // the engine's header, its two choices and their footnote are one switch now. No label heads a single row
+        // with that row's own name.
         assertAbsent(
             "Signed in with", "Key expires", "Key storage", "Manage this app's key", "Manage API keys", "Open cursor.com/agents",
             "Warning acknowledged", "Sync pinned chats", "Last synced",
             ProjectDiagnosticsCopy.TITLE, TranscriptDiagnosticsCopy.TITLE, SendDiagnosticsCopy.TITLE, SettingsDebugCopy.API_DOCS, SettingsDebugCopy.SOURCE,
-            SettingsDebugCopy.GROUP_ABOUT, SettingsDebugCopy.GROUP_DIAGNOSTICS, SettingsDebugCopy.GROUP_CREDITS, SettingsCopy.CREDITS, "Advanced", "Privacy", "Updates",
+            SettingsDebugCopy.GROUP_ABOUT, SettingsDebugCopy.GROUP_DIAGNOSTICS, SettingsDebugCopy.GROUP_CREDITS, SettingsCopy.CREDITS, "Privacy", "Updates",
+            "Transcript engine", "Stable", "Beta", "Takes effect the next time a chat is opened.",
         )
+        compose.onAllNodes(hasText(ExtendedModeCopy.SETTING_TITLE)).assertCountEquals(1)
         // No explanatory paragraph but the disclaimer: nothing on the page mentions a license.
         compose.onAllNodes(hasText("License", substring = true)).assertCountEquals(0)
         compose.onAllNodes(hasText("Anysphere", substring = true)).assertCountEquals(1)
@@ -160,9 +165,10 @@ class SettingsScreenTest {
 
         compose.onNodeWithText(SettingsCopy.LEAVE_DEMO).assertExists()
         // Every chat in the demo is this phone's own: the unread switch would change nothing, so it is not offered.
-        assertAbsent(SettingsCopy.SIGN_OUT, ExtendedModeCopy.SETTING_TITLE, SettingsCopy.UNREAD_THIS_PHONE)
+        assertAbsent(SettingsCopy.SIGN_OUT, SettingsCopy.GROUP_ADVANCED, ExtendedModeCopy.SETTING_TITLE, ExtendedModeCopy.ENGINE_TITLE, SettingsCopy.UNREAD_THIS_PHONE)
         compose.onNodeWithText(RunStopCopy.SETTING_TITLE).assertExists()
         compose.onAllNodes(hasTestTag(ExtendedModeTags.TOGGLE)).assertCountEquals(0)
+        compose.onAllNodes(hasTestTag(ExtendedModeTags.ENGINE_TOGGLE)).assertCountEquals(0)
         // The demo has no key to describe, so its account row is not a control.
         compose.onNodeWithTag(SettingsTags.ACCOUNT_ROW).assertHasNoClickAction()
         assertThat(top(SettingsCopy.GROUP_ACCOUNT)).isLessThan(top(SettingsCopy.GROUP_APPEARANCE))
