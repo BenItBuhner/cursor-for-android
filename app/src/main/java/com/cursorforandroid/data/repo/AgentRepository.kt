@@ -1743,6 +1743,11 @@ class AgentRepository(
         return result
     }
 
+    /** [agentId] was started from this phone other than by [launch] (a side chat, a Project): it may read as unread here. */
+    suspend fun markStartedHere(agentId: String) {
+        prefs.markTouchedHere(agentId)
+    }
+
     /**
      * One launch's decision and its outcome, for the diagnostics' `send:` block (see [SendDiagnostics.LaunchLine]):
      * which request it went out as, what it named as the place to run, and what came of it.

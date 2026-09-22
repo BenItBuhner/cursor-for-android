@@ -112,6 +112,10 @@ class PreferencesStore(
         val pinned = stringSetPreferencesKey("pinned_ids")
         val readMarkers = stringPreferencesKey("read_markers")
         val launchedHere = stringSetPreferencesKey("launched_here_ids")
+        /** The chats this phone has started or opened, least recently touched first (a JSON list; see [markTouchedHere]). */
+        val touchedHere = stringPreferencesKey("touched_here_ids")
+        /** Settings › "Unread only for chats from this phone"; absent is on. */
+        val unreadOnlyTouchedHere = booleanPreferencesKey("unread_only_touched_here")
         val snoozedUntil = stringPreferencesKey("snoozed_until")
         val snoozedAt = stringPreferencesKey("snoozed_at")
         val demoMode = booleanPreferencesKey("demo_mode")
@@ -172,6 +176,7 @@ class PreferencesStore(
         Keys.pinned,
         Keys.readMarkers,
         Keys.launchedHere,
+        Keys.touchedHere,
         Keys.modeChoicePending,
         Keys.dismissedNotices,
     )
@@ -450,8 +455,19 @@ class PreferencesStore(
             launchedHereIds = p[Keys.launchedHere] ?: emptySet(),
             snoozedUntil = p[Keys.snoozedUntil]?.let { decodeMarkers(it) } ?: emptyMap(),
             snoozedAt = p[Keys.snoozedAt]?.let { decodeMarkers(it) } ?: emptyMap(),
+            touchedHereIds = p.touchedHere().toSet(),
+            // The demo's backend runs on this phone: every chat in it is this phone's own.
+            unreadOnlyTouchedHere = (p[Keys.unreadOnlyTouchedHere] ?: true) && p[Keys.demoMode] != true,
         )
     }
+
+    /**
+     * Settings › "Unread only for chats from this phone" (see `LocalAgentState.unreadOnlyTouchedHere`). On by default;
+     * the device's, like the theme: it is about what this phone shows, so a sign-out leaves it as it was.
+     */
+    val unreadOnlyTouchedHere: Flow<Boolean> = data.map { it[Keys.unreadOnlyTouchedHere] ?: true }
+
+    suspend fun setUnreadOnlyTouchedHere(enabled: Boolean) = edit { it[Keys.unreadOnlyTouchedHere] = enabled }
 
     val demoMode: Flow<Boolean> = accountData.map { it[Keys.demoMode] ?: false }
 
@@ -566,8 +582,28 @@ class PreferencesStore(
         if (changed) p[Keys.readMarkers] = encodeMarkers(next)
     }
 
+    /** [agentId] was started from this install; a chat started here is also touched here (see [markTouchedHere]). */
     suspend fun markLaunchedHere(agentId: String) = edit { p ->
         p[Keys.launchedHere] = (p[Keys.launchedHere] ?: emptySet()) + agentId
+        p.touch(agentId)
+    }
+
+    /**
+     * [agentId] was opened on this phone, or started from it by a path that does not go through the launch (a side
+     * chat, a Project). The account's, like the read markers, and bounded: the [MAX_TOUCHED_HERE] chats touched most
+     * recently are kept, a touch moving the chat to the newest end.
+     */
+    suspend fun markTouchedHere(agentId: String) = edit { it.touch(agentId) }
+
+    /**
+     * The touched chats, least recently touched first. Until the first touch is written the chats launched here stand
+     * for them, so an install that predates the list starts with every chat it ever started.
+     */
+    private fun Preferences.touchedHere(): List<String> =
+        this[Keys.touchedHere]?.let(::decodeIdList) ?: this[Keys.launchedHere].orEmpty().toList()
+
+    private fun MutablePreferences.touch(agentId: String) {
+        this[Keys.touchedHere] = encodeIdList((touchedHere().filterNot { it == agentId } + agentId).takeLast(MAX_TOUCHED_HERE))
     }
 
     /** Silences [agentId] on this device until [untilMillis] (`Long.MAX_VALUE` until they unsnooze). */
@@ -701,6 +737,11 @@ class PreferencesStore(
     private fun encodeMarkers(map: Map<String, Long>): String =
         CursorJson.encodeToString(MapSerializer(String.serializer(), Long.serializer()), map)
 
+    private fun decodeIdList(raw: String): List<String> =
+        runCatching { CursorJson.decodeFromString(ListSerializer(String.serializer()), raw) }.getOrDefault(emptyList())
+
+    private fun encodeIdList(ids: List<String>): String = CursorJson.encodeToString(ListSerializer(String.serializer()), ids)
+
     private fun decodePendingPins(raw: String): Map<String, Boolean> =
         runCatching { CursorJson.decodeFromString(MapSerializer(String.serializer(), Boolean.serializer()), raw) }.getOrDefault(emptyMap())
 
@@ -724,6 +765,8 @@ class PreferencesStore(
         const val MAX_RECENT_SKILLS = 8
         const val MAX_DISMISSED_NOTICES_PER_CHAT = 8
         const val MAX_DISMISSED_NOTICE_CHATS = 200
+        /** Weeks of chats opened on a phone; far fewer than an account starts elsewhere, which are never in it. */
+        const val MAX_TOUCHED_HERE = 1_000
         const val TAG = "PreferencesStore"
 
         fun storedDevice(typeName: String?, name: String?): DeviceTarget {

@@ -55,6 +55,7 @@ class ProjectEditor(
             creation().createProject(draft)
         }
         register(record, draft)
+        agents.markStartedHere(record.id)
         record.id
     }
 

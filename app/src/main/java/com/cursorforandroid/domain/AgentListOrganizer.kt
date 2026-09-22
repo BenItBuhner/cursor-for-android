@@ -74,7 +74,18 @@ data class LocalAgentState(
     val snoozedUntil: Map<String, Long> = emptyMap(),
     /** agentId -> epoch millis the user snoozed it; later agent updates do not move this. */
     val snoozedAt: Map<String, Long> = emptyMap(),
+    /** The chats this phone has started or opened (bounded; see `PreferencesStore.markTouchedHere`). */
+    val touchedHereIds: Set<String> = emptySet(),
+    /**
+     * Settings › "Unread only for chats from this phone": a chat not in [touchedHereIds] never reads as unread —
+     * no dot, no part of a folded group's, a Project's or the widget's unread marks. Display only: nothing is marked
+     * read or unread anywhere because of it. Off here, as the neutral state; the setting itself defaults on.
+     */
+    val unreadOnlyTouchedHere: Boolean = false,
 ) {
+    /** Whether [agentId] may read as unread on this phone at all; its read marker decides whether it does. */
+    fun mayShowUnread(agentId: String): Boolean = !unreadOnlyTouchedHere || agentId in touchedHereIds
+
     fun isSnoozed(agentId: String, nowMillis: Long): Boolean {
         val until = snoozedUntil[agentId] ?: return false
         return until == SnoozeDuration.FOREVER || until > nowMillis
@@ -105,6 +116,7 @@ object AgentListOrganizer {
 
     fun isUnread(agent: Agent, local: LocalAgentState, nowMillis: Long = AppClock.now()): Boolean {
         if (agent.isArchived || agent.isRunning || local.isSnoozed(agent.id, nowMillis)) return false
+        if (!local.mayShowUnread(agent.id)) return false
         val marker = local.readMarkers[agent.id] ?: return true
         return agent.listedAtMillis > marker
     }

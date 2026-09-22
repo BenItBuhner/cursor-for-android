@@ -74,6 +74,8 @@ object SettingsCopy {
     const val GROUP_CHATS = "Chats"
     const val GROUP_NOTIFICATIONS = "Notifications"
     const val GROUP_ADVANCED = "Advanced"
+    const val UNREAD_THIS_PHONE = "Unread only for chats from this phone"
+    const val UNREAD_THIS_PHONE_DETAIL = "Chats from elsewhere show as read until opened here."
     const val GROUP_UPDATES = "Version and updates"
     const val SIGN_OUT = "Sign out"
     const val LEAVE_DEMO = "Leave demo"
@@ -97,6 +99,7 @@ object SettingsTags {
     const val ACCOUNT_ROW = "settings_account"
     const val ACCOUNT_SHEET = "settings_account_sheet"
     const val SIGN_OUT = "settings_sign_out"
+    const val UNREAD_THIS_PHONE = "settings_unread_this_phone"
     const val VERSION_ROW = "settings_version"
     const val WHATS_NEW_ROW = "settings_whats_new"
     const val DEBUG_SHEET = "settings_debug_sheet"
@@ -106,10 +109,10 @@ object SettingsTags {
 /**
  * Settings in the desktop settings-page idiom: 12sp group labels, bordered cards of [SettingsRow]s. The list is the
  * essentials and nothing else — the account and the way out of it, appearance, the chats (whether stopping a run
- * asks first), notifications, Extended mode and the transcript engine, the version with its updater and the crash
- * report consent, one line of disclaimer. What the account's key is and where to manage it sits behind a tap on the
- * account row; the diagnostics exports, the About links and the credits sit behind a long press on the version row
- * ([SettingsDebugSheet]), where support can ask for them.
+ * asks first, which chats may show as unread), notifications, Extended mode and the transcript engine, the version
+ * with its updater and the crash report consent, one line of disclaimer. What the account's key is and where to
+ * manage it sits behind a tap on the account row; the diagnostics exports, the About links and the credits sit
+ * behind a long press on the version row ([SettingsDebugSheet]), where support can ask for them.
  */
 @Composable
 fun SettingsScreen(
@@ -188,6 +191,11 @@ fun SettingsScreen(
             Group(SettingsCopy.GROUP_CHATS)
             SettingsCard {
                 ConfirmStopRow(graph)
+                // Every chat in the demo is this phone's own, so the unread switch would change nothing there.
+                if (!isDemo) {
+                    HairlineDivider()
+                    UnreadThisPhoneRow(graph)
+                }
             }
 
             Group(SettingsCopy.GROUP_NOTIFICATIONS)
@@ -292,6 +300,24 @@ private fun AccountDetailsSheet(credential: CredentialInfo?, keyStorage: SecureK
             }
         }
     }
+}
+
+/**
+ * Whether a chat this phone never started or opened can show as unread (see `LocalAgentState.unreadOnlyTouchedHere`).
+ * What this phone shows, nothing more: the switch marks nothing read or unread, here or on the account.
+ */
+@Composable
+private fun UnreadThisPhoneRow(graph: AppGraph) {
+    val scope = rememberCoroutineScope()
+    // On the main dispatcher for the reason the Extended mode switch is (see SettingsScreen).
+    val enabled by graph.prefs.unreadOnlyTouchedHere.collectAsStateWithLifecycle(initialValue = true, context = Dispatchers.Main.immediate)
+    SettingsToggleRow(
+        title = SettingsCopy.UNREAD_THIS_PHONE,
+        description = SettingsCopy.UNREAD_THIS_PHONE_DETAIL,
+        checked = enabled,
+        onCheckedChange = { scope.launch { graph.prefs.setUnreadOnlyTouchedHere(it) } },
+        modifier = Modifier.testTag(SettingsTags.UNREAD_THIS_PHONE),
+    )
 }
 
 /**
