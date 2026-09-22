@@ -99,6 +99,8 @@ data class TranscriptContent(
                     }
                     // A coordinator's workers are the Project view's business, not the Changes or Files lists'; the goal is the strip's.
                     is ToolPayload.WorkerAction, is ToolPayload.CoordinatorMessage, is ToolPayload.GoalChange, null -> Unit
+                    // A picture read and a search's hits are opened from their rows; the panel lists the paths by touch.
+                    is ToolPayload.ReadMedia, is ToolPayload.FileHits -> Unit
                 }
             }
             return TranscriptContent(
