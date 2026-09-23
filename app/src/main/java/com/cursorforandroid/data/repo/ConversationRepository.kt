@@ -3087,13 +3087,20 @@ class ConversationRepository(
         var listed: Pair<Boolean, Long?>? = null
         var movedAt = 0L
         while (true) {
+            // A load under way, and the looks for the next run a turn's end sets off (a steer's, a queued message the
+            // account delivers; see [keepFollowing]), finish first: the watch takes over where they leave off, and
+            // never reads the chat in the middle of their hand-over.
             synchronized(e) { e.loadJob }?.join()
+            synchronized(e) { e.keepFollowingJob }?.join()
             // A turn followed since the last look — started here, or found by the watch — leaves the reader's copy
-            // current: the next look starts from it, not from what was said before the turn.
+            // current: the next look starts from it, not from what was said before the turn. A moment's settling
+            // first, for the looks its end sets off to begin, and round again to wait for them.
             if (!e.state.value.atRest()) {
                 e.state.first { it.atRest() }
                 since = null
                 listed = null
+                delay(WATCH_SETTLE_MS)
+                continue
             }
             if (session.isDemo) return
             val caps = capabilities()
@@ -5147,6 +5154,8 @@ class ConversationRepository(
         const val WATCH_LIVE_FAILURES = 3
         /** A live stream open this long, with nothing to say, was being held: quiet, not refused. */
         const val WATCH_HELD_MS = 10_000L
+        /** How long a chat that has just come to rest is left before it is watched (see [watchWhileOpen]). */
+        const val WATCH_SETTLE_MS = 1_000L
         /** The code of a record answer whose shape this build did not expect (see [loadFromRecord]): the answer came, the turns did not. */
         const val SHAPE_MISMATCH = "shape_mismatch"
         /**
