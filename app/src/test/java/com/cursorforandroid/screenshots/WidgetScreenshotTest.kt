@@ -96,9 +96,9 @@ class WidgetScreenshotTest {
         capture("18_widget_preview", WidgetData.sample(ThemeMode.Dark, FIXED_NOW), defaults.copy(appearance = WidgetAppearance(theme = WidgetTheme.System)), DpSize(320.dp, 158.dp))
         // The other two arrangements: the one-line 2x1 cell, and the two-line rows of a tall placement — the latter
         // in the OLED theme at 70 % over the wallpaper, comfortable rows, a glass corner button that refreshes.
-        capture("127_widget_small", dark, defaults.copy(mode = WidgetMode.Running), WidgetSizes.sizeFor(WidgetLayout.Small))
+        capture("270_widget_small", dark, defaults.copy(mode = WidgetMode.Running), WidgetSizes.sizeFor(WidgetLayout.Small))
         capture(
-            "128_widget_large_oled_glass",
+            "271_widget_large_oled_glass",
             dark,
             defaults.copy(appearance = WidgetAppearance(WidgetTheme.Oled, opacity = 70), density = RowDensity.Comfortable, cornerAction = CornerAction.Refresh, cornerStyle = CornerStyle.Glass),
             WidgetSizes.sizeFor(WidgetLayout.Large),
@@ -106,7 +106,7 @@ class WidgetScreenshotTest {
         // One Project's chats, tinted corner button, compact rows without the metadata.
         val project = snapshot.projects.first()
         capture(
-            "129_widget_project_tinted",
+            "272_widget_project_tinted",
             dark,
             defaults.copy(mode = WidgetMode.Project, projectId = project.id, density = RowDensity.Compact, cornerStyle = CornerStyle.Tinted, elements = setOf(com.cursorforandroid.domain.RowElement.Status, com.cursorforandroid.domain.RowElement.UnreadDot)),
             DpSize(320.dp, 158.dp),
@@ -131,7 +131,7 @@ class WidgetScreenshotTest {
             activity.setContentView(host, ViewGroup.LayoutParams((size.width.value * density).toInt(), (size.height.value * density).toInt()))
         }
         compose.waitForIdle()
-        host.captureRoboImage(File(outDir, "130_widget_preview_layout.png").path, RoborazziOptions())
+        host.captureRoboImage(File(outDir, "273_widget_preview_layout.png").path, RoborazziOptions())
     }
 
     /** The screen the launcher opens when the widget is placed (and the widget's title reopens): preview on its stage, then the options. */
