@@ -54,6 +54,7 @@ import com.cursorforandroid.domain.AgentIndicator
 import com.cursorforandroid.domain.AgentRow
 import com.cursorforandroid.domain.DeviceTarget
 import com.cursorforandroid.domain.MediaMarkup
+import com.cursorforandroid.domain.NewChatHome
 import com.cursorforandroid.domain.Repository
 import com.cursorforandroid.ui.agents.AgentListUiState
 import com.cursorforandroid.ui.agents.AgentRowActions
@@ -73,8 +74,6 @@ import com.cursorforandroid.ui.components.ModePills
 import com.cursorforandroid.ui.components.Pill
 import com.cursorforandroid.ui.components.PullRequestPill
 import com.cursorforandroid.ui.components.RunningGlyph
-import com.cursorforandroid.ui.components.SelectorChip
-import com.cursorforandroid.ui.components.SelectorRow
 import com.cursorforandroid.ui.components.SheetHeader
 import com.cursorforandroid.ui.components.SpinnerRing
 import com.cursorforandroid.ui.components.pressable
@@ -96,8 +95,9 @@ import com.cursorforandroid.util.AppClock
 import com.cursorforandroid.util.TimeFormat
 
 /**
- * The "New Chat" pane — the home of the official app: context selectors, the composer, then the recent chats
- * list with preview cards (cursor.com/agents). On phones a 44dp header carries the sidebar toggle.
+ * The "New Chat" pane — the home of the official app: context selectors, the composer, then — as Settings › New chat
+ * page chooses ([home]) — the recent chats list with preview cards (cursor.com/agents), or the Projects as shortcuts
+ * (see [homeBlocks]). On phones a 44dp header carries the sidebar toggle.
  *
  * Sending opens the new chat through [onLaunchOpen] right away, before the server has answered, and leaves the
  * composer empty behind it: the launch is on its own from there (see [NewAgentViewModel.launch]), so this pane is
@@ -113,6 +113,14 @@ fun HomeScreen(
     onLaunchOpen: (agentId: String) -> Unit,
     rowActions: AgentRowActions,
     modifier: Modifier = Modifier,
+    /** What the pane lists under the composer; null while the preference is still being read, which lists nothing. */
+    home: NewChatHome? = NewChatHome.DEFAULT,
+    /** Whether the account has Projects to pin at all: Extended mode, or the demo. */
+    projectsAvailable: Boolean = false,
+    /** The Projects page's way to a first Project, when there is none. */
+    onNewProject: (() -> Unit)? = null,
+    /** The Projects page's way to Extended mode, while it is off. */
+    onOpenSettings: (() -> Unit)? = null,
 ) {
     // The draft open here is kept with the screen's saved state: a process ended under the composer opens it again,
     // while an app started afresh begins a new one, the others waiting in the sidebar.
@@ -123,7 +131,6 @@ fun HomeScreen(
     val state by viewModel.state.collectAsStateWithLifecycle()
     val commands by viewModel.commands.collectAsStateWithLifecycle()
     val colors = CursorTheme.colors
-    val type = CursorTheme.typography
     var repoSheet by rememberSaveable { mutableStateOf(false) }
     var branchSheet by rememberSaveable { mutableStateOf(false) }
     var deviceSheet by rememberSaveable { mutableStateOf(false) }
@@ -131,7 +138,8 @@ fun HomeScreen(
 
     // The Chats filters chosen in the sidebar's menu apply here just the same (the sidebar search does not), so the two
     // lists never disagree about which chats are visible; the cards are newest first.
-    val recent = listState.recentRows
+    val blocks = remember(home, listState, projectsAvailable) { homeBlocks(home, listState, projectsAvailable) }
+    val blockActions = HomeBlockActions(onOpenAgent = onOpenAgent, rowActions = rowActions, onNewProject = onNewProject, onOpenSettings = onOpenSettings)
     // The "+" menu's two pickers: the gallery — images alone in the default mode, images and videos as real files in
     // Extended mode — and, in Extended mode, the document picker for files of any type.
     val counts = AttachmentCounts.of(state.attachments, state.files)
@@ -170,19 +178,11 @@ fun HomeScreen(
         ) {
             item("composer") {
                 Column(Modifier.widthIn(max = CursorDimens.composerMaxWidth).fillMaxWidth()) {
-                    SelectorRow {
-                        // The source: a repository, or "Start from scratch" as the web composer names a chat without one.
-                        SelectorChip(state.repoLabel, onClick = { repoSheet = true }, icon = if (state.noRepo) CursorIcons.Cloud else CursorIcons.Repo, modifier = Modifier.weight(1f, fill = false))
-                        if (!state.noRepo) {
-                            // A blank ref leaves the starting point to the repository's default branch.
-                            SelectorChip(state.ref.ifBlank { "default" }, onClick = { branchSheet = true }, icon = CursorIcons.GitBranch)
-                        }
-                        SelectorChip(state.deviceLabel, onClick = { deviceSheet = true }, icon = deviceIcon(state.selectedDevice))
-                    }
+                    NewChatSelectors(state, onRepo = { repoSheet = true }, onBranch = { branchSheet = true }, onDevice = { deviceSheet = true })
                     ComposerBox(
                         value = state.prompt,
                         onValueChange = viewModel::setPrompt,
-                        placeholder = "Ask Cursor to build, fix bugs, explore",
+                        placeholder = NewChatHomeCopy.PLACEHOLDER,
                         onSend = { viewModel.launch(onOpen = onLaunchOpen) },
                         canSend = state.canLaunch,
                         isSending = state.isLaunching,
@@ -209,22 +209,8 @@ fun HomeScreen(
                     state.error?.let { ComposerErrorLine(it, state.errorAsked, onDismiss = viewModel::dismissError) }
                 }
             }
-            item("gap") { Spacer(Modifier.height(26.dp)) }
-            if (recent.isEmpty() && listState.hasLoaded) {
-                item("empty") {
-                    // A failed list request is not "no chats": say what happened (offline, rejected key, ...).
-                    val error = listState.error
-                    Text(
-                        error ?: "No chats yet",
-                        style = type.base,
-                        color = if (error != null) colors.red else colors.textQuaternary,
-                        modifier = Modifier.widthIn(max = CursorDimens.composerMaxWidth).padding(top = 24.dp, start = 7.dp, end = 7.dp),
-                    )
-                }
-            }
-            items(recent, key = { it.agent.id }) { row ->
-                RecentChatRow(row, onClick = { onOpenAgent(row) }, actions = rowActions, modifier = Modifier.widthIn(max = CursorDimens.composerMaxWidth).fillMaxWidth(), nowMillis = listState.nowMillis)
-            }
+            item("gap") { Spacer(Modifier.height(ComposerGap)) }
+            items(blocks, key = { it.key }) { block -> HomeBlockView(block, nowMillis = listState.nowMillis, actions = blockActions) }
         }
     }
 
