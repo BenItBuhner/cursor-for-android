@@ -781,6 +781,16 @@ internal const val RECORD_FALLBACK_ASKED = "Asked:"
 internal const val RECORD_FALLBACK_DETAIL = "Showing the transcript and the runs' logs. Turns older than about a day have no activity to show until the account's copy can be read again."
 
 /**
+ * The same row when Cursor's server failed to send the record, its retries spent (see `RecordFallback.serverError`):
+ * a 5xx — Bennett's frame of 2026-09-23, a bare `HTTP 502` from the load balancer on one blob — or, with no answer
+ * at all, a connection that kept dropping. The chat is not gone and the row does not say it is.
+ */
+internal const val RECORD_SERVER_ERROR_TITLE = "Cursor's server errored"
+internal const val RECORD_UNREACHABLE_TITLE = "Couldn't reach Cursor's server"
+internal const val RECORD_SERVER_ERROR_DETAIL = "Nothing is lost: the chat is still on the account, and the server failed to send it even after retrying. Showing the transcript and the runs' logs until it can be read again."
+internal const val RECORD_UNREACHABLE_DETAIL = "Nothing is lost: the chat is still on the account, and the connection to Cursor kept failing even after retrying. Showing the transcript and the runs' logs until it can be read again."
+
+/**
  * Where the activity of the turns shown stands when not every turn has it (see [TraceStatus]): "Loading the activity
  * of 4 turns…" while the logs are read or replayed; "Cursor no longer has the activity of 7 turns" once their logs
  * have expired with no copy here; "Couldn't load the activity of 3 turns" with a Retry when the network failed.

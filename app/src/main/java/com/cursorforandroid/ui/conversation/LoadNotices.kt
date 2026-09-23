@@ -58,10 +58,17 @@ object LoadNotices {
      * The record's refusal in the words [RecordFallbackRow] has always used: the title names the reason, the detail
      * what is on screen because of it — and, under that, exactly what was asked and what came back
      * (`Asked: POST /aiserver.v1.BackgroundComposerService/StreamConversation → HTTP 404 unimplemented`), so the next
-     * screenshot settles a casing or a routing question in one glance (see `RecordFallback.asked`).
+     * screenshot settles a casing or a routing question in one glance (see `RecordFallback.asked`). The server's own
+     * failure is named as such (see `RecordFallback.serverError`): the chat is there, the server did not send it.
      */
-    fun recordFallback(fallback: RecordFallback): LoadNotice =
-        LoadNotice(LoadNotice.Kind.RecordFallback, "$RECORD_FALLBACK_TITLE: ${fallback.reason}", fallback.asked?.let { "$RECORD_FALLBACK_ASKED $it\n$RECORD_FALLBACK_DETAIL" } ?: RECORD_FALLBACK_DETAIL)
+    fun recordFallback(fallback: RecordFallback): LoadNotice {
+        val (title, detail) = when {
+            !fallback.serverError -> RECORD_FALLBACK_TITLE to RECORD_FALLBACK_DETAIL
+            fallback.httpCode != null -> RECORD_SERVER_ERROR_TITLE to RECORD_SERVER_ERROR_DETAIL
+            else -> RECORD_UNREACHABLE_TITLE to RECORD_UNREACHABLE_DETAIL
+        }
+        return LoadNotice(LoadNotice.Kind.RecordFallback, "$title: ${fallback.reason}", fallback.asked?.let { "$RECORD_FALLBACK_ASKED $it\n$detail" } ?: detail)
+    }
 
     /**
      * Whether [state] is one a notice's absence can be read from: a load has run to its end and left a transcript
