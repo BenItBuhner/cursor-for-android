@@ -81,12 +81,19 @@ data class Capabilities(
      * `prompt.images[]` alone — the picker offers images only.
      */
     val promptFiles: Boolean = false,
+    /**
+     * A new chat on one of the user's machines, started the way the desktop starts one: `StartBackgroundComposerFromSnapshot`
+     * with `use_private_worker`, the `repo=` / `name=` labels, `selected_private_worker_id` and
+     * `private_worker_owner_filter`, which Cursor routes to the machine without asking its GitHub app about the
+     * repository. Off: the documented `POST /v1/agents` with `env {type: machine}`, which does ask it.
+     */
+    val machineStart: Boolean = false,
 ) {
     /** True when any private surface is on: what the persistent indicator and the default-mode explanations go by. */
     val anyExtended: Boolean
         get() = accountSession || accountProfile || pinSync || accountLifecycle || accountSlashCommands || accountPullRequests || projects || steering ||
             workspaceFiles || diffDetails || scmPullRequests || remoteDesktop || interactions || accountQueue || agentModes || accountTranscript || accountGoal ||
-            promptFiles
+            promptFiles || machineStart
 
     companion object {
         /** The default: the documented API only. */
@@ -109,6 +116,7 @@ data class Capabilities(
             accountTranscript = false,
             accountGoal = false,
             promptFiles = false,
+            machineStart = false,
         )
 
         /** Extended mode: every private surface, exactly as the app used them before the setting existed. */
@@ -131,6 +139,7 @@ data class Capabilities(
             accountTranscript = true,
             accountGoal = true,
             promptFiles = true,
+            machineStart = true,
         )
 
         /** Extended mode's Stable transcript engine: every private surface but the record read and the goal it carries (see [TranscriptEngine]). */

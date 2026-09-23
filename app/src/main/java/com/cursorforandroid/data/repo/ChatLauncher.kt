@@ -14,9 +14,10 @@ import kotlinx.coroutines.launch
  * A launch that did not go through — rejected by the server, or stopped from the chat before it had answered — handed
  * back for the composer to take up again: the draft as it went out, the nonce it went out under (an unchanged retry
  * then keeps the same id, and adopts an agent the first attempt may have created after all), and the reason, null
- * when the chat was stopped on purpose.
+ * when the chat was stopped on purpose. [asked] names the call the account refused, for a start it was asked for (see
+ * [MachineStartRefusedException]).
  */
-data class FailedLaunch(val agentId: String, val request: LaunchRequest, val nonce: String, val reason: String?)
+data class FailedLaunch(val agentId: String, val request: LaunchRequest, val nonce: String, val reason: String?, val asked: String? = null)
 
 /**
  * Sees a new chat's launch through on the composer's behalf. The composer hands a draft to [launch] and is free the
@@ -63,7 +64,7 @@ class ChatLauncher(
                 }
                 .onFailure { t ->
                     inFlight -= agentId
-                    _failures.emit(FailedLaunch(agentId, request, nonce, if (t is LaunchCancelledException) null else t.userMessage()))
+                    _failures.emit(FailedLaunch(agentId, request, nonce, if (t is LaunchCancelledException) null else t.userMessage(), (t as? MachineStartRefusedException)?.asked))
                 }
         }.invokeOnCompletion {
             inFlight -= agentId

@@ -43,6 +43,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -78,6 +79,8 @@ import com.cursorforandroid.ui.components.SpinnerRing
 import com.cursorforandroid.ui.components.pressable
 import com.cursorforandroid.ui.components.pullRequestTint
 import com.cursorforandroid.ui.components.AttachmentCounts
+import com.cursorforandroid.ui.conversation.LoadNoticeCard
+import com.cursorforandroid.ui.conversation.RECORD_FALLBACK_ASKED
 import com.cursorforandroid.ui.components.rememberFilePicker
 import com.cursorforandroid.ui.components.rememberMediaPicker
 import com.cursorforandroid.ui.components.scrollEdgeFade
@@ -202,13 +205,7 @@ fun HomeScreen(
                         modePill = if (state.planMode) ModePills.Pill.Plan else null,
                         onModePill = { pill -> viewModel.setPlanMode(pill == ModePills.Pill.Plan) },
                     )
-                    state.error?.let {
-                        Row(Modifier.padding(top = 8.dp, start = 2.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Icon(CursorIcons.Warning, null, tint = colors.red, modifier = Modifier.size(14.dp))
-                            Spacer(Modifier.width(6.dp))
-                            Text(it, style = type.small, color = colors.red)
-                        }
-                    }
+                    state.error?.let { ComposerErrorLine(it, state.errorAsked, onDismiss = viewModel::dismissError) }
                 }
             }
             item("gap") { Spacer(Modifier.height(26.dp)) }
@@ -409,6 +406,32 @@ private fun PreviewCard(row: AgentRow) {
                 else -> Icon(CursorIcons.Cube, null, tint = colors.iconQuaternary, modifier = Modifier.size(22.dp))
             }
         }
+    }
+}
+
+/**
+ * Why the last send did not go through, under the composer. A start the account was asked for and refused ([asked]
+ * set, a machine's in Extended mode) is the app's compact notice: the account's words as its title and the call under
+ * them (`Asked: POST /…/StartBackgroundComposerFromSnapshot → HTTP 400 failed_precondition`), closed with its X.
+ * Anything else is the red line it has always been.
+ */
+@Composable
+internal fun ComposerErrorLine(error: String, asked: String?, onDismiss: () -> Unit) {
+    if (asked != null) {
+        LoadNoticeCard(
+            title = error,
+            detail = "$RECORD_FALLBACK_ASKED $asked",
+            docked = false,
+            onDismiss = onDismiss,
+            titleTag = "composer-refusal-title",
+            modifier = Modifier.padding(top = 8.dp).testTag("composer-refusal"),
+        )
+        return
+    }
+    Row(Modifier.padding(top = 8.dp, start = 2.dp), verticalAlignment = Alignment.CenterVertically) {
+        Icon(CursorIcons.Warning, null, tint = CursorTheme.colors.red, modifier = Modifier.size(14.dp))
+        Spacer(Modifier.width(6.dp))
+        Text(error, style = CursorTheme.typography.small, color = CursorTheme.colors.red, modifier = Modifier.testTag("composer-error"))
     }
 }
 

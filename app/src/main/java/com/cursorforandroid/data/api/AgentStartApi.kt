@@ -4,10 +4,12 @@ import com.cursorforandroid.data.auth.SessionTokenProvider
 import com.cursorforandroid.domain.AccountModel
 import com.cursorforandroid.domain.AgentMode
 import com.cursorforandroid.domain.AgentSource
+import com.cursorforandroid.domain.MachineWorker
 import com.cursorforandroid.domain.McpServer
 import com.cursorforandroid.domain.McpTransport
 import com.cursorforandroid.domain.ModelParam
 import com.cursorforandroid.domain.PromptImage
+import com.cursorforandroid.domain.RepoRemote
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonArray
@@ -41,7 +43,16 @@ data class StartRequest(
     val autoCreatePr: Boolean = false,
     val name: String? = null,
     val mcpServers: List<McpServer> = emptyList(),
+    /** One of the user's machines to start it on, with [repoUrl] its repository; null for Cursor's cloud. */
+    val machine: MachineStart? = null,
 )
+
+/**
+ * The machine a start goes to: its [name] (the worker's `name` label, as the chat's `env.name` has it), and — when the
+ * fleet endpoint has listed it — its [worker], whose registered repository decides whether the request names the
+ * machine or only the repository. [ownerUserId] is the account's own id when the worker did not say whose it is.
+ */
+data class MachineStart(val name: String, val worker: MachineWorker? = null, val ownerUserId: Long? = null)
 
 /** Starting an ordinary chat on the account service, the way the desktop Agents Window does when a prompt carries files. */
 fun interface AgentStartApi {
@@ -72,8 +83,13 @@ fun interface AgentStartApi {
  * - `auto_create_pr` (field 37) when asked for with a repository; `mcp_config_json` (field 95) with the enabled inline
  *   servers in the desktop's `{"mcpServers": {name: {url, headers} | {command, args, env}}}` shape (`csa`); `name` when set.
  *
- * A machine or team pool is not started here: the desktop routes those through `labels` / `use_private_worker` /
- * `workspace_binding` this composer has no equivalent for, so a file on such a chat is refused before the request.
+ * On one of the user's machines ([StartRequest.machine]) the request is the desktop's for a machine picked with its
+ * repository (3.21.18: the New Agent submit → `iZS` → `QPl` → `createAgent` → `_createAgentReal` →
+ * `startBackgroundComposerFromSnapshot`): the same body plus `use_private_worker: true`, `selected_private_worker_id`
+ * when the worker is known, and `labels` — `repo=<owner/name>` from the repository's URL (`T1t`), then `name=<worker>`
+ * and `cursor.private_worker.shared_assignment_allowed=true` when that is the repository the worker registered
+ * (`Mel` → `OOa`), with `private_worker_owner_filter {owner_cursor_user_id}` beside the name (`QPl`). Cursor routes
+ * it by those labels and trusts the machine's checkout. A team pool is not started here.
  */
 class ConnectAgentStartApi(
     private val rpc: ConnectJsonClient,
@@ -123,6 +139,7 @@ class ConnectAgentStartApi(
                 data = if (file.uploadId == null) file.data?.let { Base64.getEncoder().encodeToString(it) } else null,
             )
         }
+        val onMachine = if (repo != null) request.machine?.let { privateWorkerFields(it, repo) } else null
         val dto = StartDto(
             bcId = request.agentId,
             snapshotNameOrId = snapshotName,
@@ -154,10 +171,37 @@ class ConnectAgentStartApi(
             requestedModels = listOf(requestedModel(request.modelId, request.modelParams)),
             autoCreatePr = (request.autoCreatePr && repo != null).takeIf { it },
             mcpConfigJson = mcpConfigJson(request.mcpServers),
+            labels = onMachine?.labels,
+            privateWorkerOwnerFilter = onMachine?.ownerFilter,
+            selectedPrivateWorkerId = onMachine?.workerId,
+            usePrivateWorker = onMachine?.let { true },
         )
         val response = call("StartBackgroundComposerFromSnapshot", dto, StartDto.serializer(), StartResponseDto.serializer())
         val record = response.composer?.let { BackgroundComposerApi.snapshot(it) }
         return record ?: ComposerSnapshot(request.agentId, name = request.name, archived = false)
+    }
+
+    private class PrivateWorkerFields(val labels: List<LabelDto>, val ownerFilter: OwnerFilterDto?, val workerId: String?)
+
+    /**
+     * `Mel` / `OOa` / `QPl` for [machine] and the repository [repo]: the machine is named — with its owner, without
+     * which the desktop does not name one — when [repo] is the one its worker registered, or when no listing has
+     * said which that is; a repository picked over the worker's own goes out by its label alone.
+     */
+    private fun privateWorkerFields(machine: MachineStart, repo: String): PrivateWorkerFields {
+        val repoLabel = RepoRemote.label(repo) ?: repo.substringAfter("://")
+        val worker = machine.worker
+        val owner = worker?.ownerUserId ?: machine.ownerUserId
+        val registered = worker?.repoLabel
+        val named = owner != null && (registered == null || registered.equals(repoLabel, ignoreCase = true))
+        val labels = buildList {
+            add(LabelDto(REPO_LABEL, repoLabel))
+            if (named) {
+                add(LabelDto(NAME_LABEL, worker?.name ?: machine.name))
+                add(LabelDto(SHARED_ASSIGNMENT_LABEL, "true"))
+            }
+        }
+        return PrivateWorkerFields(labels, owner?.takeIf { named }?.let(::OwnerFilterDto), worker?.workerId)
     }
 
     private suspend fun <I, O> call(method: String, body: I, requestSerializer: KSerializer<I>, responseSerializer: KSerializer<O>): O =
@@ -190,7 +234,21 @@ class ConnectAgentStartApi(
         val requestedModels: List<RequestedModelDto>,
         val autoCreatePr: Boolean? = null,
         val mcpConfigJson: String? = null,
+        /** Field 59, `aiserver.v1.PrivateWorkerLabel {key, value}`. */
+        val labels: List<LabelDto>? = null,
+        /** Field 97, `aiserver.v1.PrivateWorkerOwnerFilter {owner_cursor_user_id}`. */
+        val privateWorkerOwnerFilter: OwnerFilterDto? = null,
+        /** Field 112. */
+        val selectedPrivateWorkerId: String? = null,
+        /** Field 55. */
+        val usePrivateWorker: Boolean? = null,
     )
+
+    @Serializable
+    private data class LabelDto(val key: String, val value: String)
+
+    @Serializable
+    private data class OwnerFilterDto(val ownerCursorUserId: Long)
 
     /** `aiserver.v1.DevcontainerStartingPoint`: `url` (1), `ref` (2), `environment_name` (12) or `environment_public_id` (15). */
     @Serializable
@@ -238,6 +296,11 @@ class ConnectAgentStartApi(
     companion object {
         /** What this app is to the account service: a client on the API, like the SDK's chats (the desktop sends `GLASS`). */
         val SOURCE: String = AgentSource.API.wireName
+
+        const val REPO_LABEL = "repo"
+        const val NAME_LABEL = "name"
+        /** The desktop's `BOa`. */
+        const val SHARED_ASSIGNMENT_LABEL = "cursor.private_worker.shared_assignment_allowed"
 
         /**
          * The desktop's `csa` / `Yuy`: `{"mcpServers": {name: {url, headers?} | {command, args?, env?}}}` for the enabled

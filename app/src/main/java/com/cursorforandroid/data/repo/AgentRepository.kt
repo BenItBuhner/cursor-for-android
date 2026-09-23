@@ -4,6 +4,7 @@ import com.cursorforandroid.data.api.AgentStartApi
 import com.cursorforandroid.data.api.ComposerLifecycleApi
 import com.cursorforandroid.data.api.ComposerSnapshot
 import com.cursorforandroid.data.api.StartRequest
+import com.cursorforandroid.data.api.MachineStart
 import com.cursorforandroid.data.api.RecordFields
 import com.cursorforandroid.data.api.ConnectRpcException
 import com.cursorforandroid.data.api.CursorApiException
@@ -39,6 +40,7 @@ import com.cursorforandroid.domain.DeviceTarget
 import com.cursorforandroid.domain.EnvType
 import com.cursorforandroid.domain.KnownRoot
 import com.cursorforandroid.domain.LineageSignal
+import com.cursorforandroid.domain.MachineWorker
 import com.cursorforandroid.domain.McpServer
 import com.cursorforandroid.domain.ModelParam
 import com.cursorforandroid.domain.ProjectDiagnostics
@@ -143,6 +145,8 @@ data class LaunchRequest(
     val mcpServers: List<McpServer> = emptyList(),
     /** Where the agent runs: Cursor cloud (the default), a team pool, or a connected machine. */
     val env: DeviceTarget = DeviceTarget.Cloud,
+    /** [env]'s worker as the fleet endpoint last listed it, when [env] is a machine (see [MachineWorker]). */
+    val worker: MachineWorker? = null,
 ) {
     /** `autoCreatePR` as it goes out: a pull request wants a repository, so the switch only counts with one. */
     val opensPullRequest: Boolean get() = autoCreatePr && repoUrl != null
@@ -252,6 +256,24 @@ class LaunchUnansweredException(cause: Throwable) : IOException(
     cause,
 )
 
+/**
+ * The account refused a start on one of the user's machines (see [AgentRepository.launch], Extended mode): [message]
+ * is its words, [asked] the one line naming the call and its answer, as the app's compact notices print it —
+ * `POST /aiserver.v1.BackgroundComposerService/StartBackgroundComposerFromSnapshot → HTTP 400 failed_precondition`.
+ */
+class MachineStartRefusedException(cause: ConnectRpcException) : IOException(
+    cause.message?.trim()?.takeIf { it.isNotEmpty() } ?: "Cursor refused to start this chat on the machine.",
+    cause,
+) {
+    val asked: String = "POST ${cause.path ?: "(no request)"} → HTTP ${cause.httpCode}" + (cause.code?.let { " $it" } ?: "")
+}
+
+/**
+ * The documented create refused a machine's repository — the Cloud Agents API checks it through Cursor's GitHub app —
+ * in Cursor's words, with the line that says what does start it (see [AgentRepository.MACHINE_NEEDS_EXTENDED]).
+ */
+class MachineRepositoryRefusedException(val error: CursorApiException) : IOException("${error.message.trim()}\n${AgentRepository.MACHINE_NEEDS_EXTENDED}", error)
+
 /** The request's `model` field: the id with the variant's parameters, or null so the field is omitted. */
 private fun modelRef(modelId: String?, params: List<ModelParam>): ModelRefDto? = modelId?.let { id ->
     ModelRefDto(id = id, params = params.takeIf { it.isNotEmpty() }?.map { ModelParamDto(it.id, it.value) })
@@ -313,8 +335,9 @@ class AgentRepository(
     private val lostReplyProbeDelayMs: Long = LOST_REPLY_PROBE_DELAY_MS,
     /**
      * The account's start (`StartBackgroundComposerFromSnapshot`) and its prompt uploads, for a launch whose prompt
-     * carries files of any type — which the documented create request cannot (Extended mode, `promptFiles`). Null
-     * when there is no account to start on; such a launch then fails before anything is sent.
+     * carries files of any type — which the documented create request cannot (Extended mode, `promptFiles`) — and for
+     * one on the user's machine (`machineStart`, see [startsOnMachine]). Null when there is no account to start on;
+     * a launch with files then fails before anything is sent, and one on a machine takes the documented request.
      */
     private val start: (suspend () -> AgentStartApi)? = null,
     private val uploads: (suspend () -> PromptUploader)? = null,
@@ -1706,24 +1729,25 @@ class AgentRepository(
      */
     suspend fun launch(request: LaunchRequest, modelDisplayName: String?, saveImages: Boolean = true, progress: UploadProgress = UploadProgress.NONE): Result<Launched> {
         val startedIn = token()
-        val trace = LaunchTrace(request)
+        val onMachine = startsOnMachine(request)
+        val trace = LaunchTrace(request, onAccount = request.files.isNotEmpty() || onMachine)
         request.agentId?.let { id -> synchronized(launchTraces) { launchTraces[id] = trace } }
         val result = runCatching {
             val api = session.current.api
-            val (dto, run) = if (request.files.isNotEmpty()) {
-                startWithFiles(api, request, progress, trace)
+            val (dto, run) = if (request.files.isNotEmpty() || onMachine) {
+                startOnAccount(api, request, progress, trace, onMachine)
             } else try {
                 // Off the main thread: base64-encoding the images and serializing the body happen before the call is
                 // enqueued, on whichever thread makes it.
                 withContext(Dispatchers.IO) { api.createAgent(request.toCreateAgentDto()) }.let { it.agent to it.run }.also { (_, run) -> trace.accepted(run) }
             } catch (t: Throwable) {
                 if (t is CancellationException) throw t
-                val id = request.agentId ?: throw t
+                val id = request.agentId ?: throw machineRefusal(request, t)
                 when {
                     t.toCursorError()?.code == AGENT_ID_CONFLICT -> adopt(api, id).also { (_, run) -> trace.adopted("after 409 agent_id_conflict", run) }
                     t.isLostReply() -> recoverLostReply(api, id)?.also { (_, run) -> trace.adopted("after a lost reply (${t.javaClass.simpleName})", run) }
                         ?: throw LaunchUnansweredException(t)
-                    else -> throw t
+                    else -> throw machineRefusal(request, t)
                 }
             }
             // The provisional row, when there is one, fills in what the server's record leaves blank — its name
@@ -1763,10 +1787,10 @@ class AgentRepository(
      * One launch's decision and its outcome, for the diagnostics' `send:` block (see [SendDiagnostics.LaunchLine]):
      * which request it went out as, what it named as the place to run, and what came of it.
      */
-    private class LaunchTrace(request: LaunchRequest) {
+    private class LaunchTrace(request: LaunchRequest, onAccount: Boolean) {
         val atMillis: Long = AppClock.now()
-        /** `account` for a prompt with files (the account's start), `v1` for the documented create. */
-        val via: String = if (request.files.isNotEmpty()) "account" else "v1"
+        /** `account` for the account's start (a prompt with files, a machine in Extended mode), `v1` for the documented create. */
+        val via: String = if (onAccount) "account" else "v1"
         val target: String = request.launchTarget(via)
         val files: Int = request.files.size
         val images: Int = request.images.size
@@ -1785,8 +1809,8 @@ class AgentRepository(
 
         fun failed(t: Throwable?) {
             if (outcome != "in flight") return
-            val error = t?.toCursorError()
-            val connect = t as? ConnectRpcException
+            val error = t?.toCursorError() ?: (t as? MachineRepositoryRefusedException)?.error
+            val connect = t as? ConnectRpcException ?: t?.cause as? ConnectRpcException
             settle(
                 when {
                     t is CancellationException -> "cancelled"
@@ -1828,34 +1852,46 @@ class AgentRepository(
      * [ConnectAgentStartApi][com.cursorforandroid.data.api.ConnectAgentStartApi]); a file without one is uploaded here first. The chat is then
      * read back through the documented API under the id the request minted — the account answers with its record,
      * not a run, and the list and the transcript are built from `GET /v1/agents/{id}` like every other chat's; the
-     * first run is read once it is named, asked for a few times as [recoverLostReply] does. A machine or pool is
-     * refused here, before anything is sent: the desktop's private-worker start has no equivalent in this request.
+     * first run is read once it is named, asked for a few times as [recoverLostReply] does. A pool, or a machine with
+     * files, is refused here, before anything is sent.
+     *
+     * [onMachine] (see [startsOnMachine]): the same start on one of the user's machines, as the desktop starts one
+     * there — `use_private_worker` with the machine's labels (see `ConnectAgentStartApi`), which Cursor routes to the
+     * machine's own checkout without asking its GitHub app about the repository. A refusal comes back as
+     * [MachineStartRefusedException]: the account's words and what was asked.
      */
-    private suspend fun startWithFiles(api: CursorApi, request: LaunchRequest, progress: UploadProgress, trace: LaunchTrace): Pair<AgentDto, RunDto?> {
-        val id = requireNotNull(request.agentId) { "A launch with files needs the client-minted agent id." }
+    private suspend fun startOnAccount(api: CursorApi, request: LaunchRequest, progress: UploadProgress, trace: LaunchTrace, onMachine: Boolean): Pair<AgentDto, RunDto?> {
+        val id = requireNotNull(request.agentId) { "A launch on the account needs the client-minted agent id." }
         val startApi = start ?: throw IllegalStateException(FILES_NEED_EXTENDED)
-        val uploader = uploads ?: throw IllegalStateException(FILES_NEED_EXTENDED)
-        if (!capabilities().promptFiles) throw IllegalStateException(FILES_NEED_EXTENDED)
-        if (request.env.type == EnvType.POOL || request.env.type == EnvType.MACHINE) throw IllegalArgumentException(FILES_NEED_CLOUD)
-        // The files went up when they were attached and carry their references; one that did not is uploaded here.
-        val uploaded = uploader().ensure(request.files, progress)
-        val record = startApi().start(
-            StartRequest(
-                agentId = id,
-                text = request.prompt,
-                images = request.images,
-                files = uploaded,
-                repoUrl = request.repoUrl,
-                ref = request.ref,
-                environmentName = request.env.apiName,
-                modelId = request.modelId,
-                modelParams = request.modelParams,
-                planMode = request.planMode,
-                autoCreatePr = request.autoCreatePr,
-                name = request.name,
-                mcpServers = request.mcpServers,
-            ),
+        val uploaded = if (request.files.isEmpty()) emptyList() else {
+            val uploader = uploads ?: throw IllegalStateException(FILES_NEED_EXTENDED)
+            if (!capabilities().promptFiles) throw IllegalStateException(FILES_NEED_EXTENDED)
+            if (request.env.type == EnvType.POOL || request.env.type == EnvType.MACHINE) throw IllegalArgumentException(FILES_NEED_CLOUD)
+            // The files went up when they were attached and carry their references; one that did not is uploaded here.
+            uploader().ensure(request.files, progress)
+        }
+        val machine = if (onMachine) MachineStart(name = requireNotNull(request.env.apiName), worker = request.worker, ownerUserId = signedInUserId()) else null
+        val startRequest = StartRequest(
+            agentId = id,
+            text = request.prompt,
+            images = request.images,
+            files = uploaded,
+            repoUrl = request.repoUrl,
+            ref = request.ref,
+            environmentName = request.env.apiName.takeIf { machine == null },
+            modelId = request.modelId,
+            modelParams = request.modelParams,
+            planMode = request.planMode,
+            autoCreatePr = request.autoCreatePr,
+            name = request.name,
+            mcpServers = request.mcpServers,
+            machine = machine,
         )
+        val record = try {
+            startApi().start(startRequest)
+        } catch (t: ConnectRpcException) {
+            if (machine != null) throw MachineStartRefusedException(t) else throw t
+        }
         recoverLostReply(api, id)?.let { (dto, run) -> return (dto to run).also { trace.accepted(run) } }
         // The account started the chat and said so; the documented API has not listed it in the moments since. The
         // chat exists, so the row stands — from the account's record and what the request asked for — rather than
@@ -1865,6 +1901,30 @@ class AgentRepository(
         return request.standIn(id, record.name) to null
     }
 
+    /**
+     * Whether [request] goes to one of the user's machines the way the desktop sends one there (the account's start;
+     * Extended mode, `machineStart`): a machine with a repository. A machine without one takes the documented request,
+     * which the desktop has no start for either (`Qfm`: "Select a repository with an owner and name").
+     */
+    private suspend fun startsOnMachine(request: LaunchRequest): Boolean =
+        request.env.type == EnvType.MACHINE && request.env.apiName != null && request.repoUrl != null && request.files.isEmpty() &&
+            start != null && !session.current.isDemo && capabilities().machineStart
+
+    /** The signed-in account's user id, whose machines a start names (`private_worker_owner_filter`), when the worker's listing did not say. */
+    private fun signedInUserId(): Long? = (session.state.value as? SessionState.SignedIn)?.user?.userId?.takeIf { it > 0 }
+
+    /**
+     * [t] as the composer words it, and for a machine the documented request could not start on its repository —
+     * Cursor checks a machine's repository through its GitHub app (`integration_not_connected`, `repository_access`)
+     * — with the one line that says what does start it.
+     */
+    private fun machineRefusal(request: LaunchRequest, t: Throwable): Throwable {
+        if (request.env.type != EnvType.MACHINE) return t
+        val error = t.toCursorError() ?: return t
+        if (error.code !in MACHINE_REPOSITORY_REFUSALS) return t
+        return MachineRepositoryRefusedException(error)
+    }
+
     /** The row for a chat the account created under [id] and the API has not listed yet: the record's name over the request's facts. */
     private fun LaunchRequest.standIn(id: String, recordName: String?): AgentDto {
         val now = Instant.ofEpochMilli(AppClock.now()).toString()
@@ -1872,7 +1932,7 @@ class AgentRepository(
             id = id,
             name = recordName?.trim()?.takeIf { it.isNotEmpty() },
             status = "ACTIVE",
-            env = AgentEnvDto(type = "cloud", name = env.apiName),
+            env = env.toEnvDto() ?: AgentEnvDto(type = "cloud"),
             url = "https://cursor.com/agents/$id",
             createdAt = now,
             updatedAt = now,
@@ -2343,6 +2403,9 @@ class AgentRepository(
         private const val AGENT_ID_CONFLICT = "agent_id_conflict"
         const val FILES_NEED_EXTENDED = "Attaching files needs Extended mode; turn it on in Settings, or take the files off."
         const val FILES_NEED_CLOUD = "Files can go on a new chat that runs on Cursor's cloud only. Start it on Cloud, or attach them in a follow-up once it is running."
+        const val MACHINE_NEEDS_EXTENDED = "A machine's repository that isn't on a GitHub owner with Cursor's GitHub app starts only in Extended mode (Settings › Advanced)."
+        /** How the documented create refuses a machine's repository its GitHub app cannot vouch for. */
+        val MACHINE_REPOSITORY_REFUSALS = setOf("integration_not_connected", "repository_access")
         /** Reads of the chat by id after a launch's reply was lost, and the wait between them: about a quarter of a minute in all. */
         const val LOST_REPLY_PROBES = 5
         const val LOST_REPLY_PROBE_DELAY_MS = 3_000L

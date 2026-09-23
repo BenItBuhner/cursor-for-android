@@ -5,6 +5,7 @@ import com.cursorforandroid.data.api.dto.V0ConversationMessageDto
 import com.cursorforandroid.domain.Agent
 import com.cursorforandroid.domain.KnownRoot
 import com.cursorforandroid.domain.LineageSignal
+import com.cursorforandroid.domain.MachineWorker
 import com.cursorforandroid.domain.AgentSource
 import com.cursorforandroid.data.api.RecordFields
 import com.cursorforandroid.domain.AgentParentKind
@@ -502,14 +503,25 @@ class CatalogCache(private val cache: JsonDiskCache) {
         cache.write(REPOSITORIES, CachedRepositories.serializer(), VERSION, CachedRepositories(repositories), token)
     }
 
+    /** The machines' workers as the fleet endpoint last listed each (see [MachineWorker]), for a machine that has since gone offline. */
+    suspend fun readWorkers(): Map<String, MachineWorker>? = cache.read(WORKERS, CachedWorkers.serializer(), VERSION)?.value?.workers
+
+    suspend fun writeWorkers(workers: Map<String, MachineWorker>, token: Int = cache.token()) {
+        cache.write(WORKERS, CachedWorkers.serializer(), VERSION, CachedWorkers(workers), token)
+    }
+
     /** Taken when the work that will write starts; see [JsonDiskCache.token]. */
     fun token(): Int = cache.token()
 
     suspend fun clear() = cache.clear()
 
+    @Serializable
+    private data class CachedWorkers(val workers: Map<String, MachineWorker> = emptyMap())
+
     private companion object {
         const val MODELS = "models"
         const val REPOSITORIES = "repositories"
+        const val WORKERS = "machine-workers"
         const val VERSION = 1
     }
 }

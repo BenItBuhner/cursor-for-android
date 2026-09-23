@@ -8,6 +8,7 @@ import com.cursorforandroid.data.FakeRunStreamer
 import com.cursorforandroid.data.api.CursorApiFactory
 import com.cursorforandroid.data.api.CursorJson
 import com.cursorforandroid.data.local.DraftStore
+import com.cursorforandroid.data.repo.AgentRepository
 import com.cursorforandroid.data.repo.CursorBackend
 import com.cursorforandroid.data.repo.DocumentedCloudAgentsServer
 import com.cursorforandroid.domain.Agent
@@ -180,8 +181,10 @@ class MachineLaunchWireTest {
 
         assertThat(sent()["env"]).isEqualTo(json("""{"type":"machine","name":"bennett"}"""))
         assertThat(sent()["repos"]).isEqualTo(CursorJson.parseToJsonElement("""[{"url":"https://github.com/bennett/codex-poly-bot"}]"""))
+        // Cursor's words, then the one line that says what does start a machine on such a repository.
         assertThat(failure()).isEqualTo(
-            "The source control provider for repository bennett/codex-poly-bot is not connected to Cursor. Connect it and try again.",
+            "The source control provider for repository bennett/codex-poly-bot is not connected to Cursor. Connect it and try again.\n" +
+                AgentRepository.MACHINE_NEEDS_EXTENDED,
         )
     }
 
@@ -297,14 +300,15 @@ class MachineLaunchWireTest {
  */
 class MachineFleetServer : Dispatcher() {
 
-    private val contract = DocumentedCloudAgentsServer()
+    val contract = DocumentedCloudAgentsServer()
     val creates = CopyOnWriteArrayList<String>()
+    /** What `GET /v0/private-workers?scope=personal` answers. */
+    @Volatile var workers: String = WORKERS
+    /** Each connected machine's registered repository, as its `repo` label has it; blank for an any-repo worker. */
+    @Volatile var registered: Map<String, String> = mapOf("devbox" to "acme/payments-service", "laptop" to "acme/web", "bennett" to "bennett/codex-poly-bot", "scratch-box" to "")
 
     /** What `GET /v1/repositories` lists: the repositories reachable through Cursor's GitHub app. */
     private val reachable = listOf("acme/payments-service", "acme/web")
-
-    /** Each connected machine's registered repository, as its `repo` label has it; blank for an any-repo worker. */
-    private val registered = mapOf("devbox" to "acme/payments-service", "laptop" to "acme/web", "bennett" to "bennett/codex-poly-bot", "scratch-box" to "")
 
     override fun dispatch(request: RecordedRequest): MockResponse {
         val path = request.path?.substringBefore('?').orEmpty()
@@ -313,7 +317,7 @@ class MachineFleetServer : Dispatcher() {
             request.method == "GET" && path == "/v1/me" -> json("""{"apiKeyName":"Test key","userId":42,"userEmail":"dev@example.com","userFirstName":"Dev"}""")
             request.method == "GET" && path == "/v1/models" -> json("""{"items":[{"id":"default","displayName":"Auto"},{"id":"claude-fable-5-1","displayName":"Claude Fable 5.1"}]}""")
             request.method == "GET" && path == "/v1/repositories" -> json("""{"items":[{"url":"https://github.com/acme/payments-service"},{"url":"https://github.com/acme/web"}]}""")
-            request.method == "GET" && path == "/v0/private-workers" -> json(if (query?.queryParameter("scope") == "team_pool") """{"workers":[],"totalCount":0}""" else WORKERS)
+            request.method == "GET" && path == "/v0/private-workers" -> json(if (query?.queryParameter("scope") == "team_pool") """{"workers":[],"totalCount":0}""" else workers)
             request.method == "GET" && path == "/v0/private-workers/pools" -> json("""{"pools":[]}""")
             request.method == "GET" && path == "/v1/agents" -> json("""{"items":[]}""")
             request.method == "GET" && path == "/v0/agents" -> json("""{"agents":[]}""")

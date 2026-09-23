@@ -14,6 +14,7 @@ import com.cursorforandroid.data.api.BackgroundComposerApi
 import com.cursorforandroid.data.api.BlobCache
 import com.cursorforandroid.data.api.ComposerLifecycleApi
 import com.cursorforandroid.data.api.ComposerSnapshot
+import com.cursorforandroid.data.api.AgentStartApi
 import com.cursorforandroid.data.api.ConnectAgentStartApi
 import com.cursorforandroid.data.api.ConnectJsonClient
 import com.cursorforandroid.data.api.ConnectProjectCreationApi
@@ -185,6 +186,8 @@ class AppGraph(
      */
     followupQueue: FollowupQueueApi? = null,
     promptUploadApi: PromptUploadApi? = null,
+    /** Injectable for tests only: the account's start, so a chat started on one of the user's machines can be driven from the composer against a scripted account. */
+    agentStartApi: AgentStartApi? = null,
 ) {
     private val app = context.applicationContext
 
@@ -493,8 +496,8 @@ class AppGraph(
     val attachmentUploads: AttachmentUploads get() = lazyAttachmentUploads.value
 
     /** A new chat started on the account service, for the first prompt that carries files (see [ConnectAgentStartApi]). */
-    private val lazyAgentStart = lazy {
-        ConnectAgentStartApi(lazyAccountRpc.value, lazySessionTokens.value, noRepoEnvironment = { lazyProjectCreation.value.noRepoEnvironmentPublicId() })
+    private val lazyAgentStart: Lazy<AgentStartApi> = lazy {
+        agentStartApi ?: ConnectAgentStartApi(lazyAccountRpc.value, lazySessionTokens.value, noRepoEnvironment = { lazyProjectCreation.value.noRepoEnvironmentPublicId() })
     }
 
     /** What the last refresh cost, stage by stage, across the list, the account round, the Projects and the badges (see [RefreshStats]). */

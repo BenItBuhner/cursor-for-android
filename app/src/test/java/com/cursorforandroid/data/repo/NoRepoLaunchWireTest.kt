@@ -373,8 +373,8 @@ class DocumentedCloudAgentsServer : Dispatcher() {
     }
 
     /** A chat the account created outside this API (an account-service start): listed here under [id] with a fresh run, the way the API lists it a moment later. */
-    fun registerStarted(id: String, name: String) {
-        register(id, name, buildJsonObject { put("name", name) }, env = null, repos = null)
+    fun registerStarted(id: String, name: String, env: JsonObject? = null, repos: JsonArray? = null) {
+        register(id, name, buildJsonObject { put("name", name) }, env = env, repos = repos)
     }
 
     private fun register(agentId: String?, text: String, json: JsonObject, env: JsonObject?, repos: JsonArray?): Agent {
