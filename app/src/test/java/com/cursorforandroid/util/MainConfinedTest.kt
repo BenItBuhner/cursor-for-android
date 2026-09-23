@@ -7,6 +7,13 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.withContext
@@ -14,6 +21,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
+import java.util.concurrent.CopyOnWriteArrayList
 
 /**
  * A composition coroutine that hops to the IO dispatcher for a decode or a file read must come back to the main
@@ -61,6 +69,36 @@ class MainConfinedTest {
         pumpUntil { resumedOn != null }
         assertThat(resumedOn).isSameInstanceAs(mainThread)
         assertThat(answer).isEqualTo(7)
+    }
+
+    /**
+     * The same rule for a flow a composition collects: one shared on the Default dispatcher — `AgentsViewModel.uiState`'s
+     * shape, `flowOn(Default)` then `stateIn` — has each value set from a worker. Collected under the harness's
+     * unconfined arrangement, the collector carries on on that worker, and the state it writes is written off the main
+     * thread (`ShareDestinationScreenTest`'s picker, left on "Loading chats…" twice on main's CI); collected on
+     * [Dispatchers.Main.immediate], as `collectAsStateWithLifecycle(context = Dispatchers.Main.immediate)` does, it
+     * takes each value on the main thread.
+     */
+    @Test
+    fun `a flow shared on the Default dispatcher reaches an unconfined collector on a worker and a main-confined one on main`() {
+        val source = MutableStateFlow(0)
+        val sharing = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+        val shared = source.map { it }.flowOn(Dispatchers.Default).stateIn(sharing, SharingStarted.Eagerly, -1)
+        val unconfined = CopyOnWriteArrayList<Pair<Int, Thread>>()
+        val confined = CopyOnWriteArrayList<Pair<Int, Thread>>()
+        val collectors = CoroutineScope(UnconfinedTestDispatcher())
+        collectors.launch { shared.collect { unconfined += it to Thread.currentThread() } }
+        collectors.launch { withContext(Dispatchers.Main.immediate) { shared.collect { confined += it to Thread.currentThread() } } }
+        try {
+            pumpUntil { unconfined.any { it.first == 0 } && confined.any { it.first == 0 } }
+            source.value = 1
+            pumpUntil { unconfined.any { it.first == 1 } && confined.any { it.first == 1 } }
+            assertThat(unconfined.single { it.first == 1 }.second).isNotSameInstanceAs(mainThread)
+            assertThat(confined.single { it.first == 1 }.second).isSameInstanceAs(mainThread)
+        } finally {
+            sharing.cancel()
+            collectors.cancel()
+        }
     }
 
     @Test
