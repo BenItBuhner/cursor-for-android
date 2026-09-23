@@ -23,6 +23,7 @@ import com.cursorforandroid.domain.CursorUser
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.ui.theme.ThemeMode
 import com.google.common.truth.Truth.assertThat
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import org.junit.Before
@@ -77,7 +78,7 @@ class SidebarCollapsePersistenceTest {
         var viewModel by mutableStateOf(AgentsViewModel(graph))
         compose.setContent {
             val vm = viewModel
-            val state by vm.uiState.collectAsState()
+            val state by vm.uiState.collectAsState(context = Dispatchers.Main.immediate)
             CursorTheme(mode = ThemeMode.Dark) {
                 Sidebar(
                     state = state,
