@@ -157,6 +157,18 @@
                 android:resource="@xml/widget_chats_info" />
         </receiver>
         <!--
+          An update of the app has landed: the widget picker's Android 15 previews are the previous build's until the
+          new one publishes its own, which this does at once (see widget/WidgetPreviews.kt). The system sends this to
+          the updated package alone, so it is not exported.
+        -->
+        <receiver
+            android:name=".widget.WidgetPackageReplacedReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
+        <!--
           Picks what a widget lists; opened by the launcher when a widget is placed or reconfigured, and by the
           widget's own title. Its own task, so leaving it from the widget lands back on the home screen rather than
           in the app.

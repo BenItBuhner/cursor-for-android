@@ -17,6 +17,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.movableContentOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -89,6 +90,8 @@ fun AppNavHost(
     onDeepLinkConsumed: () -> Unit,
     newChatRequested: Boolean = false,
     onNewChatConsumed: () -> Unit = {},
+    searchRequested: Boolean = false,
+    onSearchConsumed: () -> Unit = {},
 ) {
     // The window size class is measured from the activity; without one (a wrapped context) the phone layout stands in
     // rather than the cast bringing the app down.
@@ -103,6 +106,8 @@ fun AppNavHost(
         onDeepLinkConsumed = onDeepLinkConsumed,
         newChatRequested = newChatRequested,
         onNewChatConsumed = onNewChatConsumed,
+        searchRequested = searchRequested,
+        onSearchConsumed = onSearchConsumed,
     )
 }
 
@@ -117,6 +122,8 @@ internal fun AppShell(
     onDeepLinkConsumed: () -> Unit,
     newChatRequested: Boolean = false,
     onNewChatConsumed: () -> Unit = {},
+    searchRequested: Boolean = false,
+    onSearchConsumed: () -> Unit = {},
 ) {
     val stack = rememberSaveable(saver = NavStack.Saver) { NavStack(Screen.Home) }
     val agentsViewModel: AgentsViewModel = viewModel(factory = AgentsViewModel.Factory(graph))
@@ -238,6 +245,17 @@ internal fun AppShell(
     val openDraftId by graph.newChatDrafts.open.collectAsStateWithLifecycle()
     // The draft open in the New Chat pane is the one being written while the pane is on screen; left, it is listed.
     val draftRows = remember(draftsState, openDraftId, topScreen) { DraftRow.listed(draftsState.drafts, open = openDraftId.takeIf { topScreen == Screen.Home }) }
+    // The widget's search button: the list surface with the sidebar's search field open. Counted rather than
+    // flagged so the sidebar sees a second request after the first was closed.
+    var searchRequests by rememberSaveable { mutableIntStateOf(0) }
+    LaunchedEffect(searchRequested) {
+        if (searchRequested) {
+            navigateTop(Screen.Home)
+            if (!wide) drawerState.open() else sidebarCollapsed = false
+            searchRequests++
+            onSearchConsumed()
+        }
+    }
     // Coming back to the foreground (runs that finished meanwhile would otherwise stay "Working" until a manual
     // refresh), and signing in again: the view model is activity-scoped, so its init refresh ran for the previous
     // session, whose list sign-out cleared.
@@ -319,6 +337,7 @@ internal fun AppShell(
             onQueryChange = agentsViewModel::setQuery,
             drafts = draftRows,
             shortLists = shortLists,
+            searchRequests = searchRequests,
             callbacks = SidebarCallbacks(
                 onNewChat = ::startNewChat,
                 onSettings = { navigateTop(Screen.Settings) },

@@ -222,4 +222,26 @@ class ToolPayloadsTest {
         assertThat(payload("sendToUserToolCall", """{"message":"Hi"}""")).isEqualTo(ToolPayload.CoordinatorMessage("Hi"))
         assertThat(payload("send_to_user", """{}""")).isNull()
     }
+
+    @Test
+    fun `what the subagent row reads off the calls - a message's delivery, a worker's model and machine, a task's model, place and cloud id`() {
+        // The delivery asked for, in either spelling; else the result's word on how it went.
+        val steered = payload("send_to_agent", """{"agent_id":"bc-w1","message":"Rebase.","delivery":"followup"}""") as ToolPayload.WorkerAction
+        assertThat(steered.delivery).isEqualTo(ToolPayload.WorkerAction.Delivery.Followup)
+        val queued = payload("sendToAgent", """{"agentId":"bc-w1","message":"Then cut v0.3.4.","delivery":"SEND_TO_AGENT_DELIVERY_QUEUE"}""") as ToolPayload.WorkerAction
+        assertThat(queued.delivery).isEqualTo(ToolPayload.WorkerAction.Delivery.Queue)
+        val byResult = payload("send_to_agent", """{"agent_id":"bc-w1","message":"Then cut v0.3.4."}""", """{"success":{"worker_bc_id":"bc-w1","delivered_as":"QUEUED"}}""") as ToolPayload.WorkerAction
+        assertThat(byResult.delivery).isEqualTo(ToolPayload.WorkerAction.Delivery.Queue)
+        assertThat((payload("send_to_agent", """{"agent_id":"bc-w1","message":"Hi."}""") as ToolPayload.WorkerAction).delivery).isNull()
+
+        val created = payload("create_agent", """{"prompt":"Fix it.","name":"Fixer","model":"composer-2.5","worker_id":"w-7"}""") as ToolPayload.WorkerAction
+        assertThat(created.model).isEqualTo("composer-2.5")
+        assertThat(created.workerId).isEqualTo("w-7")
+
+        // A task sent to its own VM names its cloud chat up front; the model and the place it asked for ride along.
+        val task = payload("task", """{"description":"Audit the tests","model":"claude-opus-5-5-high","environment":"SUBAGENT_EXECUTION_ENVIRONMENT_CLOUD","cloudAgentBcId":"bc-sub-2"}""") as ToolPayload.Subagent
+        assertThat(task.agentId).isEqualTo("bc-sub-2")
+        assertThat(task.model).isEqualTo("claude-opus-5-5-high")
+        assertThat(task.environment).isEqualTo("SUBAGENT_EXECUTION_ENVIRONMENT_CLOUD")
+    }
 }

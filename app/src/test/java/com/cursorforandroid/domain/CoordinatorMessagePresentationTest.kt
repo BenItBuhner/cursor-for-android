@@ -68,12 +68,13 @@ class CoordinatorMessagePresentationTest {
         assertThat(done.call.isRunning).isFalse()
         assertThat(done.call.isError).isFalse()
 
-        // The turn goes on: the remark is a note in the stretch after the message, the edit a step; the message stands.
+        // The turn goes on: the remark is a note in the stretch after the message, the edit a step; the message stands,
+        // and so does the row for the worker the coordinator messaged before it.
         events.drop(8).forEach(live::apply)
         rows = present(active = false).rows
         assertThat(messages(rows).map { it.message }).containsExactly(whole)
         val kinds = rows.map { row -> when (row) { is TranscriptRow.Item -> "item:${row.item::class.simpleName}"; is TranscriptRow.Message -> "message"; is TranscriptRow.Stretch -> "stretch:${row.summary.text}"; else -> row::class.simpleName!! } }
-        assertThat(kinds).containsExactly("item:UserMessage", "stretch:1 agent · 1 note", "message", "stretch:Worked 4m 13s · 1 edit · 1 note").inOrder()
+        assertThat(kinds).containsExactly("item:UserMessage", "stretch:1 note", "Subagent", "message", "stretch:Worked 4m 13s · 1 edit · 1 note").inOrder()
         assertThat(rows.map { it.key }).containsNoDuplicates()
 
         // Presented again from the same items: the presenter answers from its segments, the rows the same instances.

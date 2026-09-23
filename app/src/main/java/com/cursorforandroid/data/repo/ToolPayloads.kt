@@ -122,6 +122,8 @@ object ToolPayloads {
                 title = args.string(listOf("name")),
                 note = note,
                 reported = resultAgent != null,
+                model = args.string(listOf("model", "model_id", "modelId")),
+                workerId = args.string(listOf("worker_id", "workerId")),
             )
             "send_to_agent" -> ToolPayload.WorkerAction(
                 kind = ToolPayload.WorkerAction.Kind.Messaged,
@@ -129,6 +131,7 @@ object ToolPayloads {
                 text = args.string(listOf("message"))?.let { ToolPayloadLimits.clip(it, PROMPT_CHARS).first },
                 title = args.string(listOf("title")),
                 note = value?.deepString("delivered_as", "deliveredAs")?.let { "Delivered as ${it.lowercase().replace('_', ' ')}" } ?: note,
+                delivery = delivery(args.string(listOf("delivery"))) ?: delivery(value?.deepString("delivered_as", "deliveredAs")),
             )
             "get_agent_status" -> {
                 val reported = (value?.deep("workers") as? JsonArray)?.mapNotNull { element ->
@@ -370,9 +373,24 @@ object ToolPayloads {
         return ToolPayload.Recording(path, value.deepLong("recordingDurationMs", "recording_duration_ms", "durationMs", "duration_ms"))
     }
 
+    /**
+     * `send_to_agent`'s `delivery`, or the result's `delivered_as`: a follow-up steers the worker's turn, a queued
+     * message waits behind it. Spelt as the SDK's words (`followup`, `queue`) or the proto enum's (`…_FOLLOWUP`).
+     */
+    private fun delivery(raw: String?): ToolPayload.WorkerAction.Delivery? {
+        val word = raw?.trim()?.lowercase()?.replace("_", "")?.replace("-", "") ?: return null
+        return when {
+            word.endsWith("queue") || word.endsWith("queued") -> ToolPayload.WorkerAction.Delivery.Queue
+            word.endsWith("followup") || word.endsWith("steer") || word.endsWith("steered") -> ToolPayload.WorkerAction.Delivery.Followup
+            else -> null
+        }
+    }
+
     private fun subagent(args: JsonObject?, value: JsonObject?): ToolPayload? {
         val description = args.string(listOf("description", "name"))
-        val agentId = value?.deepString("agentId", "agent_id") ?: args.string(listOf("agentId", "agent_id"))
+        val agentId = args.string(listOf("cloudAgentBcId", "cloud_agent_bc_id"))
+            ?: value?.deepString("agentId", "agent_id")
+            ?: args.string(listOf("agentId", "agent_id"))
         val transcript = value?.deepString("transcriptPath", "transcript_path")
         val subagentType = (args?.get("subagentType") as? JsonObject)?.string(listOf("name", "kind"))
             ?: args.string(listOf("subagentType", "subagent_type"))
@@ -384,6 +402,8 @@ object ToolPayloads {
             durationMs = value?.deepLong("durationMs", "duration_ms"),
             isBackground = value?.deepBool("isBackground", "is_background") == true,
             subagentType = subagentType,
+            model = args.string(listOf("model")),
+            environment = args.string(listOf("environment")),
         )
     }
 

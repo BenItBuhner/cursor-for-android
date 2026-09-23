@@ -498,7 +498,7 @@ class AppScreenshotTest {
         compose.waitUntil(20_000) { compose.onAllNodes(hasContentDescription("New chat")).fetchSemanticsNodes().isNotEmpty() }
         waitForSidebarSections()
         // The Project's row in the sidebar (the recent card behind the drawer names it too) opens the coordinator's
-        // chat: a Project coordinator's transcript, whose steps are the workers it created (a card each), the status
+        // chat: a Project coordinator's transcript, whose steps are the workers it created (a row each), the status
         // check, its message to a worker, its own words to the user, and the worker's completion notice that
         // started the turn. There is no Project view in between.
         compose.onNode(hasText("Cesium billing launch") and hasAnyAncestor(sidebarList)).performClick()
@@ -515,8 +515,8 @@ class AppScreenshotTest {
         } finally {
             watching.cancel()
         }
-        // The earlier turn's worker cards sit above the current turn; bring the first of them into the frame.
-        compose.onAllNodes(hasScrollToNodeAction() and hasAnyDescendant(hasText("PR #215 (usage aggregation) is", substring = true))).onFirst().performScrollToNode(hasTestTag("worker-card"))
+        // The earlier turn's worker rows sit above the current turn; bring the first of them into the frame.
+        compose.onAllNodes(hasScrollToNodeAction() and hasAnyDescendant(hasText("PR #215 (usage aggregation) is", substring = true))).onFirst().performScrollToNode(hasTestTag("subagent-row"))
         compose.waitForIdle()
         capture("39_project_coordinator_transcript")
         // The Project itself is the chat's panel: its Project section, open by default, right under the Overview —

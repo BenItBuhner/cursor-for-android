@@ -7,7 +7,7 @@ import com.cursorforandroid.util.TimeFormat
  * agent's replies, a Project coordinator's `SendMessage` updates — are rows of their own; everything the agent did
  * between two of them is one [Stretch]: a summary line ("Worked 1m 48s · 4 edits · 1 thought") that opens onto the
  * whole sequence, verbatim and in order — its thoughts, its tool calls with the detail each opens onto, its
- * working notes, its run's footer. A worker's card, the pictures a step produced and the question a run is paused
+ * working notes, its run's footer. A subagent's row, the pictures a step produced and the question a run is paused
  * on are never behind the summary: they stay rows of their own, where they were.
  */
 sealed interface TranscriptRow {
@@ -51,9 +51,12 @@ sealed interface TranscriptRow {
         override val key: String get() = "${group.id}:${call.callId}"
     }
 
-    /** The card of a worker a coordinator created. */
-    data class Worker(val group: ActivityGroup, val call: ToolCall) : TranscriptRow {
-        override val key: String get() = "${group.id}:${call.callId}:worker"
+    /**
+     * A subagent's row, as Cursor's desktop draws one: a task the agent delegated, or a Project worker the
+     * coordinator created, messaged or stopped (see [SubagentCall]).
+     */
+    data class Subagent(val group: ActivityGroup, val call: ToolCall, val subagent: SubagentCall) : TranscriptRow {
+        override val key: String get() = "${group.id}:${call.callId}:subagent"
     }
 
     /** The pictures and recordings the calls of a stretch produced, shown whether or not the stretch is open. */
@@ -359,7 +362,7 @@ data class EventGroupSummary(val count: String, val kinds: String?, val span: St
  * Cuts a transcript into [TranscriptRow]s. A message ends the stretch before it — the user's prompt, an injected
  * turn's row, a notice, an agent's reply, and in a coordinator's chat ([coordinatorMode]) the coordinator's message
  * to the user, which sits among the steps of its group; a coordinator's plain reply is a note inside the stretch
- * instead. A worker's card cuts the stretch the same way and stands on its own; a step's pictures and the question
+ * instead. A subagent's row cuts the stretch the same way and stands on its own; a step's pictures and the question
  * a run is paused on follow the stretch they belong to as rows of their own. [runActive] marks the newest stretch
  * as still being written when the run is.
  */
@@ -457,11 +460,14 @@ object TranscriptRows {
                                     flush()
                                     rows += TranscriptRow.Message(item, step)
                                 }
-                                (step.payload as? ToolPayload.WorkerAction)?.kind == ToolPayload.WorkerAction.Kind.Created -> {
-                                    flush()
-                                    rows += TranscriptRow.Worker(item, step)
-                                }
                                 else -> {
+                                    val subagent = SubagentCall.of(step)
+                                    if (subagent != null) {
+                                        // A subagent is a row of its own wherever it starts, is steered or is stopped.
+                                        flush()
+                                        rows += TranscriptRow.Subagent(item, step, subagent)
+                                        return@forEachIndexed
+                                    }
                                     open += TranscriptRow.Entry.Call(step, "${item.id}:${step.callId}")
                                     if (step.hasMedia) pictures += step
                                     if (step.pendingQuestion != null) questions += TranscriptRow.Question(item, step)

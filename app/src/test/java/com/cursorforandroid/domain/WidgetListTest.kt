@@ -96,9 +96,122 @@ class WidgetListTest {
         assertThat(rows(WidgetMode.Recent, many).first()).isEqualTo("a0")
     }
 
+    private fun project(id: String, updatedAgo: Long = 0, lifecycle: AgentLifecycle = AgentLifecycle.IDLE) =
+        agent(id, updatedAgo, lifecycle = lifecycle).copy(isProject = true)
+
+    private fun worker(id: String, projectId: String, updatedAgo: Long = 0, kind: AgentParentKind = AgentParentKind.PROJECT_WORKER) =
+        agent(id, updatedAgo).copy(isProject = true, parent = AgentParent(projectId, kind))
+
+    private fun projectRows(projectId: String?, agents: List<Agent>, prefs: ListPreferences = ListPreferences()) =
+        WidgetList.rows(WidgetMode.Project, agents, prefs, LocalAgentState(), nowMillis = now, zone = zone, projectId = projectId).map { it.agent.id }
+
+    @Test
+    fun `a Project widget lists the coordinator first, then its chats as the sidebar nests them`() {
+        val agents = listOf(
+            agent("plain"),
+            project("proj", updatedAgo = hour),
+            worker("w-new", "proj"),
+            worker("w-old", "proj", updatedAgo = 2 * hour),
+            worker("side", "w-new", kind = AgentParentKind.SIDE_CHAT),
+            project("other"),
+            worker("other-w", "other"),
+        )
+        assertThat(projectRows("proj", agents)).containsExactly("proj", "w-new", "side", "w-old").inOrder()
+        assertThat(projectRows("other", agents)).containsExactly("other", "other-w").inOrder()
+    }
+
+    @Test
+    fun `a Project widget without a Project, or with one the list does not hold, is empty`() {
+        val agents = listOf(project("proj"), worker("w", "proj"))
+        assertThat(projectRows(null, agents)).isEmpty()
+        assertThat(projectRows("gone", agents)).isEmpty()
+    }
+
+    @Test
+    fun `a Project widget keeps its Project whatever the Chats filters say`() {
+        val agents = listOf(project("proj", updatedAgo = hour), worker("w", "proj"), agent("plain"))
+        val narrowed = ListPreferences(statuses = setOf(StatusFilter.Running), repos = setOf("acme/other"))
+        assertThat(projectRows("proj", agents, prefs = narrowed)).containsExactly("proj", "w").inOrder()
+    }
+
+    @Test
+    fun `the Projects on offer are the live roots by name`() {
+        val agents = listOf(project("zeta"), project("Alpha"), project("archived", lifecycle = AgentLifecycle.ARCHIVED), worker("w", "zeta"), agent("plain"))
+        assertThat(WidgetList.projects(agents).map { it.id }).containsExactly("Alpha", "zeta").inOrder()
+    }
+
+    private fun root(id: String, name: String?, archived: Boolean = false) =
+        KnownRoot(id, name = name, appearance = ProjectAppearance("leaf", "green"), archived = archived, signal = LineageSignal.ACCOUNT_RECORD)
+
+    private fun shortcuts(
+        agents: List<Agent>,
+        prefs: ListPreferences = ListPreferences(),
+        roots: List<KnownRoot> = emptyList(),
+        memberCounts: Map<String, Int> = emptyMap(),
+    ) = WidgetList.rows(WidgetMode.Projects, agents, prefs, LocalAgentState(), nowMillis = now, zone = zone, knownRoots = roots, memberCounts = memberCounts)
+
+    @Test
+    fun `the Projects list is the sidebar's Projects group, the registry's stand-ins after the loaded ones`() {
+        val agents = listOf(
+            agent("plain"),
+            project("older", updatedAgo = 2 * hour),
+            worker("w", "older"),
+            project("newer"),
+            project("gone", lifecycle = AgentLifecycle.ARCHIVED),
+        )
+        val roots = listOf(root("zeta", "Zeta"), root("alpha", "alpha"), root("loading", null), root("shelved", "Shelved", archived = true), root("newer", "Newer"))
+        val rows = shortcuts(agents, roots = roots)
+        // Not the chat of its own, not the worker, not the archived Project, not the root still loading under no name.
+        assertThat(rows.map { it.agent.id }).containsExactly("newer", "older", "alpha", "zeta").inOrder()
+        assertThat(rows.map { it.isStandIn }).containsExactly(false, false, true, true).inOrder()
+    }
+
+    @Test
+    fun `a Project's shortcut counts its live chats and says when any of them works`() {
+        val agents = listOf(
+            project("p"),
+            running("busy").copy(parent = AgentParent("p", AgentParentKind.PROJECT_WORKER)),
+            worker("done", "p", updatedAgo = hour),
+            worker("side", "done", kind = AgentParentKind.SIDE_CHAT),
+            agent("shelved", lifecycle = AgentLifecycle.ARCHIVED).copy(parent = AgentParent("p", AgentParentKind.PROJECT_WORKER)),
+            project("quiet", updatedAgo = 3 * hour),
+        )
+        val (busy, quiet) = shortcuts(agents)
+        assertThat(busy.agent.id).isEqualTo("p")
+        assertThat(busy.shownCount).isEqualTo(3)
+        assertThat(busy.hasRunningDescendant).isTrue()
+        assertThat(quiet.shownCount).isEqualTo(0)
+        assertThat(quiet.hasRunningDescendant).isFalse()
+        // The account's own count, once read, is the sidebar's when it is more than the loaded chats.
+        assertThat(shortcuts(agents, memberCounts = mapOf("p" to 9)).first().shownCount).isEqualTo(9)
+    }
+
+    @Test
+    fun `the Projects list answers to the archive rule alone, whatever the Chats filters say`() {
+        val agents = listOf(project("p", updatedAgo = hour), worker("w", "p"), project("gone", lifecycle = AgentLifecycle.ARCHIVED), agent("plain"))
+        val narrowed = ListPreferences(statuses = setOf(StatusFilter.Running), repos = setOf("acme/other"), git = emptySet())
+        assertThat(shortcuts(agents, prefs = narrowed).map { it.agent.id }).containsExactly("p")
+        // Showing archived chats in the sidebar does not make an archived Project a shortcut.
+        assertThat(shortcuts(agents, prefs = ListPreferences(statuses = StatusFilter.entries.toSet())).map { it.agent.id }).containsExactly("p")
+    }
+
+    @Test
+    fun `a Projects list with no Projects is empty`() {
+        assertThat(shortcuts(listOf(agent("a"), running("b")))).isEmpty()
+    }
+
+    @Test
+    fun `the Projects choice holds both the Projects list and one Project's`() {
+        assertThat(WidgetMode.choices).containsExactly(WidgetMode.Recent, WidgetMode.Running, WidgetMode.Pinned, WidgetMode.Projects).inOrder()
+        assertThat(WidgetMode.Project.choice).isEqualTo(WidgetMode.Projects)
+        assertThat(WidgetMode.Projects.choice).isEqualTo(WidgetMode.Projects)
+        assertThat(WidgetMode.Pinned.choice).isEqualTo(WidgetMode.Pinned)
+    }
+
     @Test
     fun `mode parsing falls back to the default`() {
         assertThat(WidgetMode.parse("Pinned")).isEqualTo(WidgetMode.Pinned)
+        assertThat(WidgetMode.parse("Projects")).isEqualTo(WidgetMode.Projects)
         assertThat(WidgetMode.parse(null)).isEqualTo(WidgetMode.Recent)
         assertThat(WidgetMode.parse("nonsense")).isEqualTo(WidgetMode.Recent)
     }

@@ -46,6 +46,21 @@ object AgentSchemas {
         enum(10, "mode"),
         sub(14, "turnTimings", repeated = true) { msg("agent.v1.StepTiming", u64(1, "durationMs"), u64(2, "timestampMs")) },
         u64(26, "conversationStartedTimestampMs"),
+        map(29, "communicateUpdateStatesByParentToolCallId", sub(2, "value") {
+            msg(
+                "agent.v1.CommunicateUpdateTurnState",
+                sub(1, "history", repeated = true) { msg("agent.v1.CommunicateUpdateHistoryEntry", str(1, "step"), u32(3, "messageIndex")) },
+                str(2, "finalSummary"),
+                str(3, "completedSubtitle"),
+            )
+        }),
+        map(30, "subagentRunsByParentToolCallId", sub(2, "value") {
+            msg(
+                "agent.v1.SubagentRunState",
+                str(1, "parentToolCallId"), str(2, "subagentId"), enum(3, "environment"), enum(4, "status"), str(5, "title"),
+                str(6, "detail"), str(7, "transcriptPath"), str(8, "outputPath"), u64(9, "completedTimestampMs"), str(10, "completionReason"),
+            )
+        }),
         bool(33, "isRootProjectConversation"),
     )
 

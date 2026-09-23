@@ -132,7 +132,7 @@ class CoordinatorFailureScreenshotTest {
         // The newest run failed and nothing came after: its line stands after the stretch; turn A says nothing of failure.
         val failure = rows.last() as TranscriptRow.Failure
         assertThat(failure.footer.reason).isEqualTo("Tool result not found for toolu_status_01")
-        assertThat(rows.filterIsInstance<TranscriptRow.Stretch>().map { it.summary.text }).containsExactly("2 agents · 1 note", "Worked 4m 13s · 1 note", "Worked 41s · 1 agent · 1 note").inOrder()
+        assertThat(rows.filterIsInstance<TranscriptRow.Stretch>().map { it.summary.text }).containsExactly("1 note", "Worked 4m 13s · 1 note", "Worked 41s · 1 agent · 1 note").inOrder()
         assertThat(rows.none { it is TranscriptRow.Item && it.item is NoticeCard }).isTrue()
         show(rows)
         compose.waitUntil(10_000) { compose.onAllNodesWithText("Run failed").fetchSemanticsNodes().isNotEmpty() }
