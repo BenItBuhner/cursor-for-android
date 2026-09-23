@@ -6,6 +6,7 @@ import com.cursorforandroid.data.api.ConversationStateReader
 import com.cursorforandroid.data.api.HeadlessConversationApi
 import com.cursorforandroid.data.api.ConversationRecordApi
 import com.cursorforandroid.data.api.RecordState
+import com.cursorforandroid.data.api.ServerRetry
 import com.cursorforandroid.data.api.TurnPlan
 import com.cursorforandroid.data.api.TurnTiming
 import com.cursorforandroid.data.api.CursorApi
@@ -159,6 +160,12 @@ data class RecordFallback(
     /** The HTTP status and the Connect `code` the server answered with, when it answered. */
     val httpCode: Int? = null,
     val code: String? = null,
+    /**
+     * Cursor's server failed (a 5xx, a connection it dropped), its retries spent: the account's copy of the chat is
+     * there and could not be sent just now — not a refusal, not a removal. The Retry asks at once, and the record is
+     * asked again by itself a couple of times while the chat is on screen (see `ConversationRepository.recordFallBack`).
+     */
+    val serverError: Boolean = false,
 ) {
     /** The one line that settles what was asked and what came back: `POST /…/StreamConversation → HTTP 404 unimplemented`. */
     val asked: String? get() = path?.let { p -> "POST $p" + (httpCode?.let { h -> " → HTTP $h" + (code?.let { c -> " $c" } ?: "") } ?: "") }
@@ -262,6 +269,8 @@ class ConversationRepository(
      * when the run records and the stream say nothing. Null when it cannot be told.
      */
     private val machineBusy: suspend (Agent) -> Boolean? = { null },
+    /** The pauses before the blob-backed record's pieces the server keeps failing are asked again (see [runBlobWork]). */
+    private val retryPassDelaysMs: List<Long> = ServerRetry.Waits().passes,
 ) {
     /**
      * A prompt sent from this device — the one that launched the chat, or a follow-up: its message and its run, a
@@ -530,6 +539,10 @@ class ConversationRepository(
         var extending = false
         /** The last load of the blob-backed record, as the diagnostics report it (see [BetaLoad]). */
         var betaLoad: BetaLoad? = null
+        /** The blob work is running or about to (see [startBlobWork]): a piece it has not got yet is on its way, not missing. */
+        var blobWorking = false
+        /** Re-reads made by themselves after a fallback on the server's failure, since the record last answered (see [recordFallBack]). */
+        var serverErrorRereads = 0
         /**
          * The story so far of the run [streamJob] is following, shown in place of the transcript it does not have
          * yet. The job owns it: it goes when following stops, and a snapshot from a job that is no longer the
@@ -1700,6 +1713,8 @@ class ConversationRepository(
                         firstPaintMs = load.firstPaintMs,
                         fullLoadMs = load.fullMs,
                         fallback = load.fallback,
+                        retried = spent.retried,
+                        failed = spent.failed,
                     )
                 },
                 status = run {
@@ -1814,6 +1829,7 @@ class ConversationRepository(
                 e.loadingOlder = false
                 e.blobJob?.cancel()
                 e.blobJob = null
+                e.blobWorking = false
                 e.extending = false
                 e.stopFollowing()
                 // The window the reader had open stays a while: a reader who comes straight back finds the chat as
@@ -1992,6 +2008,9 @@ class ConversationRepository(
         val e = entry(agentId)
         e.stopFollowing()
         e.loadJob?.cancel()
+        // The reader asked, the notice's Retry among the ways: after the server's own failure the record is asked at
+        // once. A refusal or a removal keeps its pause — asking again changes nothing it said.
+        synchronized(e) { if (e.state.value.recordFallback?.serverError == true) e.recordRefusedUntil = 0L }
         // The reader asked: everything is read again, the transcript included, whatever the run list says of it.
         e.loadJob = e.scope.launch { load(e, agentId, force = true) }
     }
@@ -2163,12 +2182,15 @@ class ConversationRepository(
         window.turns.forEachIndexed { i, turn ->
             val run = paired.getOrNull(offset + i)
             when {
+                // Pieces the server failed to give, and the reads behind the screen have given up for now: whatever
+                // else of the turn is on screen, it is short, with the Retry that asks again.
+                !turn.complete && turn.unavailable > 0 && !blobWorking -> failed++
                 // A turn whose reply the transcript gave and whose steps the record never had has its words, not its
                 // activity: counted by its log's state below.
                 (turn.hasBody && !turn.activityMissing) || (run != null && run.id in traces) || (run != null && live?.runId == run.id) -> shown++
                 // The record's structure lists no steps: the turn ended at its prompt, and it is whole as it is.
                 turn.structureKnown && turn.stepTotal == 0 -> shown++
-                // Its steps are still being read from the record (see [startBlobWork]).
+                // Its steps are still being read (see [startBlobWork]).
                 !turn.complete -> pending++
                 // Read from the record with nothing readable, and no run to replay its log: not on its way, missing.
                 run == null && turn.structureKnown -> if (i == window.turns.lastIndex && isChatRunning()) shown++ else failed++
@@ -2565,8 +2587,13 @@ class ConversationRepository(
                     // A coordinator's turns are read to their prompts and messages first; an ordinary chat's reply is
                     // a step like any other, which no structure names, so its turns are read whole at once.
                     val coordinator = state.isRootProject || synchronized(e) { e.projectMode } || known?.turns?.any { it.projectMode } == true
-                    RecordPager.tailTurns(api, agentId, wantTurns, state, plan = if (coordinator) TurnPlan.MESSAGES else TurnPlan.FULL, held = known?.held.orEmpty())
-                        ?.also { page -> page.drift?.let { drift -> drifted = true; throw drift } }
+                    patientOnOutage { patient -> RecordPager.tailTurns(api, agentId, wantTurns, state, plan = if (coordinator) TurnPlan.MESSAGES else TurnPlan.FULL, held = known?.held.orEmpty(), patient = patient) }
+                        ?.also { page ->
+                            page.drift?.let { drift -> drifted = true; throw drift }
+                            // Nothing of the page came back, its retries spent: the server's failure is the read's.
+                            // Anything that did come back is painted, and the rest is read again behind it.
+                            page.outage?.let { throw it }
+                        }
                 } else if (known != null && known.canAppend) {
                     RecordPager.since(api, agentId, known.total) ?: RecordPager.tail(api, agentId, wantTurns, null)
                 } else {
@@ -2635,6 +2662,7 @@ class ConversationRepository(
                     recordEmpty = false
                     recordError = null
                     recordRefusedUntil = 0L
+                    serverErrorRereads = 0
                     transcriptError = null
                     transcriptUnavailable = false
                     fetched = true
@@ -2729,7 +2757,9 @@ class ConversationRepository(
         val now = AppClock.now()
         val connect = failure as? ConnectRpcException
         val retryAfter = connect?.retryAfterMillis
-        val fallback = RecordFallback(message, now, (System.nanoTime() - readStartedAt) / 1_000_000, retryAfter, path = connect?.path, httpCode = connect?.httpCode, code = connect?.code)
+        // The server's own failure, or the connection's, its retries spent: the record is there and could not be sent.
+        val serverError = ServerRetry.isTransient(failure)
+        val fallback = RecordFallback(message, now, (System.nanoTime() - readStartedAt) / 1_000_000, retryAfter, path = connect?.path, httpCode = connect?.httpCode, code = connect?.code, serverError = serverError)
         // A removal is not a pause: the server has said the read is gone, and asking every half minute
         // costs a round trip on every open for nothing (see [RECORD_REMOVED_RETRY_MS]).
         val pause = when {
@@ -2738,15 +2768,24 @@ class ConversationRepository(
             drifted -> RECORD_DRIFT_RETRY_MS
             else -> RECORD_RETRY_MS
         }
+        var again = false
         e.publish(
             mutate = {
                 recordRefusedUntil = now + pause
                 recordError = message
                 recordWindow = null
                 extending = false
+                again = serverError && serverErrorRereads < MAX_SERVER_ERROR_REREADS && attached > 0
+                if (again) serverErrorRereads++
             },
             transform = { copy(recordFallback = fallback, isLoadingOlder = e.loadingOlder) },
         )
+        // The server's failure passes: the record is asked again by itself once the pause is over, a couple of
+        // times while the chat is on screen, so the reader need not tap Retry for a blip.
+        if (again) e.scope.launch {
+            delay(pause)
+            if (synchronized(e) { e.attached > 0 && e.state.value.recordFallback === fallback }) load(e, e.agentId, force = true)
+        }
     }
 
     /**
@@ -2762,7 +2801,9 @@ class ConversationRepository(
         val api = record ?: return
         synchronized(e) {
             e.blobJob?.cancel()
+            e.blobWorking = true
             e.blobJob = e.scope.launch {
+                val self = coroutineContext[Job]
                 val startedAt = System.nanoTime()
                 try {
                     runBlobWork(e, agentId, api)
@@ -2781,10 +2822,21 @@ class ConversationRepository(
                         e.publish(transform = { copy(transcriptError = message) })
                     }
                 } finally {
-                    withContext(NonCancellable) { e.publish(mutate = { extending = false }, transform = { copy(isLoadingOlder = e.loadingOlder) }) }
+                    // The pieces it could not get read as missing from here, with the Retry that asks again (see recordTraceStatus).
+                    withContext(NonCancellable) { e.publish(mutate = { extending = false; if (blobJob === self) blobWorking = false }, transform = { copy(isLoadingOlder = e.loadingOlder) }) }
                 }
             }
         }
+    }
+
+    /**
+     * A page of the blob-backed record read with the screen's one quick retry per piece, and read again with the
+     * whole backoff when the server failed every turn of it (see [RecordPager.Raw.outage]): a burst of 5xx is
+     * waited out before the page is given up. A page with anything readable is painted as it is.
+     */
+    private suspend inline fun <R : RecordPager.Raw?> patientOnOutage(read: (patient: Boolean) -> R): R {
+        val quick = read(false)
+        return if (quick?.outage == null) quick else read(true)
     }
 
     /** A drift the background work met (see [RecordPager.Raw.drift]), carried to [startBlobWork]'s handler. */
@@ -2805,9 +2857,10 @@ class ConversationRepository(
             if (!coordinator || enough || !window.hasOlder || window.turns.size >= MAX_WINDOW_TURNS) break
             e.publish(mutate = { extending = true }, transform = { copy(isLoadingOlder = true) })
             val pageTurns = if (pages++ == 0) FIRST_EXTEND_TURNS else EXTEND_TURNS
-            val older = RecordPager.beforeTurns(api, agentId, window.firstStep, minOf(pageTurns, MAX_WINDOW_TURNS - window.turns.size), TurnPlan.MESSAGES, window.state)
+            val older = patientOnOutage { patient -> RecordPager.beforeTurns(api, agentId, window.firstStep, minOf(pageTurns, MAX_WINDOW_TURNS - window.turns.size), TurnPlan.MESSAGES, window.state, patient = patient) }
             older.drift?.let { throw RecordDrift(it) }
-            if (older.turns.isEmpty()) break
+            // The server failed to give the page at all, its retries spent: the window stands as it is, and reaches back on the next read.
+            if (older.turns.isEmpty() || older.outage != null) break
             val widened = RecordTranscript.prepend(window, older, AppClock.now(), build = build)
             var applied: RecordWindow? = null
             e.publish(mutate = {
@@ -2834,10 +2887,21 @@ class ConversationRepository(
         }
         e.publish(mutate = { extending = false }, transform = { copy(isLoadingOlder = e.loadingOlder) })
         // The steps the first read left for later, newest turn first: the stretches fill in behind what is on screen.
+        // A turn with a piece the server failed to give after its retries waits until the rest are read — it would
+        // hold every page up by its backoff — and is then asked again after a pause, a few times, then left: it shows
+        // what did load and reads as missing, with the Retry that asks again.
+        var retryPasses = 0
+        val failing = HashSet<Int>()
         while (true) {
             val window = synchronized(e) { e.recordWindow?.takeIf { it.turnIndexed } } ?: return
-            val pending = window.incomplete.take(COMPLETE_TURNS)
-            if (pending.isEmpty()) break
+            val incomplete = window.incomplete
+            if (incomplete.isEmpty()) break
+            val others = incomplete.filter { it !in failing }
+            if (others.isEmpty()) {
+                if (retryPasses >= retryPassDelaysMs.size) break
+                delay(retryPassDelaysMs[retryPasses++])
+            }
+            val pending = others.ifEmpty { incomplete }.take(COMPLETE_TURNS)
             val state = window.state?.takeIf { it.turnBlobIds.isNotEmpty() } ?: return
             val raw = RecordPager.completeTurns(api, agentId, pending, state, window.held) ?: break
             raw.drift?.let { throw RecordDrift(it) }
@@ -2851,8 +2915,12 @@ class ConversationRepository(
             })
             val completed = done ?: return
             persistRecord(e, completed, window, backend, cacheTokens())
-            // A page read whole that did not complete what it was asked for (a turn the state no longer names): stop rather than ask again.
-            if (completed.incomplete.take(COMPLETE_TURNS) == pending) break
+            val failed = raw.turns.filter { it.unavailable > 0 }.map { it.index }
+            failing += failed
+            // Nothing of the page completed and none of it for the server's failure: a turn the state no longer
+            // names, which asking again does not change.
+            val left = completed.incomplete.toSet()
+            if (failed.isEmpty() && pending.all { it in left }) break
         }
         // What the record could not give — a turn with no readable steps — from its run's log, as ever.
         loadTraces(e, agentId, e.shownRuns())
@@ -3061,7 +3129,7 @@ class ConversationRepository(
         // The page read ahead, when it is the one before this window; else read now.
         val page = olderPageSize(e, window)
         val older = synchronized(e) { e.prefetchedOlder?.takeIf { it.isPageBefore(window) }?.also { e.prefetchedOlder = null } }
-            ?: if (window.turnIndexed) RecordPager.beforeTurns(api, e.agentId, window.firstStep, page, TurnPlan.MESSAGES, window.state).also { raw -> raw.drift?.let { throw RecordDrift(it) } }
+            ?: if (window.turnIndexed) patientOnOutage { patient -> RecordPager.beforeTurns(api, e.agentId, window.firstStep, page, TurnPlan.MESSAGES, window.state, patient = patient) }.also { raw -> raw.drift?.let { throw RecordDrift(it) }; raw.outage?.let { throw it } }
             else RecordPager.before(api, e.agentId, window.firstStep, WINDOW_RUNS)
         val sink = images?.forAgent(e.agentId)
         val built = RecordTranscript.prepend(window, older, AppClock.now(), wantTurns = page, build = turnBuilder(e.agentId, sink))
@@ -3104,7 +3172,7 @@ class ConversationRepository(
             e.prefetchedOlder = null
             e.prefetchJob = e.scope.launch {
                 val raw = runCatching {
-                    if (window.turnIndexed) RecordPager.beforeTurns(api, e.agentId, window.firstStep, olderPageSize(e, window), TurnPlan.MESSAGES, window.state).takeIf { it.drift == null }
+                    if (window.turnIndexed) RecordPager.beforeTurns(api, e.agentId, window.firstStep, olderPageSize(e, window), TurnPlan.MESSAGES, window.state, patient = false).takeIf { it.drift == null && it.outage == null }
                     else RecordPager.before(api, e.agentId, window.firstStep, WINDOW_RUNS)
                 }.getOrElse { t -> if (t is CancellationException) throw t; null } ?: return@launch
                 synchronized(e) { if (e.attached > 0 && e.recordWindow?.firstStep == window.firstStep) e.prefetchedOlder = raw }
@@ -3313,7 +3381,12 @@ class ConversationRepository(
      * for anything of the window still missing that is not known to have expired.
      */
     fun retryTraces(agentId: String) = offload(agentId) { e ->
-        synchronized(e) { e.failedTraces.clear() }
+        // The pieces of the blob-backed record the server failed to give are asked for again too.
+        val unread = synchronized(e) {
+            e.failedTraces.clear()
+            !e.blobWorking && e.recordWindow?.takeIf { it.turnIndexed }?.incomplete?.isNotEmpty() == true
+        }
+        if (unread) startBlobWork(e, agentId)
         loadTraces(e, agentId, e.shownRuns().filter { it.statusEnum().isTerminal })
     }
 
@@ -4904,6 +4977,8 @@ class ConversationRepository(
         const val RECORD_REMOVED_RETRY_MS = 60 * 60_000L
         /** How long the blob-backed record is left alone after it drifted (see [RecordPager.Raw.drift]): not a blip, not a removal. */
         const val RECORD_DRIFT_RETRY_MS = 10 * 60_000L
+        /** Re-reads of the record made by themselves after it fell back on the server's failure (see [recordFallBack]). */
+        const val MAX_SERVER_ERROR_REREADS = 2
         /** The code of a record answer whose shape this build did not expect (see [loadFromRecord]): the answer came, the turns did not. */
         const val SHAPE_MISMATCH = "shape_mismatch"
         /**

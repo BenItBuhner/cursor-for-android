@@ -133,6 +133,11 @@ data class HeadlessTurn(
     val asked: Int = 0,
     val missing: Int = 0,
     val lastMissing: ConnectRpcException? = null,
+    /** Pieces the server failed to give after their retries (see [BlobRecord.Read.unavailable]), and the last such failure. */
+    val unavailable: Int = 0,
+    val lastUnavailable: Throwable? = null,
+    /** The turn's structure was read (false: the server failed to give it, and nothing of the turn is known yet). */
+    val readable: Boolean = true,
 )
 
 /** Turns [from] until [from] + `turns.size` of a chat of [turnCount] turns. */
@@ -161,7 +166,7 @@ interface ConversationRecordApi {
      * [turns] read to [plan], the turns whose blob id [held] names (by whole-chat index) left unread and given as
      * [HeadlessTurn.reused]: the reader has them already, and a content-addressed turn does not change.
      */
-    suspend fun readTurns(agentId: String, from: Int, limit: Int, state: RecordState?, plan: TurnPlan, held: Map<Int, String> = emptyMap()): HeadlessTurnPage? = turns(agentId, from, limit, state)
+    suspend fun readTurns(agentId: String, from: Int, limit: Int, state: RecordState?, plan: TurnPlan, held: Map<Int, String> = emptyMap(), patient: Boolean = true): HeadlessTurnPage? = turns(agentId, from, limit, state)
 
     /** Whether [turns] is the read this record serves: the step-indexed read is gone from the server, the blob-backed one stands. */
     val readsTurns: Boolean get() = false
@@ -189,10 +194,12 @@ class HeadlessConversationApi(
     override val readsTurns: Boolean = true,
     /** The blobs read so far, shared with every other reader of the record (the goal strip's, see `SteeringApi`). */
     val blobs: BlobCache = BlobCache(),
+    /** The waits between attempts of a read the server failed (see [ServerRetry]). */
+    private val waits: ServerRetry.Waits = ServerRetry.Waits(),
 ) : ConversationRecordApi {
 
     /** The conversation state read (`StreamConversation`, PREWARM), which names the turns and brings the newest blobs. */
-    private val states = ConversationStateReader(rpc, tokens, blobs)
+    private val states = ConversationStateReader(rpc, tokens, blobs, waits.state)
 
     override fun blobCounts(agentId: String): Pair<BlobCache.Snapshot, Long> = blobs.counts(agentId).snapshot() to blobs.memoryBytes
 
@@ -264,9 +271,11 @@ class HeadlessConversationApi(
      * The turns [from] until [from] + [limit], each from its blobs to [plan]: the turn's structure, the user's
      * message and its steps, decoded against [AgentSchemas] (see [BlobRecord]). Blobs come from the cache first —
      * memory, then disk — and from the network only when neither holds them, [BLOB_PARALLELISM] at once across the
-     * page. A turn whose blob id [held] names is not read at all.
+     * page. A turn whose blob id [held] names is not read at all. A blob the server fails to give is asked again
+     * with backoff (see [ServerRetry]) — [patient] the whole way, else once, for a read the screen is waiting on,
+     * the piece left for the reads behind it.
      */
-    override suspend fun readTurns(agentId: String, from: Int, limit: Int, state: RecordState?, plan: TurnPlan, held: Map<Int, String>): HeadlessTurnPage {
+    override suspend fun readTurns(agentId: String, from: Int, limit: Int, state: RecordState?, plan: TurnPlan, held: Map<Int, String>, patient: Boolean): HeadlessTurnPage {
         val known = state ?: state(agentId)
         val ids = known.turnBlobIds
         val start = from.coerceIn(0, ids.size)
@@ -280,11 +289,12 @@ class HeadlessConversationApi(
                     val id = ids[index]
                     if (held[index] == id) return@async HeadlessTurn(index, emptyList(), blobId = id, reused = true)
                     val counter = BlobRecord.Counter()
-                    val read = BlobRecord.read(index, id, source(agentId, gate, counter), plan)
+                    val read = BlobRecord.read(index, id, source(agentId, gate, counter, if (patient) waits.pieces else waits.onScreen), plan)
                     HeadlessTurn(
                         index, read.steps, counter.blobs.get(), counter.prefetched.get(),
                         blobId = id, complete = read.complete, stepTotal = read.stepTotal, messageSteps = read.messageSteps,
                         asked = read.asked, missing = read.missing, lastMissing = read.lastMissing,
+                        unavailable = read.unavailable, lastUnavailable = read.lastUnavailable, readable = read.readable,
                     )
                 }
             }.awaitAll().asReversed()
@@ -293,7 +303,7 @@ class HeadlessConversationApi(
     }
 
     /** Where a turn read of [agentId] takes its blobs from: the cache, then the network through [gate]. */
-    private fun source(agentId: String, gate: Semaphore, counter: BlobRecord.Counter) = object : BlobRecord.Source {
+    private fun source(agentId: String, gate: Semaphore, counter: BlobRecord.Counter, retryDelaysMs: List<Long>) = object : BlobRecord.Source {
         override suspend fun blob(id: String, whole: Boolean): ByteArray {
             counter.blobs.incrementAndGet()
             val held = blobs.read(agentId, id)
@@ -301,7 +311,7 @@ class HeadlessConversationApi(
                 if (held.partial) counter.prefetched.incrementAndGet()
                 return held.bytes
             }
-            return gate.withPermit { fetchBlob(agentId, id) }
+            return gate.withPermit { fetchBlob(agentId, id, retryDelaysMs) }
         }
 
         override suspend fun held(id: String): BlobCache.Held? = blobs.read(agentId, id)
@@ -319,25 +329,33 @@ class HeadlessConversationApi(
         return fetchBlob(agentId, blobId)
     }
 
-    /** The network's copy of a blob, kept whole in memory and on disk. */
-    private suspend fun fetchBlob(agentId: String, blobId: String): ByteArray {
-        TranscriptPerf.session(agentId).network("blob")
+    /**
+     * The network's copy of a blob, kept whole in memory and on disk. A failure of the server's own — a 5xx (the
+     * load balancer's bare 502 among them), `unavailable`, a dropped connection — is asked again with backoff (see
+     * [ServerRetry]); what still fails after that is thrown for the turn to leave the piece for later, never the page.
+     */
+    private suspend fun fetchBlob(agentId: String, blobId: String, retryDelaysMs: List<Long> = waits.pieces): ByteArray {
         val counts = blobs.counts(agentId)
-        counts.fetched.incrementAndGet()
         val response = try {
-            rpc.unaryWithSession(
-                SERVICE,
-                "GetBlobForAgentKV",
-                tokens,
-                BlobRequestDto(bcId = agentId, blobId = blobId),
-                BlobRequestDto.serializer(),
-                BlobResponseDto.serializer(),
-                // A blob has no other source: a rate limit is waited out and the read made once more (see ApiThrottle.call).
-                retryRefusals = true,
-                lane = ApiThrottle.Lane.BLOBS,
-            )
-        } catch (e: ConnectRpcException) {
-            if (e.httpCode == 404 || e.code == "not_found") counts.missing.incrementAndGet()
+            ServerRetry.withRetries(retryDelaysMs, onRetry = { _, _, _ -> counts.retried.incrementAndGet() }) {
+                TranscriptPerf.session(agentId).network("blob")
+                counts.fetched.incrementAndGet()
+                rpc.unaryWithSession(
+                    SERVICE,
+                    "GetBlobForAgentKV",
+                    tokens,
+                    BlobRequestDto(bcId = agentId, blobId = blobId),
+                    BlobRequestDto.serializer(),
+                    BlobResponseDto.serializer(),
+                    // A blob has no other source: a rate limit is waited out and the read made once more (see ApiThrottle.call).
+                    retryRefusals = true,
+                    lane = ApiThrottle.Lane.BLOBS,
+                )
+            }
+        } catch (e: Throwable) {
+            val connect = e as? ConnectRpcException
+            if (connect != null && (connect.httpCode == 404 || connect.code == "not_found")) counts.missing.incrementAndGet()
+            if (ServerRetry.isTransient(e)) counts.failed.incrementAndGet()
             throw e
         }
         val bytes = response.blobData?.let { runCatching { Base64.getDecoder().decode(it) }.getOrNull() }
@@ -446,7 +464,11 @@ class HeadlessConversationApi(
     companion object {
         const val SERVICE = "aiserver.v1.BackgroundComposerService"
         const val BLOB_METHOD = "GetBlobForAgentKV"
-        /** Blob reads in flight at once for one page of turns: a few hundred bytes each, so the round trip is the cost, not the body. */
+        /**
+         * Blob reads in flight at once for one page of turns: a few hundred bytes each, so the round trip is the cost,
+         * not the body. Below the desktop's own: Cursor 3.21.18 puts no bound on its blob reads but the 64 of its cache
+         * migration, so eight is not what makes the server fail one.
+         */
         const val BLOB_PARALLELISM = 8
 
         /** `AgentMode.AGENT_MODE_PROJECT` — by its name in Connect JSON, or by its number (6) when an encoder writes enums so. */

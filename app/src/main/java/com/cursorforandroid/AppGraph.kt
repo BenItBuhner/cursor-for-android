@@ -643,7 +643,7 @@ class AppGraph(
         override suspend fun fetch(agentId: String, startIndex: Int, limit: Int): HeadlessPage = lazyHeadlessTranscript.value.fetch(agentId, startIndex, limit)
         override suspend fun state(agentId: String): RecordState = lazyHeadlessTranscript.value.state(agentId)
         override suspend fun turns(agentId: String, from: Int, limit: Int, state: RecordState?): HeadlessTurnPage? = lazyHeadlessTranscript.value.turns(agentId, from, limit, state)
-        override suspend fun readTurns(agentId: String, from: Int, limit: Int, state: RecordState?, plan: TurnPlan, held: Map<Int, String>): HeadlessTurnPage? = lazyHeadlessTranscript.value.readTurns(agentId, from, limit, state, plan, held)
+        override suspend fun readTurns(agentId: String, from: Int, limit: Int, state: RecordState?, plan: TurnPlan, held: Map<Int, String>, patient: Boolean): HeadlessTurnPage? = lazyHeadlessTranscript.value.readTurns(agentId, from, limit, state, plan, held, patient)
         override fun blobCounts(agentId: String) = if (lazyHeadlessTranscript.isInitialized()) lazyHeadlessTranscript.value.blobCounts(agentId) else null
         override val readsTurns: Boolean get() = true
     }

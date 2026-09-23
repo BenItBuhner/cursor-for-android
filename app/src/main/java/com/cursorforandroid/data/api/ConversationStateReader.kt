@@ -52,12 +52,15 @@ class BlobCache(
         val disk = AtomicInteger()
         val prefetched = AtomicInteger()
         val missing = AtomicInteger()
+        /** Attempts made again after a transient failure (see [ServerRetry]), and reads that still failed after them. */
+        val retried = AtomicInteger()
+        val failed = AtomicInteger()
 
-        fun snapshot(): Snapshot = Snapshot(fetched.get(), fetchedBytes.get(), memory.get(), disk.get(), prefetched.get(), missing.get())
+        fun snapshot(): Snapshot = Snapshot(fetched.get(), fetchedBytes.get(), memory.get(), disk.get(), prefetched.get(), missing.get(), retried.get(), failed.get())
     }
 
-    data class Snapshot(val fetched: Int = 0, val fetchedBytes: Long = 0, val memory: Int = 0, val disk: Int = 0, val prefetched: Int = 0, val missing: Int = 0) {
-        operator fun minus(other: Snapshot) = Snapshot(fetched - other.fetched, fetchedBytes - other.fetchedBytes, memory - other.memory, disk - other.disk, prefetched - other.prefetched, missing - other.missing)
+    data class Snapshot(val fetched: Int = 0, val fetchedBytes: Long = 0, val memory: Int = 0, val disk: Int = 0, val prefetched: Int = 0, val missing: Int = 0, val retried: Int = 0, val failed: Int = 0) {
+        operator fun minus(other: Snapshot) = Snapshot(fetched - other.fetched, fetchedBytes - other.fetchedBytes, memory - other.memory, disk - other.disk, prefetched - other.prefetched, missing - other.missing, retried - other.retried, failed - other.failed)
     }
 
     private val blobs = object : LinkedHashMap<String, Held>(64, 0.75f, true) {}
@@ -193,6 +196,8 @@ class ConversationStateReader(
     private val rpc: ConnectJsonClient,
     private val tokens: SessionTokenProvider,
     val blobs: BlobCache,
+    /** The waits between attempts of a read the server failed (see [readNow]). */
+    private val retryDelaysMs: List<Long> = ServerRetry.Waits().state,
 ) {
     /** What `initial_state` carried, in the corner this app reads, and the raw JSON of the rest for the diagnostics. */
     class InitialState(
@@ -248,7 +253,14 @@ class ConversationStateReader(
         }
     }
 
-    private suspend fun readNow(agentId: String): InitialState {
+    /**
+     * [readOnce], asked again after a failure of the server's own or of the connection (see [ServerRetry]): the
+     * first paint waits on it, so it is asked a few times rather than the blobs' number of times.
+     */
+    private suspend fun readNow(agentId: String): InitialState =
+        ServerRetry.withRetries(retryDelaysMs, onRetry = { _, _, _ -> blobs.counts(agentId).retried.incrementAndGet() }) { readOnce(agentId) }
+
+    private suspend fun readOnce(agentId: String): InitialState {
         TranscriptPerf.session(agentId).network("state")
         val known = blobs.heldIds(agentId)
         val request = StreamConversationRequestDto(bcId = agentId, preFetchedBlobIds = known)
