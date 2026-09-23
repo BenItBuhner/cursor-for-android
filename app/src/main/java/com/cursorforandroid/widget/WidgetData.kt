@@ -12,8 +12,10 @@ import com.cursorforandroid.data.repo.SessionState
 import com.cursorforandroid.domain.Agent
 import com.cursorforandroid.domain.AgentLifecycle
 import com.cursorforandroid.domain.AgentRow
+import com.cursorforandroid.domain.ChatsWidgetSettings
 import com.cursorforandroid.domain.EnvType
 import com.cursorforandroid.domain.GitBranch
+import com.cursorforandroid.domain.KnownRoot
 import com.cursorforandroid.domain.ListPreferences
 import com.cursorforandroid.domain.LocalAgentState
 import com.cursorforandroid.domain.PullRequestState
@@ -45,10 +47,29 @@ data class WidgetSnapshot(
     val local: LocalAgentState,
     val theme: ThemeMode,
     val oledBlack: Boolean = false,
+    /** The registry's Project roots, restored with the list: the Projects list's stand-ins, as in the sidebar. */
+    val knownRoots: List<KnownRoot> = emptyList(),
+    /** The account's member count per Project, as far as this process has read them: the sidebar's counts. */
+    val memberCounts: Map<String, Int> = emptyMap(),
+    /** Extended mode is on: the only way the account says which chats are Projects (see `Capabilities.projects`). */
+    val extendedMode: Boolean = false,
 ) {
     val isSignedOut: Boolean get() = session is SessionState.SignedOut
 
-    fun rows(mode: WidgetMode, nowMillis: Long = AppClock.now()): List<AgentRow> = WidgetList.rows(mode, agents, prefs, local, nowMillis)
+    /** Projects can be listed at all: Extended mode is on, or this is the demo, which stands in for the account. */
+    val projectsAvailable: Boolean get() = extendedMode || (session as? SessionState.SignedIn)?.isDemo == true
+
+    fun rows(mode: WidgetMode, nowMillis: Long = AppClock.now(), projectId: String? = null): List<AgentRow> =
+        WidgetList.rows(mode, agents, prefs, local, nowMillis, projectId = projectId, knownRoots = knownRoots, memberCounts = memberCounts)
+
+    /** The header's title for [settings]: the list's name, or the chosen Project's. */
+    fun title(settings: ChatsWidgetSettings): String = when (settings.mode) {
+        WidgetMode.Project -> settings.projectId?.let { id -> agents.firstOrNull { it.id == id }?.name } ?: WidgetMode.Project.title
+        else -> settings.mode.title
+    }
+
+    /** The Projects a widget can be set to list. */
+    val projects: List<Agent> get() = WidgetList.projects(agents)
 }
 
 /**
@@ -77,13 +98,13 @@ object WidgetData {
 
     fun snapshots(graph: AppGraph): Flow<WidgetSnapshot> = combine(
         graph.session.state,
-        graph.agents.state,
-        graph.prefs.listPreferences,
+        combine(graph.agents.state, graph.agents.knownRoots, graph.projects.memberCounts, ::Triple),
+        combine(graph.prefs.listPreferences, graph.extendedMode.enabled, ::Pair),
         // The Git filter goes by the pull request states the app last read; the widget itself never asks GitHub.
         combine(graph.prefs.localAgentState, graph.pullRequests.states) { local, states -> local.copy(pullRequests = states) },
         combine(graph.prefs.themeMode, graph.prefs.oledBlack, ::Pair),
-    ) { session, list, prefs, local, appearance ->
-        WidgetSnapshot(session, list.hasLoaded, list.agents, prefs, local, appearance.first, appearance.second)
+    ) { session, (list, roots, counts), (prefs, extended), local, appearance ->
+        WidgetSnapshot(session, list.hasLoaded, list.agents, prefs, local, appearance.first, appearance.second, knownRoots = roots, memberCounts = counts, extendedMode = extended)
     }.distinctUntilChanged()
 
     suspend fun snapshot(graph: AppGraph): WidgetSnapshot = snapshots(graph).first()

@@ -547,7 +547,7 @@ class TranscriptVerifier(
         is TranscriptRow.Event -> "event kind=${row.notification.kind} ×${row.count} title=\"${row.notification.title}\""
         is TranscriptRow.Events -> "events count=${row.count} startsOpen=${row.startsOpen} \"${row.summary.text}\""
         is TranscriptRow.Message -> "MESSAGE " + describeMessage(row.call)
-        is TranscriptRow.Worker -> "worker ${row.call.name} linked=${row.call.linkedAgentIds.size}"
+        is TranscriptRow.Subagent -> "subagent ${row.subagent.source} ${row.call.name} title=\"${row.subagent.title ?: "-"}\" linked=${row.call.linkedAgentIds.size}"
         is TranscriptRow.Media -> "media calls=${row.group.calls.count { it.hasMedia }}"
         is TranscriptRow.Question -> "question ${row.call.name} answered=${(row.call.payload as? ToolPayload.Question)?.isAnswered}"
         is TranscriptRow.Failure -> "FAILURE run=${tail(row.footer.runId)} status=${row.footer.status} reason=${row.footer.reason?.length ?: 0}ch"

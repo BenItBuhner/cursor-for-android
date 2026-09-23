@@ -7,6 +7,7 @@ import androidx.glance.GlanceId
 import androidx.glance.appwidget.GlanceAppWidgetManager
 import androidx.glance.appwidget.updateAll
 import com.cursorforandroid.AppGraph
+import com.cursorforandroid.appGraph
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
@@ -111,11 +112,15 @@ object WidgetSync {
         job.start()
     }
 
-    /** From a screen, once it has settled: hand the widget picker a live preview. Android 15 lets the app render it; the system rate-limits repeats. */
+    /**
+     * From a screen, once it has settled: the widget picker's previews, published once per installed build and boot
+     * — the system keeps them across updates and loses them on a reboot, and allows two publishes an hour (see
+     * [WidgetPreviews]). Nothing before Android 15, which has no generated previews.
+     */
     fun publishPreviews(context: Context) {
         if (Build.VERSION.SDK_INT < 35) return
         val app = context.applicationContext
-        scope.launch { runCatching { GlanceAppWidgetManager(app).setWidgetPreviews(ChatsWidgetReceiver::class) } }
+        scope.launch { WidgetPreviews.publishIfNeeded(app, app.appGraph) }
     }
 
     /**

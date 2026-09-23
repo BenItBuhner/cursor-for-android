@@ -249,7 +249,11 @@ object BlobRecord {
     private fun toolCallSteps(call: JsonObject, position: Int, index: Int, shape: String, stepIndexInTurn: Int): List<HeadlessStep> {
         val variant = AgentSchemas.TOOL_VARIANTS.entries.firstOrNull { (_, name) -> call[AgentSchemas.variantKey(name)] is JsonObject }
         val body = variant?.let { call[AgentSchemas.variantKey(it.value)] as JsonObject }
-        val args = body?.get("args")
+        // A task's cloud child is named beside its arguments (`TaskToolCall.cloud_agent_bc_id`), before any result does.
+        val args = body?.get("args").let { args ->
+            val bcId = body?.get("cloudAgentBcId") as? JsonPrimitive
+            if (args is JsonObject && bcId != null && !bcId.contentOrNull.isNullOrBlank()) JsonObject(args + ("cloudAgentBcId" to bcId)) else args
+        }
         val result = body?.get("result")
         val callId = call.string("toolCallId")
             ?: (args as? JsonObject)?.string("toolCallId")

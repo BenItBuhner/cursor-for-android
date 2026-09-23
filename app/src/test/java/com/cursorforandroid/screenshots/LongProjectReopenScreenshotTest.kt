@@ -149,10 +149,12 @@ class LongProjectReopenScreenshotTest {
         val rows = rowsAfter()
         assertThat(rows.filterIsInstance<TranscriptRow.Message>()).isNotEmpty()
         assertThat(rows.any { it is TranscriptRow.Item && it.item is UserMessage }).isTrue()
-        // The newest of the rows: what the screen opens on, bottom-anchored.
+        // The newest of the rows: what the screen opens on, bottom-anchored — each report's stretch and the worker
+        // the coordinator queued work for after it, a subagent row as the desktop draws every SendToAgent.
         val shown = rows.takeLast(6)
+        assertThat(shown.count { it is TranscriptRow.Subagent }).isAtLeast(2)
         show { shown.forEach { TranscriptRowView(it) } }
-        compose.waitUntil(10_000) { compose.onAllNodes(hasTestTag("coordinator-message")).fetchSemanticsNodes().isNotEmpty() }
+        compose.waitUntil(10_000) { compose.onAllNodes(hasTestTag("subagent-row")).fetchSemanticsNodes().isNotEmpty() }
         compose.onAllNodes(hasTestTag("loading-older")).assertCountEquals(0)
         capture("99_long_project_reopen_after")
     }

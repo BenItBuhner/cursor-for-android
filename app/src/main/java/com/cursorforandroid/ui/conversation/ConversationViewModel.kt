@@ -39,6 +39,7 @@ import com.cursorforandroid.domain.SlashCatalog
 import com.cursorforandroid.domain.SlashCommand
 import com.cursorforandroid.domain.SlashCommands
 import com.cursorforandroid.domain.SnoozeDuration
+import com.cursorforandroid.domain.SubagentRows
 import com.cursorforandroid.domain.ToolPayload
 import com.cursorforandroid.domain.TranscriptPresenter
 import com.cursorforandroid.domain.TranscriptRow
@@ -135,6 +136,7 @@ class PresentedTranscript(val state: ConversationState, val presented: Transcrip
     val rows: List<TranscriptRow> get() = presented.rows
     val items get() = presented.items
     val coordinatorMode: Boolean get() = presented.coordinatorMode
+    val subagents: SubagentRows.Index get() = presented.subagents
 }
 
 /** Where every screen's transcript is presented: one thread at a time, off the main one, in the order the states came. */

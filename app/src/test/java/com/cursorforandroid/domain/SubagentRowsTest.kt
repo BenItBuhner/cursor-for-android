@@ -1,0 +1,274 @@
+package com.cursorforandroid.domain
+
+import com.cursorforandroid.fixtures.LiveModelCatalog
+import com.google.common.truth.Truth.assertThat
+import org.junit.Test
+
+/**
+ * The desktop's rules for a subagent's row (`SubagentTaskCard`, Cursor 3.21.18) as this app reads them: which calls
+ * are rows, the title, the model's label, the placement glyph, the line under the title and the indicator, for a
+ * task's subagent and for a Project's worker created, steered, queued, messaged or stopped.
+ */
+class SubagentRowsTest {
+
+    private val models = LiveModelCatalog.models
+
+    private fun task(
+        description: String? = "CursorBench chart hover highlight",
+        status: String = ToolCall.STATUS_RUNNING,
+        agentId: String? = null,
+        model: String? = null,
+        type: String? = null,
+        environment: String? = null,
+    ) = ToolCall(
+        "t1", "task", ToolKind.Task, status, description.orEmpty(),
+        payload = ToolPayload.Subagent(description, agentId = agentId, subagentType = type, model = model, environment = environment),
+    )
+
+    private fun created(name: String? = "Build Projects under Extended mode", prompt: String = "Fix the Projects list.", agentId: String? = "bc-w1", status: String = ToolCall.STATUS_COMPLETED, model: String? = null, workerId: String? = null) = ToolCall(
+        "c1", "create_agent", ToolKind.Coordinator, status, name.orEmpty(),
+        payload = ToolPayload.WorkerAction(ToolPayload.WorkerAction.Kind.Created, listOfNotNull(agentId?.let { WorkerStatus(it, name) }), text = prompt, title = name, model = model, workerId = workerId),
+    )
+
+    private fun sent(delivery: ToolPayload.WorkerAction.Delivery?, title: String? = "Rebase", status: String = ToolCall.STATUS_COMPLETED, callId: String = "s1") = ToolCall(
+        callId, "send_to_agent", ToolKind.Coordinator, status, "bc-w1",
+        payload = ToolPayload.WorkerAction(ToolPayload.WorkerAction.Kind.Messaged, listOf(WorkerStatus("bc-w1")), text = "Rebase onto main.", title = title, delivery = delivery),
+    )
+
+    private fun stopped(status: String = ToolCall.STATUS_COMPLETED, isError: Boolean = false) = ToolCall(
+        "x1", "stop_agent", ToolKind.Coordinator, status, "bc-w1", isError = isError,
+        payload = ToolPayload.WorkerAction(ToolPayload.WorkerAction.Kind.Stopped, listOf(WorkerStatus("bc-w1"))),
+    )
+
+    private fun agent(status: RunStatus?, env: EnvType = EnvType.CLOUD, pending: Boolean = false, modelId: String? = null, name: String = "Usage events aggregation") = Agent(
+        id = "bc-w1", name = name, lifecycle = AgentLifecycle.ACTIVE, runStatus = status, envType = env, envName = null,
+        url = "https://cursor.com/agents/bc-w1", createdAtMillis = 1L, updatedAtMillis = 2L, latestRunId = "run-1", repoUrl = null, startingRef = null,
+        hasPendingInteraction = pending, modelId = modelId,
+    )
+
+    private fun look(call: ToolCall, child: SubagentChild? = null, latest: Boolean = true) = SubagentRows.look(call, SubagentCall.of(call)!!, child, latest)
+
+    // -- which calls are rows, and what they say ------------------------------------------------------------------
+
+    @Test
+    fun `every kind of subagent call is a row, and nothing else is`() {
+        assertThat(SubagentCall.of(task())!!.source).isEqualTo(SubagentCall.Source.Task)
+        assertThat(SubagentCall.of(created())!!.source).isEqualTo(SubagentCall.Source.Created)
+        assertThat(SubagentCall.of(sent(ToolPayload.WorkerAction.Delivery.Followup))!!.source).isEqualTo(SubagentCall.Source.Steered)
+        assertThat(SubagentCall.of(sent(ToolPayload.WorkerAction.Delivery.Queue))!!.source).isEqualTo(SubagentCall.Source.Queued)
+        assertThat(SubagentCall.of(sent(null))!!.source).isEqualTo(SubagentCall.Source.Messaged)
+        assertThat(SubagentCall.of(stopped())!!.source).isEqualTo(SubagentCall.Source.Stopped)
+        // A status check and a transcript read are the coordinator's own reading, not a row.
+        val status = ToolCall("g1", "get_agent_status", ToolKind.Coordinator, ToolCall.STATUS_COMPLETED, "2 agents", payload = ToolPayload.WorkerAction(ToolPayload.WorkerAction.Kind.Status))
+        val read = ToolCall("r1", "read_agent_transcript", ToolKind.Coordinator, ToolCall.STATUS_COMPLETED, "bc-w1", payload = ToolPayload.WorkerAction(ToolPayload.WorkerAction.Kind.ReadTranscript))
+        assertThat(SubagentCall.of(status)).isNull()
+        assertThat(SubagentCall.of(read)).isNull()
+        assertThat(SubagentCall.of(ToolCall("e1", "edit", ToolKind.Edit, ToolCall.STATUS_COMPLETED, "Main.kt"))).isNull()
+    }
+
+    @Test
+    fun `a failed call carries no payload, and is still its row off its name, summary and link`() {
+        val create = SubagentCall.of(ToolCall("c", "createAgent", ToolKind.Coordinator, ToolCall.STATUS_COMPLETED, "Webhooks", isError = true, linkedAgentIds = listOf("bc-w2")))!!
+        assertThat(create.source).isEqualTo(SubagentCall.Source.Created)
+        assertThat(create.title).isEqualTo("Webhooks")
+        assertThat(create.agentId).isEqualTo("bc-w2")
+        val send = SubagentCall.of(ToolCall("s", "sendToAgent", ToolKind.Coordinator, ToolCall.STATUS_INTERRUPTED, "bc-w1"))!!
+        assertThat(send.source).isEqualTo(SubagentCall.Source.Messaged)
+        assertThat(send.title).isEqualTo(SubagentCall.FOLLOW_UP)
+        assertThat(send.agentId).isEqualTo("bc-w1")
+        assertThat(SubagentCall.of(ToolCall("x", "stop_agent", ToolKind.Coordinator, ToolCall.STATUS_COMPLETED, "bc-w1"))!!.source).isEqualTo(SubagentCall.Source.Stopped)
+        val bareTask = SubagentCall.of(ToolCall("t", "task", ToolKind.Task, ToolCall.STATUS_RUNNING, "subagent"))!!
+        assertThat(bareTask.title).isNull()
+    }
+
+    @Test
+    fun `the title is the desktop's, per source`() {
+        fun title(call: ToolCall, workerName: String? = null, childName: String? = null, child: SubagentChild? = null): String {
+            val subagent = SubagentCall.of(call)!!
+            return SubagentRows.title(subagent, SubagentRows.look(call, subagent, child), workerName, childName)
+        }
+        // A task: its description; none, the child's own name; neither, the desktop's word.
+        assertThat(title(task())).isEqualTo("CursorBench chart hover highlight")
+        assertThat(title(task(description = null), childName = "Explore the repo")).isEqualTo("Explore the repo")
+        assertThat(title(task(description = null))).isEqualTo(SubagentCall.NEW_SUBAGENT)
+        // A worker created: its name, else its prompt's first line, cut to 79 characters and an ellipsis.
+        assertThat(title(created())).isEqualTo("Build Projects under Extended mode")
+        assertThat(title(created(name = null, prompt = "Fix the Projects list: workers leak into Today.\nThen cut a release."))).isEqualTo("Fix the Projects list: workers leak into Today.")
+        val long = "x".repeat(120)
+        val cut = title(created(name = null, prompt = long))
+        assertThat(cut).hasLength(SubagentCall.TITLE_MAX)
+        assertThat(cut).endsWith("\u2026")
+        // A worker cancelled before it started is the desktop's "New Agent", whatever it was to be called.
+        assertThat(title(created(agentId = null, status = ToolCall.STATUS_INTERRUPTED))).isEqualTo(SubagentCall.NEW_AGENT)
+        // A message: its title, else "Agent follow-up", steered or queued alike.
+        assertThat(title(sent(ToolPayload.WorkerAction.Delivery.Followup))).isEqualTo("Rebase")
+        assertThat(title(sent(ToolPayload.WorkerAction.Delivery.Queue, title = null))).isEqualTo(SubagentCall.FOLLOW_UP)
+        // A stop: the worker's name as the call that created it gave it, else the list's, else "Agent".
+        assertThat(title(stopped(), workerName = "Build Projects under Extended mode")).isEqualTo("Build Projects under Extended mode")
+        assertThat(title(stopped(), childName = "Usage events aggregation")).isEqualTo("Usage events aggregation")
+        assertThat(title(stopped())).isEqualTo(SubagentCall.AGENT)
+    }
+
+    // -- the state ------------------------------------------------------------------------------------------------
+
+    @Test
+    fun `a running subagent's line is its step, else its action, else planning, shimmering beside the dot grid`() {
+        val stepped = look(task(), SubagentChild(SubagentChild.Status.Running, step = "Wiring the hover state", action = "Editing Chart.kt"))
+        assertThat(stepped.indicator).isEqualTo(SubagentLook.Indicator.Running)
+        assertThat(stepped.status).isEqualTo("Wiring the hover state")
+        assertThat(stepped.active).isTrue()
+        assertThat(look(task(), SubagentChild(SubagentChild.Status.Running, action = "Editing Chart.kt")).status).isEqualTo("Editing Chart.kt")
+        assertThat(look(task(), SubagentChild(SubagentChild.Status.Running)).status).isEqualTo(SubagentRows.PLANNING)
+        // The call alone, still running: planning.
+        assertThat(look(task()).status).isEqualTo(SubagentRows.PLANNING)
+    }
+
+    @Test
+    fun `finished, errored, stopped and waiting children read as the desktop's states`() {
+        val done = look(task(status = ToolCall.STATUS_COMPLETED), SubagentChild(SubagentChild.Status.Succeeded))
+        assertThat(done).isEqualTo(SubagentLook(SubagentLook.Indicator.Finished, SubagentRows.COMPLETED))
+        assertThat(look(task(status = ToolCall.STATUS_COMPLETED))).isEqualTo(SubagentLook(SubagentLook.Indicator.Finished, SubagentRows.COMPLETED))
+        val failed = look(created(), SubagentChild(SubagentChild.Status.Failed))
+        assertThat(failed).isEqualTo(SubagentLook(SubagentLook.Indicator.Error, SubagentRows.STOPPED_WITH_ERROR))
+        assertThat(look(task(status = ToolCall.STATUS_COMPLETED).copy(isError = true))).isEqualTo(SubagentLook(SubagentLook.Indicator.Error, SubagentRows.STOPPED_WITH_ERROR))
+        val aborted = look(created(), SubagentChild(SubagentChild.Status.Aborted))
+        assertThat(aborted).isEqualTo(SubagentLook(SubagentLook.Indicator.Finished, SubagentRows.STOPPED, dimmed = true))
+        assertThat(look(task(status = ToolCall.STATUS_INTERRUPTED)).dimmed).isTrue()
+        val waiting = look(created(), SubagentChild(SubagentChild.Status.Running, waiting = true))
+        assertThat(waiting).isEqualTo(SubagentLook(SubagentLook.Indicator.Attention, SubagentRows.WAITING, attention = true))
+    }
+
+    @Test
+    fun `a worker's row starts with its call, fails to start with it, and settles once a later row addresses the worker`() {
+        assertThat(look(created(agentId = null, status = ToolCall.STATUS_RUNNING))).isEqualTo(SubagentLook(SubagentLook.Indicator.Running, SubagentRows.STARTING, active = true))
+        assertThat(look(sent(ToolPayload.WorkerAction.Delivery.Queue, status = ToolCall.STATUS_RUNNING))).isEqualTo(SubagentLook(SubagentLook.Indicator.Running, SubagentRows.STARTING, active = true))
+        assertThat(look(created().copy(isError = true))).isEqualTo(SubagentLook(SubagentLook.Indicator.Finished, SubagentRows.COULD_NOT_START, dimmed = true))
+        val cancelled = look(created(agentId = null, status = ToolCall.STATUS_INTERRUPTED))
+        assertThat(cancelled.indicator).isEqualTo(SubagentLook.Indicator.Error)
+        assertThat(cancelled.status).isEqualTo(SubagentRows.CANCELLED)
+        // Running by the list, but a later row speaks for the worker now: this one is over.
+        assertThat(look(created(), SubagentChild(SubagentChild.Status.Running), latest = false)).isEqualTo(SubagentLook(SubagentLook.Indicator.Finished, SubagentRows.COMPLETED))
+        // A task is never superseded.
+        assertThat(look(task(), SubagentChild(SubagentChild.Status.Running), latest = false).indicator).isEqualTo(SubagentLook.Indicator.Running)
+    }
+
+    @Test
+    fun `a stop reads as stopping, stopped or failing to stop`() {
+        assertThat(look(stopped(status = ToolCall.STATUS_RUNNING))).isEqualTo(SubagentLook(SubagentLook.Indicator.Running, SubagentRows.STOPPING, active = true))
+        assertThat(look(stopped())).isEqualTo(SubagentLook(SubagentLook.Indicator.Finished, SubagentRows.STOPPED, dimmed = true))
+        assertThat(look(stopped(isError = true))).isEqualTo(SubagentLook(SubagentLook.Indicator.Error, SubagentRows.COULD_NOT_STOP))
+    }
+
+    // -- the action line ------------------------------------------------------------------------------------------
+
+    @Test
+    fun `the child's action is read newest first, the way the desktop reads its bubbles`() {
+        val edit = ToolCall("e", "edit", ToolKind.Edit, ToolCall.STATUS_RUNNING, "Chart.kt")
+        val shell = ToolCall("sh", "shell", ToolKind.Shell, ToolCall.STATUS_RUNNING, "./gradlew test")
+        val web = ToolCall("w", "web_search", ToolKind.WebSearch, ToolCall.STATUS_COMPLETED, "compose shimmer")
+        val todo = ToolCall("td", "todo_write", ToolKind.Todo, ToolCall.STATUS_COMPLETED, "", labels = ToolLabels("Updating to-dos", "Completed 2 of 5", "Update to-dos"))
+        val update = ToolCall("u", "update_current_step", ToolKind.Other, ToolCall.STATUS_COMPLETED, "Wiring the hover state")
+        assertThat(SubagentRows.actionOf(listOf(ActivityGroup("g", listOf(edit))))).isEqualTo("Editing Chart.kt")
+        assertThat(SubagentRows.actionOf(listOf(ActivityGroup("g", listOf(web))))).isEqualTo("Searching web compose shimmer")
+        // A command has no subject on the desktop's line: the step before it speaks.
+        assertThat(SubagentRows.actionOf(listOf(ActivityGroup("g", listOf(edit, shell))))).isEqualTo("Editing Chart.kt")
+        assertThat(SubagentRows.actionOf(listOf(ActivityGroup("g", listOf(edit, ThinkingBlock("Hmm.", isStreaming = true)))))).isEqualTo(SubagentRows.THINKING)
+        assertThat(SubagentRows.actionOf(listOf(ActivityGroup("g", listOf(todo))))).isEqualTo("Completed 2 of 5")
+        assertThat(SubagentRows.actionOf(listOf(ActivityGroup("g", listOf(edit, update))))).isEqualTo("Editing Chart.kt")
+        // A reply: its first fifty characters, as plain text.
+        val reply = AssistantMessage("a", "**Done.** The hover highlight now follows the [pointer](https://x.y) across every series in the chart.")
+        assertThat(SubagentRows.actionOf(listOf(ActivityGroup("g", listOf(edit)), reply))).isEqualTo("Done. The hover highlight now follows the pointer ")
+        // The prompt that started the turn ends the reading.
+        assertThat(SubagentRows.actionOf(listOf(ActivityGroup("g", listOf(edit)), UserMessage("u", "Go on.")))).isNull()
+        assertThat(SubagentRows.actionOf(emptyList())).isNull()
+        // The step it announced.
+        assertThat(SubagentRows.stepOf(listOf(ActivityGroup("g", listOf(update, edit))))).isEqualTo("Wiring the hover state")
+        assertThat(SubagentRows.stepOf(listOf(ActivityGroup("g", listOf(edit))))).isNull()
+        assertThat(SubagentRows.isStepUpdate("communicate_update")).isTrue()
+        assertThat(SubagentRows.isStepUpdate("updateCurrentStepToolCall")).isTrue()
+    }
+
+    @Test
+    fun `a run's stream moves the line on, and its end says how the child finished`() {
+        val edit = ActivityGroup("g", listOf(ToolCall("e", "edit", ToolKind.Edit, ToolCall.STATUS_RUNNING, "Chart.kt")))
+        val going = SubagentRows.withRun(SubagentChild(), listOf(edit), finished = false, status = RunStatus.RUNNING)
+        assertThat(going.status).isEqualTo(SubagentChild.Status.Running)
+        assertThat(going.action).isEqualTo("Editing Chart.kt")
+        val asking = ActivityGroup("q", listOf(ToolCall("q", "ask_question", ToolKind.Question, ToolCall.STATUS_RUNNING, "", payload = ToolPayload.Question(title = null, questions = listOf(ToolPayload.Question.Item("1", "Which one?", emptyList()))))))
+        assertThat(SubagentRows.withRun(SubagentChild(), listOf(edit, asking), finished = false, status = RunStatus.RUNNING).waiting).isTrue()
+        val ended = SubagentRows.withRun(going, listOf(edit), finished = true, status = RunStatus.ERROR)
+        assertThat(ended.status).isEqualTo(SubagentChild.Status.Failed)
+        assertThat(ended.waiting).isFalse()
+    }
+
+    @Test
+    fun `the list's row says how a cloud child stands, whether it waits, its name and model`() {
+        assertThat(SubagentRows.statusOf(RunStatus.CREATING)).isEqualTo(SubagentChild.Status.Running)
+        assertThat(SubagentRows.statusOf(RunStatus.FINISHED)).isEqualTo(SubagentChild.Status.Succeeded)
+        assertThat(SubagentRows.statusOf(RunStatus.EXPIRED)).isEqualTo(SubagentChild.Status.Failed)
+        assertThat(SubagentRows.statusOf(RunStatus.CANCELLED)).isEqualTo(SubagentChild.Status.Aborted)
+        assertThat(SubagentRows.statusOf(null)).isNull()
+        val child = SubagentRows.childOf(agent(RunStatus.RUNNING, pending = true, modelId = "composer-2.5"), models)
+        assertThat(child.status).isEqualTo(SubagentChild.Status.Running)
+        assertThat(child.waiting).isTrue()
+        assertThat(child.name).isEqualTo("Usage events aggregation")
+        assertThat(child.model?.label).isEqualTo("Composer 2.5")
+        // A finished child waits on nothing.
+        assertThat(SubagentRows.childOf(agent(RunStatus.FINISHED, pending = true), models).waiting).isFalse()
+    }
+
+    // -- the model and the placement ------------------------------------------------------------------------------
+
+    @Test
+    fun `the model label is the type's name for a built-in type, nothing for a review, else the model with Fast`() {
+        assertThat(SubagentRows.modelLabel(SubagentCall.of(task(type = "explore"))!!, models)).isEqualTo(SubagentModel("Explorer"))
+        assertThat(SubagentRows.modelLabel(SubagentCall.of(task(type = "computerUse"))!!, models)).isEqualTo(SubagentModel("Computer Use"))
+        assertThat(SubagentRows.modelLabel(SubagentCall.of(task(type = "bugbot", model = "composer-2.5"))!!, models)).isNull()
+        assertThat(SubagentRows.modelLabel(SubagentCall.of(task(model = "composer-2.5"))!!, models)).isEqualTo(SubagentModel("Composer 2.5", fast = true))
+        val opus = SubagentRows.modelLabel(SubagentCall.of(task(model = "claude-opus-5-5-high"))!!, models)!!
+        assertThat(opus.label).startsWith("Claude Opus 5.5")
+        assertThat(opus.fast).isFalse()
+        // A message names no model: the one the worker was created with, from the call that created it.
+        assertThat(SubagentRows.modelLabel(SubagentCall.of(sent(null))!!, models, workerModelId = "composer-2.5")).isEqualTo(SubagentModel("Composer 2.5", fast = true))
+        // Else the model the child runs on, as the list says.
+        assertThat(SubagentRows.modelLabel(SubagentCall.of(sent(null))!!, models, child = agent(RunStatus.RUNNING, modelId = "composer-2.5"))?.label).isEqualTo("Composer 2.5")
+        assertThat(SubagentRows.modelLabel(SubagentCall.of(sent(null))!!, models)).isNull()
+    }
+
+    @Test
+    fun `the placement glyph follows the desktop's rule for where the child runs`() {
+        val cloud = SubagentPlacement.Cloud
+        // A worker has a VM of its own: the cloud, or the self-hosted machine it was sent to.
+        assertThat(SubagentRows.placement(SubagentCall.of(created())!!, cloud)).isEqualTo(SubagentPlacement.Cloud)
+        assertThat(SubagentRows.placement(SubagentCall.of(created(workerId = "w-1"))!!, cloud)).isEqualTo(SubagentPlacement.Machine)
+        assertThat(SubagentRows.placement(SubagentCall.of(created())!!, cloud, agent(RunStatus.RUNNING, env = EnvType.MACHINE))).isEqualTo(SubagentPlacement.Machine)
+        // A task asked to run locally shares its parent's VM: no glyph. Asked for the cloud: the cloud.
+        assertThat(SubagentRows.placement(SubagentCall.of(task(environment = "SUBAGENT_EXECUTION_ENVIRONMENT_LOCAL"))!!, cloud)).isNull()
+        assertThat(SubagentRows.placement(SubagentCall.of(task(environment = "2"))!!, cloud)).isEqualTo(SubagentPlacement.Cloud)
+        // Neither said: the glyph only when the child runs somewhere its parent does not.
+        assertThat(SubagentRows.placement(SubagentCall.of(task(agentId = "bc-t1"))!!, cloud)).isNull()
+        assertThat(SubagentRows.placement(SubagentCall.of(task(agentId = "bc-t1"))!!, SubagentPlacement.Machine)).isEqualTo(SubagentPlacement.Cloud)
+        assertThat(SubagentRows.placement(SubagentCall.of(task())!!, cloud)).isNull()
+        assertThat(SubagentPlacement.parse("1")).isEqualTo(SubagentPlacement.Local)
+        assertThat(SubagentPlacement.parse("cloud")).isEqualTo(SubagentPlacement.Cloud)
+        assertThat(SubagentPlacement.parse("unspecified")).isNull()
+    }
+
+    // -- across the transcript ------------------------------------------------------------------------------------
+
+    @Test
+    fun `the index names each worker's newest row and the name and model it was created with`() {
+        val create = created(model = "composer-2.5")
+        val steer = sent(ToolPayload.WorkerAction.Delivery.Followup, callId = "s1")
+        val queue = sent(ToolPayload.WorkerAction.Delivery.Queue, callId = "s2")
+        val rows = listOf(create, steer, queue, task()).map { call -> TranscriptRow.Subagent(ActivityGroup("g-${call.callId}", listOf(call)), call, SubagentCall.of(call)!!) }
+        val index = SubagentRows.index(rows)
+        assertThat(index.latest).containsExactly("bc-w1", "s2")
+        assertThat(index.workers).containsExactly("bc-w1", SubagentRows.Index.Worker("Build Projects under Extended mode", "composer-2.5"))
+        assertThat(index.isLatest(create, SubagentCall.of(create)!!)).isFalse()
+        assertThat(index.isLatest(steer, SubagentCall.of(steer)!!)).isFalse()
+        assertThat(index.isLatest(queue, SubagentCall.of(queue)!!)).isTrue()
+        assertThat(index.isLatest(task(), SubagentCall.of(task())!!)).isTrue()
+        assertThat(SubagentRows.index(emptyList())).isSameInstanceAs(SubagentRows.Index.EMPTY)
+    }
+}

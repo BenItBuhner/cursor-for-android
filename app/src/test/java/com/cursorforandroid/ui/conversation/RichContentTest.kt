@@ -145,7 +145,10 @@ class RichContentTest {
     fun `a subagent opens onto its transcript path`() {
         val subagent = ToolPayload.Subagent("Audit the tests", agentId = "bc-sub-1", transcriptPath = "/home/u/.cursor/projects/w/agent-transcripts/x.json", durationMs = 61_000, subagentType = "explore")
         show(group(call("t1", ToolKind.Task, "Audit the tests", detail = "Go through the suite", payload = subagent)))
-        openLine("Explored", "Completed task")
+        compose.onNodeWithText("Explored").performClick()
+        compose.waitUntil(10_000) { compose.onAllNodesWithTag("subagent-row").fetchSemanticsNodes().isNotEmpty() }
+        // With no chat to open, the subagent's row opens onto its card.
+        compose.onNodeWithTag("subagent-row").performClick()
         compose.onNodeWithTag("subagent-card").assertIsDisplayed()
         assertThat(shown("explore subagent · ran 1m 1s")).isTrue()
         assertThat(shown("agent-transcripts/x.json")).isTrue()

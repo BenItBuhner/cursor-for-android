@@ -186,8 +186,9 @@ class TranscriptEngineScreenshotTest {
         assertThat(state.recordFallback).isNull()
         assertThat(state.items.any { it.id.startsWith("expired-") }).isTrue()
         val rows = TranscriptPresenter().present(state.items, coordinatorMode = true, runActive = true).rows
-        // The newest rows, as the screen opens on them: the coordinator's word, its stretches, the expired turn's row, the live stretch.
-        show(state, rows.takeLast(7))
+        // The newest rows, as the screen opens on them: the expired turn's row, the coordinator's word, its stretches,
+        // the workers it queued work for (a subagent row each) and the live stretch.
+        show(state, rows.takeLast(9))
         compose.waitUntil(10_000) { compose.onAllNodesWithText(TimelineBuilder.EXPIRED_TITLE).fetchSemanticsNodes().isNotEmpty() }
         compose.onAllNodes(hasTestTag("record-fallback")).assertCountEquals(0)
         compose.onAllNodesWithText(RECORD_FALLBACK_TITLE, substring = true).assertCountEquals(0)
