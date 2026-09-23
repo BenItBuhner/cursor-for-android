@@ -94,6 +94,8 @@ class FaultRig(
     queuePollMs: Long = 10_000L,
     /** The record's waits between attempts of a read the server failed, and between its passes (production's by default; see `ServerRetry.Waits`). */
     recordWaits: ServerRetry.Waits = ServerRetry.Waits(),
+    /** How many chats a list refresh warms (production: 6; see `ConversationRepository.schedulePrefetch`). Off by default here. */
+    prefetchLimit: Int = 0,
 ) : AutoCloseable {
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     var now: Long = 1_800_000_000_000L
@@ -177,7 +179,7 @@ class FaultRig(
     val record: ConversationRecordApi? = if (extended) HeadlessConversationApi(accountRpc, sessionTokens, blobs = blobs, waits = recordWaits) else null
     /** What the private surfaces may do; a test that switches the engine mid-run sets this, and the next load reads it (as the app's `ExtendedMode` would). */
     @Volatile var capabilities: Capabilities = Capabilities.of(extended, engine)
-    val conversations = ConversationRepository(session, agents, prefs, hub, attachments, conversationCache, traces, isForeground = { true }, prefetchLimit = 0, scope = scope, record = record, capabilities = { capabilities }, retryPassDelaysMs = recordWaits.passes, composerStatus = { id -> accountAgents.status(id) })
+    val conversations = ConversationRepository(session, agents, prefs, hub, attachments, conversationCache, traces, isForeground = { true }, prefetchLimit = prefetchLimit, prefetchSpacingMs = 10L, scope = scope, record = record, capabilities = { capabilities }, retryPassDelaysMs = recordWaits.passes, composerStatus = { id -> accountAgents.status(id) })
     /** The account's controls on a chat — its queue above all — over the same host, wired as the app wires them (see AppGraph). */
     val steeringApi = SteeringApi(accountRpc, sessionTokens, blobs = blobs)
     val steering = SteeringRepository(

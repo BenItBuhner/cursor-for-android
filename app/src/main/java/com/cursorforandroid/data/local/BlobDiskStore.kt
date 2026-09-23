@@ -27,6 +27,25 @@ class BlobDiskStore(private val cache: JsonDiskCache, private val maxBytes: Long
 
     fun has(agentId: String, blobId: String): Boolean = file(agentId, blobId).isFile
 
+    /**
+     * A state read's prefetched copy of a blob (heavy step data possibly left out, see `BlobCache.Held.partial`),
+     * kept apart from the whole copies under a name of its own, so it is never taken for one: a turn built from it
+     * before a restart is built from it again after one, and the next state read names it as held.
+     */
+    suspend fun readPartial(agentId: String, blobId: String): ByteArray? = withContext(Dispatchers.IO) {
+        val file = partialFile(agentId, blobId)
+        if (!file.isFile) return@withContext null
+        runCatching { file.readBytes() }.getOrNull()?.also { file.setLastModified(System.currentTimeMillis()) }
+    }
+
+    fun hasPartial(agentId: String, blobId: String): Boolean = partialFile(agentId, blobId).isFile
+
+    /** Keeps a prefetched copy (see [readPartial]) unless the whole blob is on disk already. */
+    suspend fun writePartial(agentId: String, blobId: String, value: ByteArray, token: Int = cache.token()) {
+        if (has(agentId, blobId)) return
+        writeFile(partialFile(agentId, blobId), value, token)
+    }
+
     /** Every blob, gone: what the account service produced does not outlive Extended mode. */
     suspend fun clear() {
         cache.drop()
@@ -34,9 +53,18 @@ class BlobDiskStore(private val cache: JsonDiskCache, private val maxBytes: Long
     }
 
     /** Writes [value] as [blobId]'s blob unless it is on disk already, or the store was wiped since [token] was taken. */
-    suspend fun write(agentId: String, blobId: String, value: ByteArray, token: Int = cache.token()) = withContext(Dispatchers.IO) {
+    suspend fun write(agentId: String, blobId: String, value: ByteArray, token: Int = cache.token()) {
+        writeFile(file(agentId, blobId), value, token)
+        // The whole copy stands for the prefetched one from here.
+        withContext(Dispatchers.IO) {
+            val stale = partialFile(agentId, blobId)
+            val size = stale.length()
+            if (stale.isFile && stale.delete() && bytes.get() >= 0) bytes.addAndGet(-size)
+        }
+    }
+
+    private suspend fun writeFile(file: File, value: ByteArray, token: Int) = withContext(Dispatchers.IO) {
         if (cache.isStale(token)) return@withContext
-        val file = file(agentId, blobId)
         if (file.isFile) return@withContext
         val tmp = File(file.parentFile, file.name + ".tmp")
         val written = runCatching {
@@ -105,11 +133,15 @@ class BlobDiskStore(private val cache: JsonDiskCache, private val maxBytes: Long
 
     private fun file(agentId: String, blobId: String): File = File(chatDir(agentId), nameOf(blobId))
 
+    private fun partialFile(agentId: String, blobId: String): File = File(chatDir(agentId), PARTIAL + nameOf(blobId))
+
     companion object {
         /** Blobs on disk across every chat, all told. */
         const val MAX_BYTES = 96L * 1024 * 1024
         /** A chat's note of what the server prefetches for it; never a blob's name (those start `x` or `h`). */
         private const val INDEX = "prefetched"
+        /** Ahead of a prefetched copy's name (see [readPartial]): `qx…` or `qh…`, never a whole blob's, never the index. */
+        private const val PARTIAL = "q"
 
         /** A file name for a blob id: its characters in hex, reversible whatever the id's alphabet; a hash for an id too long for a name. */
         internal fun nameOf(blobId: String): String {
