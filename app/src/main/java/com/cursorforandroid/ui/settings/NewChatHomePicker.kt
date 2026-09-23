@@ -33,6 +33,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -94,6 +95,7 @@ internal fun NewChatHomeCard(
     // On the main dispatcher for the reason the Extended mode switch is (see SettingsScreen).
     val chosen by graph.prefs.newChatHome.collectAsStateWithLifecycle(initialValue = null, context = Dispatchers.Main.immediate)
     val chips = rememberComposerChips(graph)
+    val maxWidth = miniatureMaxWidth(pageSize)
     SettingsCard {
         Row(
             Modifier.fillMaxWidth().selectableGroup().padding(horizontal = RowInset, vertical = 16.dp),
@@ -104,6 +106,7 @@ internal fun NewChatHomeCard(
                     label = NewChatHomePickerCopy.label(option),
                     selected = chosen == option,
                     onClick = { scope.launch { graph.prefs.setNewChatHome(option) } },
+                    maxWidth = maxWidth,
                     modifier = Modifier.weight(1f).testTag(NewChatHomePickerTags.of(option)),
                 ) { miniatureModifier ->
                     NewChatPageMiniature(
@@ -131,14 +134,16 @@ internal fun NewChatHomeCard(
 }
 
 /**
- * One layout to choose: its miniature, ringed in the accent while chosen with a hairline's gap between ring and
- * page, then its name and a round check under it. The whole column is the radio button, read as its name.
+ * One layout to choose: its miniature, at most [maxWidth] wide and ringed in the accent while chosen with a
+ * hairline's gap between ring and page, then its name and a round check under it. The whole column is the radio
+ * button, read as its name.
  */
 @Composable
 private fun PickerOption(
     label: String,
     selected: Boolean,
     onClick: () -> Unit,
+    maxWidth: Dp,
     modifier: Modifier = Modifier,
     miniature: @Composable (Modifier) -> Unit,
 ) {
@@ -161,7 +166,7 @@ private fun PickerOption(
     ) {
         Box(
             Modifier
-                .widthIn(max = MaxMiniatureWidth + RingGap * 2 + RingWidth * 2)
+                .widthIn(max = maxWidth + RingGap * 2 + RingWidth * 2)
                 .fillMaxWidth()
                 .border(RingWidth, ring, RoundedCornerShape(MiniatureRadius + RingGap + RingWidth))
                 .padding(RingWidth + RingGap),
@@ -198,8 +203,13 @@ private fun CheckCircle(checked: Boolean) {
     }
 }
 
-/** A miniature's widest: a phone's pane at a little under two fifths, whatever the width the card gives it. */
-private val MaxMiniatureWidth = 156.dp
+/**
+ * A miniature's widest: a phone's pane at a little under two fifths, and a wider pane's at three tenths, so a
+ * tablet's page is drawn no smaller for its size than a phone's — whatever the width the card gives it.
+ */
+internal fun miniatureMaxWidth(page: DpSize): Dp = maxOf(PhoneMiniatureWidth, page.width * 0.3f)
+
+private val PhoneMiniatureWidth = 156.dp
 private val MiniatureRadius = 12.dp
 private val RingWidth = 2.dp
 private val RingGap = 3.dp

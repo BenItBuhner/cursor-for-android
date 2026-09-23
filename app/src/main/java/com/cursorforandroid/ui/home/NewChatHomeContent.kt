@@ -149,7 +149,7 @@ internal fun homeBlocks(home: NewChatHome?, list: AgentListUiState, projectsAvai
     }
 }
 
-/** What a [HomeBlock] opens; null throughout for the Settings miniature, which opens nothing. */
+/** What a [HomeBlock] opens. */
 internal class HomeBlockActions(
     val onOpenAgent: (AgentRow) -> Unit,
     val rowActions: AgentRowActions?,
@@ -158,14 +158,14 @@ internal class HomeBlockActions(
 )
 
 @Composable
-internal fun HomeBlockView(block: HomeBlock, nowMillis: Long, actions: HomeBlockActions?) {
+internal fun HomeBlockView(block: HomeBlock, nowMillis: Long, actions: HomeBlockActions) {
     val colors = CursorTheme.colors
     val column = Modifier.widthIn(max = CursorDimens.composerMaxWidth).fillMaxWidth()
     when (block) {
         is HomeBlock.Chat -> RecentChatRow(
             block.row,
-            onClick = { actions?.onOpenAgent?.invoke(block.row) },
-            actions = actions?.rowActions,
+            onClick = { actions.onOpenAgent(block.row) },
+            actions = actions.rowActions,
             modifier = column,
             nowMillis = nowMillis,
         )
@@ -175,12 +175,12 @@ internal fun HomeBlockView(block: HomeBlock, nowMillis: Long, actions: HomeBlock
             color = if (block.error != null) colors.red else colors.textQuaternary,
             modifier = Modifier.widthIn(max = CursorDimens.composerMaxWidth).padding(top = 24.dp, start = 7.dp, end = 7.dp),
         )
-        is HomeBlock.Projects -> ProjectShortcutGrid(block.rows, onOpen = actions?.onOpenAgent, modifier = column)
+        is HomeBlock.Projects -> ProjectShortcutGrid(block.rows, onOpen = actions.onOpenAgent, modifier = column)
         is HomeBlock.Note -> ProjectsNoteCard(
             block.note,
             onAction = when (block.note) {
-                ProjectsNote.NeedsExtendedMode -> actions?.onOpenSettings
-                ProjectsNote.NoProjects -> actions?.onNewProject
+                ProjectsNote.NeedsExtendedMode -> actions.onOpenSettings
+                ProjectsNote.NoProjects -> actions.onNewProject
             },
             modifier = column.padding(bottom = 12.dp),
         )
@@ -371,7 +371,7 @@ internal fun NewChatPageMiniature(
                         )
                     }
                     Spacer(Modifier.height(ComposerGap))
-                    blocks.forEach { HomeBlockView(it, nowMillis = list.nowMillis, actions = null) }
+                    blocks.forEach { HomeBlockView(it, nowMillis = list.nowMillis, actions = MiniatureActions) }
                 }
             }
         }
@@ -408,6 +408,9 @@ internal val ComposerGap = 26.dp
 private val ShortcutGap = 10.dp
 private const val MiniatureBlocks = 12
 private const val MiniatureShortcuts = 12
+
+/** Every action the pane offers, so a miniature draws each button the page does; none is reachable through it. */
+private val MiniatureActions = HomeBlockActions(onOpenAgent = {}, rowActions = null, onNewProject = {}, onOpenSettings = {})
 
 /** [NewAgentUiState]'s chips as [NewChatSelectors] draws them. */
 @Composable
