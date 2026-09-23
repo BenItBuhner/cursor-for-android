@@ -72,13 +72,15 @@ class CoordinatorRepeatedMessagesTest {
             // The message is drawn from run 2's own log: its group's id names run 2.
             val m2 = rows.filterIsInstance<TranscriptRow.Message>()[1]
             assertThat(m2.group.id).startsWith("activity-run-2-")
-            // Nothing of the silent runs stands as a row of its own: their calls, notes and footers are entries of the one stretch after the message.
+            // Nothing of the silent runs stands as a message: their calls, notes and footers are entries of the
+            // stretches after it, and the workers they addressed are the subagent rows between those.
             val between = rows.subList(rows.indexOf(m2) + 1, rows.indexOfFirst { it is TranscriptRow.Message && (it.call.payload as ToolPayload.CoordinatorMessage).message == SevenRunCoordinator.M6 })
-            assertThat(between).hasSize(1)
-            val stretch = between.single() as TranscriptRow.Stretch
-            assertThat(stretch.entries.filterIsInstance<TranscriptRow.Entry.Footer>().map { it.footer.runId }).containsExactly("run-2", "run-3", "run-4", "run-5").inOrder()
-            assertThat(stretch.summary.action).isEqualTo("Worked 3m 10s")
-            assertThat(stretch.entries.none { it is TranscriptRow.Entry.Call && it.call.payload is ToolPayload.CoordinatorMessage }).isTrue()
+            assertThat(between.map { it::class.simpleName }.distinct()).containsExactly("Stretch", "Subagent")
+            val stretches = between.filterIsInstance<TranscriptRow.Stretch>()
+            val footers = stretches.flatMap { stretch -> stretch.entries.filterIsInstance<TranscriptRow.Entry.Footer>().map { it.footer } }
+            assertThat(footers.map { it.runId }).containsExactly("run-2", "run-3", "run-4", "run-5").inOrder()
+            assertThat(footers.sumOf { it.durationMs ?: 0L }).isEqualTo(190_000L)
+            assertThat(stretches.none { stretch -> stretch.entries.any { it is TranscriptRow.Entry.Call && it.call.payload is ToolPayload.CoordinatorMessage } }).isTrue()
             // The presented items carry the copies' groups without the copied call — and no run's group empties.
             val presentedCalls = presented.items.filterIsInstance<ActivityGroup>().flatMap { it.calls }
             assertThat(presentedCalls.count { it.callId == SevenRunCoordinator.M2_CALL_ID }).isEqualTo(1)
