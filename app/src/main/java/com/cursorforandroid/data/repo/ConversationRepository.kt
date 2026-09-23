@@ -13,6 +13,7 @@ import com.cursorforandroid.data.api.isLostReply
 import com.cursorforandroid.data.api.toCursorError
 import com.cursorforandroid.data.api.userMessage
 import com.cursorforandroid.data.local.AttachmentStore
+import com.cursorforandroid.data.local.CachedAwaiting
 import com.cursorforandroid.data.local.CachedConversation
 import com.cursorforandroid.data.local.CachedLocalPrompt
 import com.cursorforandroid.data.local.CachedRecordTurn
@@ -1398,6 +1399,22 @@ class ConversationRepository(
                     turns = kept.map { CachedRecordTurn(it.stepIndex, it.stepCount, it.prompt, it.projectMode, it.errorMessage) },
                     timings = w.state?.timings?.map { CachedTurnTiming(it.durationMs, it.timestampMs) } ?: emptyList(),
                     turnIndexed = w.turnIndexed,
+                )
+            },
+            awaiting = awaiting.map { a ->
+                CachedAwaiting(
+                    localId = a.staged.localId,
+                    text = a.staged.text,
+                    stagedAtMillis = a.staged.stagedAt,
+                    placeholder = a.staged.placeholder,
+                    behindRunId = a.behindRunId,
+                    queuedAtMillis = a.queuedAt,
+                    queuedOnAccount = a.queuedOnAccount,
+                    followupId = a.followupId,
+                    runId = a.runId,
+                    priorCopies = a.priorCopies,
+                    priorTranscriptCopies = a.priorTranscriptCopies,
+                    attachments = a.staged.attachments.attachments,
                 )
             },
         )
@@ -3138,6 +3155,13 @@ class ConversationRepository(
                 // an earlier build drew in a Project's transcript while it waited behind the turn: the account's queue,
                 // and so the card, still holds it until its run starts.
                 local = local + cached.local.filter { saved -> saved.waitsBehind == null && local.none { it.message.id == saved.message.id } }.map { LocalPrompt(it.message, it.run, it.reply, it.steeredAfter) }
+                // The messages queued from here that were still waiting: on the card again, known for this device's own.
+                if (awaiting.isEmpty()) {
+                    awaiting = cached.awaiting.map { c ->
+                        val staged = StagedFollowUp(c.localId, c.text, attachments.staged(c.attachments), c.stagedAtMillis, shown = false, message = V0ConversationMessageDto(c.localId, USER_MESSAGE, c.text), placeholder = c.placeholder)
+                        Awaiting(staged, c.behindRunId, c.queuedAtMillis, c.queuedOnAccount, c.followupId, c.priorCopies, c.priorTranscriptCopies, c.runId)
+                    }
+                }
                 if (promptImages.isEmpty()) promptImages = onDevice
             },
             transform = { if (trusted) copy(activeRunId = latest?.id, runStatus = status, transcriptUnavailable = cached.transcriptUnavailable) else copy(transcriptUnavailable = cached.transcriptUnavailable) },
@@ -3907,6 +3931,7 @@ class ConversationRepository(
         val e = entry(agentId)
         val behind = synchronized(e) { e.queueTail(except = runId) }
         awaitDelivery(agentId, staged, followupId, runId = runId, behindRunId = behind?.id)
+        persist(e, session.current)
         return staged
     }
 
@@ -3986,7 +4011,7 @@ class ConversationRepository(
             if (gone.isNotEmpty()) awaiting = awaiting - gone
             if (followupId in returned) returned = returned - followupId
         })
-        if (gone.isNotEmpty()) e.scope.launch { gone.forEach { attachments.discard(it.staged.attachments) } }
+        if (gone.isNotEmpty()) e.scope.launch { gone.forEach { attachments.discard(it.staged.attachments) }; persist(e, session.current) }
     }
 
     /**
@@ -4003,6 +4028,7 @@ class ConversationRepository(
             val priorTranscript = messages.count { it.type == USER_MESSAGE && QueuePlacement.textKey(it.text) == key }
             awaiting = awaiting.map { a -> if (a.followupId == followupId && a.staged.text != trimmed) a.copy(staged = a.staged.withText(trimmed), priorTranscriptCopies = priorTranscript) else a }
         })
+        e.scope.launch { persist(e, session.current) }
     }
 
     fun noteAccountQueue(agentId: String, pending: List<PendingFollowup>, readAtMillis: Long = AppClock.now()) {
@@ -4215,6 +4241,7 @@ class ConversationRepository(
                     // frame, so the message is never out of both. A turn this device did not know of has the chat read
                     // again, for the run the account is on; one it is following already stands.
                     awaitDelivery(agentId, staged, followupId, runId = run?.id, behindRunId = waitsBehind?.id)
+                    persist(e, session.current)
                     if (!synchronized(e) { e.isChatRunning() }) reload(agentId)
                 }
             }
