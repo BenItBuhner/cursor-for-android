@@ -167,10 +167,12 @@ class ComposerFilesScreenshotTest {
             }
         }
         compose.waitForIdle()
-        // The copy the viewer reads is written on the tap; the open follows. Frozen a frame in, then halfway.
-        compose.onAllNodesWithTag("media-tile")[0].performClick()
-        compose.waitUntil(10_000) { state.phase == MediaViewerState.Phase.Opening }
+        // The copies the viewer reads are written on the tap; the open follows on the main thread, through the looper
+        // each wait drains. The clock is stopped before the tap, so the open starts the same frame on every run.
+        // Frozen a frame in, then halfway.
         compose.mainClock.autoAdvance = false
+        compose.onAllNodesWithTag("media-tile")[0].performClick()
+        compose.waitUntil(10_000) { compose.waitForIdle(); state.phase == MediaViewerState.Phase.Opening }
         compose.mainClock.advanceTimeByFrame()
         compose.mainClock.advanceTimeByFrame()
         compose.waitForIdle()
@@ -180,8 +182,8 @@ class ComposerFilesScreenshotTest {
         check(state.phase == MediaViewerState.Phase.Opening) { "the transform should still be running, was ${state.phase}" }
         compose.onRoot().captureRoboImage(File(outDir, "118_composer_media_open_mid.png").path, RoborazziOptions())
         compose.mainClock.autoAdvance = true
-        compose.waitUntil(10_000) { state.phase == MediaViewerState.Phase.Open }
-        compose.waitUntil(10_000) { compose.onAllNodesWithTag("viewer-image-0").fetchSemanticsNodes().isNotEmpty() }
+        compose.waitUntil(10_000) { compose.waitForIdle(); state.phase == MediaViewerState.Phase.Open }
+        compose.waitUntil(10_000) { compose.waitForIdle(); compose.onAllNodesWithTag("viewer-image-0").fetchSemanticsNodes().isNotEmpty() }
         compose.waitForIdle()
         compose.onRoot().captureRoboImage(File(outDir, "119_composer_media_open.png").path, RoborazziOptions())
         // Dismissed: halfway back into the tile it came from. The close is picked up by the host's effect on the
@@ -198,7 +200,7 @@ class ComposerFilesScreenshotTest {
         check(state.phase == MediaViewerState.Phase.Closing) { "the close should still be running, was ${state.phase}" }
         compose.onRoot().captureRoboImage(File(outDir, "120_composer_media_close_mid.png").path, RoborazziOptions())
         compose.mainClock.autoAdvance = true
-        compose.waitUntil(10_000) { state.phase == MediaViewerState.Phase.Closed }
+        compose.waitUntil(10_000) { compose.waitForIdle(); state.phase == MediaViewerState.Phase.Closed }
     }
 
     /**

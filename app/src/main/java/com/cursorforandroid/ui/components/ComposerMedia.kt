@@ -55,9 +55,10 @@ import com.cursorforandroid.ui.media.rememberThumbnailSlot
 import com.cursorforandroid.ui.media.thumbnailSlot
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.util.TimeFormat
-import kotlinx.coroutines.Dispatchers
+import com.cursorforandroid.util.ioThenMain
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.io.File
 import java.security.MessageDigest
 import java.util.concurrent.TimeUnit
@@ -95,26 +96,46 @@ class ComposerMediaItem(
 
 /**
  * The on-device copies the viewer opens a composer's media from: the bytes are in memory until the message is sent,
- * and the viewer reads a `file://` reference, so a tap writes the picture or recording under the app's cache once
- * and opens that. The path is a function of the chip's id, so a tile can register its thumbnail for the transition
- * under the reference before the copy exists. Copies are the cache's to drop; anything older than a day goes when
- * the next one is written.
+ * and the viewer reads a `file://` reference, so every picture, recording and sound in the row is written under the
+ * app's cache while its tile is shown ([ensureAll]). The viewer pages through all of them and a page swiped to reads
+ * its own copy: with only the tapped tile's written, every other page said "no longer on this device" until it had
+ * been opened itself. The path is a function of the chip's id, so a tile can register its thumbnail for the
+ * transition under the reference before the copy exists. Copies are the cache's to drop: one no row has asked for in
+ * a day goes the next time a row's copies are written.
  */
 class ComposerMediaPreviews(private val dir: File) {
     /** The `file://` reference the tile registers and the viewer opens. */
     fun src(id: String, mimeType: String): String = Uri.fromFile(file(id, mimeType)).toString()
 
     /** The copy on disk, written if it is not there yet; the reference the viewer opens. */
-    suspend fun ensure(id: String, mimeType: String, bytes: ByteArray): String = withContext(Dispatchers.IO) {
-        val target = file(id, mimeType)
-        if (!target.isFile || target.length() != bytes.size.toLong()) {
-            dir.mkdirs()
-            val temp = File(dir, target.name + ".part")
-            temp.writeBytes(bytes)
-            if (!temp.renameTo(target)) target.writeBytes(bytes)
+    suspend fun ensure(id: String, mimeType: String, bytes: ByteArray): String = ioThenMain {
+        lock.withLock { Uri.fromFile(write(file(id, mimeType), bytes)).toString() }
+    }
+
+    /** Every one of [items]' copies on disk, each written if it is not there yet, and any other copy not asked for in a day dropped. */
+    suspend fun ensureAll(items: List<ComposerMediaItem>) {
+        ioThenMain {
+            lock.withLock {
+                val keep = items.mapNotNullTo(HashSet()) { item -> runCatching { write(file(item.id, item.mimeType), item.bytes) }.getOrNull() }
+                pruneStale(keep)
+            }
         }
-        pruneStale(keep = target)
-        Uri.fromFile(target).toString()
+    }
+
+    /** [target] holding [bytes]: written through a partial file when it is missing or cut short, its time moved on when it is there. */
+    private fun write(target: File, bytes: ByteArray): File {
+        if (target.isFile && target.length() == bytes.size.toLong()) {
+            target.setLastModified(System.currentTimeMillis())
+            return target
+        }
+        dir.mkdirs()
+        val temp = File(dir, target.name + ".part")
+        temp.writeBytes(bytes)
+        if (!temp.renameTo(target)) {
+            target.writeBytes(bytes)
+            temp.delete()
+        }
+        return target
     }
 
     private fun file(id: String, mimeType: String): File {
@@ -127,13 +148,15 @@ class ComposerMediaPreviews(private val dir: File) {
         MimeTypeMap.getSingleton().getExtensionFromMimeType(mimeType.lowercase())
             ?: mimeType.substringAfter('/', "bin").takeWhile { it.isLetterOrDigit() }.ifEmpty { "bin" }
 
-    private fun pruneStale(keep: File) {
+    private fun pruneStale(keep: Set<File>) {
         val cutoff = System.currentTimeMillis() - STALE_AFTER_MS
-        dir.listFiles()?.forEach { f -> if (f != keep && f.lastModified() < cutoff) f.delete() }
+        dir.listFiles()?.forEach { f -> if (f !in keep && f.lastModified() < cutoff) f.delete() }
     }
 
     private companion object {
         val STALE_AFTER_MS = TimeUnit.DAYS.toMillis(1)
+        /** One writer at a time for every row: the New Chat composer's and a chat's share the directory, and a prune must not take a copy mid-write. */
+        val lock = Mutex()
     }
 }
 
@@ -312,12 +335,16 @@ val MediaBadgeHit: Dp = 20.dp
 /**
  * Opens the app's media viewer on one of the composer's media, out of its tile and among the rest of the row's, the
  * way a transcript's picture opens: the tile's picture drawn first, the page grown out of the tile's box, and shrunk
- * back into it on dismiss. The keyboard steps aside first — the viewer covers everything. The copy the viewer reads
- * is written on the way if it is not there yet; a tap where no viewer is hosted (a preview, a test) does nothing.
+ * back into it on dismiss. The keyboard steps aside first — the viewer covers everything. Every page's copy is on
+ * disk before the viewer opens — [media], the row's media, sounds included — not only the tapped one's: a page
+ * swiped to reads its own. A tap where no viewer is hosted (a preview, a test) does nothing.
  */
 @Composable
 internal fun rememberOpenComposerMedia(
+    /** The pages, in order: the row's pictures and recordings. */
     items: List<ComposerMediaItem>,
+    /** Everything that opens in the viewer: [items] and the row's sounds, each its own page. */
+    media: List<ComposerMediaItem>,
     previews: ComposerMediaPreviews,
     agentId: String?,
 ): (ComposerMediaItem, ThumbnailSlot) -> Unit {
@@ -330,7 +357,7 @@ internal fun rememberOpenComposerMedia(
             val src = previews.src(item.id, item.mimeType)
             val entries = items.map { it.entry(previews) }
             scope.launch {
-                runCatching { previews.ensure(item.id, item.mimeType, item.bytes) }
+                runCatching { previews.ensureAll((media + item).distinctBy { it.id }) }
                 keyboard?.hide()
                 focus.clearFocus(force = true)
                 viewer.open(agentId, entries, src, slot = slot, seen = item.thumbnail, fallback = item.entry(previews), autoplay = item.isVideo || item.isAudio)
