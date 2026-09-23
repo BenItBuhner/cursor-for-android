@@ -91,11 +91,12 @@ class SettingsScreenTest {
         composeSettings(isDemo = false)
 
         // Account, with the way out of it, first; then appearance (ending on how long the sidebar's Projects list
-        // runs), the chats (whether stopping asks first, which chats may show as unread), notifications, Extended mode
-        // and beside it the transcript engine, the version with its updater and the crash report consent; the one-line
-        // disclaimer last.
+        // runs), what the New Chat pane lists, the chats (whether stopping asks first, which chats may show as
+        // unread), notifications, Extended mode and beside it the transcript engine, the version with its updater and
+        // the crash report consent; the one-line disclaimer last.
         val order = listOf(
-            SettingsCopy.GROUP_ACCOUNT, SettingsCopy.SIGN_OUT, SettingsCopy.GROUP_APPEARANCE, SettingsCopy.SHORTEN_PROJECTS, SettingsCopy.GROUP_CHATS, RunStopCopy.SETTING_TITLE,
+            SettingsCopy.GROUP_ACCOUNT, SettingsCopy.SIGN_OUT, SettingsCopy.GROUP_APPEARANCE, SettingsCopy.SHORTEN_PROJECTS,
+            NewChatHomePickerCopy.GROUP, NewChatHomePickerCopy.NEEDS_MODE, SettingsCopy.GROUP_CHATS, RunStopCopy.SETTING_TITLE,
             SettingsCopy.UNREAD_THIS_PHONE, SettingsCopy.GROUP_NOTIFICATIONS,
             SettingsCopy.GROUP_ADVANCED, ExtendedModeCopy.SETTING_TITLE, ExtendedModeCopy.ENGINE_TITLE,
             SettingsCopy.GROUP_UPDATES, "Version ${BuildConfig.VERSION_NAME}", CrashReportCopy.TITLE, SettingsCopy.DISCLAIMER,
@@ -184,13 +185,13 @@ class SettingsScreenTest {
         compose.onNodeWithText(SettingsCopy.UNREAD_THIS_PHONE_DETAIL).assertExists()
         compose.onNode(toggle).assertIsOn()
 
-        compose.onNodeWithText(SettingsCopy.UNREAD_THIS_PHONE).performClick()
+        compose.onNodeWithText(SettingsCopy.UNREAD_THIS_PHONE).performScrollTo().performClick()
         compose.waitUntil(10_000) { runBlocking { !graph.prefs.unreadOnlyTouchedHere.first() } }
         compose.waitForIdle()
         compose.onNode(toggle).assertIsOff()
         assertThat(runBlocking { graph.prefs.localAgentState.first() }.let { it.readMarkers.isEmpty() && it.touchedHereIds.isEmpty() }).isTrue()
 
-        compose.onNodeWithText(SettingsCopy.UNREAD_THIS_PHONE).performClick()
+        compose.onNodeWithText(SettingsCopy.UNREAD_THIS_PHONE).performScrollTo().performClick()
         compose.waitUntil(10_000) { runBlocking { graph.prefs.unreadOnlyTouchedHere.first() } }
         compose.waitForIdle()
         compose.onNode(toggle).assertIsOn()
@@ -236,7 +237,7 @@ class SettingsScreenTest {
         // The earlier build's own values were read from the same file.
         compose.onNode(isToggleable() and hasAnyAncestor(hasText("Live notifications"))).assertIsOff()
 
-        compose.onNodeWithTag(SettingsTags.CONFIRM_STOP).performClick()
+        compose.onNodeWithTag(SettingsTags.CONFIRM_STOP).performScrollTo().performClick()
         compose.waitUntil(10_000) { compose.onAllNodes(isOff() and hasAnyAncestor(hasTestTag(SettingsTags.CONFIRM_STOP))).fetchSemanticsNodes().isNotEmpty() }
         assertThat(runBlocking { graph.prefs.confirmStop.first() }).isFalse()
         // A device preference: a sign-out leaves it as the user set it.

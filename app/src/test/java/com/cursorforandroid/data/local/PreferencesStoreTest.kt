@@ -13,6 +13,7 @@ import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.cursorforandroid.domain.CredentialInfo
 import com.cursorforandroid.domain.CursorUser
+import com.cursorforandroid.domain.NewChatHome
 import com.cursorforandroid.domain.SignInMethod
 import com.cursorforandroid.ui.theme.ThemeMode
 import com.google.common.truth.Truth.assertThat
@@ -240,6 +241,25 @@ class PreferencesStoreTest {
         assertThat(prefs.crashReports.first()).isTrue()
         prefs.setCrashReports(false)
         assertThat(prefs.crashReports.first()).isFalse()
+    }
+
+    @Test
+    fun `the new chat page lists recent chats until Projects is chosen, and the choice is the device's`() = runBlocking<Unit> {
+        val prefs = PreferencesStore(ApplicationProvider.getApplicationContext())
+        assertThat(prefs.newChatHome.first()).isEqualTo(NewChatHome.RECENT)
+        prefs.setNewChatHome(NewChatHome.PROJECTS)
+        assertThat(prefs.newChatHome.first()).isEqualTo(NewChatHome.PROJECTS)
+        prefs.clearSession()
+        assertThat(prefs.newChatHome.first()).isEqualTo(NewChatHome.PROJECTS)
+        prefs.setNewChatHome(NewChatHome.RECENT)
+        assertThat(prefs.newChatHome.first()).isEqualTo(NewChatHome.RECENT)
+    }
+
+    @Test
+    fun `a new chat page value this build does not know reads as Recent`() {
+        assertThat(NewChatHome.parse("pinned")).isEqualTo(NewChatHome.RECENT)
+        assertThat(NewChatHome.parse(null)).isEqualTo(NewChatHome.RECENT)
+        assertThat(NewChatHome.parse(NewChatHome.PROJECTS.key)).isEqualTo(NewChatHome.PROJECTS)
     }
 
     @Test
