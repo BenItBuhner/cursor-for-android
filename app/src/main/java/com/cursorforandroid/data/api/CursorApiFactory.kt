@@ -2,6 +2,7 @@ package com.cursorforandroid.data.api
 
 import com.cursorforandroid.BuildConfig
 import com.cursorforandroid.data.api.dto.ApiErrorBodyDto
+import com.cursorforandroid.data.auth.SessionUnavailableException
 import kotlinx.serialization.json.Json
 import okhttp3.Interceptor
 import okhttp3.MediaType.Companion.toMediaType
@@ -91,7 +92,8 @@ private const val MAX_RETRY_AFTER_SECONDS = 15 * 60L
  * connection), a `429`, a `5xx`, or a `409` about the agent's state other than it being busy — the moments right
  * after a run was cancelled, when the agent is between turns. Busy is a wait, not a retry, and is left to the caller;
  * so is anything that will not change by itself: a request the server found wrong, a rejected key, an agent that is
- * gone or archived, a spent usage limit, or being offline.
+ * gone or archived, a spent usage limit, or being offline. A name lookup that failed on a phone that is online is a
+ * resolver's moment, and passes.
  */
 fun Throwable.isTransientFailure(): Boolean {
     toCursorError()?.let { e ->
@@ -101,7 +103,7 @@ fun Throwable.isTransientFailure(): Boolean {
             else -> false
         }
     }
-    return this is IOException && this !is java.net.UnknownHostException
+    return this is IOException && (this !is java.net.UnknownHostException || DeviceNetwork.isOnline() == true)
 }
 
 /** `409` codes that describe a state another attempt will find unchanged, or one the caller handles in its own way. */
@@ -115,6 +117,18 @@ private val SETTLED_CONFLICTS = setOf("agent_busy", "agent_id_conflict", "agent_
  */
 fun Throwable.isLostReply(): Boolean = this is IOException && this !is java.net.UnknownHostException && toCursorError() == null
 
+/**
+ * True for a failure on the way to Cursor rather than an answer from it: a name lookup, a connection that would not
+ * open or that dropped, a reply cut off or too slow — and a session that could not be started for one of those. Not
+ * an answer the server gave (a Connect error, the API's error body), nor a session refused (the key, a policy).
+ */
+fun Throwable.isTransportFailure(): Boolean = when (this) {
+    is ConnectRpcException, is CursorApiException -> false
+    is SessionUnavailableException -> cause?.isTransportFailure() == true
+    is IOException -> true
+    else -> false
+}
+
 fun Throwable.userMessage(): String {
     toCursorError()?.let { e ->
         return when {
@@ -126,8 +140,14 @@ fun Throwable.userMessage(): String {
             else -> e.message
         }
     }
+    // A session that could not be started for want of a connection is said as the connection's failure.
+    if (this is SessionUnavailableException) cause?.takeIf { it.isTransportFailure() }?.let { return it.userMessage() }
+    // Offline is the phone's own word (see DeviceNetwork), never a guess from the failure: a lookup the resolver did
+    // not answer with Wi-Fi and cellular both up is not being offline. An answer from the server never is either.
+    val online = if (isTransportFailure()) DeviceNetwork.isOnline() else null
+    if (online == false) return OFFLINE
     return when (this) {
-        is java.net.UnknownHostException -> "You're offline. Check your connection."
+        is java.net.UnknownHostException -> if (online == true) LOOKUP_FAILED_ONLINE else LOOKUP_FAILED
         is java.net.SocketTimeoutException -> "Cursor took too long to respond."
         is java.net.ConnectException -> "Cursor couldn't be reached. Check your connection."
         is IOException -> transportWords() ?: message ?: "Something went wrong."
@@ -159,6 +179,15 @@ private fun IOException.transportWords(): String? = when (this) {
 
 /** Said of a request whose reply never came back whole: the connection went, not the server. */
 const val CONNECTION_DROPPED = "The connection to Cursor dropped before it answered."
+
+/** Said of any failure to reach Cursor while the phone has no network (see [DeviceNetwork]). */
+const val OFFLINE = "You're offline. Check your connection."
+
+/** Said of a failed name lookup of Cursor's host while the phone has a network. */
+const val LOOKUP_FAILED_ONLINE = "Couldn't look up Cursor's server, though the phone is online. Try again in a moment."
+
+/** Said of a failed name lookup of Cursor's host when the phone cannot tell whether it has a network. */
+const val LOOKUP_FAILED = "Couldn't look up Cursor's server. Check your connection."
 
 /**
  * Marks the body of every request that is not idempotent — a `POST`, a `DELETE`, anything but `GET` and `HEAD` —
@@ -199,6 +228,7 @@ object CursorApiFactory {
         // timeout above, sixty seconds of silence, still catches a connection that has died. At ninety seconds the
         // long chats' transcripts failed on every open, and the failure read as the chat not loading at all.
         .callTimeout(5, TimeUnit.MINUTES)
+        .dns(LastGoodDns.CURSOR)
         .addInterceptor(AuthInterceptor(apiKeyProvider))
         // Writes go out once: a lost reply is reported, not resent behind the app's back (see the class).
         .addInterceptor(OneShotWritesInterceptor())
@@ -220,6 +250,7 @@ object CursorApiFactory {
         .connectTimeout(20, TimeUnit.SECONDS)
         .readTimeout(30, TimeUnit.SECONDS)
         .callTimeout(45, TimeUnit.SECONDS)
+        .dns(LastGoodDns.CURSOR)
         .addInterceptor { chain ->
             chain.proceed(chain.request().newBuilder().header("User-Agent", "cursor-for-android/${BuildConfig.VERSION_NAME}").build())
         }
