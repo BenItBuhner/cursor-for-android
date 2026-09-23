@@ -15,7 +15,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.selection.SelectionContainer
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
@@ -54,6 +53,7 @@ import com.cursorforandroid.ui.components.MarkdownText
 import com.cursorforandroid.ui.components.SheetHeader
 import com.cursorforandroid.ui.components.SpinnerRing
 import com.cursorforandroid.ui.components.VideoBlock
+import com.cursorforandroid.ui.components.fadingVerticalScroll
 import com.cursorforandroid.ui.components.pressable
 import com.cursorforandroid.ui.media.FileHandoff
 import com.cursorforandroid.ui.theme.CursorTheme
@@ -159,7 +159,7 @@ private fun ColumnScope.StoreTextDocument(ref: MediaRef.Store, files: StoreFileR
                 Modifier
                     .fillMaxWidth()
                     .weight(1f, fill = false)
-                    .verticalScroll(rememberScrollState())
+                    .fadingVerticalScroll()
                     .padding(horizontal = 20.dp)
                     .padding(bottom = 20.dp)
                     .testTag("store-document-preview"),
@@ -175,7 +175,7 @@ private fun ColumnScope.StoreTextDocument(ref: MediaRef.Store, files: StoreFileR
                     modifier = Modifier
                         .fillMaxWidth()
                         .weight(1f, fill = false)
-                        .verticalScroll(rememberScrollState())
+                        .fadingVerticalScroll()
                         .horizontalScroll(rememberScrollState())
                         .padding(horizontal = 20.dp)
                         .padding(bottom = 20.dp)

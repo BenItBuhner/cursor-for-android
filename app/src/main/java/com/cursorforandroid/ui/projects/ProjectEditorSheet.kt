@@ -21,17 +21,15 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
@@ -74,10 +72,12 @@ import com.cursorforandroid.domain.Repository
 import com.cursorforandroid.ui.components.CursorButton
 import com.cursorforandroid.ui.components.CursorIcons
 import com.cursorforandroid.ui.components.CursorSheet
+import com.cursorforandroid.ui.components.FadingLazyColumn
 import com.cursorforandroid.ui.components.FlatIconButton
 import com.cursorforandroid.ui.components.ProjectGlyph
 import com.cursorforandroid.ui.components.SheetHeader
 import com.cursorforandroid.ui.components.SpinnerRing
+import com.cursorforandroid.ui.components.fadingVerticalScroll
 import com.cursorforandroid.ui.components.pressable
 import com.cursorforandroid.ui.components.scrollEdgeFade
 import com.cursorforandroid.ui.components.stylusWriting
@@ -285,13 +285,11 @@ fun ProjectEditorSheet(
             if (creating) "One chat that plans the work and runs agents to do it." else "Changes also show on desktop and on cursor.com.",
             style = type.small, color = colors.textTertiary, modifier = Modifier.padding(horizontal = 20.dp).padding(bottom = 6.dp),
         )
-        val scroll = rememberScrollState()
         Column(
             Modifier
                 .fillMaxWidth()
                 .weight(1f, fill = false)
-                .scrollEdgeFade(clippedAtTop = scroll.canScrollBackward, clippedAtBottom = scroll.canScrollForward, surface = colors.elevated)
-                .verticalScroll(scroll)
+                .fadingVerticalScroll()
                 .padding(bottom = 6.dp)
                 .testTag("project-editor-list"),
         ) {
@@ -452,7 +450,7 @@ private fun RepositoryPickerSheet(
         Text("Pick every repository this Project should work on.", style = type.small, color = colors.textTertiary, modifier = Modifier.padding(horizontal = 20.dp).padding(bottom = 10.dp))
         SearchField(value = query, onValueChange = { query = it }, placeholder = "Search repositories")
         Spacer(Modifier.height(6.dp))
-        LazyColumn(Modifier.fillMaxWidth().weight(1f, fill = false).testTag("repo-picker-list"), contentPadding = PaddingValues(bottom = 6.dp)) {
+        FadingLazyColumn(Modifier.fillMaxWidth().weight(1f, fill = false).testTag("repo-picker-list"), contentPadding = PaddingValues(bottom = 6.dp)) {
             items(visible, key = { it.url }) { repo ->
                 val on = repo.url in picked
                 RepositoryChoice(repo, on) { picked = ArrayList(if (on) picked - repo.url else picked + repo.url) }
@@ -500,9 +498,11 @@ private fun IconCatalogSheet(selected: String, tone: Color, onPick: (String) -> 
         SheetHeader("All icons")
         SearchField(value = query, onValueChange = { query = it }, placeholder = "Search ${ProjectIcons.ids.size} icons")
         Spacer(Modifier.height(6.dp))
+        val grid = rememberLazyGridState()
         LazyVerticalGrid(
             columns = GridCells.Adaptive(minSize = IconCellSize + 4.dp),
-            modifier = Modifier.fillMaxWidth().weight(1f, fill = false).testTag("icon-catalog"),
+            state = grid,
+            modifier = Modifier.fillMaxWidth().weight(1f, fill = false).scrollEdgeFade(grid).testTag("icon-catalog"),
             contentPadding = PaddingValues(start = CardGutter, end = CardGutter, bottom = 16.dp),
             horizontalArrangement = Arrangement.spacedBy(4.dp),
             verticalArrangement = Arrangement.spacedBy(4.dp),

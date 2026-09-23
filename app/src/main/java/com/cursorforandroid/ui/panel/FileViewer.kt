@@ -16,8 +16,8 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -48,6 +48,7 @@ import com.cursorforandroid.domain.lineStatsOf
 import com.cursorforandroid.ui.components.AudioChip
 import com.cursorforandroid.ui.components.CursorHeader
 import com.cursorforandroid.ui.components.CursorIcons
+import com.cursorforandroid.ui.components.FadingLazyColumn
 import com.cursorforandroid.ui.components.FlatIconButton
 import com.cursorforandroid.ui.components.HairlineDivider
 import com.cursorforandroid.ui.components.ImageBlock
@@ -55,7 +56,9 @@ import com.cursorforandroid.ui.components.LocalMarkdownMedia
 import com.cursorforandroid.ui.components.MarkdownText
 import com.cursorforandroid.ui.components.SpinnerRing
 import com.cursorforandroid.ui.components.VideoBlock
+import com.cursorforandroid.ui.components.fadingVerticalScroll
 import com.cursorforandroid.ui.components.pressable
+import com.cursorforandroid.ui.components.scrollEdgeFade
 import com.cursorforandroid.ui.conversation.DiffBlock
 import com.cursorforandroid.ui.conversation.LineCounts
 import com.cursorforandroid.ui.conversation.LoadNoticeCard
@@ -107,7 +110,7 @@ internal fun FileViewerScreen(view: FileView, onBack: () -> Unit, onOpenUrl: (St
                 view.copyablePath?.let { path -> if (onAskToCopy != null) NoticeAction("Ask the agent to copy it into the workspace", { onAskToCopy(path) }, Modifier.testTag("file-viewer-ask-copy")) }
             }
             is FileView.Transcript -> TextFile(view.content.content, view.content.truncated)
-            is FileView.Changes -> LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            is FileView.Changes -> FadingLazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 items(view.change.diffs) { diff -> DiffBlock(diff, showHeader = false) }
             }
             is FileView.Repository -> RepoFileBody(view.file, view.file.downloadUrl, onOpenUrl)
@@ -116,7 +119,7 @@ internal fun FileViewerScreen(view: FileView, onBack: () -> Unit, onOpenUrl: (St
                 val file = view.file
                 val patch = file.patch
                 when {
-                    patch != null -> LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(12.dp)) {
+                    patch != null -> FadingLazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(12.dp)) {
                         item { DiffBlock(ToolPayload.FileDiff(file.path, patch, file.additions, file.deletions), showHeader = false) }
                     }
                     file.modifiedContent != null -> TextFile(file.modifiedContent, truncated = false)
@@ -162,7 +165,7 @@ private fun RepoFileBody(file: RepoFile, webUrl: String?, onOpenUrl: (String) ->
         read is FileBytes.LfsPointer -> FileProblemRow(MediaProblem.LfsPointer, file, webUrl, onOpenUrl)
         format != null && format.isMedia -> MediaFileBody(file, plain.bytes, format)
         file.kind == RepoFile.Kind.Markdown && plain != null && FileBytes.looksLikeText(plain.bytes) ->
-            Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 14.dp, vertical = 10.dp).testTag("markdown-file")) {
+            Column(Modifier.fillMaxSize().fadingVerticalScroll().padding(horizontal = 14.dp, vertical = 10.dp).testTag("markdown-file")) {
                 MarkdownText(file.text, style = type.message)
             }
         plain != null && (format?.kind == MediaKind.Text || format == null && FileBytes.looksLikeText(plain.bytes)) -> TextFile(file.text, truncated = false)
@@ -261,7 +264,8 @@ internal fun TextFile(text: String, truncated: Boolean, modifier: Modifier = Mod
         with(density) { measurer.measure(AnnotatedString(sample), type.code).size.width.toDp() } + 24.dp
     }
     val scroll = rememberScrollState()
-    LazyColumn(modifier.fillMaxSize().horizontalScroll(scroll).testTag("text-file"), contentPadding = PaddingValues(vertical = 8.dp)) {
+    val list = rememberLazyListState()
+    LazyColumn(modifier.fillMaxSize().scrollEdgeFade(list).horizontalScroll(scroll).testTag("text-file"), state = list, contentPadding = PaddingValues(vertical = 8.dp)) {
         itemsIndexed(lines) { index, line ->
             Row(Modifier.width(rowWidth).padding(horizontal = 12.dp)) {
                 Text((index + 1).toString().padStart(gutter), style = type.code, color = colors.textQuaternary, softWrap = false)

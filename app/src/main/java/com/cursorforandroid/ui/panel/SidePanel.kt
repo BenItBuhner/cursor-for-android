@@ -26,6 +26,7 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.width
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
@@ -61,6 +62,7 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.unit.dp
+import com.cursorforandroid.ui.components.LocalScrollFadeSurface
 import com.cursorforandroid.ui.theme.CursorTheme
 import kotlin.coroutines.cancellation.CancellationException
 import kotlin.math.abs
@@ -173,7 +175,7 @@ fun SidePanelHost(
             // (`panelInsetPadding` at the panel's root), so the one consumption is the content's whichever host it is in.
             if (state.isOpen || state.fraction > 0f) {
                 Surface(color = containerColor, contentColor = contentColor, shape = RectangleShape, modifier = Modifier.fillMaxSize()) {
-                    panelContent()
+                    CompositionLocalProvider(LocalScrollFadeSurface provides containerColor, content = panelContent)
                 }
             }
         }

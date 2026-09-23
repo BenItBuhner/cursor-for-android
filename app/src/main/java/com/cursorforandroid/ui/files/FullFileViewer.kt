@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -63,10 +64,12 @@ import com.cursorforandroid.domain.ToolPayload
 import com.cursorforandroid.ui.components.CursorButton
 import com.cursorforandroid.ui.components.CursorHeader
 import com.cursorforandroid.ui.components.CursorIcons
+import com.cursorforandroid.ui.components.FadingLazyColumn
 import com.cursorforandroid.ui.components.FlatIconButton
 import com.cursorforandroid.ui.components.HairlineDivider
 import com.cursorforandroid.ui.components.SpinnerRing
 import com.cursorforandroid.ui.components.pressable
+import com.cursorforandroid.ui.components.scrollEdgeFade
 import com.cursorforandroid.ui.conversation.DiffBlock
 import com.cursorforandroid.ui.conversation.LoadNoticeCard
 import com.cursorforandroid.ui.conversation.NoticeAction
@@ -295,7 +298,7 @@ fun FullFileScreen(
             }
             is FullFile.Diff -> {
                 Notice(shown.notice, shown.webUrl)
-                LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                FadingLazyColumn(Modifier.fillMaxSize().navigationBarsPadding(), contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp), surface = colors.canvas) {
                     itemsIndexed(shown.diffs) { _, diff -> DiffBlock(diff, showHeader = false) }
                 }
             }
@@ -385,7 +388,11 @@ private fun CodeLines(file: FullFile.Text) {
     // A few lines of what comes before the mark stay in view above it.
     val list = rememberLazyListState(initialFirstVisibleItemIndex = scrollTo?.let { (it - LinesAboveMark).coerceAtLeast(0) } ?: 0)
     val sideways = rememberScrollState()
-    LazyColumn(Modifier.fillMaxSize().horizontalScroll(sideways).testTag("full-file-lines"), state = list, contentPadding = PaddingValues(vertical = 8.dp)) {
+    LazyColumn(
+        Modifier.fillMaxSize().navigationBarsPadding().scrollEdgeFade(list, surface = colors.canvas).horizontalScroll(sideways).testTag("full-file-lines"),
+        state = list,
+        contentPadding = PaddingValues(vertical = 8.dp),
+    ) {
         itemsIndexed(lines) { index, line ->
             val number = file.firstLine + index
             val marked = number in file.highlighted

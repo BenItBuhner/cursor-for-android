@@ -16,11 +16,9 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.material3.ripple
@@ -42,6 +40,7 @@ import com.cursorforandroid.AppGraph
 import com.cursorforandroid.ui.components.CursorButton
 import com.cursorforandroid.ui.components.CursorIcons
 import com.cursorforandroid.ui.components.cursorSurface
+import com.cursorforandroid.ui.components.fadingVerticalScroll
 import com.cursorforandroid.ui.settings.ExtendedModeAcknowledgmentDialog
 import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
@@ -119,7 +118,7 @@ fun ModeChoiceScreen(graph: AppGraph) {
         contentAlignment = Alignment.Center,
     ) {
         Column(
-            Modifier.widthIn(max = 380.dp).fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 24.dp, vertical = 32.dp),
+            Modifier.widthIn(max = 380.dp).fillMaxWidth().fadingVerticalScroll(surface = colors.canvas).padding(horizontal = 24.dp, vertical = 32.dp),
             horizontalAlignment = Alignment.Start,
         ) {
             Icon(CursorIcons.Cube, null, tint = colors.iconPrimary, modifier = Modifier.size(40.dp))
