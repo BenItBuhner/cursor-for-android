@@ -34,6 +34,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.io.IOException
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * A chat's controls on the account service — what the desktop, the web and the iOS app can do to a running cloud
@@ -80,6 +81,9 @@ class SteeringRepository(
     private val states = ConcurrentHashMap<String, MutableStateFlow<ConversationControls>>()
     private val attached = ConcurrentHashMap<String, Int>()
     private val pollers = ConcurrentHashMap<String, Job>()
+    /** Per chat: how many reads of its queue have begun, and the newest of them applied (see [applyQueueRead]). */
+    private val queueReads = ConcurrentHashMap<String, AtomicLong>()
+    private val queueApplied = HashMap<String, Long>()
 
     init {
         scope.launch { session.backend.drop(1).collect { reset() } }
@@ -170,15 +174,28 @@ class SteeringRepository(
         f.update { it.copy(queueLoad = QueueLoad.Loading) }
         // When the read began, by the app's clock: the transcript reads the answer against what happened meanwhile.
         val readAt = AppClock.now()
+        val read = queueReads.getOrPut(agentId) { AtomicLong() }.incrementAndGet()
         try {
             val pending = api.listPending(agentId)
-            f.update { it.copy(queue = pending, queueLoad = QueueLoad.Loaded) }
+            if (!applyQueueRead(agentId, read) { f.update { it.copy(queue = pending, queueLoad = QueueLoad.Loaded) } }) return
             onQueueRead(agentId, pending, readAt)
         } catch (e: CancellationException) {
             throw e
         } catch (t: Throwable) {
-            f.update { it.copy(queueLoad = QueueLoad.Unavailable(describe(t))) }
+            applyQueueRead(agentId, read) { f.update { it.copy(queueLoad = QueueLoad.Unavailable(describe(t))) } }
         }
+    }
+
+    /**
+     * Applies read number [read] of [agentId]'s queue unless a read begun after it has been applied already: reads
+     * overlap (the poll, the one a filing asks for, the one after an edit), and an older answer landing last put a
+     * message the account had let go of — and the transcript had taken — back on the card beside it.
+     */
+    private inline fun applyQueueRead(agentId: String, read: Long, apply: () -> Unit): Boolean = synchronized(queueApplied) {
+        if (read < (queueApplied[agentId] ?: 0L)) return false
+        queueApplied[agentId] = read
+        apply()
+        true
     }
 
     /**
