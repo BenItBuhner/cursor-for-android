@@ -1,6 +1,11 @@
 package com.cursorforandroid.data.repo
 
+import com.cursorforandroid.data.api.CursorServer
+import com.cursorforandroid.data.api.CursorServerApi
+import com.cursorforandroid.data.api.CursorServerFiles
+import com.cursorforandroid.data.api.CursorServerReadException
 import com.cursorforandroid.data.api.GitHubRepo
+import com.cursorforandroid.data.api.userMessage
 import com.cursorforandroid.data.api.OriginRepo
 import com.cursorforandroid.domain.Agent
 import com.cursorforandroid.domain.RepoContents
@@ -10,7 +15,10 @@ import com.cursorforandroid.domain.WorkspaceTree
 import com.cursorforandroid.util.AppClock
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
+import java.io.IOException
 import java.net.URLEncoder
+import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 
 /** How a read of a file the agent named ended: the file and where it came from, or why not, with where it can be seen instead. */
 sealed interface FileRead {
@@ -27,7 +35,11 @@ sealed interface FileRead {
 
     enum class Source(val label: String) { Workspace("From the agent's workspace"), Machine("From the agent's machine"), Repository("From the repository at the agent's branch") }
 
-    enum class Reason { MachineAsleep, MachineGone, NotFound, Other }
+    /**
+     * [OutsideWorkspace]: the file is on the machine outside its workspace and nothing that may be asked here gave it
+     * — `ReadBinaryFile` stops at the workspace, and the machine's cursor-server did not answer with it.
+     */
+    enum class Reason { MachineAsleep, MachineGone, NotFound, OutsideWorkspace, Other }
 }
 
 /**
@@ -53,9 +65,11 @@ data class FileReadAttempt(
  * files through it, `cursor-worker://{bcId}/{relativePath}`), else, for a file of the repository, the repository at
  * the agent's branch (GitHub's or Origin's contents read, what the panel's Repository tab shows). Agents name files
  * absolutely on their VM: under the workspace root (`/workspace/app/src/Main.kt`) the read takes the path relative to
- * it — the workspace's own listing says which suffix that is — and anywhere else (`/tmp/frame.png`) the path as it
- * is, since the VM's read (`agent.v1.ControlService/ReadBinaryFile {path}`) takes a path and no root. A file outside
- * the workspace is no file of the repository, and the repository is not asked for it.
+ * it — the workspace's own listing says which suffix that is. `ReadBinaryFile` stops there: a path outside the
+ * workspace (`/tmp/frame.png`) is refused, `invalid_argument "File path must stay within the workspace."` (Bennett's
+ * 2026-09-22 frame). Such a file is read the way Cursor's own client reads it, off the machine's cursor-server
+ * ([CursorServerFiles]: `GetCursorServerUrl`, then its remote-resource route). A file outside the workspace is no
+ * file of the repository, and the repository is not asked for it.
  */
 class AgentFileRepository(
     private val workspace: WorkspaceRepository,
@@ -63,11 +77,18 @@ class AgentFileRepository(
     private val agent: (String) -> Agent?,
     /** `WakeBackgroundComposer`: asks the account to start the chat's machine; false where nothing can be asked. */
     private val wakeMachine: suspend (agentId: String) -> Boolean = { false },
+    /** The machine's cursor-server, for a file outside the workspace (Extended mode); null where none is wired. */
+    private val cursorServer: CursorServerFiles? = null,
+    private val mintToken: () -> String = { UUID.randomUUID().toString() },
     private val now: () -> Long = AppClock::now,
     private val wakeWaitMs: Long = WAKE_WAIT_MS,
     private val wakePollMs: Long = WAKE_POLL_MS,
 ) {
     private val log = ArrayDeque<FileReadAttempt>()
+    /** Per chat: the connection token minted for its cursor-server, as the desktop keeps one per agent and build. */
+    private val serverTokens = ConcurrentHashMap<String, String>()
+    /** Per chat: the server `GetCursorServerUrl` named, and when; asked again once stale or refused. */
+    private val servers = ConcurrentHashMap<String, Pair<CursorServer, Long>>()
 
     /** The reads made for [agentId], oldest first, for the transcript diagnostics. */
     fun attempts(agentId: String): List<FileReadAttempt> = synchronized(log) { log.filter { it.agentId == agentId } }
@@ -127,7 +148,9 @@ class AgentFileRepository(
                 workspaceFailure = tree
                 vmNote = "$vmPath→${tree.kind.name} (listing)" + (tree.asked?.let { " [$it]" } ?: "")
             }
-            else -> when (val read = workspace.file(agentId, vmPath, force, absolute = !inWorkspace)) {
+            // ReadBinaryFile refuses a path outside the workspace: the cursor-server reads it, below.
+            !inWorkspace -> vmNote = "ReadBinaryFile skipped (outside the workspace)"
+            else -> when (val read = workspace.file(agentId, vmPath, force)) {
                 is VmRead.Loaded -> {
                     vmNote = "$vmPath→loaded"
                     return done(FileRead.Loaded(read.value, if (inWorkspace) FileRead.Source.Workspace else FileRead.Source.Machine))
@@ -148,12 +171,28 @@ class AgentFileRepository(
         val machineGone = workspaceFailure?.kind == VmRead.FailureKind.MachineGone || row?.runStatus == RunStatus.EXPIRED || row?.isArchived == true
         if (!inWorkspace) {
             repoNote = "skipped (outside the workspace)"
-            return done(
-                when {
-                    workspaceFailure != null -> failedOf(workspaceFailure, null, machineGone)
-                    else -> FileRead.NotReadable(outsideNeedsExtended(path), null)
-                },
-            )
+            if (workspaceNotReadable != null) return done(FileRead.NotReadable(outsideNeedsExtended(path), null))
+            if (workspaceFailure != null && (workspaceFailure.kind == VmRead.FailureKind.MachineAsleep || workspaceFailure.kind == VmRead.FailureKind.MachineGone)) {
+                return done(failedOf(workspaceFailure, null, machineGone))
+            }
+            val server = cursorServer ?: return done(FileRead.Failed(OUTSIDE_WORKSPACE, null, retryable = false, reason = FileRead.Reason.OutsideWorkspace))
+            return when (val read = readOffMachine(server, agentId, path.trim(), force)) {
+                is MachineRead.Loaded -> {
+                    vmNote = "cursor-server ${read.asked}→loaded"
+                    done(FileRead.Loaded(RepoFile(path = path.trim(), bytes = read.bytes, sizeBytes = read.bytes.size.toLong()), FileRead.Source.Machine))
+                }
+                is MachineRead.Failed -> {
+                    vmNote = "cursor-server→${read.failure.kind.name}" + (read.failure.asked?.let { " [$it]" } ?: " \"${read.failure.message.take(80)}\"")
+                    done(
+                        when (read.failure.kind) {
+                            VmRead.FailureKind.MachineAsleep, VmRead.FailureKind.MachineGone -> failedOf(read.failure, null, machineGone)
+                            VmRead.FailureKind.NotFound -> FileRead.Failed(WorkspaceRepository.NO_SUCH_FILE, null, reason = FileRead.Reason.NotFound, asked = read.failure.asked)
+                            VmRead.FailureKind.NeedsExtendedMode -> FileRead.NotReadable(outsideNeedsExtended(path), null)
+                            else -> FileRead.Failed(OUTSIDE_WORKSPACE, null, reason = FileRead.Reason.OutsideWorkspace, asked = read.failure.asked)
+                        },
+                    )
+                }
+            }
         }
         if (hostReadable && repoUrl != null) {
             val repoPath = relativeGuess(path)
@@ -188,6 +227,52 @@ class AgentFileRepository(
                 else -> FileRead.NotReadable(workspaceNotReadable ?: WorkspaceRepository.NEEDS_EXTENDED_MODE, webUrl)
             },
         )
+    }
+
+    private sealed interface MachineRead {
+        class Loaded(val bytes: ByteArray, val asked: String) : MachineRead
+        class Failed(val failure: VmRead.Failed) : MachineRead
+    }
+
+    /**
+     * [path] off [agentId]'s machine through its cursor-server: the server `GetCursorServerUrl` names for the token
+     * minted for the chat (kept a while, as the desktop keeps it), then the file from its remote-resource route. A
+     * refused or unreachable server is asked for again once, fresh, before the read is given up on.
+     */
+    private suspend fun readOffMachine(api: CursorServerFiles, agentId: String, path: String, force: Boolean): MachineRead {
+        var fresh = force
+        repeat(2) { attempt ->
+            val server = try {
+                cachedServer(agentId, fresh) ?: api.server(agentId, CursorServerApi.DESKTOP_COMMIT, serverTokens.getOrPut(agentId, mintToken)).also { servers[agentId] = it to now() }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (t: Throwable) {
+                return MachineRead.Failed(WorkspaceRepository.failure(t))
+            }
+            try {
+                return MachineRead.Loaded(api.read(server, path), server.describe(path))
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: CursorServerReadException) {
+                servers.remove(agentId)
+                if (e.httpCode == 404) return MachineRead.Failed(VmRead.Failed(WorkspaceRepository.NO_SUCH_FILE, kind = VmRead.FailureKind.NotFound, asked = e.asked))
+                if (attempt == 1 || (e.httpCode != 401 && e.httpCode != 403)) return MachineRead.Failed(VmRead.Failed(e.message ?: "The agent's machine refused.", asked = e.asked))
+            } catch (e: IOException) {
+                servers.remove(agentId)
+                if (attempt == 1) return MachineRead.Failed(VmRead.Failed(e.userMessage(), asked = "${server.describe(path)} → ${e.javaClass.simpleName}: ${e.message?.take(100)}"))
+            }
+            fresh = true
+        }
+        return MachineRead.Failed(VmRead.Failed("The agent's machine could not be reached."))
+    }
+
+    private fun cachedServer(agentId: String, fresh: Boolean): CursorServer? {
+        if (fresh) {
+            servers.remove(agentId)
+            return null
+        }
+        val (server, at) = servers[agentId] ?: return null
+        return server.takeIf { now() - at < SERVER_TTL_MS }
     }
 
     /** The VM's refusal in the reader's words, the chat's own state deciding a machine that is gone from one asleep. */
@@ -231,6 +316,9 @@ class AgentFileRepository(
         /** How long a woken machine is given to come up before the read is given up on; the Agents Window polls a preparing one about this long. */
         const val WAKE_WAIT_MS = 60_000L
         const val WAKE_POLL_MS = 3_000L
+        /** How long a server `GetCursorServerUrl` named is used before it is asked for again. */
+        const val SERVER_TTL_MS = 10 * 60_000L
+        const val OUTSIDE_WORKSPACE = "The picture was saved outside the agent's workspace, and Cursor only lets apps read files inside it."
 
         /** What default mode says of a file outside the repository: only the agent's machine holds it. */
         fun outsideNeedsExtended(path: String): String = "${path.trim()} is on the agent's machine, outside the repository; reading it needs Extended mode."

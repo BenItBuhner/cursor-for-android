@@ -71,7 +71,7 @@ import java.io.File
  * reason it could not be shown.
  */
 @Composable
-internal fun FileViewerScreen(view: FileView, onBack: () -> Unit, onOpenUrl: (String) -> Unit, modifier: Modifier = Modifier, onRetry: ((wake: Boolean) -> Unit)? = null) {
+internal fun FileViewerScreen(view: FileView, onBack: () -> Unit, onOpenUrl: (String) -> Unit, modifier: Modifier = Modifier, onRetry: ((wake: Boolean) -> Unit)? = null, onAskToCopy: ((path: String) -> Unit)? = null) {
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
     Column(modifier.fillMaxSize().testTag("file-viewer")) {
@@ -104,6 +104,7 @@ internal fun FileViewerScreen(view: FileView, onBack: () -> Unit, onOpenUrl: (St
             ) {
                 if (onRetry != null && view.wakeable) NoticeAction("Wake the machine", { onRetry(true) }, Modifier.testTag("file-viewer-wake"))
                 if (onRetry != null && view.retryable) NoticeAction("Retry", { onRetry(false) }, Modifier.testTag("file-viewer-retry"))
+                view.copyablePath?.let { path -> if (onAskToCopy != null) NoticeAction("Ask the agent to copy it into the workspace", { onAskToCopy(path) }, Modifier.testTag("file-viewer-ask-copy")) }
             }
             is FileView.Transcript -> TextFile(view.content.content, view.content.truncated)
             is FileView.Changes -> LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {

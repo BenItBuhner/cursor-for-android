@@ -130,6 +130,8 @@ internal class PageEnvironment(
     /** Hands the file of a page that cannot show it to the browser, or to another app, from the page's own row. */
     val onOpenInBrowser: (url: String) -> Unit = {},
     val onOpenElsewhere: (MediaRef, MediaEntry) -> Unit = { _, _ -> },
+    /** Drafts a follow-up asking the agent to copy a file into its workspace; null where no composer stands behind the viewer. */
+    val onCopyIntoWorkspace: ((path: String) -> Unit)? = null,
 ) {
     /** Whether [page] is anywhere in the pager's viewport, however little of it. */
     fun isVisible(page: Int): Boolean = pagerState.layoutInfo.visiblePagesInfo.any { it.index == page }
@@ -587,6 +589,7 @@ internal fun PageProblem(
     val browserUrl by produceState<String?>(null, ref) { value = environment.loader.browserUrl(ref) }
     val elsewhere = problem.openable && problem !is MediaProblem.NotReadable && problem !is MediaProblem.Failed &&
         !(problem is MediaProblem.NotMedia && problem.actual == FileFormat.HTML) && problem !is MediaProblem.LfsPointer
+    val copyPath = (ref as? MediaRef.Workspace)?.path?.takeIf { problem is MediaProblem.OutsideWorkspace && environment.onCopyIntoWorkspace != null }
     val detail = listOfNotNull(problem.detail, problem.asked?.let { "Asked: $it" }).joinToString("\n").ifEmpty { null }
     val tone = when (problem) {
         is MediaProblem.MachineAsleep, is MediaProblem.NotReadable, is MediaProblem.Unsupported, is MediaProblem.LfsPointer -> NoticeTone.Warning
@@ -596,6 +599,7 @@ internal fun PageProblem(
         LoadNoticeCard(title = problem.title, detail = detail, tone = tone, docked = false, titleTag = "viewer-error-title") {
             if (onRetry != null && problem.wakeable) NoticeAction("Wake the machine", { onRetry(true) }, Modifier.testTag("viewer-wake"))
             if (onRetry != null && problem.retryable) NoticeAction("Retry", { onRetry(false) }, Modifier.testTag("viewer-retry"))
+            if (copyPath != null) NoticeAction("Ask the agent to copy it into the workspace", { environment.onCopyIntoWorkspace?.invoke(copyPath) }, Modifier.testTag("viewer-ask-copy"))
             browserUrl?.let { url -> NoticeAction("Open in browser", { environment.onOpenInBrowser(url) }, Modifier.testTag("viewer-open-browser")) }
             if (elsewhere) NoticeAction("Open with\u2026", { environment.onOpenElsewhere(ref, entry) }, Modifier.testTag("viewer-open-elsewhere"))
         }

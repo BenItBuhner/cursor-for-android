@@ -471,6 +471,19 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
     }
 
     /**
+     * A picture a tool call read is outside the agent's workspace and no source this chat carries has it (see
+     * `MediaProblem.OutsideWorkspace`): fill the composer with a follow-up asking the agent to copy the file under
+     * the workspace, where a read can reach it, and leave it unsent for the reader to send. Appended to whatever is
+     * already typed, on its own line, so nothing drafted is lost.
+     */
+    fun askToCopyFileIntoWorkspace(path: String) {
+        val clean = path.trim()
+        val ask = "Please copy $clean into the workspace (for example `cp \"$clean\" ./` ) so I can view it here, then tell me the path."
+        val current = draft.value
+        setDraft(if (current.isBlank()) ask else current.trimEnd() + "\n\n" + ask)
+    }
+
+    /**
      * The one-slot rule the other way round: a draft that carries `/multitask` — typed, picked, shared in, restored or
      * taken back from the queue — puts a mode that was asked for off (to agent mode, as the pill's cross does). A
      * mode never asked for stays not asked for.

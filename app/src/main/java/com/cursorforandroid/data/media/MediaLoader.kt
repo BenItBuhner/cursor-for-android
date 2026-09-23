@@ -23,6 +23,7 @@ import com.cursorforandroid.data.repo.AgentFileRepository
 import com.cursorforandroid.data.repo.ArtifactRepository
 import com.cursorforandroid.data.repo.FileRead
 import com.cursorforandroid.data.repo.StoreFileRepository
+import com.cursorforandroid.domain.ArtifactPaths
 import com.cursorforandroid.domain.FileBytes
 import com.cursorforandroid.domain.FileFormat
 import com.cursorforandroid.domain.MediaRef
@@ -315,8 +316,21 @@ class MediaLoader(
         return when (val read = reads.read(ref.agentId, ref.path, force = wake, wake = wake)) {
             is FileRead.Loaded -> read.file.bytes
             is FileRead.NotReadable -> throw MediaProblemException(MediaProblem.NotReadable(where, read.reason))
-            is FileRead.Failed -> throw MediaProblemException(problemOf(read))
+            // A picture the machine would not give may still be one the agent published as an artifact of the same name.
+            is FileRead.Failed -> artifactBytes(ref.agentId, ref.path) ?: throw MediaProblemException(problemOf(read))
         }
+    }
+
+    /**
+     * The bytes of an artifact whose file name matches [path]'s, or null when none does or it cannot be fetched: a
+     * generated or saved picture the agent published (`GET /v1/agents/{id}/artifacts`) is a documented copy of a file
+     * that lived outside the workspace. The newest match wins (the listing is newest-first).
+     */
+    private suspend fun artifactBytes(agentId: String, path: String): ByteArray? {
+        val name = ArtifactPaths.fileName(path).ifBlank { return null }
+        val match = runCatching { artifacts.list(agentId) }.getOrNull()?.firstOrNull { it.name == name } ?: return null
+        val url = runCatching { artifacts.downloadUrl(agentId, match.path) }.getOrNull() ?: return null
+        return runCatching { download(url, MAX_DIAGNOSE_BYTES) }.getOrNull()?.takeIf { it.isNotEmpty() }
     }
 
     private fun unavailableDetail(ref: MediaRef.Unavailable): String? = ref.src.takeIf { it.isNotBlank() && !it.startsWith("data:") }
@@ -393,6 +407,7 @@ class MediaLoader(
             FileRead.Reason.MachineAsleep -> MediaProblem.MachineAsleep(read.asked)
             FileRead.Reason.MachineGone -> MediaProblem.MachineGone(read.asked)
             FileRead.Reason.NotFound -> MediaProblem.Failed("The agent's machine has no such file", "It was moved or deleted, or went with a machine that was replaced.", asked = read.asked)
+            FileRead.Reason.OutsideWorkspace -> MediaProblem.OutsideWorkspace(read.asked)
             FileRead.Reason.Other -> MediaProblem.Failed("Couldn't read this file", read.message, retryable = read.retryable, asked = read.asked)
         }
 

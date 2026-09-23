@@ -96,6 +96,7 @@ sealed interface FileView {
         val asked: String? = null,
         val retryable: Boolean = false,
         val wakeable: Boolean = false,
+        val copyablePath: String? = null,
     ) : FileView
     data class Repository(val file: RepoFile) : FileView { override val path: String get() = file.path }
     data class Transcript(val content: ToolPayload.FileContent) : FileView { override val path: String get() = content.path }
@@ -510,6 +511,7 @@ class PanelViewModel(private val graph: AppGraph, val agentId: String) : ViewMod
                             FileRead.Reason.MachineAsleep -> FileView.Failed(path, "Wake it and the file is read again.", title = "The agent's machine is asleep", asked = read.asked, retryable = true, wakeable = true)
                             FileRead.Reason.MachineGone -> FileView.Failed(path, "The chat expired or was archived, and its VM went with it; only what the transcript carried can be shown.", title = "The agent's machine is gone", asked = read.asked)
                             FileRead.Reason.NotFound -> FileView.Failed(path, "It was moved or deleted, or went with a machine that was replaced.", title = "The agent's machine has no such file", asked = read.asked, retryable = true)
+                            FileRead.Reason.OutsideWorkspace -> FileView.Failed(path, AgentFileRepository.OUTSIDE_WORKSPACE + " This chat didn't include a copy.", title = "This file is outside the agent's workspace", asked = read.asked, copyablePath = path)
                             FileRead.Reason.Other -> FileView.Failed(path, read.message, asked = read.asked, retryable = read.retryable)
                         }
                     },
