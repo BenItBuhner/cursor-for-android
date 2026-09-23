@@ -68,6 +68,7 @@ import com.cursorforandroid.domain.EnvType
 import com.cursorforandroid.share.ShareTarget
 import com.cursorforandroid.domain.RunStatus
 import com.cursorforandroid.domain.StorePath
+import com.cursorforandroid.domain.SubagentPlacement
 import com.cursorforandroid.ui.agents.RenameChatDialog
 import com.cursorforandroid.ui.agents.SnoozeChatDialog
 import com.cursorforandroid.ui.components.ChatHeader
@@ -185,6 +186,11 @@ fun ConversationScreen(
     // A Project coordinator's cards name its workers by the list's live rows and open their chats (either mode).
     val agentList by graph.agents.state.collectAsStateWithLifecycle()
     val agentsById = remember(agentList.agents) { agentList.agents.associateBy { it.id } }
+    // A subagent's row names its model off the catalog, and draws where it runs against where this chat does.
+    val models by graph.catalog.models.collectAsStateWithLifecycle()
+    val placement = SubagentPlacement.of(agent?.envType)
+    val subagents = presentedTranscript.subagents
+    val subagentRuns = conversation.subagentRuns
     // The transcript's rows answer the question they show and stop the step they show through the account
     // (Extended mode); with the surfaces off the hands are null and the rows stay read-only.
     // A Project's coordinator speaks to the user through its SendMessage tool; its plain replies are its working
@@ -198,7 +204,7 @@ fun ConversationScreen(
     // A file a tool call names, tapped: the full-file viewer over the chat (pictures, recordings and sounds open the
     // media viewer from the row instead). Kept across a rotation and a process death, like the store sheet.
     var openFile by rememberSaveable(agentId, stateSaver = FileOpenRequestSaver) { mutableStateOf<FileOpenRequest?>(null) }
-    val transcriptControls = remember(controls, capabilities, agentsById, onOpenAgent, coordinatorMode, outgoing) {
+    val transcriptControls = remember(controls, capabilities, agentsById, onOpenAgent, coordinatorMode, outgoing, models, placement, subagents, subagentRuns) {
         TranscriptControls(
             state = controls,
             onAnswer = if (capabilities.interactions && !isDemo) ({ callId, answers -> viewModel.answerQuestion(callId, answers) }) else null,
@@ -214,6 +220,11 @@ fun ConversationScreen(
             onDismissNotice = viewModel::dismissInlineNotice,
             onOpenFile = { openFile = it },
             onAskToCopyFile = if (isDemo) null else viewModel::askToCopyFileIntoWorkspace,
+            models = models,
+            subagents = subagents,
+            placement = placement,
+            subagentActivity = graph.subagentActivity::of,
+            subagentRuns = subagentRuns,
         )
     }
     // The "+" menu's two pickers: the gallery — images alone in the default mode, images and videos as real files in

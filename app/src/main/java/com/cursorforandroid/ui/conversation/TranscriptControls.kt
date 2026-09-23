@@ -4,7 +4,13 @@ import androidx.compose.runtime.compositionLocalOf
 import com.cursorforandroid.domain.Agent
 import com.cursorforandroid.domain.ConversationControls
 import com.cursorforandroid.domain.FileOpenRequest
+import com.cursorforandroid.domain.ModelOption
+import com.cursorforandroid.domain.SubagentChild
+import com.cursorforandroid.domain.SubagentPlacement
+import com.cursorforandroid.domain.SubagentRows
 import com.cursorforandroid.domain.ToolPayload
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flowOf
 
 /**
  * What the transcript's rows may do on the account (Extended mode): answer the question a card shows, stop the tool
@@ -62,6 +68,22 @@ data class TranscriptControls(
      * composer stands behind the rows.
      */
     val onAskToCopyFile: ((path: String) -> Unit)? = null,
+    /** The account's models, which a subagent's row names its model by (see [SubagentRows.modelLabel]). */
+    val models: List<ModelOption> = emptyList(),
+    /** What the transcript's subagent rows say across its turns: each worker's newest row, name and model. */
+    val subagents: SubagentRows.Index = SubagentRows.Index.EMPTY,
+    /** Where this chat's own agent runs, which a subagent's glyph is drawn against (see [SubagentRows.placement]). */
+    val placement: SubagentPlacement? = null,
+    /**
+     * A cloud child's state as it moves — its run's status, the step it announced, the action it is on — for the
+     * row that stands for it; a flow of nothing where the rows are rendered without the app behind them.
+     */
+    val subagentActivity: (agentId: String) -> Flow<SubagentChild?> = { flowOf(null) },
+    /**
+     * The in-VM subagents the account's record of this chat tracks (Extended mode on the Beta engine), by the id
+     * of the task call that started each: its status, and the step it last announced.
+     */
+    val subagentRuns: Map<String, SubagentChild> = emptyMap(),
 )
 
 /** The transcript's controls, provided by the conversation screen around its list; the defaults where it is rendered alone. */
