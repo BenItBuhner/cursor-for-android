@@ -2369,6 +2369,9 @@ class ConversationRepository(
                 // newest, whatever order the list came in (see [newestRuns]).
                 val latestId = agents.agent(agentId)?.latestRunId?.takeUnless { it.startsWith(LOCAL_RUN_PREFIX) }
                 val (known, knownComplete) = synchronized(e) { e.runs to e.runsComplete }
+                // A list read oldest first whose newest runs are pages away: the transcript is shown now, its prompts
+                // and replies, and the runs join it once the list has been read to its end (see [newestRuns]).
+                if (transcript != null && firstPage != null && readsToEnd(firstPage, latestId, known)) e.publish(mutate = { messages = transcript })
                 val newest = firstPage?.let { newestRuns(api, agentId, it, latestId, known, knownComplete) }
                 val page = newest?.page
                 val fetched = convResult.isSuccess || page?.items?.isNotEmpty() == true
@@ -2478,6 +2481,8 @@ class ConversationRepository(
         val firstPage = runResult.getOrNull() ?: return
         val latestId = agents.agent(agentId)?.latestRunId?.takeUnless { it.startsWith(LOCAL_RUN_PREFIX) }
         val (known, knownComplete) = synchronized(e) { e.runs to e.runsComplete }
+        // Reading an oldest-first list to its end takes a round trip a page: the transcript is not held up behind it.
+        if (readsToEnd(firstPage, latestId, known)) return
         val newest = newestRuns(api, agentId, firstPage, latestId, known, knownComplete)
         if (newest.page.items.isEmpty()) return
         patchRowIfFollowedOver(e, agentId, newest.page.items)
@@ -3172,9 +3177,14 @@ class ConversationRepository(
      * about turns finished months before. The text of the newest prompts, laid over them, showed with no tool calls,
      * the ongoing turn read as finished, and the row went idle. So the order is read off the page itself and off the
      * agent's [latestRunId]: a page listed oldest first is read on to the end of the list, so that the runs in hand
-     * are every run and the newest among them (past [MAX_RUN_PAGES] the newest run alone stands, fetched by id); a
-     * page listed newest first that lacks the latest run — the list lagging the agent's record — gets it by id. The
-     * cursor a newest-first page carries stays the way to the older records (see [pageOlderRuns]).
+     * are every run and the newest among them (past [MAX_ASCENDING_RUN_PAGES] the newest run alone stands, fetched by
+     * id); a page listed newest first that lacks the latest run — the list lagging the agent's record — gets it by
+     * id. The cursor a newest-first page carries stays the way to the older records (see [pageOlderRuns]).
+     *
+     * The end of an oldest-first list is as far away as the chat is long: a Project of two thousand turns is twenty
+     * pages. A read that gave up at eight dropped every run, and the newest turns' prompts stood without a run, a
+     * footer, a log or the coordinator's messages — one stretch of events under "Older messages" (Bennett's frame of
+     * 2026-09-23).
      */
     private suspend fun newestRuns(api: CursorApi, agentId: String, first: ListRunsResponseDto, latestId: String?, known: List<RunDto>, knownComplete: Boolean): NewestRuns {
         val items = first.items
@@ -3193,7 +3203,7 @@ class ConversationRepository(
             val all = items.toMutableList()
             var next: String? = cursor
             var pages = 1
-            while (next != null && pages < MAX_RUN_PAGES) {
+            while (next != null && pages < MAX_ASCENDING_RUN_PAGES) {
                 val more = runCatching { net(agentId, "runs"); api.listRuns(agentId, limit = RUN_PAGE_SIZE, cursor = next) }.getOrElse { t ->
                     if (t is CancellationException) throw t
                     null
@@ -3221,6 +3231,13 @@ class ConversationRepository(
             if (latest != null) page = page.copy(items = listOf(latest) + page.items.filter { it.id != latest.id })
         }
         return NewestRuns(page, ascending = ascending, endKnown = endKnown, latestFetched = latestId != null && first.items.none { it.id == latestId } && page.items.any { it.id == latestId })
+    }
+
+    /** Whether [newestRuns] will read [first] on to the end of the list: listed oldest first, with pages after it, and the newest run not in hand. */
+    private fun readsToEnd(first: ListRunsResponseDto, latestId: String?, known: List<RunDto>): Boolean {
+        val items = first.items
+        val ascending = items.size >= 2 && parseIsoMillis(items.first().createdAt) < parseIsoMillis(items.last().createdAt)
+        return ascending && !first.nextCursor.isNullOrBlank() && !(latestId != null && known.any { it.id == latestId })
     }
 
     /** What [newestRuns] made of the first page: the page to merge, and the facts about it the diagnostics report. */
@@ -4848,6 +4865,8 @@ class ConversationRepository(
         const val LOST_REPLY_ATTEMPTS = 2
         /** Pages of older run records read past the first: beyond them the oldest prompts are shown without runs. */
         const val MAX_RUN_PAGES = 8
+        /** Pages of a list read oldest first that are read to reach its end, at most (see [newestRuns]): four thousand runs. */
+        const val MAX_ASCENDING_RUN_PAGES = 40
         /** How close two publications may come before the second waits for the burst (see [publishCoalesced]). */
         const val PUBLISH_COALESCE_MS = 80L
 
