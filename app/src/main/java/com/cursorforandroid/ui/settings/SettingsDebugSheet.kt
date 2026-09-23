@@ -2,8 +2,6 @@ package com.cursorforandroid.ui.settings
 
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -18,6 +16,7 @@ import com.cursorforandroid.data.update.GitHubReleasesClient
 import com.cursorforandroid.ui.components.CursorSheet
 import com.cursorforandroid.ui.components.HairlineDivider
 import com.cursorforandroid.ui.components.SheetHeader
+import com.cursorforandroid.ui.components.fadingVerticalScroll
 import com.cursorforandroid.ui.theme.CursorTheme
 
 /** The debug sheet's words, shared with its tests. */
@@ -50,7 +49,7 @@ fun SettingsDebugSheet(graph: AppGraph, isDemo: Boolean, extendedMode: Boolean, 
     val update by graph.updates.state.collectAsStateWithLifecycle()
     CursorSheet(onDismiss = onDismiss) { _ ->
         SheetHeader(SettingsDebugCopy.TITLE)
-        Column(Modifier.testTag(SettingsTags.DEBUG_SHEET).verticalScroll(rememberScrollState()).padding(horizontal = 16.dp).padding(bottom = 20.dp)) {
+        Column(Modifier.testTag(SettingsTags.DEBUG_SHEET).fadingVerticalScroll().padding(horizontal = 16.dp).padding(bottom = 20.dp)) {
             Group(SettingsDebugCopy.GROUP_DIAGNOSTICS)
             // The exports read what the app already holds and say which mode it held it under; neither needs the mode.
             // Sending them to the Project writes to the account's store, which only the mode does.
