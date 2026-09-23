@@ -81,10 +81,15 @@ fun rememberFileOpener(path: String, call: ToolCall? = null, line: Int? = null, 
         val onAskToCopy = controls.onAskToCopyFile?.let { ask -> { p: String -> ask(p) } }
         return FileOpener(slot, { viewer.open(media.agentId, listOf(entry), src, slot, fallback = entry, autoplay = entry.isPlayable, onAskToCopy = onAskToCopy) }, "Open $name")
     }
-    // A file of an Agent Store (a Project's context) is the store sheet's: it reads the store, not the workspace.
+    // A store DOC a tool call only read opens the store sheet, which renders it in Extended mode (a Project's
+    // context). An edit's changed lines belong in the full-file viewer, which shows the carried diff and reads the
+    // file when it can; and a store file the account cannot read must not fall through to the store handler's
+    // cursor.com hand-off (see ConversationScreen.onOpenStorePath) — it opens the full-file viewer with a notice,
+    // never the browser. So the store sheet is only for a readable, non-edit store file; everything else opens here.
     val store = StorePath.parse(path)
     val onStore = media?.onOpenStorePath
-    if (store != null && onStore != null) return FileOpener(null, { onStore(store) }, "Open $name")
+    val isEdit = call?.kind == ToolKind.Edit || call?.kind == ToolKind.Create
+    if (store != null && onStore != null && media.canReadStores && !isEdit) return FileOpener(null, { onStore(store) }, "Open $name")
     val onOpen = controls.onOpenFile ?: return null
     return FileOpener(null, { onOpen(FileOpenRequest(path, call?.callId, line)) }, "Open $name")
 }
