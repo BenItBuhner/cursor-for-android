@@ -9,10 +9,12 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -74,9 +76,14 @@ fun ConversationPanel(
             trailing = { FlatIconButton(CursorIcons.Close, "Close panel", onClick = onClose) },
         )
         HairlineDivider()
+        val lazySections = sections.mapNotNull { section ->
+            val items = section.items ?: return@mapNotNull null
+            section.id to key(section.id) { lazySection(section, items, state, actions) }
+        }.toMap()
         FadingLazyColumn(Modifier.fillMaxSize().testTag("panel-sections"), contentPadding = PaddingValues(vertical = 4.dp)) {
-            items(sections, key = { it.id.name }) { section ->
-                PanelSectionView(section, state, actions)
+            for (section in sections) {
+                val rows = lazySections[section.id]
+                if (rows != null) rows() else item(key = section.id.name) { PanelSectionView(section, state, actions) }
             }
         }
     }
@@ -85,23 +92,11 @@ fun ConversationPanel(
 @Composable
 private fun PanelSectionView(section: PanelSection, state: PanelState, actions: PanelActions) {
     val availability = section.availability(state.capabilities, state)
-    // Opened or closed by the reader here, and remembered by the view model for as long as the panel lives: the
-    // panel is composed only while it is open, so a reopened one starts from what the reader left rather than the
-    // defaults. Where nothing remembers (previews, tests), the row's own state is all there is, and it still toggles.
-    var expanded by rememberSaveable("panel-section-${section.id.name}") { mutableStateOf(state.expandedSections[section.id] ?: section.expandedByDefault) }
-    // What the section needs is asked for when it is opened, and again when its chat — or the mode, which decides
-    // which reads may be made — changes under it.
-    LaunchedEffect(expanded, availability is SectionAvailability.Available, state.prUrl, state.agentId, state.capabilities) {
-        if (expanded && availability is SectionAvailability.Available) section.onOpen(actions)
-    }
-    val hint = when (availability) {
-        is SectionAvailability.Available -> section.hint(state)
-        // Not drawn: the registry leaves such a section out (see PanelRegistry.shown).
-        is SectionAvailability.RequiresExtended -> return
-        is SectionAvailability.NotForThisChat -> "—"
-    }
+    var expanded by rememberExpanded(section, availability, state, actions)
+    // Not drawn: the registry leaves such a section out (see PanelRegistry.shown).
+    if (availability is SectionAvailability.RequiresExtended) return
     Column(Modifier.fillMaxWidth()) {
-        SectionHeader(section, hint, expanded, onToggle = { expanded = !expanded; actions.setSectionExpanded(section.id, expanded) })
+        SectionHeader(section, hintOf(section, availability, state), expanded, onToggle = { expanded = !expanded; actions.setSectionExpanded(section.id, expanded) })
         AnimatedVisibility(visible = expanded) {
             when (availability) {
                 is SectionAvailability.Available -> section.content(state, actions)
@@ -111,6 +106,57 @@ private fun PanelSectionView(section: PanelSection, state: PanelState, actions: 
         }
         HairlineDivider(Modifier.padding(horizontal = 12.dp))
     }
+}
+
+/**
+ * A section whose rows are the panel list's own items ([PanelSection.items]): the header, rows and divider
+ * [PanelSectionView] draws as one item, each an item of its own. Whether it is open, the read it asks for and what
+ * [items] holds are composed here, beside the list, and the rows are composed by the list as they come on screen.
+ */
+@Composable
+private fun lazySection(
+    section: PanelSection,
+    items: @Composable (PanelState, PanelActions) -> (LazyListScope.() -> Unit),
+    state: PanelState,
+    actions: PanelActions,
+): LazyListScope.() -> Unit {
+    val availability = section.availability(state.capabilities, state)
+    var expanded by rememberExpanded(section, availability, state, actions)
+    if (availability is SectionAvailability.RequiresExtended) return {}
+    val hint = hintOf(section, availability, state)
+    val rows = if (expanded && availability is SectionAvailability.Available) items(state, actions) else null
+    return {
+        item(key = section.id.name) {
+            SectionHeader(section, hint, expanded, onToggle = { expanded = !expanded; actions.setSectionExpanded(section.id, expanded) })
+        }
+        if (rows != null) rows()
+        if (expanded && availability is SectionAvailability.NotForThisChat) {
+            sectionRow("${section.id.name}-unavailable") { EmptyRow(availability.reason, modifier = Modifier.padding(bottom = 4.dp)) }
+        }
+        item(key = "${section.id.name}-end") { HairlineDivider(Modifier.padding(horizontal = 12.dp)) }
+    }
+}
+
+/**
+ * Whether [section] is open. Opened or closed by the reader here, and remembered by the view model for as long as the
+ * panel lives: the panel is composed only while it is open, so a reopened one starts from what the reader left rather
+ * than the defaults. Where nothing remembers (previews, tests), the row's own state is all there is, and it still toggles.
+ */
+@Composable
+private fun rememberExpanded(section: PanelSection, availability: SectionAvailability, state: PanelState, actions: PanelActions): MutableState<Boolean> {
+    val expanded = rememberSaveable("panel-section-${section.id.name}") { mutableStateOf(state.expandedSections[section.id] ?: section.expandedByDefault) }
+    // What the section needs is asked for when it is opened, and again when its chat — or the mode, which decides
+    // which reads may be made — changes under it.
+    LaunchedEffect(expanded.value, availability is SectionAvailability.Available, state.prUrl, state.agentId, state.capabilities) {
+        if (expanded.value && availability is SectionAvailability.Available) section.onOpen(actions)
+    }
+    return expanded
+}
+
+private fun hintOf(section: PanelSection, availability: SectionAvailability, state: PanelState): String? = when (availability) {
+    is SectionAvailability.Available -> section.hint(state)
+    is SectionAvailability.RequiresExtended -> null
+    is SectionAvailability.NotForThisChat -> "—"
 }
 
 /**

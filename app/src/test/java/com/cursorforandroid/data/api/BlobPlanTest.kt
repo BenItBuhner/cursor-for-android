@@ -99,19 +99,21 @@ class BlobPlanTest {
     }
 
     @Test
-    fun `a prefetched copy stays in memory until confirmed, a whole one reaches the disk, and the prefetch is named as held in the next process`() = runBlocking<Unit> {
+    fun `a prefetched copy is kept on disk as partial until confirmed, a whole one as whole, and both are named as held in the next process`() = runBlocking<Unit> {
         val dir = folder.newFolder("blobs")
         val cache = BlobCache(disk = BlobDiskStore(JsonDiskCache(dir)))
         cache.put("bc-1", "cHJlZmV0Y2hlZA==", byteArrayOf(1), partial = true)
         cache.keep("bc-1", "d2hvbGU=", byteArrayOf(2))
         cache.notePrefetched("bc-1", listOf("cHJlZmV0Y2hlZA==", "d2hvbGU="))
         val next = BlobCache(disk = BlobDiskStore(JsonDiskCache(dir)))
-        // Only the whole copy made it to disk; the partial one is named only once it is held again.
-        assertThat(next.read("bc-1", "d2hvbGU=")!!.bytes).isEqualTo(byteArrayOf(2))
-        assertThat(next.read("bc-1", "cHJlZmV0Y2hlZA==")).isNull()
-        assertThat(next.heldIds("bc-1")).containsExactly("d2hvbGU=")
+        // The whole copy reads back whole; the prefetched one reads back as what it is, partial, never as a whole copy.
+        assertThat(next.read("bc-1", "d2hvbGU=")!!.let { it.bytes.toList() to it.partial }).isEqualTo(listOf<Byte>(2) to false)
+        assertThat(next.read("bc-1", "cHJlZmV0Y2hlZA==")!!.let { it.bytes.toList() to it.partial }).isEqualTo(listOf<Byte>(1) to true)
+        assertThat(next.heldIds("bc-1")).containsExactly("cHJlZmV0Y2hlZA==", "d2hvbGU=").inOrder()
+        // Confirmed whole: the whole copy stands for the prefetched one from here.
         cache.confirm("bc-1", "cHJlZmV0Y2hlZA==")
         val third = BlobCache(disk = BlobDiskStore(JsonDiskCache(dir)))
+        assertThat(third.read("bc-1", "cHJlZmV0Y2hlZA==")!!.partial).isFalse()
         assertThat(third.heldIds("bc-1")).containsExactly("cHJlZmV0Y2hlZA==", "d2hvbGU=").inOrder()
     }
 

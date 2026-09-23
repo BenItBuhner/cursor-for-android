@@ -185,6 +185,13 @@ interface ConversationRecordApi {
      * live stream to hold.
      */
     suspend fun watch(agentId: String, since: LivePoint?, resume: Boolean): LiveWatch? = null
+
+    /**
+     * The turns [turns] names (whole-chat index to the turn's blob id) read from the blobs this device holds alone —
+     * memory, then the disk — never the network: a saved turn whose file is gone rebuilt before anything is painted
+     * (see `ConversationRepository.rebuiltFromHeldBlobs`). A piece not held leaves its turn short, not unreadable.
+     */
+    suspend fun heldTurns(agentId: String, turns: Map<Int, String>): List<HeadlessTurn> = emptyList()
 }
 
 /**
@@ -273,6 +280,35 @@ class HeadlessConversationApi(
     }
 
     override suspend fun watch(agentId: String, since: LivePoint?, resume: Boolean): LiveWatch = states.watch(agentId, since, resume)
+
+    override suspend fun heldTurns(agentId: String, turns: Map<Int, String>): List<HeadlessTurn> = coroutineScope {
+        turns.entries.sortedBy { it.key }.map { (index, id) ->
+            async {
+                val counter = BlobRecord.Counter()
+                val read = BlobRecord.read(index, id, heldSource(agentId, counter), TurnPlan.FULL)
+                HeadlessTurn(
+                    index, read.steps, counter.blobs.get(), counter.prefetched.get(),
+                    blobId = id, complete = read.complete, stepTotal = read.stepTotal, messageSteps = read.messageSteps,
+                    asked = read.asked, missing = read.missing, lastMissing = read.lastMissing,
+                    unavailable = read.unavailable, lastUnavailable = read.lastUnavailable, readable = read.readable,
+                )
+            }
+        }.awaitAll()
+    }
+
+    /** A turn read's pieces from the cache alone (see [heldTurns]): one not held is left for later, as a failed piece is. */
+    private fun heldSource(agentId: String, counter: BlobRecord.Counter) = object : BlobRecord.Source {
+        override suspend fun blob(id: String, whole: Boolean): ByteArray {
+            counter.blobs.incrementAndGet()
+            val held = blobs.read(agentId, id)
+            if (held != null && !(whole && held.partial)) return held.bytes
+            throw java.io.IOException("Not held on this device: $id")
+        }
+
+        override suspend fun held(id: String): BlobCache.Held? = blobs.read(agentId, id)
+
+        override suspend fun confirm(id: String) = blobs.confirm(agentId, id)
+    }
 
     /**
      * The turns [from] until [from] + [limit], each from its blobs: the turn's structure, the user's message and

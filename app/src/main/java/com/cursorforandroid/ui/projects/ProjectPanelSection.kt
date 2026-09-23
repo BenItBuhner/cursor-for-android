@@ -1,7 +1,6 @@
 package com.cursorforandroid.ui.projects
 
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -17,37 +16,39 @@ import com.cursorforandroid.AppGraph
 import com.cursorforandroid.domain.AgentParentKind
 import com.cursorforandroid.domain.LocalAgentState
 import com.cursorforandroid.ui.components.CursorIcons
+import com.cursorforandroid.ui.panel.sectionRow
 
 /**
  * The Project section of a conversation's right-side panel — a Cursor Project's one surface in the app. For a
  * coordinator's chat: the Project's primaries with their live status and each one's menu, the coordinator's hands
  * (New primary, Adopt a chat, the icon and colour editor), its subagents and its shared context
- * ([ProjectSectionBody]). For a primary, side chat or subagent: the coordinator's chat it belongs to, a tap away.
+ * ([projectSection]). For a primary, side chat or subagent: the coordinator's chat it belongs to, a tap away.
  * Self-contained — it owns its view model, keyed on the chat, and attaches the Project's polling only while it is
  * on screen — so the panel needs nothing beyond the graph, a way to open a chat and a way to say what an action did.
+ * What it holds is composed here; it returns the section's rows, which the panel's list composes as they come on
+ * screen (see `PanelSection.items`).
  */
 @Composable
-fun ProjectPanelSection(
+fun projectPanelItems(
     graph: AppGraph,
     agentId: String,
     onOpenAgent: (String) -> Unit,
     onNotify: (String) -> Unit,
-    modifier: Modifier = Modifier,
-) {
+): LazyListScope.() -> Unit {
     val list by graph.agents.state.collectAsStateWithLifecycle()
     val agent = list.agents.firstOrNull { it.id == agentId }
+    if (agent != null && agent.looksLikeProject) return projectBodyItems(graph, agentId, onOpenAgent, onNotify)
     val parent = agent?.parent
-    when {
-        agent == null -> NoticeRow("This chat isn't loaded yet.", icon = CursorIcons.Clock)
-        agent.looksLikeProject -> ProjectPanelBody(graph, agentId, onOpenAgent, onNotify, modifier)
-        parent != null -> {
-            val root = list.agents.firstOrNull { it.id == parent.id }
-            val role = when (parent.kind) {
-                AgentParentKind.PROJECT_WORKER -> "A primary of"
-                AgentParentKind.SIDE_CHAT -> "A side chat of"
-                AgentParentKind.SUBAGENT -> "A subagent of"
-            }
-            Column(modifier.fillMaxWidth()) {
+    val root = parent?.let { p -> list.agents.firstOrNull { it.id == p.id } }
+    return {
+        when {
+            agent == null -> sectionRow("project-not-loaded") { NoticeRow("This chat isn't loaded yet.", icon = CursorIcons.Clock) }
+            parent != null -> sectionRow("project-coordinator-link") {
+                val role = when (parent.kind) {
+                    AgentParentKind.PROJECT_WORKER -> "A primary of"
+                    AgentParentKind.SIDE_CHAT -> "A side chat of"
+                    AgentParentKind.SUBAGENT -> "A subagent of"
+                }
                 ActionRow(
                     CursorIcons.project(root?.projectAppearance?.icon),
                     root?.name ?: "its Project",
@@ -57,13 +58,13 @@ fun ProjectPanelSection(
                     modifier = Modifier.testTag("project-coordinator-link"),
                 )
             }
+            else -> sectionRow("project-none") { NoticeRow("This chat isn't part of a Project.", icon = CursorIcons.Folder) }
         }
-        else -> NoticeRow("This chat isn't part of a Project.", icon = CursorIcons.Folder)
     }
 }
 
 @Composable
-private fun ProjectPanelBody(graph: AppGraph, projectId: String, onOpenAgent: (String) -> Unit, onNotify: (String) -> Unit, modifier: Modifier) {
+private fun projectBodyItems(graph: AppGraph, projectId: String, onOpenAgent: (String) -> Unit, onNotify: (String) -> Unit): LazyListScope.() -> Unit {
     val viewModel: ProjectViewModel = viewModel(key = "project-panel-$projectId", factory = ProjectViewModel.Factory(graph, projectId))
     val state by viewModel.state.collectAsStateWithLifecycle()
     val local by graph.prefs.localAgentState.collectAsStateWithLifecycle(initialValue = LocalAgentState())
@@ -100,7 +101,7 @@ private fun ProjectPanelBody(graph: AppGraph, projectId: String, onOpenAgent: (S
         onOpenContextFile = viewModel::openContextFile,
         onRefresh = { viewModel.refresh() },
     )
-    ProjectSectionBody(state, local, busy, actions, nowMillis = viewModel.now(), modifier = modifier)
+    // The sheets are windows of their own, so they sit here beside the list rather than in a row that can scroll away.
     when (val open = sheet) {
         null -> Unit
         ProjectSheet.NewWorker -> NewWorkerSheet(root = state.root, onLaunch = { prompt, name -> viewModel.createWorker(prompt, name, repoUrl = null, baseBranch = null) }, onDismiss = { sheet = null })
@@ -111,4 +112,6 @@ private fun ProjectPanelBody(graph: AppGraph, projectId: String, onOpenAgent: (S
         is ProjectSheet.Move -> MoveSheet(workerName = open.name, projects = otherProjects, onPick = { viewModel.reparent(open.agentId, it) }, onDismiss = { sheet = null })
     }
     contextFile?.let { file -> ContextFileSheet(file, onDismiss = viewModel::closeContextFile) }
+    val now = viewModel.now()
+    return { projectSection(state, local, busy, actions, nowMillis = now) }
 }

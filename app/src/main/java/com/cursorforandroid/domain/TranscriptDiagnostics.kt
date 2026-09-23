@@ -96,11 +96,16 @@ data class TranscriptLoadDiagnostics(
         val fallback: String?,
         val retried: Int = 0,
         val failed: Int = 0,
+        /** Saved turns rebuilt from the blobs on the phone because their files were gone (see `ConversationRepository.rebuiltFromHeldBlobs`). */
+        val rebuilt: Int = 0,
+        /** How long ago the account's word last confirmed the window current, or null when it never has (see `ConversationRepository.Entry.currentAt`). */
+        val currentAgoMs: Long? = null,
     ) {
         val text: String get() =
             "beta: engine=beta turns=$turns window=[$windowStart,$windowEnd) reused=$reused incomplete=$incomplete words=$words" +
                 " blobs fetched=$fetched/${fetchedBytes / 1024}KB memory=$memory disk=$disk prefetched=$prefetched missing=$missing retried=$retried failed=$failed memKb=$memoryKb" +
-                " firstPaintMs=${firstPaintMs ?: "-"} fullLoadMs=${fullLoadMs ?: "-"} fallback=${fallback?.let { "\"$it\"" } ?: "-"}"
+                " firstPaintMs=${firstPaintMs ?: "-"} fullLoadMs=${fullLoadMs ?: "-"} fallback=${fallback?.let { "\"$it\"" } ?: "-"}" +
+                " rebuilt=$rebuilt currentAgoMs=${currentAgoMs ?: "-"}"
     }
 
     /**

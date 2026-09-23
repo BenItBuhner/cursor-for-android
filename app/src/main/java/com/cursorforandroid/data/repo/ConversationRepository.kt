@@ -564,6 +564,17 @@ class ConversationRepository(
         /** The account's word on the open chat while it is at rest: a turn started elsewhere is read in (see [watchWhileOpen]). */
         var watchJob: Job? = null
         /**
+         * When the account's word last confirmed the Beta engine's window current (the app clock): a live stream held
+         * with nothing new to say, or a sync that found the chat at rest. A reopen or a return to the foreground
+         * within [CURRENT_FOR_MS] of it has nothing to read (see [isCurrent]).
+         */
+        var currentAt = 0L
+        /** Saved turns rebuilt from the blobs on this device when their files were gone (see [rebuiltFromHeldBlobs]), for the diagnostics. */
+        var rebuiltTurns = 0
+
+        /** The account's word confirmed the window current within [CURRENT_FOR_MS] of [now] (see [currentAt]). */
+        fun isCurrent(now: Long): Boolean = currentAt > 0L && now - currentAt in 0 until CURRENT_FOR_MS
+        /**
          * The story so far of the run [streamJob] is following, shown in place of the transcript it does not have
          * yet. The job owns it: it goes when following stops, and a snapshot from a job that is no longer the
          * follower is ignored. Left behind, it would keep standing in for a run that has since finished — hiding the
@@ -1469,17 +1480,7 @@ class ConversationRepository(
             olderRunsCursor = olderRunsCursor,
             // The window the reader had open, within reason: the next start renders it from disk before the network answers.
             window = window.coerceAtMost(keptTurns(recordWindow)),
-            record = recordWindow?.let { w ->
-                val kept = w.turns.takeLast(keptTurns(w))
-                CachedRecordWindow(
-                    total = w.total,
-                    firstStep = kept.firstOrNull()?.stepIndex ?: w.firstStep,
-                    turnCount = w.state?.turnCount ?: 0,
-                    turns = kept.map { CachedRecordTurn(it.stepIndex, it.stepCount, it.prompt, it.projectMode, it.errorMessage, blobId = it.blobId, complete = it.complete, stepTotal = it.stepTotal, messageSteps = it.messageSteps) },
-                    timings = w.state?.timings?.map { CachedTurnTiming(it.durationMs, it.timestampMs) } ?: emptyList(),
-                    turnIndexed = w.turnIndexed,
-                )
-            },
+            record = cachedRecord(),
             awaiting = awaiting.map { a ->
                 CachedAwaiting(
                     localId = a.staged.localId,
@@ -1497,6 +1498,23 @@ class ConversationRepository(
                 )
             },
         )
+
+        /** The record's window as the disk keeps it (see [CachedRecordWindow]); null with none. */
+        fun cachedRecord(): CachedRecordWindow? = recordWindow?.let { w ->
+            val kept = w.turns.takeLast(keptTurns(w))
+            CachedRecordWindow(
+                total = w.total,
+                firstStep = kept.firstOrNull()?.stepIndex ?: w.firstStep,
+                turnCount = w.state?.turnCount ?: 0,
+                turns = kept.map { CachedRecordTurn(it.stepIndex, it.stepCount, it.prompt, it.projectMode, it.errorMessage, blobId = it.blobId, complete = it.complete, stepTotal = it.stepTotal, messageSteps = it.messageSteps) },
+                timings = w.state?.timings?.map { CachedTurnTiming(it.durationMs, it.timestampMs) } ?: emptyList(),
+                turnIndexed = w.turnIndexed,
+                liveOffsetKey = w.state?.live?.offsetKey,
+                liveStatus = w.state?.live?.status,
+                rootProject = w.state?.isRootProject == true,
+                currentAtMillis = currentAt,
+            )
+        }
 
         /** Runs the placeholder of a prompt sent now must sort after, whatever the device clock says relative to the server's. */
         fun newestRunAt(): Long = (runs + local.map { it.run }).maxOfOrNull { parseIsoMillis(it.createdAt) } ?: 0L
@@ -1735,6 +1753,8 @@ class ConversationRepository(
                         fallback = load.fallback,
                         retried = spent.retried,
                         failed = spent.failed,
+                        rebuilt = e.rebuiltTurns,
+                        currentAgoMs = e.currentAt.takeIf { it > 0L }?.let { AppClock.now() - it },
                     )
                 },
                 status = run {
@@ -1793,7 +1813,12 @@ class ConversationRepository(
                     // A chat read under the other transcript engine (see [TranscriptEngine]) is read again whatever the
                     // clock says: the engine takes effect on the next open, and this is it.
                     val recordAllowed = record != null && !session.isDemo && capabilities().accountTranscript
-                    val fresh = synchronized(e) { e.fetched && e.hasInputs && AppClock.now() - e.fetchedAt < REOPEN_FRESH_MS && e.recordAllowedAtLoad == recordAllowed }
+                    // Under the Beta engine, a window the account's word has confirmed current since (a live stream
+                    // held with nothing new, a sync behind the screen) is as fresh as one read a moment ago.
+                    val fresh = synchronized(e) {
+                        val now = AppClock.now()
+                        e.fetched && e.hasInputs && e.recordAllowedAtLoad == recordAllowed && (now - e.fetchedAt < REOPEN_FRESH_MS || (recordAllowed && e.isCurrent(now)))
+                    }
                     if (fresh) reopen(e, agentId) else load(e, agentId)
                 }
             }
@@ -2086,6 +2111,8 @@ class ConversationRepository(
                 return
             }
             if (!force && AppClock.now() - e.fetchedAt < REVALIDATE_MIN_INTERVAL_MS) return
+            // Beta: confirmed current by the account's word since (see [Entry.currentAt]) — nothing to read.
+            if (!force && e.recordAllowedAtLoad == true && e.isCurrent(AppClock.now())) return
             e.loadJob = e.scope.launch { load(e, e.agentId) }
         }
     }
@@ -2359,6 +2386,12 @@ class ConversationRepository(
             e.publish(mutate = { recordWindow = null; recordError = null; recordRefusedUntil = 0L }, transform = { copy(recordFallback = null) })
         }
         val recordApi = record?.takeIf { recordEnabled && !synchronized(e) { e.recordEmpty } }
+        // Beta with no window in memory though the entry has inputs — the engine switched back from Stable, a
+        // fallback's pause over, a copy the documented path wrote: the saved window stands in from its own file, so
+        // the read below is the delta, not the whole window again. Not while a refusal's pause holds the record off.
+        if (recordApi != null && synchronized(e) { e.hasInputs && e.recordWindow == null && AppClock.now() >= e.recordRefusedUntil }) {
+            readBetaWindow(agentId)?.let { restoreRecordWindow(e, agentId, it) }
+        }
         // The run list's first page the record path read beside the record, handed on when the record was not served:
         // the documented path needs the same page, and the fallback should not cost the round trip twice.
         var handedRuns: Result<ListRunsResponseDto>? = null
@@ -3139,6 +3172,8 @@ class ConversationRepository(
                 if (outcome?.moved != true) {
                     // Parked, as the desktop's stream parks on these: nothing comes until the chat is asked again.
                     if (outcome != null && outcome.point.status in LivePoint.TERMINAL) return
+                    // Held with nothing new, the chat at rest: the window is current by the account's word.
+                    if (held && outcome?.point?.status == LivePoint.IDLE) synchronized(e) { e.currentAt = AppClock.now() }
                     delay(watchRetryDelay(++failures))
                     continue
                 }
@@ -3660,7 +3695,8 @@ class ConversationRepository(
     private suspend fun restoreFromCache(e: Entry, agentId: String) {
         // An entry that already has its inputs has nothing to restore.
         if (synchronized(e) { e.hasInputs || e.fetched }) return
-        val cached = readCache(agentId) ?: return
+        val betaSaved = readBetaWindow(agentId)
+        val cached = readCache(agentId) ?: betaSaved?.let { CachedConversation(agentId, messages = emptyList(), runs = emptyList(), window = it.turns.size) } ?: return
         // The inputs arrived while the file was being read: the memory copy wins.
         if (synchronized(e) { e.hasInputs || e.fetched }) return
         val latest = (cached.runs + cached.local.filter { it.waitsBehind == null }.map { saved -> saved.run }).maxByOrNull { parseIsoMillis(it.createdAt) }
@@ -3706,55 +3742,77 @@ class ConversationRepository(
         // The record's window (Extended mode): its turns' items come from their own files, one read per turn. Only
         // while the record is the transcript's source; with the mode off the documented copy below renders.
         // A saved window of the other record's kind (step-indexed, from before the blob-backed read) names other turns by its indices: the network reads afresh.
-        cached.record?.takeIf { it.turns.isNotEmpty() && record != null && !session.isDemo && capabilities().accountTranscript && it.turnIndexed == record.readsTurns }?.let { saved ->
-            val state = saved.turnCount.takeIf { it > 0 }?.let { count ->
-                RecordState(count, saved.timings.map { TurnTiming(it.durationMs, it.timestampMs) }, pendingToolCalls = 0, isRootProject = false, numPriorInteractionUpdates = 0L, rewindEpoch = 0L)
-            }
-            // The newest turns' files first — the ones the screen opens on — and the rest of the saved window behind
-            // them: a window of thirty turns is megabytes of JSON, and the reader should not wait on the twenty they
-            // have to scroll up to before the ten in front of them show their tool calls.
-            val newest = saved.turns.takeLast(WINDOW_RUNS)
-            val older = saved.turns.dropLast(newest.size)
-            var restored: RecordWindow? = null
-            fun publishRestored(turns: List<CachedRecordTurn>, files: Map<String, CachedTrace>, onlyOver: RecordWindow?) {
-                val built = turns.map { turn ->
-                    val items = files[RecordTurn.traceKey(turn.stepIndex, saved.turnIndexed)]?.items
-                    // A turn whose file is gone is not held: its blob id is not named, and the next read reads it again.
-                    RecordTurn(
-                        turn.stepIndex, turn.stepCount, turn.prompt, turn.projectMode, items ?: emptyList(), errorMessage = turn.errorMessage, turnIndexed = saved.turnIndexed,
-                        blobId = turn.blobId.takeIf { items != null }, complete = turn.complete && items != null, stepTotal = turn.stepTotal, messageSteps = turn.messageSteps,
-                    )
-                }
-                val window = RecordWindow(saved.total, built.first().stepIndex, built, emptyList(), state, readAtMillis = 0L, turnIndexed = saved.turnIndexed)
-                var project = false
-                e.publish(
-                    mutate = {
-                        // Only over what this restore put there: the network may have answered meanwhile, and its
-                        // window — built on the newest turns restored, the older ones read again — stands.
-                        if (onlyOver == null || recordWindow === onlyOver) {
-                            recordWindow = window
-                            restored = window
-                        }
-                        if (built.any { it.projectMode }) projectMode = true
-                        project = projectMode
-                    },
-                    transform = { copy(isProjectConversation = project) },
-                )
-            }
-            val newestFiles = readTraces(agentId, newest.map { RecordTurn.traceKey(it.stepIndex, saved.turnIndexed) })
-            publishRestored(newest, newestFiles, onlyOver = null)
-            if (older.isNotEmpty()) {
-                val olderFiles = readTraces(agentId, older.map { RecordTurn.traceKey(it.stepIndex, saved.turnIndexed) })
-                publishRestored(older + newest, olderFiles + newestFiles, onlyOver = restored)
-            }
-            // The turns the record holds without their steps: the traces their runs' logs gave last time, from disk.
-            val replayed = readTraces(agentId, e.shownRuns().map { it.id })
-            if (replayed.isNotEmpty()) e.publish(mutate = { traces = replayed.mapValues { it.value.items } + traces })
+        // The Beta engine's own copy of its window first (see [ConversationCache.readRecord]): the chat's file may have
+        // been written since without one.
+        (betaSaved ?: cached.record)?.takeIf { it.turns.isNotEmpty() && record != null && !session.isDemo && capabilities().accountTranscript && it.turnIndexed == record.readsTurns }?.let { saved ->
+            restoreRecordWindow(e, agentId, saved)
             return
         }
         // The window's traces come straight from their files — one small read per run, nothing of the older turns —
         // so the chat is whole, tool calls and payloads included, before the network has said a word. The newest
         // runs' files first, the rest of the window behind them, for the same reason as above.
+        restoreRunTraces(e, agentId)
+    }
+
+    /**
+     * The saved window of the account's record into the entry, each turn's items from its own file — the newest
+     * turns' first — a turn whose file is gone rebuilt from the blobs on this device (see [rebuiltFromHeldBlobs]).
+     */
+    private suspend fun restoreRecordWindow(e: Entry, agentId: String, saved: CachedRecordWindow) {
+        val state = saved.turnCount.takeIf { it > 0 }?.let { count ->
+            RecordState(
+                count, saved.timings.map { TurnTiming(it.durationMs, it.timestampMs) }, pendingToolCalls = 0, isRootProject = saved.rootProject, numPriorInteractionUpdates = 0L, rewindEpoch = 0L,
+                live = LivePoint(saved.liveOffsetKey, saved.liveStatus, count),
+            )
+        }
+        synchronized(e) { e.currentAt = maxOf(e.currentAt, saved.currentAtMillis) }
+        // The newest turns' files first — the ones the screen opens on — and the rest of the saved window behind
+        // them: a window of thirty turns is megabytes of JSON, and the reader should not wait on the twenty they
+        // have to scroll up to before the ten in front of them show their tool calls.
+        val newest = saved.turns.takeLast(WINDOW_RUNS)
+        val older = saved.turns.dropLast(newest.size)
+        var restored: RecordWindow? = null
+        suspend fun publishRestored(turns: List<CachedRecordTurn>, files: Map<String, CachedTrace>, onlyOver: RecordWindow?) {
+            val built = turns.map { turn ->
+                val items = files[RecordTurn.traceKey(turn.stepIndex, saved.turnIndexed)]?.items
+                // A turn whose file is gone keeps its blob id but is not held (not complete): it is rebuilt below
+                // from the blobs on this device, or else read again by the next load.
+                RecordTurn(
+                    turn.stepIndex, turn.stepCount, turn.prompt, turn.projectMode, items ?: emptyList(), errorMessage = turn.errorMessage, turnIndexed = saved.turnIndexed,
+                    blobId = turn.blobId, complete = turn.complete && items != null, stepTotal = turn.stepTotal, messageSteps = turn.messageSteps,
+                )
+            }
+            val unbuilt = turns.filter { it.blobId != null && files[RecordTurn.traceKey(it.stepIndex, saved.turnIndexed)] == null }
+            val window = RecordWindow(saved.total, built.first().stepIndex, built, emptyList(), state, readAtMillis = 0L, turnIndexed = saved.turnIndexed)
+                .let { w -> if (unbuilt.isEmpty()) w else rebuiltFromHeldBlobs(e, w, unbuilt.associate { it.stepIndex to it.blobId!! }) }
+            var project = false
+            e.publish(
+                mutate = {
+                    // Only over what this restore put there: the network may have answered meanwhile, and its
+                    // window — built on the newest turns restored, the older ones read again — stands.
+                    if (onlyOver == null || recordWindow === onlyOver) {
+                        recordWindow = window
+                        restored = window
+                    }
+                    if (built.any { it.projectMode }) projectMode = true
+                    project = projectMode
+                },
+                transform = { copy(isProjectConversation = project) },
+            )
+        }
+        val newestFiles = readTraces(agentId, newest.map { RecordTurn.traceKey(it.stepIndex, saved.turnIndexed) })
+        publishRestored(newest, newestFiles, onlyOver = null)
+        if (older.isNotEmpty()) {
+            val olderFiles = readTraces(agentId, older.map { RecordTurn.traceKey(it.stepIndex, saved.turnIndexed) })
+            publishRestored(older + newest, olderFiles + newestFiles, onlyOver = restored)
+        }
+        // The turns the record holds without their steps: the traces their runs' logs gave last time, from disk.
+        val replayed = readTraces(agentId, e.shownRuns().map { it.id })
+        if (replayed.isNotEmpty()) e.publish(mutate = { traces = replayed.mapValues { it.value.items } + traces })
+    }
+
+    /** The traces of the window's finished runs from their files, the newest runs' first (see [restoreFromCache]). */
+    private suspend fun restoreRunTraces(e: Entry, agentId: String) {
         val shown = e.shownRuns().filter { it.statusEnum().isTerminal }
         val newestRuns = shown.takeLast(WINDOW_RUNS)
         val olderRuns = shown.dropLast(newestRuns.size)
@@ -3769,6 +3827,28 @@ class ConversationRepository(
                 staleTraces += saved.filterValues { isStaleTrace(it.items) }.keys
             })
         }
+    }
+
+    /**
+     * [window] with the turns [turns] names (whole-chat index to blob id) rebuilt from the blobs this device holds —
+     * memory, then the disk — and never the network (see [ConversationRecordApi.heldTurns]): a saved turn whose file
+     * is gone, evicted or written by a build whose format this one does not read, painted whole before the network
+     * has said a word rather than blank until the whole window is read again. A turn whose pieces are not all held
+     * shows what is, and the next read completes it.
+     */
+    private suspend fun rebuiltFromHeldBlobs(e: Entry, window: RecordWindow, turns: Map<Int, String>): RecordWindow {
+        val api = record ?: return window
+        val held = runCatching { api.heldTurns(e.agentId, turns) }.getOrElse { t -> if (t is CancellationException) throw t; emptyList() }
+            .filter { it.readable && it.steps.isNotEmpty() }
+        if (held.isEmpty()) return window
+        synchronized(e) { e.rebuiltTurns += held.size }
+        val raw = RecordPager.Raw(held.flatMap { it.steps }, held.first().index, window.total, turnIndexed = true, turns = held)
+        val rebuilt = RecordTranscript.completed(window, raw, AppClock.now(), turnBuilder(e.agentId, images?.forAgent(e.agentId)))
+        // Their files again, so the next start paints them straight from disk.
+        val indices = held.mapTo(HashSet()) { it.index }
+        val now = AppClock.now()
+        writeTraces(e.agentId, rebuilt.turns.filter { it.stepIndex in indices }.map { turn -> CachedTrace(turn.traceKey, now - (rebuilt.total - turn.stepIndex), turn.items) })
+        return rebuilt
     }
 
     /** One network call of [kind] for the chat's counters (see [TranscriptPerf]). */
@@ -3811,7 +3891,17 @@ class ConversationRepository(
         if (backend.isDemo) return
         val snapshot = synchronized(e) { if (e.hasInputs || e.local.isNotEmpty()) e.toCached() else null } ?: return
         store.write(snapshot, tokens.conversations)
+        // The Beta engine's window to its own file too (see [ConversationCache.readRecord]): a later write of the
+        // chat without it — the documented path's — leaves this one standing for the next Beta open.
+        snapshot.record?.takeIf { it.turnIndexed && it.turns.isNotEmpty() }?.let { store.writeRecord(snapshot.agentId, it, tokens.conversations) }
         diskIndex[snapshot.agentId] = snapshot.agentUpdatedAtMillis
+    }
+
+    /** The Beta engine's saved window of the chat (see [ConversationCache.readRecord]); null under Stable, in the demo, or with none. */
+    private suspend fun readBetaWindow(agentId: String): CachedRecordWindow? {
+        val api = record ?: return null
+        if (session.isDemo || !api.readsTurns || !capabilities().accountTranscript) return null
+        return cache?.readRecord(agentId)?.takeIf { it.turnIndexed && it.turns.isNotEmpty() }
     }
 
     private suspend fun writeTrace(agentId: String, runId: String, createdAtMillis: Long, items: List<TimelineItem>, tokens: CacheTokens = cacheTokens()) =
@@ -5046,6 +5136,9 @@ class ConversationRepository(
         val backend = session.current
         val tokens = cacheTokens()
         val api = backend.api
+        // The Beta engine keeps its chats current from the account's record (see LiveSync): the documented warm-up
+        // would read each chat's whole `/v0` transcript, and write a copy of the chat without its record window.
+        if (record != null && capabilities().accountTranscript) return
         for (agent in candidates) {
             if (!isForeground()) return
             if (isFresh(agent)) continue
@@ -5152,6 +5245,8 @@ class ConversationRepository(
         const val RECORD_DRIFT_RETRY_MS = 10 * 60_000L
         /** Re-reads of the record made by themselves after it fell back on the server's failure (see [recordFallBack]). */
         const val MAX_SERVER_ERROR_REREADS = 2
+        /** How long the account's word keeps a Beta window current for a reopen or a return to the foreground (see [Entry.currentAt]). */
+        const val CURRENT_FOR_MS = 30_000L
         /** How often the account's list entry of an open chat at rest is asked for its status (see [watchWhileOpen]): "within a few seconds". */
         const val WATCH_POLL_MS = 4_000L
         /** The least time between two reads a watch sets off: a burst of the stream's updates is one change. */
