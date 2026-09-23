@@ -9,6 +9,8 @@ import androidx.compose.material3.LocalRippleConfiguration
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import androidx.compose.ui.test.onNodeWithContentDescription
+import androidx.compose.ui.test.performClick
 import androidx.core.graphics.Insets
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
@@ -40,8 +42,8 @@ import java.util.TimeZone
 /**
  * A chat's header under a 24dp status bar, in the demo's chat with a pull request and in its Project's coordinator
  * chat, dark and light: back, the pull request where there is one, the panel and the menu in a 40dp row, and the
- * transcript from right under it. Same device qualifiers as [AppScreenshotTest]; written to `screenshots/` and
- * compared pixel for pixel in CI.
+ * transcript from right under it; and the chat's menu open, dark. Same device qualifiers as [AppScreenshotTest];
+ * written to `screenshots/` and compared pixel for pixel in CI.
  */
 @RunWith(AndroidJUnit4::class)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
@@ -109,13 +111,17 @@ class ChatHeaderScreenshotTest {
     private fun onScreen(text: String) = compose.onAllNodes(hasText(text, substring = true)).fetchSemanticsNodes().isNotEmpty()
 
     /** The finished run's trace spliced in, by the frame's word (see [AppScreenshotTest.tabletTwoPane]). */
-    private fun chat(mode: ThemeMode, name: String) {
+    private fun chat(mode: ThemeMode, name: String, menuOpen: Boolean = false) {
         val (graph, id) = show(mode, agentName = "Revenue Scaling Pipeline Research")
         compose.waitUntil(60_000) {
             val state = graph.conversations.state(id).value
             state.items.any { it is ActivityGroup } && state.traceStatus.pending == 0 && !onScreen("Loading the activity") && onScreen("1 thought")
         }
         compose.waitForIdle()
+        if (menuOpen) {
+            compose.onNodeWithContentDescription("More").performClick()
+            compose.waitForIdle()
+        }
         captureScreenRoboImage(File(outDir, "$name.png").path, RoborazziOptions())
     }
 
@@ -134,6 +140,9 @@ class ChatHeaderScreenshotTest {
 
     @Test
     fun chatLight() = chat(ThemeMode.Light, "128_slim_header_chat_light")
+
+    @Test
+    fun chatMenuDark() = chat(ThemeMode.Dark, "196_chat_menu_dark", menuOpen = true)
 
     @Test
     fun projectDark() = project(ThemeMode.Dark, "129_slim_header_project_dark")
