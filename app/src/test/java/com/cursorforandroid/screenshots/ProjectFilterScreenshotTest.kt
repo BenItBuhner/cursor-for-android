@@ -250,7 +250,8 @@ class ProjectFilterScreenshotTest {
         val archivedToo = AgentListOrganizer.organize(agents, ListPreferences(statuses = StatusFilter.entries.toSet()), local, nowMillis = NOW, knownRoots = registry, memberCounts = counts)
             .first { it.key == AgentListOrganizer.PROJECTS_KEY }.rows
         assertThat(archivedToo.map { it.agent.name }).contains("Q3 launch retro")
-        show(AgentListUiState(sections = sections, allAgents = agents, prefs = prefs, local = local, hasLoaded = true, nowMillis = NOW))
+        // Every one of the eight listed, not the first five.
+        show(AgentListUiState(sections = sections, allAgents = agents, prefs = prefs, local = local, hasLoaded = true, nowMillis = NOW, shortenLongGroups = false))
         compose.waitUntil(10_000) { compose.onAllNodesWithText("Rust rewrite spike").fetchSemanticsNodes().isNotEmpty() }
         capture("58_sidebar_all_projects")
     }
