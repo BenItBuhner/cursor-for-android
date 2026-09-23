@@ -152,10 +152,13 @@ fun Sidebar(
     drafts: List<DraftRow> = emptyList(),
     /** Which long groups are listing every row; the shell's, so leaving the sidebar can cut them back (see [SidebarShortLists]). */
     shortLists: SidebarShortLists = remember { SidebarShortLists() },
+    /** Bumped by the shell when something outside asks for the search field (the widget's search button): each bump opens it. */
+    searchRequests: Int = 0,
 ) {
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
     var searching by rememberSaveable { mutableStateOf(false) }
+    LaunchedEffect(searchRequests) { if (searchRequests > 0) searching = true }
     // The field owns what is typed. [state.query] is the organized list's copy, computed off the main thread, and
     // feeding it back here put the cursor at the start of the box on every keystroke — the next character then
     // inserted on the left, so a search could not be typed. Closing still clears both.

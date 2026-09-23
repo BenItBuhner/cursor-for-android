@@ -6,6 +6,7 @@ import android.content.Intent
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.core.net.toUri
+import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.glance.GlanceId
@@ -16,6 +17,7 @@ import androidx.glance.appwidget.GlanceAppWidgetReceiver
 import androidx.glance.appwidget.SizeMode
 import androidx.glance.appwidget.action.ActionCallback
 import androidx.glance.appwidget.provideContent
+import androidx.glance.appwidget.state.getAppWidgetState
 import androidx.glance.appwidget.state.updateAppWidgetState
 import androidx.glance.currentState
 import androidx.glance.state.GlanceStateDefinition
@@ -23,14 +25,19 @@ import androidx.glance.state.PreferencesGlanceStateDefinition
 import com.cursorforandroid.MainActivity
 import com.cursorforandroid.appGraph
 import com.cursorforandroid.data.api.CursorEndpoints
+import com.cursorforandroid.domain.ChatsWidgetSettings
+import com.cursorforandroid.domain.WidgetAppearance
+import com.cursorforandroid.domain.WidgetLayout
 import com.cursorforandroid.domain.WidgetMode
+import com.cursorforandroid.domain.WidgetTheme
 import com.cursorforandroid.ui.theme.ThemeMode
 import com.cursorforandroid.util.AppClock
 import kotlinx.coroutines.flow.first
 
 /**
- * The "Chats" home-screen widget: recent, running or pinned chats as sidebar rows. What it lists is per instance,
- * kept in the widget's own preferences under [MODE_KEY]; the rows come from the same repository, filters and pins
+ * The "Chats" home-screen widget: recent, running, pinned or one Project's chats as sidebar rows. What it lists and
+ * how it looks is per instance ([ChatsWidgetSettings], kept in the widget's own preferences under [SETTINGS_KEY]);
+ * the rows come from the same repository, filters and pins
  * the app renders, restored from disk first so a fresh process shows the last known list at once, and re-rendered
  * by [WidgetSync] whenever any of that changes while the app is alive.
  *
@@ -43,8 +50,8 @@ class ChatsWidget : GlanceAppWidget() {
 
     override val stateDefinition: GlanceStateDefinition<*> = PreferencesGlanceStateDefinition
 
-    /** One layout for every size: the header keeps its height and the list takes whatever is left. */
-    override val sizeMode: SizeMode = SizeMode.Single
+    /** One arrangement per cell size ([WidgetSizes]); the launcher shows the largest that fits without a render. */
+    override val sizeMode: SizeMode = SizeMode.Responsive(WidgetSizes.all)
 
     override suspend fun provideGlance(context: Context, id: GlanceId) {
         val graph = context.appGraph
@@ -55,26 +62,32 @@ class ChatsWidget : GlanceAppWidget() {
         val initial = snapshots.first()
         val appWidgetId = GlanceAppWidgetManager(context).getAppWidgetId(id)
         provideContent {
-            val mode = WidgetMode.parse(currentState(MODE_KEY))
+            val settings = WidgetSettingsState.read(currentState())
             val refreshing = WidgetRefresh.isRefreshing(currentState(REFRESHING_SINCE_KEY), AppClock.now())
             // Keeps following the repository for as long as the render session lives (a refresh landing behind a
             // cache-first render, a run finishing); after that, WidgetSync starts a new one.
             val snapshot by snapshots.collectAsState(initial)
-            ChatsWidgetContent(snapshot, mode, appWidgetId, refreshing)
+            ChatsWidgetContent(snapshot, settings, appWidgetId, refreshing)
         }
     }
 
     /**
      * The launcher's live preview (Android 15+): the widget with sample rows. Follows the system theme like the
-     * picker around it does, and reads nothing of the account — it has to work before the app was ever opened.
+     * picker around it does, and reads nothing of the account — it has to work before the app was ever opened. The
+     * arrangement is pinned to the 4x2 one: the picker composes the preview at the smallest responsive size, and a
+     * one-line preview in a 4x2 box says nothing about the widget.
      */
     override suspend fun providePreview(context: Context, widgetCategory: Int) {
-        provideContent { ChatsWidgetContent(WidgetData.sample(ThemeMode.System), WidgetMode.Default, AppWidgetManager.INVALID_APPWIDGET_ID) }
+        val settings = ChatsWidgetSettings(layout = WidgetLayout.Medium, appearance = WidgetAppearance(theme = WidgetTheme.System))
+        provideContent { ChatsWidgetContent(WidgetData.sample(ThemeMode.System), settings, AppWidgetManager.INVALID_APPWIDGET_ID) }
     }
 
     companion object {
-        /** The [WidgetMode] name of one widget instance. */
+        /** The [WidgetMode] name of one widget instance, as builds before [SETTINGS_KEY] kept it; read as a fallback. */
         val MODE_KEY = stringPreferencesKey("mode")
+
+        /** One widget instance's [ChatsWidgetSettings], as JSON. */
+        val SETTINGS_KEY = stringPreferencesKey("settings")
 
         /**
          * When this instance's refresh button was last tapped and the page it asked for has not landed yet; absent
@@ -82,6 +95,21 @@ class ChatsWidget : GlanceAppWidget() {
          * button's place.
          */
         val REFRESHING_SINCE_KEY = longPreferencesKey("refreshing_since")
+    }
+}
+
+/** One widget's settings in its Glance state: the JSON under [ChatsWidget.SETTINGS_KEY], else what an older build kept. */
+object WidgetSettingsState {
+    fun read(prefs: Preferences): ChatsWidgetSettings =
+        prefs[ChatsWidget.SETTINGS_KEY]?.let { ChatsWidgetSettings.decode(it) } ?: ChatsWidgetSettings.fromLegacyMode(prefs[ChatsWidget.MODE_KEY])
+
+    suspend fun read(context: Context, id: GlanceId): ChatsWidgetSettings = read(getAppWidgetState(context, PreferencesGlanceStateDefinition, id))
+
+    suspend fun write(context: Context, id: GlanceId, settings: ChatsWidgetSettings) {
+        updateAppWidgetState(context, id) {
+            it[ChatsWidget.SETTINGS_KEY] = settings.encode()
+            it[ChatsWidget.MODE_KEY] = settings.mode.name
+        }
     }
 }
 
@@ -139,6 +167,10 @@ internal object WidgetIntents {
 
     fun newChat(context: Context): Intent =
         Intent(context, MainActivity::class.java).setAction(MainActivity.ACTION_NEW_CHAT).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+
+    /** The sidebar with its search field open and focused. */
+    fun search(context: Context): Intent =
+        Intent(context, MainActivity::class.java).setAction(MainActivity.ACTION_SEARCH).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
 
     /** Reopens the placement-time choice for one widget; the data URI keeps each widget's intent its own. */
     fun configure(context: Context, appWidgetId: Int): Intent =

@@ -16,6 +16,9 @@ import androidx.glance.appwidget.ExperimentalGlanceRemoteViewsApi
 import androidx.glance.appwidget.GlanceRemoteViews
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.cursorforandroid.domain.ChatsWidgetSettings
+import com.cursorforandroid.domain.CornerAction
+import com.cursorforandroid.domain.CornerStyle
 import com.cursorforandroid.domain.WidgetMode
 import com.cursorforandroid.ui.theme.ThemeMode
 import com.google.common.truth.Truth.assertThat
@@ -43,7 +46,7 @@ class WidgetIndicatorTest {
 
     @Test
     fun `a running row's glyph is a frame animation a ProgressBar plays`() {
-        val host = render(WidgetData.sample(ThemeMode.Dark, now), WidgetMode.Running, refreshing = false)
+        val host = render(WidgetData.sample(ThemeMode.Dark, now), ChatsWidgetSettings(mode = WidgetMode.Running), refreshing = false)
 
         val glyphs = host.rowViews().flatMap { it.progressBars() }
         assertThat(glyphs).isNotEmpty()
@@ -58,10 +61,10 @@ class WidgetIndicatorTest {
 
     @Test
     fun `the header holds no spinner at rest and one while its refresh runs`() {
-        val atRest = render(WidgetData.sample(ThemeMode.Dark, now), WidgetMode.Recent, refreshing = false)
+        val atRest = render(WidgetData.sample(ThemeMode.Dark, now), ChatsWidgetSettings(), refreshing = false)
         assertThat(atRest.headerProgressBars()).isEmpty()
 
-        val refreshing = render(WidgetData.sample(ThemeMode.Dark, now), WidgetMode.Recent, refreshing = true)
+        val refreshing = render(WidgetData.sample(ThemeMode.Dark, now), ChatsWidgetSettings(), refreshing = true)
         val spinners = refreshing.headerProgressBars()
         assertThat(spinners).hasSize(1)
         assertThat(spinners.single().isIndeterminate).isTrue()
@@ -71,19 +74,43 @@ class WidgetIndicatorTest {
     fun `an empty list that is being fetched says so instead of asking for the app`() {
         val snapshot = WidgetData.sample(ThemeMode.Dark, now).copy(agents = emptyList(), hasLoaded = false)
 
-        val waiting = render(snapshot, WidgetMode.Recent, refreshing = true)
+        val waiting = render(snapshot, ChatsWidgetSettings(), refreshing = true)
         assertThat(waiting.texts()).contains("Loading chats…")
 
-        val idle = render(snapshot, WidgetMode.Recent, refreshing = false)
+        val idle = render(snapshot, ChatsWidgetSettings(), refreshing = false)
         assertThat(idle.texts()).contains("Open Cursor to load your chats")
+    }
+
+    /** The corner button stands for its action, so the header drops the flat button for the same one. */
+    @Test
+    fun `the corner button takes its action out of the header`() {
+        val sample = WidgetData.sample(ThemeMode.Dark, now)
+        val newChatCorner = render(sample, ChatsWidgetSettings(cornerAction = CornerAction.NewChat), refreshing = false)
+        assertThat(newChatCorner.descriptions()).containsExactly("Cursor", "Choose what the widget lists", "Refresh", "New chat").inOrder()
+
+        val refreshCorner = render(sample, ChatsWidgetSettings(cornerAction = CornerAction.Refresh), refreshing = false)
+        assertThat(refreshCorner.descriptions()).containsExactly("Cursor", "Choose what the widget lists", "New chat", "Refresh").inOrder()
+
+        val none = render(sample, ChatsWidgetSettings(cornerAction = CornerAction.None), refreshing = false)
+        assertThat(none.descriptions()).containsExactly("Cursor", "Choose what the widget lists", "Refresh", "New chat").inOrder()
+        assertThat(none.headerProgressBars()).isEmpty()
+    }
+
+    /** A refresh asked for from the corner button turns that button, not the header, into the spinner. */
+    @Test
+    fun `a corner refresh button spins while its refresh runs`() {
+        val sample = WidgetData.sample(ThemeMode.Dark, now)
+        val spinning = render(sample, ChatsWidgetSettings(cornerAction = CornerAction.Refresh, cornerStyle = CornerStyle.Glass), refreshing = true)
+        assertThat(spinning.headerProgressBars()).hasSize(1)
+        assertThat(spinning.descriptions()).doesNotContain("Refresh")
     }
 
     /** The Glance composition to RemoteViews, the RemoteViews to views under a widget host, as a launcher does it. */
     @OptIn(ExperimentalGlanceRemoteViewsApi::class)
-    private fun render(snapshot: WidgetSnapshot, mode: WidgetMode, refreshing: Boolean): AppWidgetHostView {
+    private fun render(snapshot: WidgetSnapshot, settings: ChatsWidgetSettings, refreshing: Boolean): AppWidgetHostView {
         val size = DpSize(320.dp, 158.dp)
         val remoteViews = runBlocking {
-            GlanceRemoteViews().compose(app, size) { ChatsWidgetContent(snapshot, mode, AppWidgetManager.INVALID_APPWIDGET_ID, refreshing, now) }.remoteViews
+            GlanceRemoteViews().compose(app, size) { ChatsWidgetContent(snapshot, settings, AppWidgetManager.INVALID_APPWIDGET_ID, refreshing, now) }.remoteViews
         }
         val activity = Robolectric.buildActivity(ComponentActivity::class.java).setup().get()
         val density = activity.resources.displayMetrics.density
@@ -111,6 +138,12 @@ class WidgetIndicatorTest {
     private fun View.progressBars(): List<ProgressBar> = descendants().filterIsInstance<ProgressBar>()
 
     private fun View.texts(): List<String> = descendants().filterIsInstance<android.widget.TextView>().map { it.text.toString() }
+
+    /** The content descriptions outside the list, in layout order: the header's controls and the corner button. */
+    private fun AppWidgetHostView.descriptions(): List<String> {
+        val list = descendants().filterIsInstance<AbsListView>().singleOrNull()
+        return descendants().filter { list == null || !list.descendants().contains(it) }.mapNotNull { it.contentDescription?.toString() }
+    }
 
     private fun View.descendants(): List<View> = listOf(this) + if (this is ViewGroup) (0 until childCount).flatMap { getChildAt(it).descendants() } else emptyList()
 }

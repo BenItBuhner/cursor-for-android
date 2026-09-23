@@ -60,7 +60,7 @@ class StretchViewTest {
         payload = ToolPayload.WorkerAction(ToolPayload.WorkerAction.Kind.Created, listOf(WorkerStatus(agentId = "bc-w2", name = "Stripe webhook handler")), text = "Handle the webhooks.", title = "Stripe webhook handler"),
     )
 
-    /** A coordinator's turn: a note, a thought, a message to a worker and an edit before its update; then the worker it created and the footer. */
+    /** A coordinator's turn: a note, a thought and an edit; then a message to a worker, its update, the worker it created and the footer. */
     private val items: List<TimelineItem> = listOf(
         UserMessage("u1", "Where do we stand?"),
         AssistantMessage("a1", "Checking the board before answering."),
@@ -68,8 +68,8 @@ class StretchViewTest {
             "g1",
             listOf(
                 ThinkingBlock("The aggregation landed; check the webhook handler."),
-                ToolCall("c1", "send_to_agent", ToolKind.Coordinator, "completed", "bc-w1", payload = ToolPayload.WorkerAction(ToolPayload.WorkerAction.Kind.Messaged, listOf(WorkerStatus(agentId = "bc-w1", name = "Usage events aggregation")), text = "Rebase onto main.", note = "Delivered as followup")),
                 ToolCall("c3", "edit_file", ToolKind.Edit, "completed", "notes.md", detail = "notes.md", linesAdded = 2, linesRemoved = 1),
+                ToolCall("c1", "send_to_agent", ToolKind.Coordinator, "completed", "bc-w1", payload = ToolPayload.WorkerAction(ToolPayload.WorkerAction.Kind.Messaged, listOf(WorkerStatus(agentId = "bc-w1", name = "Usage events aggregation")), text = "Rebase onto main.", note = "Delivered as followup")),
                 update,
                 created,
             ),
@@ -78,31 +78,31 @@ class StretchViewTest {
     )
 
     @Test
-    fun `closed, a stretch is one line, open, it is the sequence verbatim, and the message and the card stand outside`() {
+    fun `closed, a stretch is one line, open, it is the sequence verbatim, and the message and the subagents stand outside`() {
         val rows = TranscriptRows.of(items, coordinatorMode = true)
-        assertThat(rows.map { it::class.simpleName }).containsExactly("Item", "Stretch", "Message", "Worker", "Stretch").inOrder()
+        assertThat(rows.map { it::class.simpleName }).containsExactly("Item", "Stretch", "Subagent", "Message", "Subagent", "Stretch").inOrder()
         show(rows)
         // The summary alone: nothing of the sequence is on screen.
         compose.onNodeWithText("1 edit").assertIsDisplayed()
-        compose.onNodeWithText("1 agent · 1 thought · 1 note").assertIsDisplayed()
+        compose.onNodeWithText("1 thought · 1 note").assertIsDisplayed()
         assertThat(compose.onAllNodesWithText("Checking the board before answering.").fetchSemanticsNodes()).isEmpty()
         assertThat(compose.onAllNodesWithText("The aggregation landed; check the webhook handler.").fetchSemanticsNodes()).isEmpty()
         assertThat(compose.onAllNodesWithText("Edited").fetchSemanticsNodes()).isEmpty()
-        // The update and the worker's card are rows of their own, visible whatever the stretch does.
+        // The update and each subagent row stand on their own, visible whatever the stretch does.
         compose.onNodeWithText("merged", substring = true).assertIsDisplayed()
-        compose.onNodeWithTag("worker-card").assertIsDisplayed()
+        compose.onNodeWithText("Agent follow-up").assertIsDisplayed()
+        compose.onNodeWithText("Stripe webhook handler").assertIsDisplayed()
+        assertThat(compose.onAllNodes(hasTestTag("subagent-row")).fetchSemanticsNodes()).hasSize(2)
         assertThat(compose.onAllNodesWithText("Coordinator").fetchSemanticsNodes()).isEmpty()
-        // The footer after the card is a stretch of one entry: drawn as the footer.
+        // The footer after them is a stretch of one entry: drawn as the footer.
         compose.onNodeWithText("Worked").assertIsDisplayed()
         compose.onNodeWithText("1m 48s").assertIsDisplayed()
 
-        // Open: the note, the thought, the row to the worker and the edit's line, in order, each as it always was.
+        // Open: the note, the thought and the edit's line, in order, each as it always was.
         compose.onNodeWithText("1 edit").performClick()
         compose.onNodeWithTag("stretch-steps", useUnmergedTree = true).assertIsDisplayed()
         compose.onNodeWithText("Checking the board before answering.").assertIsDisplayed()
         compose.onNodeWithText("The aggregation landed; check the webhook handler.").assertIsDisplayed()
-        compose.onNodeWithText("Messaged").assertIsDisplayed()
-        compose.onNodeWithText("Usage events aggregation").assertIsDisplayed()
         compose.onNodeWithText("Edited").assertIsDisplayed()
         compose.onNodeWithText("notes.md").assertIsDisplayed()
         // The edits' line counts sit on the summary and on the edit's own line.

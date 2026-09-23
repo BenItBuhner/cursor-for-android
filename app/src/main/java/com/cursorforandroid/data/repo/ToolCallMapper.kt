@@ -4,6 +4,7 @@ import com.cursorforandroid.data.api.dto.SseToolCallDto
 import com.cursorforandroid.domain.CoordinatorLineage
 import com.cursorforandroid.domain.DiffStats
 import com.cursorforandroid.domain.GoalStatus
+import com.cursorforandroid.domain.SubagentRows
 import com.cursorforandroid.domain.ToolCall
 import com.cursorforandroid.domain.ToolKind
 import com.cursorforandroid.domain.ToolLabels
@@ -173,7 +174,12 @@ object ToolCallMapper {
             }
             // "Updated goal complete": the status asked for, in plain words.
             ToolPayload.GoalChange.Action.Update -> Description(GoalStatus.parse(args?.get("status"))?.name?.lowercase().orEmpty(), kind)
-            null -> Description("", kind)
+            // "Updated progress Wiring the payloads": the step an agent announced, which its parent's row reads as its status.
+            null -> if (SubagentRows.isStepUpdate(name)) {
+                Description(truncate(args.string(listOf("currentStep", "current_step", "step"))?.lineSequence()?.firstOrNull()?.trim().orEmpty(), PROMPT_MAX), kind)
+            } else {
+                Description("", kind)
+            }
         }
     }
 
