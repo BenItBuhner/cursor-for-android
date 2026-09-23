@@ -181,6 +181,12 @@ data class TranscriptLoadDiagnostics(
         val fallback: FallbackLine? = null,
         /** How the record is read: `turns` (the blob-backed record, `GetLatestAgentConversationState` + `GetBlobForAgentKV`) or `steps` (`FetchBackgroundComposer`). */
         val read: String = "steps",
+        /** The failure behind [error] as it was thrown, its class and its own words: a resolver's reason, a reset, the server's code. */
+        val cause: String? = null,
+        /** Whether the phone said it had a network (see `DeviceNetwork`): null when it cannot tell. */
+        val online: Boolean? = null,
+        /** The last load could not reach Cursor, and the chat reads itself again once it can (see `ConversationRepository.Entry.unreached`). */
+        val unreached: Boolean = false,
     )
 
     /**
@@ -316,7 +322,12 @@ object TranscriptDiagnostics {
         )
         load.pairing?.let { appendLine(it.text) }
         load.record?.let { r ->
-            appendLine("record: read=${r.read} total=${r.total} firstStep=${r.firstStep} turnsLoaded=${r.turnsLoaded} turnCount=${r.turnCount ?: "-"} state=${if (r.stateRead) "read" else "-"} empty=${r.empty}" + (r.error?.let { " error=\"${redact(it)}\"" } ?: "") + (r.fallback?.let { " ${it.text}" } ?: ""))
+            appendLine(
+                "record: read=${r.read} total=${r.total} firstStep=${r.firstStep} turnsLoaded=${r.turnsLoaded} turnCount=${r.turnCount ?: "-"} state=${if (r.stateRead) "read" else "-"} empty=${r.empty}" +
+                    (r.error?.let { " error=\"${redact(it)}\"" } ?: "") +
+                    (r.cause?.let { " cause=\"${redact(it)}\" online=${r.online ?: "-"} unreached=${r.unreached}" } ?: "") +
+                    (r.fallback?.let { " ${it.text}" } ?: ""),
+            )
         }
         load.beta?.let { appendLine(it.copy(fallback = it.fallback?.let(::redact)).text) }
         load.status?.let { st ->

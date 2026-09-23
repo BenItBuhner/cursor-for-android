@@ -96,20 +96,38 @@ class FaultRig(
     recordWaits: ServerRetry.Waits = ServerRetry.Waits(),
     /** How many chats a list refresh warms (production: 6; see `ConversationRepository.schedulePrefetch`). Off by default here. */
     prefetchLimit: Int = 0,
+    /** HTTP/2 to a [FaultServer] made with `http2`, as the phone speaks to both of Cursor's hosts: one connection per client, multiplexed. */
+    http2: Boolean = false,
 ) : AutoCloseable {
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     var now: Long = 1_800_000_000_000L
     val context: Context = ApplicationProvider.getApplicationContext()
     private val key = { "fault-key" }
 
+    /** Name lookups the clients made: one each time a connection is opened. */
+    val dnsLookups = java.util.concurrent.atomic.AtomicInteger()
+    /** While set, every name lookup fails with these words, as a resolver that will not answer fails one on the phone. */
+    @Volatile var dnsFailure: String? = null
+    // The host answers at two addresses, as api.cursor.com does: a request that fails on one has another route
+    // to try, which is when OkHttp's own retry of a request comes into play (see OneShotWritesInterceptor).
+    private val dns = object : Dns {
+        override fun lookup(hostname: String): List<java.net.InetAddress> {
+            dnsLookups.incrementAndGet()
+            dnsFailure?.let { throw java.net.UnknownHostException(it) }
+            return Dns.SYSTEM.lookup(hostname).let { it + it }
+        }
+    }
+    /** As production resolves Cursor's hosts (see `LastGoodDns`), over this rig's own lookups. */
+    val lastGoodDns = com.cursorforandroid.data.api.LastGoodDns(system = dns)
+    private val protocols = if (http2) listOf(okhttp3.Protocol.H2_PRIOR_KNOWLEDGE) else listOf(okhttp3.Protocol.HTTP_2, okhttp3.Protocol.HTTP_1_1)
+
     val client: OkHttpClient = CursorApiFactory.okHttp(key).newBuilder()
         .connectTimeout(connectTimeoutMs, TimeUnit.MILLISECONDS)
         .readTimeout(readTimeoutMs, TimeUnit.MILLISECONDS)
         .writeTimeout(readTimeoutMs, TimeUnit.MILLISECONDS)
         .callTimeout(60, TimeUnit.SECONDS)
-        // The host answers at two addresses, as api.cursor.com does: a request that fails on one has another route
-        // to try, which is when OkHttp's own retry of a request comes into play (see OneShotWritesInterceptor).
-        .dns(object : Dns { override fun lookup(hostname: String) = Dns.SYSTEM.lookup(hostname).let { it + it } })
+        .dns(lastGoodDns)
+        .protocols(protocols)
         .build()
     val api: CursorApi = CursorApiFactory.retrofit(client, baseUrl)
     val streamer = SseRunStreamer(
@@ -138,7 +156,8 @@ class FaultRig(
         .readTimeout(readTimeoutMs, TimeUnit.MILLISECONDS)
         .writeTimeout(readTimeoutMs, TimeUnit.MILLISECONDS)
         .callTimeout(60, TimeUnit.SECONDS)
-        .dns(object : Dns { override fun lookup(hostname: String) = Dns.SYSTEM.lookup(hostname).let { it + it } })
+        .dns(lastGoodDns)
+        .protocols(protocols)
         .build()
         // As `AppGraph` widens the record's client: the blobs are read several at a time.
         .also { it.dispatcher.maxRequestsPerHost = maxOf(it.dispatcher.maxRequestsPerHost, HeadlessConversationApi.BLOB_PARALLELISM + 2) }

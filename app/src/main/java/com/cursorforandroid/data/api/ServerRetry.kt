@@ -38,7 +38,9 @@ object ServerRetry {
                 if (!isTransient(t) || attempt >= delaysMs.size) throw t
                 val base = delaysMs[attempt]
                 val jittered = base + (Random.nextDouble(-0.25, 0.25) * base).toLong()
-                val wait = maxOf(jittered, (t as? ConnectRpcException)?.retryAfterMillis ?: 0L).coerceAtMost(MAX_WAIT_MS)
+                // A failed lookup asked again sooner is answered from Android's cache of the failure, not the resolver.
+                val floor = if (t is java.net.UnknownHostException) LOOKUP_RETRY_MS else 0L
+                val wait = maxOf(jittered, (t as? ConnectRpcException)?.retryAfterMillis ?: 0L, floor).coerceAtMost(MAX_WAIT_MS)
                 attempt++
                 onRetry(attempt, t, wait)
                 delay(wait)
@@ -65,6 +67,12 @@ object ServerRetry {
 
     /** The longest one wait is, whatever `Retry-After` asks. */
     const val MAX_WAIT_MS = 30_000L
+
+    /**
+     * The least wait after a failed name lookup: Android keeps a failed lookup for two seconds (libcore's
+     * `AddressCache`), and an attempt within them fails from the cache without the resolver being asked.
+     */
+    const val LOOKUP_RETRY_MS = 2_500L
 
     /** Connect codes that say the server failed or is overloaded, not that the request was wrong. */
     private val TRANSIENT_CODES = setOf("unavailable", "deadline_exceeded", "internal", "unknown", "aborted")
