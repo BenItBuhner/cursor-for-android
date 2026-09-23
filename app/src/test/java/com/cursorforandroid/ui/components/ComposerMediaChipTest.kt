@@ -113,7 +113,7 @@ class ComposerMediaChipTest {
 
         // The middle of the pasted picture: opens, out of the tile, its thumbnail the first frame.
         chips[0].performTouchInput { click(dp(24f, 36f)) }
-        compose.waitUntil(10_000) { viewer.isOpen }
+        compose.waitUntil(10_000) { compose.waitForIdle(); viewer.isOpen }
         assertThat(viewer.current!!.kind).isEqualTo(MediaEntry.Kind.Image)
         assertThat(viewer.current!!.src).startsWith("file:")
         assertThat(viewer.current!!.src).contains("composer-media")
@@ -128,7 +128,7 @@ class ComposerMediaChipTest {
 
         // Near the top-end corner but past the target's reach (34dp in, 26dp down: inside the tile, below the 20dp target): opens.
         chips[0].performTouchInput { click(dp(34f, 26f)) }
-        compose.waitUntil(10_000) { viewer.isOpen }
+        compose.waitUntil(10_000) { compose.waitForIdle(); viewer.isOpen }
         assertThat(removedImages).isEmpty()
         viewer.finishClose()
 
@@ -144,13 +144,13 @@ class ComposerMediaChipTest {
         assertThat(viewer.isOpen).isFalse()
         // Just past the target's reach into the tile (2dp outside it on both axes): opens.
         chips[0].performTouchInput { click(dp(38f, 22f)) }
-        compose.waitUntil(10_000) { viewer.isOpen }
+        compose.waitUntil(10_000) { compose.waitForIdle(); viewer.isOpen }
         assertThat(removedImages).hasSize(2)
         viewer.finishClose()
 
         // The recording's tile opens the viewer on the recording, playing.
         chips[2].performTouchInput { click(dp(24f, 36f)) }
-        compose.waitUntil(10_000) { viewer.isOpen }
+        compose.waitUntil(10_000) { compose.waitForIdle(); viewer.isOpen }
         assertThat(viewer.current!!.kind).isEqualTo(MediaEntry.Kind.Video)
         assertThat(viewer.current!!.durationMs).isEqualTo(12_000L)
         assertThat(viewer.session!!.autoplay).isTrue()

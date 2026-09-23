@@ -94,6 +94,11 @@ fun MediaViewerHost(
     autoHideControlsMillis: Long? = AutoHideMillis,
     content: @Composable () -> Unit,
 ) {
+    val preloadScope = rememberCoroutineScope()
+    DisposableEffect(state, loader, preloadScope) {
+        state.preloads = ViewerPreloads(loader, preloadScope) { state.hostCoordinates?.takeIf { it.isAttached }?.size ?: IntSize.Zero }
+        onDispose { state.preloads = null }
+    }
     Box(modifier.fillMaxSize().onGloballyPositioned { state.hostCoordinates = it }) {
         CompositionLocalProvider(LocalMediaViewer provides state) { content() }
         val session = state.session
@@ -326,6 +331,7 @@ private fun MediaViewerOverlay(state: MediaViewerState, session: MediaViewerStat
                 presentations[page] = presentation
                 onDispose { if (presentations[page] === presentation) presentations.remove(page) }
             }
+            LaunchedEffect(presentation, presentation.previous) { presentation.playUpgrade() }
             val isCurrent = page == state.currentIndex
             when (entry.kind) {
                 MediaEntry.Kind.Image -> ImagePage(state, session, entry, page, presentation, environment, viewport, isCurrent)
@@ -389,8 +395,9 @@ private fun MediaViewerOverlay(state: MediaViewerState, session: MediaViewerStat
 /**
  * Draws the picture on its way: at [MediaViewerState.progress] 0 it fills the thumbnail's box, clipped to the box's
  * rounded corners; at 1 it is the page, wherever the page rests or was dragged to. Without a thumbnail it scales up
- * from (or down to) a little under the page's size while fading. One `drawImage` under a transform per frame, and
- * nothing recomposes for it.
+ * from (or down to) a little under the page's size while fading. A sharper picture landing on the way is faded in
+ * over the one it replaces ([PagePresentation.previous]), both in the same box. One or two `drawImage`s under a
+ * transform per frame, and nothing recomposes for it.
  */
 @Composable
 private fun TransformLayer(state: MediaViewerState, frames: TransformFrames, dismiss: DismissState, modifier: Modifier = Modifier) {
@@ -398,7 +405,10 @@ private fun TransformLayer(state: MediaViewerState, frames: TransformFrames, dis
     Spacer(
         modifier.drawBehind {
             val progress = state.progress.value
-            val bitmap = frames.source()?.bitmap ?: frames.fallbackBitmap
+            val presentation = frames.source()
+            val bitmap = presentation?.bitmap ?: frames.fallbackBitmap
+            val upgrade = presentation?.upgrade ?: 1f
+            val previous = presentation?.previous?.takeIf { upgrade < 1f }
             val imageSize = bitmap?.let { IntSize(it.width, it.height) } ?: frames.fallbackSize
             if (imageSize.width <= 0 || imageSize.height <= 0) return@drawBehind
             // Before the viewer's own size is measured the layer's is the viewport: the page's rest is known from it.
@@ -416,8 +426,13 @@ private fun TransformLayer(state: MediaViewerState, frames: TransformFrames, dis
             if (bitmap == null) return@drawBehind
             val draw: () -> Unit = {
                 translate(frame.image.left, frame.image.top) {
+                    if (previous != null) {
+                        scale(frame.image.width / previous.width, frame.image.height / previous.height, pivot = Offset.Zero) {
+                            drawImage(previous, alpha = alpha)
+                        }
+                    }
                     scale(frame.image.width / imageSize.width, frame.image.height / imageSize.height, pivot = Offset.Zero) {
-                        drawImage(bitmap, alpha = alpha)
+                        drawImage(bitmap, alpha = if (previous != null) alpha * upgrade else alpha)
                     }
                 }
             }

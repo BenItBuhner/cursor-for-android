@@ -9,6 +9,7 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -19,6 +20,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.cursorforandroid.data.media.MediaLoader
 import com.cursorforandroid.domain.PromptFileKind
+import com.cursorforandroid.ui.media.LocalMediaViewer
 import java.io.File
 
 /**
@@ -87,7 +89,15 @@ fun ComposerAttachments(
     val mediaItems = remember(images, files, uploads) {
         images.map { ComposerMediaItem.of(it) } + files.filter { it.isMedia }.map { ComposerMediaItem.of(it, uploads[it.id]) }
     }
-    val open = rememberOpenComposerMedia(mediaItems, previews, agentId)
+    // A sound stays a chip, and opens the viewer's player out of it.
+    val sounds = remember(files) { files.filter { !it.isMedia && it.file.kind == PromptFileKind.Audio }.associate { it.id to ComposerMediaItem.of(it, null) } }
+    val openable = mediaItems + sounds.values
+    val opener = rememberComposerMediaOpener(mediaItems, openable, previews, agentId)
+    // Every copy the viewer can page to is written as soon as its tile is shown, so a page reached by a swipe never
+    // finds its file missing; keyed by what is attached, not by an upload's progress.
+    if (LocalMediaViewer.current != null) {
+        LaunchedEffect(openable.map { it.id }) { runCatching { previews.ensureAll(openable) } }
+    }
     val imageById = remember(images) { images.associateBy { it.id } }
     val fileById = remember(files) { files.associateBy { it.id } }
     AttachmentCarousel(modifier, state = state, surface = surface, verticalAlignment = Alignment.Bottom) {
@@ -98,21 +108,21 @@ fun ComposerAttachments(
             val shown = if (preview != null) ComposerMediaItem(item.id, item.bytes, item.mimeType, item.name, preview.first ?: item.thumbnail, item.isVideo, preview.second ?: item.durationMs, item.upload) else item
             MediaChip(
                 shown,
-                onOpen = { slot -> open(shown, slot) },
+                onOpen = { slot -> opener.open(shown, slot) },
                 onRemove = { imageById[item.id]?.let(onRemoveImage) ?: file?.let(onRemoveFile) },
                 onRetry = if (file != null && onRetryFile != null) ({ onRetryFile(file) }) else null,
                 src = previews.src(item.id, item.mimeType),
+                onPress = { opener.warm(shown) },
             )
         }
         items(files.filterNot { it.isMedia }, key = { "file:${it.id}" }) { file ->
-            // A sound stays a chip, and opens the viewer's player out of it.
-            val sound = remember(file) { if (file.file.kind == PromptFileKind.Audio) ComposerMediaItem.of(file, null) else null }
+            val sound = sounds[file.id]
             FileChip(
                 file,
                 upload = uploads[file.id],
                 onRemove = { onRemoveFile(file) },
                 onRetry = onRetryFile?.let { retry -> { retry(file) } },
-                onOpen = sound?.let { item -> { slot -> open(item, slot) } },
+                onOpen = sound?.let { item -> { slot -> opener.open(item, slot) } },
                 openSrc = sound?.let { previews.src(it.id, it.mimeType) },
             )
         }

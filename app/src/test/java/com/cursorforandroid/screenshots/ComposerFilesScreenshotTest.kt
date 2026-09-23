@@ -2,7 +2,10 @@ package com.cursorforandroid.screenshots
 
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.Canvas
 import android.graphics.Color as AndroidColor
+import android.graphics.Paint
+import android.net.Uri
 import androidx.activity.ComponentActivity
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -25,6 +28,7 @@ import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollToIndex
+import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.unit.dp
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -34,6 +38,7 @@ import com.cursorforandroid.domain.PromptFile
 import com.cursorforandroid.domain.PromptImage
 import com.cursorforandroid.domain.UserMessage
 import com.cursorforandroid.ui.components.ComposerBox
+import com.cursorforandroid.ui.components.ComposerMediaPreviews
 import com.cursorforandroid.ui.components.ComposerMenuActions
 import com.cursorforandroid.ui.components.FileUploadState
 import com.cursorforandroid.ui.components.PendingAttachment
@@ -43,7 +48,9 @@ import com.cursorforandroid.ui.conversation.OutgoingStatus
 import com.cursorforandroid.ui.conversation.TimelineItemView
 import com.cursorforandroid.ui.conversation.TranscriptControls
 import com.cursorforandroid.ui.media.FakeVideoPlayer
+import com.cursorforandroid.ui.media.MediaEntry
 import com.cursorforandroid.ui.media.MediaViewerState
+import com.cursorforandroid.ui.media.UpgradeFadeMillis
 import com.cursorforandroid.ui.media.ViewerFixtures
 import com.cursorforandroid.ui.media.ViewerScene
 import com.cursorforandroid.ui.theme.CursorTheme
@@ -51,6 +58,7 @@ import com.cursorforandroid.ui.theme.ThemeMode
 import com.github.takahirom.roborazzi.RoborazziOptions
 import com.github.takahirom.roborazzi.captureRoboImage
 import com.github.takahirom.roborazzi.captureScreenRoboImage
+import kotlinx.coroutines.CompletableDeferred
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -137,15 +145,8 @@ class ComposerFilesScreenshotTest {
         compose.onNodeWithTag("scene").captureRoboImage(File(outDir, "78_composer_file_chips.png").path, RoborazziOptions())
     }
 
-    /**
-     * A tap on a tile opens the picture in the app's viewer, out of the tile: the page grown from the tile's box with
-     * the scrim coming in behind it (a frame in, and halfway), the page open, and — on dismiss — halfway back into the
-     * tile. The same transform the transcript's pictures ride (see MediaViewerScreenshotTest).
-     */
-    @Test
-    fun composerMediaOpensInViewer() {
-        val state = MediaViewerState(null)
-        val still = PendingAttachment.of(PromptImage(swatch(720, 1600, AndroidColor.rgb(52, 120, 246)), "image/png"), id = "img-open")
+    /** The composer over the app's viewer, [still] the row's first tile, ahead of a picked picture, a recording and a PDF. */
+    private fun composerOverViewer(state: MediaViewerState, still: PendingAttachment) {
         compose.setContent {
             ViewerScene(state, ViewerFixtures.loader(), entries = emptyList(), playerFactory = { FakeVideoPlayer() }) {
                 Column(Modifier.fillMaxSize().background(CursorTheme.colors.canvas).padding(16.dp), verticalArrangement = Arrangement.Bottom) {
@@ -167,10 +168,82 @@ class ComposerFilesScreenshotTest {
             }
         }
         compose.waitForIdle()
-        // The copy the viewer reads is written on the tap; the open follows. Frozen a frame in, then halfway.
-        compose.onAllNodesWithTag("media-tile")[0].performClick()
-        compose.waitUntil(10_000) { state.phase == MediaViewerState.Phase.Opening }
+    }
+
+    private fun srcOf(still: PendingAttachment): String =
+        ComposerMediaPreviews(File(compose.activity.cacheDir, "composer-media")).src(still.id, still.image.mimeType)
+
+    /**
+     * A press on the first tile, held (the clock stopped, so it is not a long press) until the page's screen-sized
+     * decode the press started has landed, then let go: the open grows out of that picture, the same way every run.
+     * Waits drain the main looper, which the open's hop back from writing the copies goes through.
+     */
+    private fun pressAndOpen(state: MediaViewerState, still: PendingAttachment) {
+        val src = srcOf(still)
+        val tile = compose.onAllNodesWithTag("media-tile")[0]
         compose.mainClock.autoAdvance = false
+        tile.performTouchInput { down(center) }
+        compose.waitUntil(10_000) { compose.waitForIdle(); state.preloaded(src)?.isDone == true }
+        tile.performTouchInput { up() }
+        compose.waitUntil(10_000) { compose.waitForIdle(); state.phase == MediaViewerState.Phase.Opening }
+    }
+
+    /**
+     * A picture with the detail a screenshot has — a title bar, rows of small text, hairline rules, a chart — where a
+     * thumbnail grown to the screen shows as blur. The bytes of a PNG, the size of a phone's screenshot.
+     */
+    private fun uiShot(): ByteArray {
+        val width = 1080
+        val height = 2340
+        val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bitmap)
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+        canvas.drawColor(AndroidColor.rgb(246, 247, 249))
+        paint.color = AndroidColor.rgb(31, 111, 235)
+        canvas.drawRect(0f, 0f, width.toFloat(), 220f, paint)
+        paint.color = AndroidColor.WHITE
+        paint.textSize = 56f
+        canvas.drawText("Checkout · Order summary", 48f, 150f, paint)
+        for (row in 0 until 12) {
+            val top = 260f + row * 140f
+            paint.color = AndroidColor.rgb(28, 32, 38)
+            paint.textSize = 40f
+            canvas.drawText("Line item ${row + 1} — Pro plan, annual seat", 48f, top + 60f, paint)
+            paint.color = AndroidColor.rgb(98, 106, 118)
+            paint.textSize = 30f
+            canvas.drawText("SKU CUR-${1000 + row * 37} · qty ${row % 3 + 1} · \$${(row + 3) * 12}.00 · renews Sep 23", 48f, top + 108f, paint)
+            paint.color = AndroidColor.rgb(210, 214, 222)
+            canvas.drawRect(48f, top + 132f, width - 48f, top + 134f, paint)
+        }
+        val chartTop = 1980f
+        paint.color = AndroidColor.rgb(222, 226, 232)
+        for (line in 0..6) canvas.drawRect(48f, chartTop + line * 50f, width - 48f, chartTop + line * 50f + 1f, paint)
+        paint.color = AndroidColor.rgb(31, 111, 235)
+        paint.strokeWidth = 3f
+        var x = 48f
+        var y = chartTop + 250f
+        for (step in 1..24) {
+            val nx = 48f + step * (width - 96f) / 24
+            val ny = chartTop + 250f - (step * 9 % 220) - step * 3
+            canvas.drawLine(x, y, nx, ny, paint)
+            x = nx
+            y = ny
+        }
+        return ByteArrayOutputStream().also { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }.toByteArray()
+    }
+
+    /**
+     * A tap on a tile opens the picture in the app's viewer, out of the tile: the page grown from the tile's box with
+     * the scrim coming in behind it (a frame in, and halfway), the page open, and — on dismiss — halfway back into the
+     * tile. The same transform the transcript's pictures ride (see MediaViewerScreenshotTest).
+     */
+    @Test
+    fun composerMediaOpensInViewer() {
+        val state = MediaViewerState(null)
+        val still = PendingAttachment.of(PromptImage(swatch(720, 1600, AndroidColor.rgb(52, 120, 246)), "image/png"), id = "img-open")
+        composerOverViewer(state, still)
+        // Frozen a frame in, then halfway.
+        pressAndOpen(state, still)
         compose.mainClock.advanceTimeByFrame()
         compose.mainClock.advanceTimeByFrame()
         compose.waitForIdle()
@@ -180,8 +253,8 @@ class ComposerFilesScreenshotTest {
         check(state.phase == MediaViewerState.Phase.Opening) { "the transform should still be running, was ${state.phase}" }
         compose.onRoot().captureRoboImage(File(outDir, "118_composer_media_open_mid.png").path, RoborazziOptions())
         compose.mainClock.autoAdvance = true
-        compose.waitUntil(10_000) { state.phase == MediaViewerState.Phase.Open }
-        compose.waitUntil(10_000) { compose.onAllNodesWithTag("viewer-image-0").fetchSemanticsNodes().isNotEmpty() }
+        compose.waitUntil(10_000) { compose.waitForIdle(); state.phase == MediaViewerState.Phase.Open }
+        compose.waitUntil(10_000) { compose.waitForIdle(); compose.onAllNodesWithTag("viewer-image-0").fetchSemanticsNodes().isNotEmpty() }
         compose.waitForIdle()
         compose.onRoot().captureRoboImage(File(outDir, "119_composer_media_open.png").path, RoborazziOptions())
         // Dismissed: halfway back into the tile it came from. The close is picked up by the host's effect on the
@@ -198,7 +271,63 @@ class ComposerFilesScreenshotTest {
         check(state.phase == MediaViewerState.Phase.Closing) { "the close should still be running, was ${state.phase}" }
         compose.onRoot().captureRoboImage(File(outDir, "120_composer_media_close_mid.png").path, RoborazziOptions())
         compose.mainClock.autoAdvance = true
-        compose.waitUntil(10_000) { state.phase == MediaViewerState.Phase.Closed }
+        compose.waitUntil(10_000) { compose.waitForIdle(); state.phase == MediaViewerState.Phase.Closed }
+    }
+
+    /**
+     * The open of a screenshot-like picture, sharp all the way: a press started the page's screen-sized decode, and
+     * the transform grows that picture out of the tile — three frames in, six (the picture near half the screen,
+     * where a tile-sized thumbnail was blur), and the page open on the same pixels.
+     */
+    @Test
+    fun composerMediaOpensSharp() {
+        val state = MediaViewerState(null)
+        val shot = PendingAttachment.of(PromptImage(uiShot(), "image/png"), id = "img-shot")
+        composerOverViewer(state, shot)
+        pressAndOpen(state, shot)
+        check(state.session!!.seen === state.preloaded(srcOf(shot))!!.bitmap) { "the open should start on the press's decode" }
+        repeat(3) { compose.mainClock.advanceTimeByFrame() }
+        compose.waitForIdle()
+        compose.onRoot().captureRoboImage(File(outDir, "215_composer_media_sharp_open_frame3.png").path, RoborazziOptions())
+        repeat(3) { compose.mainClock.advanceTimeByFrame() }
+        compose.waitForIdle()
+        check(state.phase == MediaViewerState.Phase.Opening) { "the transform should still be running, was ${state.phase}" }
+        compose.onRoot().captureRoboImage(File(outDir, "216_composer_media_sharp_open_frame6.png").path, RoborazziOptions())
+        compose.mainClock.autoAdvance = true
+        compose.waitUntil(10_000) { compose.waitForIdle(); state.phase == MediaViewerState.Phase.Open }
+        compose.waitForIdle()
+        compose.onRoot().captureRoboImage(File(outDir, "217_composer_media_sharp_open.png").path, RoborazziOptions())
+    }
+
+    /**
+     * The tap beating the decode: the open starts on the tile's own picture — decoded at half the screen for these
+     * frames — and the screen-sized one, held here until two frames in, fades in over it inside the transform.
+     */
+    @Test
+    fun composerMediaUpgradesMidOpen() {
+        val state = MediaViewerState(null)
+        val shot = PendingAttachment.of(PromptImage(uiShot(), "image/png"), id = "img-shot-late")
+        composerOverViewer(state, shot)
+        val src = srcOf(shot)
+        compose.waitUntil(10_000) { compose.waitForIdle(); File(Uri.parse(src).path!!).isFile }
+        val gate = CompletableDeferred<Unit>()
+        compose.runOnIdle { state.preload(MediaEntry(src, MediaEntry.Kind.Image), "bc-1") { gate.await() } }
+        compose.mainClock.autoAdvance = false
+        compose.onAllNodesWithTag("media-tile")[0].performClick()
+        compose.waitUntil(10_000) { compose.waitForIdle(); state.phase == MediaViewerState.Phase.Opening }
+        check(state.session!!.seen === shot.thumbnail) { "the open should start on the tile's picture" }
+        repeat(2) { compose.mainClock.advanceTimeByFrame() }
+        compose.waitForIdle()
+        compose.onRoot().captureRoboImage(File(outDir, "218_composer_media_open_on_tile_picture.png").path, RoborazziOptions())
+        gate.complete(Unit)
+        compose.waitUntil(10_000) { compose.waitForIdle(); state.preloaded(src)?.isDone == true }
+        compose.mainClock.advanceTimeByFrame()
+        compose.mainClock.advanceTimeBy(UpgradeFadeMillis / 2L)
+        compose.waitForIdle()
+        check(state.phase == MediaViewerState.Phase.Opening) { "the fade should land inside the transform, was ${state.phase}" }
+        compose.onRoot().captureRoboImage(File(outDir, "219_composer_media_upgrade_mid_open.png").path, RoborazziOptions())
+        compose.mainClock.autoAdvance = true
+        compose.waitUntil(10_000) { compose.waitForIdle(); state.phase == MediaViewerState.Phase.Open }
     }
 
     /**

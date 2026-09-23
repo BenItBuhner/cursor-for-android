@@ -1,6 +1,9 @@
 package com.cursorforandroid.ui.media
 
 import android.view.TextureView
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.animate
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.core.withInfiniteAnimationFrameMillis
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -24,6 +27,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
@@ -34,6 +38,7 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
@@ -52,6 +57,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
@@ -73,6 +79,7 @@ import com.cursorforandroid.ui.theme.CursorTheme
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.first
+import kotlin.math.roundToInt
 
 /**
  * What one page has to show and where: the best picture it has so far (the thumbnail's decode, then the
@@ -107,10 +114,33 @@ internal class PagePresentation(initial: ImageBitmap?) {
 
     val imageSize: IntSize get() = bitmap?.let { IntSize(it.width, it.height) } ?: IntSize.Zero
 
-    /** A decode arrived: kept if it is sharper than what is shown. */
+    /** The picture [bitmap] replaced, drawn under it while it fades in; null once the fade is over, or with nothing to fade from. */
+    var previous by mutableStateOf<ImageBitmap?>(null)
+        private set
+    /** How far [bitmap] has faded in over [previous], 0 to 1; read in draw and layer blocks, so the fade recomposes nothing. */
+    var upgrade by mutableFloatStateOf(1f)
+        private set
+
+    /**
+     * A decode arrived: kept if it is at least as sharp as what is shown. A sharper one fades in over the picture it
+     * replaces ([previous], [upgrade]) — on the page, and in the transform when it lands mid-open — rather than
+     * snapping; one arriving mid-fade takes the fading one's place.
+     */
     fun offer(candidate: ImageBitmap) {
         val current = bitmap
-        if (current == null || candidate.width >= current.width) bitmap = candidate
+        if (current != null && candidate.width < current.width) return
+        if (current != null && candidate.width > current.width && previous == null) {
+            previous = current
+            upgrade = 0f
+        }
+        bitmap = candidate
+    }
+
+    /** Plays the fade [offer] began, then lets the picture it replaced go; nothing to do without one. */
+    suspend fun playUpgrade() {
+        if (previous == null) return
+        animate(upgrade, 1f, animationSpec = tween(UpgradeFadeMillis, easing = LinearEasing)) { value, _ -> upgrade = value }
+        previous = null
     }
 
     /** Where the picture is drawn right now, zoom, pan and any dismiss drag included. */
@@ -168,6 +198,19 @@ internal fun ImagePage(
         // turns a portrait viewport into a landscape one asks for the wider decode a wide picture then needs.
         val have = presentation.bitmap
         if (presentation.loaded && have != null && (have.width >= target.width || have.height >= target.height)) return@LaunchedEffect
+        // The decode a press on the thumbnail started ahead of the open lands whenever it does, the transform
+        // included: that is what it is for, and it fades in over the thumbnail's picture there instead of swapping.
+        // Made for this viewport, it is this page's full decode.
+        val early = state.preloaded(entry.src)?.takeIf { !wake && presentation.attempt == 0 }
+        if (early != null) {
+            early.await()?.let { bitmap ->
+                presentation.offer(bitmap)
+                if (early.viewport == viewport) {
+                    presentation.loaded = true
+                    return@LaunchedEffect
+                }
+            }
+        }
         // Nothing lands on a page while the transform runs: a decode arriving then is a bitmap swap and a re-layout
         // mid-animation — on the page opening, or on a neighbour no one can see yet — for a difference no one sees
         // at that size, the thumbnail's own decode being bounded by the screen's short edge already. The decodes
@@ -239,6 +282,7 @@ internal fun ImagePage(
                     modifier = Modifier
                         .size(with(density) { fitted.width.toDp() }, with(density) { fitted.height.toDp() })
                         .pageTransform(state, page, zoom, environment.dismiss, isCurrent)
+                        .upgradeFade(presentation)
                         .testTag("viewer-image-$page"),
                 )
             }
@@ -267,6 +311,26 @@ private fun Modifier.pageTransform(state: MediaViewerState, page: Int, zoom: Zoo
 }
 
 /**
+ * The page's side of [PagePresentation.offer]'s fade: the picture being replaced drawn under the new one, fitted and
+ * centred as the node's own `ContentScale.Fit` draws the new one (a picture's node is its fitted rect already, a
+ * poster's is the page), which fades in over it in its own layer. Both read at draw time; at rest it is a layer at
+ * full alpha and nothing under it.
+ */
+private fun Modifier.upgradeFade(presentation: PagePresentation): Modifier =
+    drawBehind {
+        val previous = presentation.previous ?: return@drawBehind
+        if (presentation.upgrade >= 1f || previous.width <= 0 || previous.height <= 0) return@drawBehind
+        val fit = minOf(size.width / previous.width, size.height / previous.height)
+        val width = (previous.width * fit).roundToInt()
+        val height = (previous.height * fit).roundToInt()
+        drawImage(
+            previous,
+            dstOffset = IntOffset(((size.width - width) / 2).roundToInt(), ((size.height - height) / 2).roundToInt()),
+            dstSize = IntSize(width, height),
+        )
+    }.graphicsLayer { alpha = if (presentation.previous != null) presentation.upgrade else 1f }
+
+/**
  * A recording: its poster (the thumbnail's frame, or one probed from the file) until the player has drawn its
  * first frame on the texture underneath, then the video at the same fitted rect. The player exists only while
  * this is the page on screen — a swipe away releases it, a swipe back prepares it again — and pauses whenever
@@ -285,11 +349,18 @@ internal fun VideoPage(
 ) {
     val density = LocalDensity.current
     val ref = remember(entry.src, session.agentId) { MediaRef.parse(entry.src, session.agentId) }
+    // The poster at the viewport's size, faded in over a smaller one (the tile's) wherever it lands, the transform
+    // included; the one a press started ahead of the open first. A poster that already reaches the viewport on
+    // either axis is as sharp as the page shows it. Over the network a thumbnail is poster enough: the player is
+    // about to read the same file, and a second reader of it would only slow the first frame.
     LaunchedEffect(ref, viewport) {
-        if (presentation.bitmap == null && viewport.width > 0) {
-            val maxPx = maxOf(viewport.width, viewport.height)
-            runCatching { environment.loader.videoPoster(ref, maxPx) }.getOrNull()?.frame?.let { presentation.offer(it.asImageBitmap()) }
-        }
+        if (viewport.width <= 0 || viewport.height <= 0) return@LaunchedEffect
+        val early = state.preloaded(entry.src)
+        early?.await()?.let(presentation::offer)
+        val have = presentation.bitmap
+        if (have != null && (early?.viewport == viewport || have.width >= viewport.width || have.height >= viewport.height || ref !is MediaRef.Local)) return@LaunchedEffect
+        val maxPx = maxOf(viewport.width, viewport.height)
+        runCatching { environment.loader.videoPoster(ref, maxPx) }.getOrNull()?.frame?.let { presentation.offer(it.asImageBitmap()) }
     }
     val source = rememberPagePlayback(state, session, ref, page, presentation, environment, isCurrent)
     val url = source.url
@@ -344,7 +415,7 @@ internal fun VideoPage(
                 )
             }
             if (poster != null && playback?.firstFrameRendered != true) {
-                Image(poster, contentDescription = null, contentScale = ContentScale.Fit, modifier = Modifier.fillMaxSize().testTag("viewer-video-poster"))
+                Image(poster, contentDescription = null, contentScale = ContentScale.Fit, modifier = Modifier.fillMaxSize().upgradeFade(presentation).testTag("viewer-video-poster"))
             }
             val problem = playback?.error?.let { MediaProblem.Failed(it, retryable = false) } ?: urlProblem
             when {
@@ -617,6 +688,9 @@ private fun PageSpinner(waking: Boolean, modifier: Modifier = Modifier) {
         if (waking) Text("Waking the agent's machine\u2026", style = CursorTheme.typography.small, color = Color.White.copy(alpha = 0.7f), modifier = Modifier.padding(top = 10.dp).testTag("viewer-waking"))
     }
 }
+
+/** A sharper picture's fade in over the one it replaces: about ten frames, so the finer detail blends in rather than arrives in one. */
+internal const val UpgradeFadeMillis = 160
 
 /** Where the note sits on the card, as a share of its height: above the middle, the play disc below it. */
 private const val AudioGlyphAt = 0.4f
