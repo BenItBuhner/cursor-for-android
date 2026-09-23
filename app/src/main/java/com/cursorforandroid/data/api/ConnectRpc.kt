@@ -17,6 +17,8 @@ import okhttp3.Request
 import okhttp3.RequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
 import java.io.IOException
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.TimeUnit
 
 /**
  * A failed Connect call: the HTTP status, the protocol's `code` (`unauthenticated`, `permission_denied`, …) when the
@@ -169,12 +171,15 @@ class ApiThrottle(
      * Where a call waits for its permit: [CONTROL], the account's lists, queues and writes, a few at a time; [BLOBS],
      * the record's blobs (`GetBlobForAgentKV`) — a few hundred bytes each, content-addressed, read by the dozen when a
      * long chat opens, as Cursor's own client reads them — in a lane of their own, so a chat's turns are not read three
-     * at a time behind the sidebar's refresh. Both lanes wait out the same pause.
+     * at a time behind the sidebar's refresh; [WATCH], an open chat's live stream (see `ConversationStateReader.watch`),
+     * which stays open for as long as the chat is on screen and would otherwise hold one of the control lane's few
+     * permits the whole while. Every lane waits out the same pause, and a refusal on any of them pauses them all.
      */
-    enum class Lane { CONTROL, BLOBS }
+    enum class Lane { CONTROL, BLOBS, WATCH }
 
     private val permits = Semaphore(maxInFlight)
     private val blobPermits = Semaphore(blobsInFlight)
+    private val watchPermits = Semaphore(WATCHES_IN_FLIGHT)
     @Volatile private var pausedUntilMillis = 0L
     private val refusals = java.util.concurrent.atomic.AtomicInteger()
 
@@ -203,7 +208,12 @@ class ApiThrottle(
             val wait = pausedUntilMillis - now()
             if (wait > 0) delay(wait)
             try {
-                return (if (lane == Lane.BLOBS) blobPermits else permits).withPermit { block() }
+                val lanePermits = when (lane) {
+                    Lane.CONTROL -> permits
+                    Lane.BLOBS -> blobPermits
+                    Lane.WATCH -> watchPermits
+                }
+                return lanePermits.withPermit { block() }
             } catch (e: ConnectRpcException) {
                 if (!e.isRateLimited) throw e
                 refusals.incrementAndGet()
@@ -218,6 +228,8 @@ class ApiThrottle(
         const val DEFAULT_MAX_IN_FLIGHT = 3
         /** Blob reads on the wire at once (see [Lane.BLOBS]). */
         const val BLOBS_IN_FLIGHT = 8
+        /** Open chats' live streams at once (see [Lane.WATCH]): one per chat on screen, two panes at most. */
+        const val WATCHES_IN_FLIGHT = 2
         const val DEFAULT_PAUSE_MS = 1_500L
         const val MIN_PAUSE_MS = 250L
         const val MAX_PAUSE_MS = 15_000L
@@ -230,6 +242,9 @@ class ApiThrottle(
  * every one of them through [throttle].
  */
 class ConnectJsonClient(private val client: OkHttpClient, private val baseUrl: String, val throttle: ApiThrottle = ApiThrottle()) {
+
+    /** [client] as a stream meant to stay open reads with it, by its silence limit (see [serverStream]); same pool, same dispatcher. */
+    private val openClients = ConcurrentHashMap<Long, OkHttpClient>()
 
     suspend fun <I, O> unary(
         service: String,
@@ -285,12 +300,19 @@ class ConnectJsonClient(private val client: OkHttpClient, private val baseUrl: S
         body: I,
         requestSerializer: KSerializer<I>,
         retryRefusals: Boolean = false,
+        lane: ApiThrottle.Lane = ApiThrottle.Lane.CONTROL,
+        /**
+         * A stream meant to stay open (see [ApiThrottle.Lane.WATCH]): no limit on the call as a whole, and this long
+         * without a byte — a heartbeat included — before the read gives up. Null: the client's own timeouts.
+         */
+        silenceMs: Long? = null,
         onMessage: (JsonObject) -> Boolean,
-    ): Int = throttle.call(retryRefusals) {
+    ): Int = throttle.call(retryRefusals, lane) {
         withContext(Dispatchers.IO) {
             val json = CursorJson.encodeToString(requestSerializer, body)
             val path = ConnectRpc.path(service, method)
-            client.newCall(ConnectRpc.streamRequest(baseUrl, service, method, accessToken, json)).await().use { response ->
+            val caller = silenceMs?.let { ms -> openClients.getOrPut(ms) { client.newBuilder().readTimeout(ms, TimeUnit.MILLISECONDS).callTimeout(0, TimeUnit.MILLISECONDS).build() } } ?: client
+            caller.newCall(ConnectRpc.streamRequest(baseUrl, service, method, accessToken, json)).await().use { response ->
                 if (!response.isSuccessful) {
                     val text = response.body?.string().orEmpty()
                     throw ConnectRpcException(
