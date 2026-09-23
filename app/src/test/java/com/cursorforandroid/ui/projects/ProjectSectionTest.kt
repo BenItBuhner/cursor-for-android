@@ -1,9 +1,13 @@
 package com.cursorforandroid.ui.projects
 
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.hasTestTag
@@ -55,7 +59,7 @@ import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 
 /**
- * The panel's Project section body — the Project's one surface: what it lists, every action it offers in Extended
+ * The panel's Project section rows — the Project's one surface: what it lists, every action it offers in Extended
  * mode and where each goes, and the named states it shows otherwise.
  */
 @RunWith(AndroidJUnit4::class)
@@ -115,9 +119,15 @@ class ProjectSectionTest {
         busy = isBusy
         compose.setContent {
             CursorTheme(mode = ThemeMode.Dark) {
-                ProjectSectionBody(state = current, local = LocalAgentState(), busy = busy, actions = actions, nowMillis = now)
+                Section(busy = busy, actions = actions)
             }
         }
+    }
+
+    /** The section's rows as the panel's list lays them out. */
+    @Composable
+    private fun Section(busy: Boolean, actions: ProjectActions) {
+        LazyColumn(Modifier.fillMaxSize()) { projectSection(state = current, local = LocalAgentState(), busy = busy, actions = actions, nowMillis = now) }
     }
 
     private val tapped = mutableListOf<String>()
@@ -239,7 +249,7 @@ class ProjectSectionTest {
         compose.setContent {
             CursorTheme(mode = ThemeMode.Dark) {
                 CompositionLocalProvider(LocalMediaViewer provides viewer) {
-                    ProjectSectionBody(state = current, local = LocalAgentState(), busy = false, actions = actions(), nowMillis = now)
+                    Section(busy = false, actions = actions())
                 }
             }
         }
@@ -290,7 +300,7 @@ class ProjectSectionTest {
             CursorTheme(mode = ThemeMode.Dark) {
                 val confirmation = rememberRunStopConfirmation(prefs)
                 CompositionLocalProvider(LocalRunStopConfirmation provides confirmation) {
-                    ProjectSectionBody(state = current, local = LocalAgentState(), busy = busy, actions = actions(), nowMillis = now)
+                    Section(busy = busy, actions = actions())
                 }
                 RunStopDialog(confirmation)
             }
@@ -331,7 +341,7 @@ class ProjectSectionTest {
             CursorTheme(mode = ThemeMode.Dark) {
                 val confirmation = rememberRunStopConfirmation(PreferencesStore(ApplicationProvider.getApplicationContext()))
                 CompositionLocalProvider(LocalRunStopConfirmation provides confirmation) {
-                    ProjectSectionBody(state = current, local = LocalAgentState(), busy = busy, actions = actions(), nowMillis = now)
+                    Section(busy = busy, actions = actions())
                 }
                 RunStopDialog(confirmation)
             }

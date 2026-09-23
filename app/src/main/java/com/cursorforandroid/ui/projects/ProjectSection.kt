@@ -7,10 +7,12 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.Icon
@@ -19,7 +21,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -54,6 +55,8 @@ import com.cursorforandroid.ui.media.LocalMediaViewer
 import com.cursorforandroid.ui.media.MediaEntry
 import com.cursorforandroid.ui.media.rememberThumbnailSlot
 import com.cursorforandroid.ui.media.thumbnailSlot
+import com.cursorforandroid.ui.panel.sectionRow
+import com.cursorforandroid.ui.panel.sectionRows
 import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.util.TimeFormat
@@ -63,54 +66,62 @@ import com.cursorforandroid.util.TimeFormat
  * glance with its icon and colour (editable in Extended mode), its primaries with their live status and each one's
  * menu (open, steer, hold, stop, move, release), the coordinator's hands (New primary, Adopt a chat), its cloud
  * subagents, and its shared context (the Agent Store) folder by folder. Every row of a chat opens that chat. The
- * coordinator's side chats are the panel's own Side chats section, as any chat's are. A plain column, so it flows
- * inside the panel's list; the named state stands where Extended mode is off.
+ * coordinator's side chats are the panel's own Side chats section, as any chat's are. Its rows are the panel list's
+ * own items, so a Project with hundreds of primaries composes the ones on screen rather than all of them as the panel
+ * opens; the named state stands where Extended mode is off.
  */
-@Composable
-internal fun ProjectSectionBody(
+internal fun LazyListScope.projectSection(
     state: ProjectViewState,
     local: LocalAgentState,
     busy: Boolean,
     actions: ProjectActions,
     nowMillis: Long,
-    modifier: Modifier = Modifier,
 ) {
-    val colors = CursorTheme.colors
-    val type = CursorTheme.typography
-    Column(modifier.fillMaxWidth().padding(bottom = 6.dp).testTag("project-section")) {
+    sectionRow("project-summary") {
         ProjectSummary(state, nowMillis, onEditAppearance = if (state.actionsAvailable) actions.onEditAppearance else null, enabled = !busy)
+    }
 
+    sectionRow("project-primaries-label") {
         SectionLabel(if (state.workers.isEmpty()) "Primaries" else "Primaries \u00B7 ${state.workers.size}", syncing = state.isSyncing)
-        if (state.workers.isEmpty()) {
+    }
+    if (state.workers.isEmpty()) {
+        sectionRow("project-primaries-empty") {
             Text(
                 if (state.hasSynced || state.isSyncing) "No primaries yet. The coordinator creates them as it delegates; you can start one below." else "Loading\u2026",
-                style = type.small, color = colors.textQuaternary, modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp),
+                style = CursorTheme.typography.small, color = CursorTheme.colors.textQuaternary, modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp),
             )
         }
-        state.workers.forEach { worker ->
-            WorkerRow(worker, local, nowMillis, actionsAvailable = state.actionsAvailable, busy = busy, actions = actions)
-        }
-        state.lineageNotice?.let { notice -> NoticeRow(notice) }
-        if (state.actionsAvailable) {
+    }
+    sectionRows(state.workers.distinctBy { it.agent.id }, key = { "project-primary-${it.agent.id}" }, contentType = { "project-primary" }) { worker ->
+        WorkerRow(worker, local, nowMillis, actionsAvailable = state.actionsAvailable, busy = busy, actions = actions)
+    }
+    state.lineageNotice?.let { notice -> sectionRow("project-lineage-notice") { NoticeRow(notice) } }
+    if (state.actionsAvailable) {
+        sectionRow("project-new-primary") {
             ActionRow(CursorIcons.Plus, "New primary", "Start an agent under this Project", enabled = !busy, onClick = actions.onNewWorker, modifier = Modifier.testTag("project-new-primary"))
+        }
+        sectionRow("project-adopt") {
             ActionRow(CursorIcons.Layers, "Adopt a chat", "Bring one of your chats into the Project", enabled = !busy, onClick = actions.onAdopt, modifier = Modifier.testTag("project-adopt"))
         }
+    }
 
-        if (state.subagents.isNotEmpty()) {
-            SectionLabel("Subagents \u00B7 ${state.subagents.size}")
-            state.subagents.forEach { sub ->
-                AgentLine(sub, local, nowMillis, subtitle = "Cloud subagent", onOpen = { actions.onOpenAgent(sub) })
-            }
+    if (state.subagents.isNotEmpty()) {
+        sectionRow("project-subagents-label") { SectionLabel("Subagents \u00B7 ${state.subagents.size}") }
+        sectionRows(state.subagents.distinctBy { it.id }, key = { "project-subagent-${it.id}" }, contentType = { "project-subagent" }) { sub ->
+            AgentLine(sub, local, nowMillis, subtitle = "Cloud subagent", onOpen = { actions.onOpenAgent(sub) })
         }
+    }
 
-        SectionLabel("Context")
-        ContextItems(state.projectId, state.context, busy, actions)
+    sectionRow("project-context-label") { SectionLabel("Context") }
+    contextItems(state.projectId, state.context, busy, actions)
 
+    sectionRow("project-refresh") {
         ActionRow(CursorIcons.Refresh, "Refresh", "Re-read the primaries and the account's memberships", enabled = !busy, onClick = actions.onRefresh, modifier = Modifier.testTag("project-refresh"))
     }
+    sectionRow("project-end") { Spacer(Modifier.fillMaxWidth().height(6.dp)) }
 }
 
-/** The screen's hands, passed down to the rows; see [ProjectSectionBody]. */
+/** The screen's hands, passed down to the rows; see [projectSection]. */
 internal class ProjectActions(
     val onOpenAgent: (Agent) -> Unit,
     val onSteer: (Agent) -> Unit,
@@ -168,22 +179,24 @@ private fun ProjectSummary(state: ProjectViewState, nowMillis: Long, onEditAppea
  * there. A picture, a recording or a sound in the listing opens the media viewer out of its row, among the folder's
  * other media, read through the store's presigned bytes — never its text read, which carries a string.
  */
-@Composable
-private fun ContextItems(projectId: String, context: ContextState, busy: Boolean, actions: ProjectActions) {
+private fun LazyListScope.contextItems(projectId: String, context: ContextState, busy: Boolean, actions: ProjectActions) {
     when (context) {
-        ContextState.Idle -> ActionRow(CursorIcons.Folder, "Show shared context", "The files this Project's agents share", enabled = !busy, onClick = { actions.onLoadContext("") }, modifier = Modifier.testTag("project-context-open"))
-        ContextState.Loading -> LoadingRow("Reading the Project's context\u2026")
-        ContextState.NoStore -> EmptyRow("No shared context for this Project yet.")
-        is ContextState.Unavailable -> NoticeRow(context.reason)
+        ContextState.Idle -> sectionRow("project-context-open") {
+            ActionRow(CursorIcons.Folder, "Show shared context", "The files this Project's agents share", enabled = !busy, onClick = { actions.onLoadContext("") }, modifier = Modifier.testTag("project-context-open"))
+        }
+        ContextState.Loading -> sectionRow("project-context-loading") { LoadingRow("Reading the Project's context\u2026") }
+        ContextState.NoStore -> sectionRow("project-context-none") { EmptyRow("No shared context for this Project yet.") }
+        is ContextState.Unavailable -> sectionRow("project-context-unavailable") { NoticeRow(context.reason) }
         is ContextState.Loaded -> {
             val path = context.context.relativePath
+            val entries = context.context.entries
             if (path.isNotEmpty()) {
-                ActionRow(CursorIcons.ChevronLeft, path, "Back to the folder above", enabled = true, onClick = actions.onContextUp)
+                sectionRow("project-context-up") { ActionRow(CursorIcons.ChevronLeft, path, "Back to the folder above", enabled = true, onClick = actions.onContextUp) }
             }
-            if (context.context.entries.isEmpty()) EmptyRow("This folder is empty.")
-            val viewer = LocalMediaViewer.current
-            val folderMedia = remember(context.context.entries, projectId) { contextMedia(projectId, context.context.entries) }
-            context.context.entries.forEach { entry ->
+            if (entries.isEmpty()) sectionRow("project-context-empty") { EmptyRow("This folder is empty.") }
+            val folderMedia = contextMedia(projectId, entries)
+            sectionRows(entries.distinctBy { it.relativePath }, key = { "project-context-entry:${it.relativePath}" }, contentType = { "project-context-entry" }) { entry ->
+                val viewer = LocalMediaViewer.current
                 val media = folderMedia.firstOrNull { it.fileName == entry.name && !entry.isDirectory }
                 if (media != null && viewer != null) {
                     val slot = rememberThumbnailSlot(media.src, CursorTheme.shapes.base, crop = true)
