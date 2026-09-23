@@ -238,7 +238,9 @@ private fun RefreshButton(palette: WidgetPalette, appWidgetId: Int, refreshing: 
 
 /**
  * The one-line arrangement of a 2x1 cell: the cube, the list's name with what it holds ("3 running", "2 unread"),
- * and the corner action at the end. The line itself opens the app.
+ * and the corner action at the end. The line itself opens the app. The words take what the cube and the corner
+ * button leave — a LinearLayout measures its weighted child last — so in the narrowest cell they give way to the
+ * button rather than push it off the end.
  */
 @Composable
 private fun SmallLine(title: String, detail: String, palette: WidgetPalette, corner: CornerButtonSpec?, appWidgetId: Int, refreshing: Boolean) {
@@ -254,9 +256,11 @@ private fun SmallLine(title: String, detail: String, palette: WidgetPalette, cor
             colorFilter = ColorFilter.tint(palette.iconPrimary),
         )
         Spacer(GlanceModifier.width(10.dp))
-        Text(title, style = TextStyle(color = palette.textTertiary, fontSize = 12.sp), maxLines = 1)
-        Spacer(GlanceModifier.width(8.dp))
-        Text(detail, style = TextStyle(color = palette.textPrimary, fontSize = 13.sp), maxLines = 1, modifier = GlanceModifier.defaultWeight())
+        Row(GlanceModifier.defaultWeight(), verticalAlignment = Alignment.Vertical.CenterVertically) {
+            Text(title, style = TextStyle(color = palette.textTertiary, fontSize = 12.sp), maxLines = 1)
+            Spacer(GlanceModifier.width(8.dp))
+            Text(detail, style = TextStyle(color = palette.textPrimary, fontSize = 13.sp), maxLines = 1, modifier = GlanceModifier.defaultWeight())
+        }
         if (corner != null) CornerButton(corner, palette, appWidgetId, refreshing)
     }
 }
