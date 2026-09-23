@@ -34,6 +34,8 @@ class TranscriptPresenter {
         /** How many segments were cut afresh for this presentation, and how many were the last presentation's. */
         val segmentsBuilt: Int = 0,
         val segmentsReused: Int = 0,
+        /** What the subagent rows say about the workers across every turn (see [SubagentRows.index]). */
+        val subagents: SubagentRows.Index = SubagentRows.Index.EMPTY,
     ) {
         companion object {
             val EMPTY = Presented(emptyList(), emptyList(), coordinatorMode = false)
@@ -150,9 +152,13 @@ class TranscriptPresenter {
         }
         val rows = tailPasses(rawRows, runActive)
         val goal = GoalTranscript.derive(items)
+        val index = SubagentRows.index(rows).let { if (it == subagents) subagents else it.also { fresh -> subagents = fresh } }
         TranscriptPerf.focused?.presenterRun(System.nanoTime() - startedAt, built = built, reused = reused)
-        return Presented(presentedItems, rows, mode, goal, segmentsBuilt = built, segmentsReused = reused)
+        return Presented(presentedItems, rows, mode, goal, segmentsBuilt = built, segmentsReused = reused, subagents = index)
     }
+
+    /** The last presentation's index, kept while it says the same so the rows reading it are not recomposed. */
+    private var subagents: SubagentRows.Index = SubagentRows.Index.EMPTY
 
     /**
      * The chat's content says coordinator: a segment that said so last time and is still among the items says so
