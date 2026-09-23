@@ -14,7 +14,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.material3.ripple
@@ -35,6 +34,8 @@ import com.cursorforandroid.data.local.DraftStore
 import com.cursorforandroid.domain.ListPreferences
 import com.cursorforandroid.domain.Repository
 import com.cursorforandroid.ui.components.CursorIcons
+import com.cursorforandroid.ui.components.CursorMenu
+import com.cursorforandroid.ui.components.CursorMenuItem
 import com.cursorforandroid.ui.components.Dot
 import com.cursorforandroid.ui.components.ModePills
 import com.cursorforandroid.ui.theme.CursorDimens
@@ -135,8 +136,8 @@ fun DraftRowItem(
                 Text(trailing.joinToString(" · "), style = type.base, color = colors.textQuaternary, maxLines = 1)
             }
         }
-        DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }, containerColor = colors.elevated, shape = CursorTheme.shapes.lg) {
-            MenuItem("Delete draft", CursorIcons.Trash) { menuOpen = false; onDelete(row) }
+        CursorMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+            CursorMenuItem("Delete draft", CursorIcons.Trash) { menuOpen = false; onDelete(row) }
         }
     }
 }
