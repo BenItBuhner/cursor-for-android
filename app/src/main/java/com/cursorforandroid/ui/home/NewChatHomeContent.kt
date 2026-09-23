@@ -33,6 +33,8 @@ import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.graphics.TransformOrigin
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.style.TextOverflow
@@ -45,10 +47,8 @@ import com.cursorforandroid.domain.AccountModel
 import com.cursorforandroid.domain.AgentIndicator
 import com.cursorforandroid.domain.AgentRow
 import com.cursorforandroid.domain.DeviceTarget
-import com.cursorforandroid.domain.ModelSlugs
+import com.cursorforandroid.domain.ModelResolution
 import com.cursorforandroid.domain.NewChatHome
-import com.cursorforandroid.domain.Repository
-import com.cursorforandroid.domain.named
 import com.cursorforandroid.ui.agents.AgentListUiState
 import com.cursorforandroid.ui.agents.AgentRowActions
 import com.cursorforandroid.ui.components.ComposerBox
@@ -64,6 +64,7 @@ import com.cursorforandroid.ui.components.SelectorChip
 import com.cursorforandroid.ui.components.SelectorRow
 import com.cursorforandroid.ui.components.pressable
 import com.cursorforandroid.ui.compose.NewAgentUiState
+import com.cursorforandroid.ui.compose.NewAgentViewModel
 import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
 import kotlin.math.roundToInt
@@ -295,7 +296,8 @@ internal fun NewChatSelectors(
 
 /**
  * What a fresh New Chat composer's chips would say, for a miniature of the page drawn away from it: the last launch's
- * repository, branch and device, and the model it remembers (Auto until one is).
+ * repository (else the catalogue's first), branch and device, and the model a new chat would start on — chosen as
+ * [NewAgentViewModel] chooses it, the remembered pick against the account's newest chat's model, then Auto.
  */
 @Immutable
 internal data class ComposerChips(val repoLabel: String, val noRepo: Boolean, val ref: String, val device: DeviceTarget, val modelLabel: String)
@@ -305,17 +307,19 @@ internal fun rememberComposerChips(graph: AppGraph): ComposerChips {
     val defaults by graph.prefs.composerDefaults.collectAsStateWithLifecycle(initialValue = null)
     val repositories by graph.catalog.repositories.collectAsStateWithLifecycle()
     val models by graph.catalog.models.collectAsStateWithLifecycle()
-    return remember(defaults, repositories, models) {
+    val agents by graph.agents.state.collectAsStateWithLifecycle()
+    return remember(defaults, repositories, models, agents.agents) {
         val saved = defaults
         val url = saved?.repoUrl
-        val repo = url?.let { repositories.firstOrNull { r -> r.url == it } ?: repositories.firstOrNull { r -> r.isAt(it) } ?: Repository(it) } ?: repositories.firstOrNull()
-        val modelId = saved?.modelId?.takeIf { saved.modelChosen }
+        val repo = url?.let { repositories.firstOrNull { r -> r.url == it } ?: repositories.firstOrNull { r -> r.isAt(it) } } ?: repositories.firstOrNull()
+        val remembered = saved?.takeIf { it.modelChosen }?.modelId?.let { ModelResolution.Candidate.Remembered(it, saved.modelParams, saved.modelChosenAtMillis) }
+        val model = ModelResolution.forNewChat(models, listOfNotNull(remembered, ModelResolution.newestAccountModel(agents.agents)), settleOnAuto = true)?.choice?.model
         ComposerChips(
             repoLabel = repo?.shortName ?: "Repository",
             noRepo = false,
             ref = saved?.ref.orEmpty(),
             device = saved?.env ?: DeviceTarget.Cloud,
-            modelLabel = modelId?.let { models.named(it)?.displayName ?: ModelSlugs.readableName(models, it) } ?: AccountModel.AUTO_LABEL,
+            modelLabel = model?.displayName ?: AccountModel.AUTO_LABEL,
         )
     }
 }
@@ -343,32 +347,37 @@ internal fun NewChatPageMiniature(
         homeBlocks(home, list, projectsAvailable).take(MiniatureBlocks).map { if (it is HomeBlock.Projects) HomeBlock.Projects(it.rows.take(MiniatureShortcuts)) else it }
     }
     val menu = remember { ComposerMenuActions(onPickMedia = {}) }
-    ScaledPage(pageSize, modifier.focusProperties { enter = { FocusRequester.Cancel } }.focusGroup()) {
-        Column(Modifier.fillMaxSize().background(colors.canvas).consumeWindowInsets(WindowInsets.systemBars)) {
-            if (withHeader) CursorHeader(leading = { FlatIconButton(CursorIcons.Sidebar, null, onClick = {}) })
-            Column(
-                Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = if (withHeader) 8.dp else 48.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-            ) {
-                Column(Modifier.widthIn(max = CursorDimens.composerMaxWidth).fillMaxWidth()) {
-                    NewChatSelectors(chips.repoLabel, chips.noRepo, chips.ref, chips.device, onRepo = {}, onBranch = {}, onDevice = {})
-                    ComposerBox(
-                        value = "",
-                        onValueChange = {},
-                        placeholder = NewChatHomeCopy.PLACEHOLDER,
-                        onSend = {},
-                        canSend = false,
-                        minLines = 3,
-                        plusMenu = menu,
-                        modelLabel = chips.modelLabel,
-                        onModel = {},
-                        onModePill = {},
-                    )
+    Box(modifier) {
+        ScaledPage(pageSize, Modifier.focusProperties { enter = { FocusRequester.Cancel } }.focusGroup()) {
+            Column(Modifier.fillMaxSize().background(colors.canvas).consumeWindowInsets(WindowInsets.systemBars)) {
+                if (withHeader) CursorHeader(leading = { FlatIconButton(CursorIcons.Sidebar, null, onClick = {}) })
+                Column(
+                    Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = if (withHeader) 8.dp else 48.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    Column(Modifier.widthIn(max = CursorDimens.composerMaxWidth).fillMaxWidth()) {
+                        NewChatSelectors(chips.repoLabel, chips.noRepo, chips.ref, chips.device, onRepo = {}, onBranch = {}, onDevice = {})
+                        ComposerBox(
+                            value = "",
+                            onValueChange = {},
+                            placeholder = NewChatHomeCopy.PLACEHOLDER,
+                            onSend = {},
+                            canSend = false,
+                            minLines = 3,
+                            plusMenu = menu,
+                            modelLabel = chips.modelLabel,
+                            onModel = {},
+                            onModePill = {},
+                        )
+                    }
+                    Spacer(Modifier.height(ComposerGap))
+                    blocks.forEach { HomeBlockView(it, nowMillis = list.nowMillis, actions = null) }
                 }
-                Spacer(Modifier.height(ComposerGap))
-                blocks.forEach { HomeBlockView(it, nowMillis = list.nowMillis, actions = null) }
             }
         }
+        // Hit first, so no row, chip or field of the page underneath takes the touch; left unconsumed, it goes on to
+        // whatever holds the miniature.
+        Box(Modifier.matchParentSize().pointerInput(Unit) { awaitPointerEventScope { while (true) awaitPointerEvent(PointerEventPass.Initial) } })
     }
 }
 
