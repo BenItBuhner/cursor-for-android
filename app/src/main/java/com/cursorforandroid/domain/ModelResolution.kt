@@ -27,28 +27,42 @@ object ModelResolution {
      * The chat's model for the follow-up composer. [choice] is the catalog's entry when the catalog places the
      * model (shown checked in the picker); [label] always names something for the chip. [source] AUTO is an
      * assumption — the chat may run on anything, and follow-ups keep whatever that is unless a model is picked.
+     * [detail] is for a model the catalog cannot place: the parameters its id spells and the id itself, which is what
+     * the chat keeps running on.
      */
-    data class Current(val choice: ModelChoice?, val label: String, val source: Source) {
+    data class Current(val choice: ModelChoice?, val label: String, val source: Source, val detail: String? = null) {
         val isAssumed: Boolean get() = source == Source.AUTO
     }
 
     /**
      * What [agent] runs on, in order: the account's record (`requested_model`, else `model_details`; the desktop's
      * `default` is Auto), what this device recorded at launch or on a switch — by id, else by the label rows kept
-     * before ids were — and, with neither, Auto. A record the catalog cannot place still labels the chip with the
-     * record's own name; only the choice is left unchecked.
+     * before ids were — and, with neither, Auto. Every id is read by [ModelSlugs.resolve], so a slug a Project's
+     * coordinator or another client wrote (`claude-opus-5-5-max-fast`) lands on the entry and parameters picking it
+     * here would give. One the catalog cannot place is named by [ModelSlugs.readableName], never blank, and left
+     * unchecked.
      */
     fun forChat(agent: Agent?, models: List<ModelOption>): Current {
         agent?.accountModel?.let { account ->
             val choice = models.choiceFor(account)
-            return Current(choice, choice?.label ?: account.fallbackLabel, Source.ACCOUNT)
+            if (choice != null) return Current(choice, choice.label, Source.ACCOUNT)
+            val label = ModelSlugs.readableName(models, account.modelId)
+            return Current(null, label, Source.ACCOUNT, unplacedDetail(models, account.modelId, label))
         }
         val recorded = agent?.modelId?.let { models.choiceFor(it, agent.modelParams) }
             ?: agent?.modelDisplayName?.let(models::choiceLabelled)
-        val recordedLabel = recorded?.label ?: agent?.modelName
-        if (recordedLabel != null) return Current(recorded, recordedLabel, Source.DEVICE)
+        if (recorded != null) return Current(recorded, recorded.label, Source.DEVICE)
+        val id = agent?.modelId
+        // A row whose name was never kept is named by its id; one that kept the id as its name reads the same way.
+        val recordedLabel = agent?.modelName?.takeIf { it != id } ?: id?.let { ModelSlugs.readableName(models, it) }
+        if (recordedLabel != null) return Current(null, recordedLabel, Source.DEVICE, id?.let { unplacedDetail(models, it, recordedLabel) })
         return Current(null, AccountModel.AUTO_LABEL, Source.AUTO)
     }
+
+    /** "Max · Fast · claude-opus-6-max-fast": what an unplaced id spells beyond its name, and the id as it is kept. */
+    private fun unplacedDetail(models: List<ModelOption>, id: String, label: String): String? =
+        listOfNotNull(ModelSlugs.readableQualifier(models, id), id.trim().takeIf { it.isNotEmpty() && it != label })
+            .takeIf { it.isNotEmpty() }?.joinToString(" · ")
 
     /** One place a new chat's default could come from, dated so the newer word wins. */
     sealed interface Candidate {
@@ -103,11 +117,12 @@ object ModelResolution {
 
     /**
      * A remembered choice is matched on its id and its exact parameters — a parameter-less variant is not swapped
-     * for the model's default one; an account record on its id or aliases, its variant the nearest to the record's
-     * parameters (see [choiceFor]).
+     * for the model's default one — and any other spelling of it read by [ModelSlugs.resolve]; an account record
+     * through [choiceFor], which reads its id the same way, its variant the nearest to the record's parameters.
      */
     private fun List<ModelOption>.resolve(candidate: Candidate): ModelChoice? = when (candidate) {
         is Candidate.Remembered -> named(candidate.modelId)?.let { ModelChoice(it, it.variantWithParams(candidate.params) ?: it.defaultVariant) }
+            ?: ModelSlugs.resolve(this, candidate.modelId, candidate.params.map { (id, value) -> ModelParam(id, value) })
         is Candidate.Account -> choiceFor(candidate.model)
     }
 }

@@ -136,14 +136,15 @@ class ConversationViewModelTest {
         assertThat(picker.chipLabel).isEqualTo("GPT-5.6")
     }
 
-    /** A record's id the catalogue no longer lists still names the chip; an alias resolves like the id. */
+    /** A record's id the catalogue no longer lists still names the chip, read as a name; an alias resolves like the id. */
     @Test
-    fun `a record the catalogue cannot place labels the chip with its own name, an alias with the model's`() {
+    fun `a record the catalogue cannot place labels the chip with the name its id spells, an alias with the model's`() {
         graph.agents.patch(IDLE) { it.copy(accountModel = AccountModel("claude-9-preview")) }
-        val unplaced = open(IDLE).picker { it.currentLabel == "claude-9-preview" }
+        val unplaced = open(IDLE).picker { it.currentLabel == "Claude 9 Preview" }
         assertThat(unplaced.current).isNull()
         assertThat(unplaced.currentAssumed).isFalse()
-        assertThat(unplaced.chipLabel).isEqualTo("claude-9-preview")
+        assertThat(unplaced.chipLabel).isEqualTo("Claude 9 Preview")
+        assertThat(unplaced.currentDetail).isEqualTo("claude-9-preview")
 
         graph.agents.patch(IDLE) { it.copy(accountModel = AccountModel("composer-latest", listOf(ModelParam("fast", "false")))) }
         val aliased = open(IDLE).picker { it.current?.model?.id == "composer-2.5" }

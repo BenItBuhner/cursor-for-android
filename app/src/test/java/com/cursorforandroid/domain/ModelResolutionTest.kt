@@ -2,6 +2,7 @@ package com.cursorforandroid.domain
 
 import com.cursorforandroid.domain.ModelResolution.Candidate
 import com.cursorforandroid.domain.ModelResolution.Source
+import com.cursorforandroid.fixtures.LiveModelCatalog
 import com.google.common.truth.Truth.assertThat
 import org.junit.Test
 
@@ -77,10 +78,11 @@ class ModelResolutionTest {
     }
 
     @Test
-    fun `a record the catalogue cannot place still labels the chip with the record's own name, nothing checked`() {
+    fun `a record the catalogue cannot place labels the chip with the name its id spells, nothing checked`() {
         val current = ModelResolution.forChat(agent(accountModel = AccountModel("claude-9-preview"), modelId = "gpt-5.6", modelDisplayName = "GPT-5.6"), models)
         assertThat(current.choice).isNull()
-        assertThat(current.label).isEqualTo("claude-9-preview")
+        assertThat(current.label).isEqualTo("Claude 9 Preview")
+        assertThat(current.detail).isEqualTo("claude-9-preview")
         assertThat(current.source).isEqualTo(Source.ACCOUNT)
         assertThat(current.isAssumed).isFalse()
 
@@ -119,9 +121,9 @@ class ModelResolutionTest {
         assertThat(unread.label).isEqualTo("Auto")
         assertThat(unread.isAssumed).isTrue()
 
-        // Before the catalogue: the same assumption, and a record's name still shows.
+        // Before the catalogue: the same assumption, and a record's name still shows, read from its id.
         assertThat(ModelResolution.forChat(agent(), emptyList()).label).isEqualTo("Auto")
-        assertThat(ModelResolution.forChat(agent(accountModel = AccountModel("gpt-5.6")), emptyList()).label).isEqualTo("gpt-5.6")
+        assertThat(ModelResolution.forChat(agent(accountModel = AccountModel("gpt-5.6")), emptyList()).label).isEqualTo("GPT 5.6")
     }
 
     // -- a new chat ----------------------------------------------------------------------------------------------
@@ -177,6 +179,40 @@ class ModelResolutionTest {
         assertThat(noAutoRow.source).isEqualTo(Source.AUTO)
 
         assertThat(ModelResolution.forNewChat(emptyList(), listOf(remembered), settleOnAuto = true)).isNull()
+    }
+
+    /**
+     * A new chat inherits a model in whatever spelling it was recorded: the account's newest chat started by another
+     * client or a slug this device kept lands on the entry and parameters picking it here gives; a Project worker's
+     * model — its coordinator's choice — is still not the account's default.
+     */
+    @Test
+    fun `a new chat inherits a slug from the account's newest chat or this device, read as the catalogue's entry`() {
+        val live = LiveModelCatalog.models
+        val opus = LiveModelCatalog.model("claude-opus-5.5")
+
+        val fromAccount = ModelResolution.forNewChat(live, listOf(Candidate.Account(AccountModel("claude-opus-5-5-max-fast"), 5_000L)), settleOnAuto = true)!!
+        assertThat(fromAccount.choice.model).isEqualTo(opus)
+        assertThat(fromAccount.choice.params.toSet()).isEqualTo(setOf(ModelParam("effort", "max"), ModelParam("fast", "true")))
+        assertThat(fromAccount.source).isEqualTo(Source.ACCOUNT)
+
+        val remembered = ModelResolution.forNewChat(live, listOf(Candidate.Remembered("claude-opus-5-5-xhigh", emptyMap(), 6_000L)), settleOnAuto = true)!!
+        assertThat(remembered.choice.model).isEqualTo(opus)
+        assertThat(remembered.choice.params.toSet()).isEqualTo(setOf(ModelParam("effort", "xhigh"), ModelParam("fast", "false")))
+        assertThat(remembered.source).isEqualTo(Source.DEVICE)
+
+        // A slug nothing can place is still waited on by a saved list and walked past by the fresh one.
+        val unplaced = listOf(Candidate.Account(AccountModel("claude-opus-6-max-fast"), 9_000L))
+        assertThat(ModelResolution.forNewChat(live, unplaced, settleOnAuto = false)).isNull()
+        assertThat(ModelResolution.forNewChat(live, unplaced, settleOnAuto = true)!!.source).isEqualTo(Source.AUTO)
+
+        val agents = listOf(
+            agent(id = "worker", accountModel = AccountModel("claude-opus-5-5-max-fast"), createdAtMillis = 9_000L, scope = AgentScope.PROJECT_CHILD),
+            agent(id = "mine", accountModel = AccountModel("gpt-5.6-sol-high-fast"), createdAtMillis = 5_000L),
+        )
+        val newest = ModelResolution.forNewChat(live, listOfNotNull(ModelResolution.newestAccountModel(agents)), settleOnAuto = true)!!
+        assertThat(newest.choice.model.id).isEqualTo("gpt-5.6-sol")
+        assertThat(newest.choice.params.toSet()).isEqualTo(setOf(ModelParam("effort", "high"), ModelParam("fast", "true")))
     }
 
     @Test

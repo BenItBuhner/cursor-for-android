@@ -24,6 +24,7 @@ import com.cursorforandroid.domain.KnownDevices
 import com.cursorforandroid.domain.ModelOption
 import com.cursorforandroid.domain.ModelParam
 import com.cursorforandroid.domain.ModelResolution
+import com.cursorforandroid.domain.ModelSlugs
 import com.cursorforandroid.domain.ModelVariant
 import com.cursorforandroid.domain.PromptFile
 import com.cursorforandroid.domain.PromptImage
@@ -370,16 +371,17 @@ class NewAgentViewModel(
     }
 
     /**
-     * The draft's model as the selection, until the list says more: the list's own entry when it has the model, else a
-     * stand-in with the id, the name and the parameters, which [withModelSelection] resolves by id when the list comes.
+     * The draft's model as the selection, until the list says more: the list's own entry when it places the model
+     * (any spelling of it, see [ModelSlugs.resolve]), else a stand-in with the id as saved, a readable name and the
+     * parameters, which [withModelSelection] resolves when the list comes.
      */
     private fun NewAgentUiState.withDraftModel(record: DraftStore.Record): NewAgentUiState {
         if (!record.modelChosen) return this
         val id = record.modelId ?: return copy(selectedModel = models.autoOption() ?: models.firstOrNull(), selectedVariant = (models.autoOption() ?: models.firstOrNull())?.defaultVariant)
-        val listed = models.named(id)
-        val model = listed ?: ModelOption(id, record.modelLabel ?: id)
-        val variant = listed?.variantNearest(record.modelParams) ?: ModelVariant(record.modelLabel ?: id, record.modelParams, isDefault = false)
-        return copy(selectedModel = model, selectedVariant = variant)
+        models.named(id)?.let { listed -> return copy(selectedModel = listed, selectedVariant = listed.variantNearest(record.modelParams)) }
+        ModelSlugs.resolve(models, id, record.modelParams)?.let { placed -> return copy(selectedModel = placed.model, selectedVariant = placed.variant) }
+        val name = record.modelLabel?.takeIf { it.isNotBlank() && it != id } ?: ModelSlugs.readableName(models, id)
+        return copy(selectedModel = ModelOption(id, name), selectedVariant = ModelVariant(name, record.modelParams, isDefault = false))
     }
 
     /** The composer's open draft is [id] from now: what is on disk for it is its own, nothing of the previous one's. */
@@ -675,6 +677,12 @@ class NewAgentViewModel(
         if (models.isEmpty()) return this
         val wanted = selectedModel?.takeIf { modelPicked }
         if (wanted != null) {
+            // A stand-in restored from a draft in another spelling (a slug) is placed the way a chat's record is.
+            if (models.named(wanted.id) == null) {
+                ModelSlugs.resolve(models, wanted.id, selectedVariant?.params.orEmpty())?.let { placed ->
+                    return copy(selectedModel = placed.model, selectedVariant = placed.variant)
+                }
+            }
             val model = models.named(wanted.id) ?: if (settleOnAuto) models.autoOption() ?: models.firstOrNull() ?: return this else return this
             val params = selectedVariant?.params?.associate { it.id to it.value }
             val variant = params?.takeIf { model.id == wanted.id }?.let(model::variantWithParams) ?: model.defaultVariant

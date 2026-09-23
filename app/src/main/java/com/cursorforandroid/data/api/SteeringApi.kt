@@ -6,6 +6,7 @@ import com.cursorforandroid.domain.AgentSource
 import com.cursorforandroid.domain.Goal
 import com.cursorforandroid.domain.GoalStatus
 import com.cursorforandroid.domain.InteractionResolution
+import com.cursorforandroid.domain.ModelParam
 import com.cursorforandroid.domain.PendingAttachment
 import com.cursorforandroid.domain.PendingFollowup
 import com.cursorforandroid.domain.PromptFile
@@ -43,6 +44,8 @@ data class AccountFollowup(
     val mode: AgentMode? = null,
     /** The model the chat switches to from this run on; null keeps the current one. */
     val modelId: String? = null,
+    /** The picked variant's parameters, sent with [modelId] as the desktop sends them (`requested_model.parameters`). */
+    val modelParams: List<ModelParam> = emptyList(),
     /** Client-minted, so a retry after a lost reply files nothing twice — and so the card's row and the transcript's copy of the message are one (see `QueuePlacement`). */
     val followupId: String = newId(),
 ) {
@@ -180,7 +183,9 @@ class SteeringApi(
             followup = text,
             synchronous = synchronous,
             followupMessage = ConversationMessageDto(text = text, agentMode = followup.mode?.wireName),
-            requestedModel = followup.modelId?.takeIf { it.isNotBlank() }?.let { RequestedModelDto(it) },
+            requestedModel = followup.modelId?.takeIf { it.isNotBlank() }?.let { id ->
+                RequestedModelDto(id, followup.modelParams.filter { it.id.isNotBlank() }.map { ModelParameterDto(it.id, it.value) }.takeIf { it.isNotEmpty() })
+            },
             followupSource = SOURCE,
             followupId = followup.followupId,
             followupConversationAction = ConversationActionDto(
@@ -355,8 +360,13 @@ class SteeringApi(
     @Serializable
     private data class ConversationMessageDto(val text: String, val agentMode: String? = null)
 
+    /** `agent.v1.RequestedModel {model_id, parameters[]}`; `parameters` only when there are any, as the start sends them. */
     @Serializable
-    private data class RequestedModelDto(val modelId: String)
+    private data class RequestedModelDto(val modelId: String, val parameters: List<ModelParameterDto>? = null)
+
+    /** `agent.v1.RequestedModel.ModelParameterValue {id, value}`. */
+    @Serializable
+    private data class ModelParameterDto(val id: String, val value: String)
 
     @Serializable
     private data class ConversationActionDto(val userMessageAction: UserMessageActionDto)

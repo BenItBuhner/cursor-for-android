@@ -346,6 +346,7 @@ class OutgoingSends(
                     files = uploaded,
                     mode = draft.mode,
                     modelId = draft.override?.model?.id,
+                    modelParams = draft.override?.params.orEmpty(),
                     followupId = followupId,
                 )
                 steering.sendFollowup(agentId, followup, refresh = false).getOrThrow()

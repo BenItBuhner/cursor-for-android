@@ -696,6 +696,7 @@ class AppGraph(
                     files = uploaded,
                     mode = AgentMode.ofPlanMode(item.planMode),
                     modelId = item.modelId,
+                    modelParams = item.modelParams,
                 )
                 steering.sendFollowup(agentId, followup).getOrThrow()
             },
@@ -708,6 +709,7 @@ class AppGraph(
                     files = emptyList(),
                     mode = AgentMode.ofPlanMode(item.planMode),
                     modelId = item.modelId,
+                    modelParams = item.modelParams,
                 )
                 FollowUpRepository.AccountHandoff(steering.sendFollowup(agentId, followup).getOrThrow(), followup.followupId)
             },

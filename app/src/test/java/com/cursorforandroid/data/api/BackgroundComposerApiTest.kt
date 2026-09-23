@@ -156,7 +156,7 @@ class BackgroundComposerApiTest {
         assertThat(models["bc-3"]!!.isAuto).isTrue()
         assertThat(models["bc-3"]!!.fallbackLabel).isEqualTo("Auto")
         assertThat(models["bc-4"]).isEqualTo(AccountModel("composer-2"))
-        assertThat(models["bc-4"]!!.fallbackLabel).isEqualTo("composer-2")
+        assertThat(models["bc-4"]!!.fallbackLabel).isEqualTo("Composer 2")
         assertThat(models["bc-5"]).isNull()
     }
 
