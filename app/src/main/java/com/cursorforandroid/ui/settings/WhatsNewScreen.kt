@@ -11,8 +11,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -33,7 +31,7 @@ import com.cursorforandroid.ui.components.CursorHeader
 import com.cursorforandroid.ui.components.CursorIcons
 import com.cursorforandroid.ui.components.FlatIconButton
 import com.cursorforandroid.ui.components.MarkdownText
-import com.cursorforandroid.ui.components.scrollEdgeFade
+import com.cursorforandroid.ui.components.fadingVerticalScroll
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.util.TimeFormat
 import kotlinx.coroutines.launch
@@ -91,11 +89,9 @@ fun WhatsNewScreen(graph: AppGraph, onBack: () -> Unit, modifier: Modifier = Mod
             subtitle = notes?.publishedAtMs?.takeIf { it > 0 }?.let(WhatsNewCopy::released),
             leading = { FlatIconButton(CursorIcons.ChevronLeft, "Back", onClick = onBack) },
         )
-        val scroll = rememberScrollState()
         Column(
             Modifier.weight(1f).fillMaxWidth()
-                .scrollEdgeFade(clippedAtTop = scroll.canScrollBackward, clippedAtBottom = scroll.canScrollForward, surface = colors.canvas)
-                .verticalScroll(scroll)
+                .fadingVerticalScroll(surface = colors.canvas)
                 .padding(horizontal = 16.dp, vertical = 12.dp),
         ) {
             val current = notes

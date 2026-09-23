@@ -7,8 +7,6 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -121,7 +119,7 @@ fun SlashCommandPopover(
         focusable = false,
         modifier = Modifier.semantics { contentDescription = "Slash commands" },
     ) {
-        Column(Modifier.width(PopoverWidth).heightIn(max = PopoverMaxHeight).verticalScroll(rememberScrollState())) {
+        Column(Modifier.width(PopoverWidth).heightIn(max = PopoverMaxHeight).fadingVerticalScroll(surface = colors.elevated)) {
             results.forEach { entry ->
                 SlashCommandRow(entry, onClick = { onPick(entry) })
             }

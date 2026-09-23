@@ -25,7 +25,6 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -58,6 +57,7 @@ import com.cursorforandroid.ui.components.CursorIcons
 import com.cursorforandroid.ui.components.CursorMenu
 import com.cursorforandroid.ui.components.CursorMenuItem
 import com.cursorforandroid.ui.components.CursorSheet
+import com.cursorforandroid.ui.components.FadingLazyColumn
 import com.cursorforandroid.ui.components.CursorToggle
 import com.cursorforandroid.ui.components.FlatIconButton
 import com.cursorforandroid.ui.components.HairlineDivider
@@ -141,7 +141,7 @@ fun CustomizeSheet(viewModel: AgentsViewModel, onDismiss: () -> Unit) {
                     pages using SizeTransform { _, _ -> tween(PageTransitionMillis, easing = LinearOutSlowInEasing) }
                 },
             ) { current ->
-                LazyColumn(Modifier.fillMaxWidth(), contentPadding = PaddingValues(bottom = 12.dp)) {
+                FadingLazyColumn(Modifier.fillMaxWidth(), contentPadding = PaddingValues(bottom = 12.dp)) {
                     when (current) {
                         null -> rows { RootPage(state.prefs, state.unreadCount, viewModel, onOpen = { page = it }) }
                         FilterKind.Repo -> repoPage(state.repoSlugs, state.prefs.repos, onSelectAll = { viewModel.setRepos(null) }) { slug ->

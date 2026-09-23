@@ -19,7 +19,6 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -42,6 +41,7 @@ import com.cursorforandroid.domain.arrangedForPicker
 import com.cursorforandroid.ui.components.CursorButton
 import com.cursorforandroid.ui.components.CursorIcons
 import com.cursorforandroid.ui.components.CursorSheet
+import com.cursorforandroid.ui.components.FadingLazyColumn
 import com.cursorforandroid.ui.components.CursorToggle
 import com.cursorforandroid.ui.components.HairlineDivider
 import com.cursorforandroid.ui.components.SheetHeader
@@ -105,7 +105,7 @@ internal fun ModelSheet(
         SheetHeader("Model") {
             if (loading && models.isNotEmpty()) SpinnerRing(modifier = Modifier.padding(end = 8.dp))
         }
-        LazyColumn(
+        FadingLazyColumn(
             state = listState,
             modifier = Modifier.fillMaxWidth().weight(1f, fill = false),
             contentPadding = PaddingValues(bottom = 12.dp),

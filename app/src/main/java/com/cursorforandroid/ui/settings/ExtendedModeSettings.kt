@@ -8,8 +8,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CheckboxDefaults
@@ -32,6 +30,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.cursorforandroid.AppGraph
 import com.cursorforandroid.domain.TranscriptEngine
 import com.cursorforandroid.ui.components.CursorIcons
+import com.cursorforandroid.ui.components.fadingVerticalScroll
 import com.cursorforandroid.ui.components.pressable
 import com.cursorforandroid.ui.theme.CursorTheme
 import kotlinx.coroutines.Dispatchers
@@ -177,7 +176,7 @@ fun ExtendedModeAcknowledgmentDialog(onCancel: () -> Unit, onConfirm: () -> Unit
         icon = { Icon(CursorIcons.Warning, null, tint = colors.orange, modifier = Modifier.size(22.dp)) },
         title = { Text(ExtendedModeCopy.DIALOG_TITLE, style = type.sectionTitle) },
         text = {
-            Column(Modifier.verticalScroll(rememberScrollState())) {
+            Column(Modifier.fadingVerticalScroll(surface = colors.elevated)) {
                 Text(ExtendedModeCopy.DIALOG_INTRO, style = type.base, color = colors.textSecondary)
                 Spacer(Modifier.height(10.dp))
                 ExtendedModeCopy.DIALOG_POINTS.forEach { point ->

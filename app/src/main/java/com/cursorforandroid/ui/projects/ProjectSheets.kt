@@ -15,17 +15,16 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.selection.SelectionContainer
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
@@ -52,9 +51,12 @@ import com.cursorforandroid.domain.PromptFile
 import com.cursorforandroid.ui.components.CursorButton
 import com.cursorforandroid.ui.components.CursorIcons
 import com.cursorforandroid.ui.components.CursorSheet
+import com.cursorforandroid.ui.components.FadingLazyColumn
 import com.cursorforandroid.ui.components.HairlineDivider
 import com.cursorforandroid.ui.components.SheetHeader
+import com.cursorforandroid.ui.components.fadingVerticalScroll
 import com.cursorforandroid.ui.components.pressable
+import com.cursorforandroid.ui.components.scrollEdgeFade
 import com.cursorforandroid.ui.components.stylusWriting
 import com.cursorforandroid.ui.home.SheetRow
 import com.cursorforandroid.ui.home.SheetSearchField
@@ -115,7 +117,7 @@ internal fun AdoptSheet(candidates: List<Agent>, onPick: (String) -> Unit, onDis
         SheetSearchField(value = query, onValueChange = { query = it }, placeholder = "Search your chats")
         Spacer(Modifier.height(6.dp))
         val visible = candidates.filter { query.isBlank() || it.name.contains(query.trim(), ignoreCase = true) || it.repoSlug?.contains(query.trim(), ignoreCase = true) == true }
-        LazyColumn(Modifier.fillMaxWidth().weight(1f, fill = false), contentPadding = PaddingValues(bottom = 12.dp)) {
+        FadingLazyColumn(Modifier.fillMaxWidth().weight(1f, fill = false), contentPadding = PaddingValues(bottom = 12.dp)) {
             items(visible, key = { it.id }) { agent ->
                 SheetRow(title = agent.name, subtitle = listOfNotNull(agent.repoShortName, agent.branchName).joinToString(" \u00B7 ").ifBlank { null }, checked = false, icon = CursorIcons.Layers) {
                     onPick(agent.id)
@@ -140,7 +142,7 @@ internal fun MoveSheet(workerName: String, projects: List<Agent>, onPick: (Strin
     val type = CursorTheme.typography
     CursorSheet(onDismiss = onDismiss) { dismiss ->
         SheetHeader("Move $workerName under\u2026")
-        LazyColumn(Modifier.fillMaxWidth().weight(1f, fill = false), contentPadding = PaddingValues(bottom = 12.dp)) {
+        FadingLazyColumn(Modifier.fillMaxWidth().weight(1f, fill = false), contentPadding = PaddingValues(bottom = 12.dp)) {
             items(projects, key = { it.id }) { project ->
                 SheetRow(title = project.name, subtitle = project.repoSlug, checked = false, icon = CursorIcons.project(project.projectAppearance?.icon)) {
                     onPick(project.id)
@@ -233,9 +235,11 @@ internal fun AppearanceSheet(current: ProjectAppearance?, onPick: (ProjectAppear
         Spacer(Modifier.height(12.dp))
         SheetSearchField(value = query, onValueChange = { query = it }, placeholder = "Search ${ProjectIcons.ids.size} icons")
         Spacer(Modifier.height(6.dp))
+        val grid = rememberLazyGridState()
         LazyVerticalGrid(
             columns = GridCells.Adaptive(minSize = 44.dp),
-            modifier = Modifier.fillMaxWidth().weight(1f, fill = false).semantics { contentDescription = "Icons" },
+            state = grid,
+            modifier = Modifier.fillMaxWidth().weight(1f, fill = false).scrollEdgeFade(grid).semantics { contentDescription = "Icons" },
             contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp),
             horizontalArrangement = Arrangement.spacedBy(4.dp),
             verticalArrangement = Arrangement.spacedBy(4.dp),
@@ -341,7 +345,7 @@ internal fun ContextFileSheet(file: OpenContextFile, onDismiss: () -> Unit) {
                 modifier = Modifier
                     .fillMaxWidth()
                     .weight(1f, fill = false)
-                    .verticalScroll(rememberScrollState())
+                    .fadingVerticalScroll()
                     .horizontalScroll(rememberScrollState())
                     .padding(horizontal = 20.dp)
                     .padding(bottom = 20.dp),

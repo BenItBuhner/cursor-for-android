@@ -29,8 +29,6 @@ import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -63,6 +61,7 @@ import com.cursorforandroid.ui.components.CursorToggle
 import com.cursorforandroid.ui.components.FlatIconButton
 import com.cursorforandroid.ui.components.HairlineDivider
 import com.cursorforandroid.ui.components.SpinnerRing
+import com.cursorforandroid.ui.components.fadingVerticalScroll
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.util.AppClock
 import kotlinx.coroutines.delay
@@ -261,7 +260,8 @@ private fun FailureView(failure: DesktopFailure, onRetry: () -> Unit, onShare: (
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
     val failed = failure.trace.lastFailed
-    Column(modifier.padding(24.dp).verticalScroll(rememberScrollState()).testTag("desktop-failure"), horizontalAlignment = Alignment.Start, verticalArrangement = Arrangement.spacedBy(10.dp)) {
+    // Over black, or over the desktop's last frame when the connection ended: dissolved into whatever is behind.
+    Column(modifier.padding(24.dp).fadingVerticalScroll(surface = Color.Unspecified).testTag("desktop-failure"), horizontalAlignment = Alignment.Start, verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Text(title ?: failed?.let { "Failed at ${it.name}" } ?: "Couldn't open the desktop", style = type.title, color = colors.textPrimary)
         Text(failure.message, style = type.base, color = colors.textSecondary, modifier = Modifier.testTag("desktop-failure-message"))
         if (failure.trace.steps.isNotEmpty()) {

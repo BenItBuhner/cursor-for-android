@@ -2,9 +2,20 @@ package com.cursorforandroid.ui.components
 
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.ScrollState
+import androidx.compose.foundation.gestures.ScrollableState
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.staticCompositionLocalOf
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Offset
@@ -17,13 +28,29 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.isSpecified
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.LayoutDirection
+import androidx.compose.ui.unit.dp
 import com.cursorforandroid.ui.theme.CursorDimens
+
+/**
+ * The flat colour of the container a vertically scrolling viewport fills — what [scrollEdgeFade] and
+ * [fadingVerticalScroll] paint their edges in when the call site names none. Provided by the containers that paint
+ * one flat colour behind everything they hold: every [CursorSheet] (the elevated surface) and the conversation's side
+ * panel (the sidebar surface). Unprovided it is unspecified, and a fade dissolves offscreen into whatever is behind,
+ * which is right over any background: a popup, a dialog, a card. A screen on the canvas names the canvas itself.
+ */
+val LocalScrollFadeSurface = staticCompositionLocalOf { Color.Unspecified }
 
 /**
  * Dissolves a list's content into the surface behind it at the top and bottom of its viewport, instead of cutting
  * it off flat where the container clips. Each edge fades only while the list has more content past it and eases
  * back to a hard edge as the reader reaches the end, so the first and last rows are never dimmed when they are
- * fully in view.
+ * fully in view. Every vertically scrolling surface of the app wears it — a lazy list or grid through this modifier
+ * or [FadingLazyColumn], a scrolling column through [fadingVerticalScroll] in place of `verticalScroll` — and
+ * `ScrollEdgeFadeCoverageTest` fails the build on one that does not.
+ *
+ * Place it after the modifiers that size the viewport (and after any inset padding, so the bottom edge fades above
+ * the navigation bar rather than behind it) and before the scroll itself, so it draws over the viewport rather than
+ * over the scrolled content.
  *
  * There are two ways to paint it, and which one a list gets is decided by [surface]:
  *
@@ -41,21 +68,59 @@ import com.cursorforandroid.ui.theme.CursorDimens
  * Either way overlays placed on top of the list (pull-to-refresh, scroll-to-bottom) are drawn after it and are
  * unaffected.
  *
+ * @param state the list's, grid's or column's scroll state: whether it can scroll either way is what turns each edge on.
  * @param reverseLayout mirror of the list's own flag: in a bottom-anchored transcript item 0 sits at the bottom, so
  *   "more items ahead" means content clipped at the top.
  * @param surface the flat colour the container paints behind the list, for the painted fade; unspecified for the
- *   offscreen dissolve.
+ *   offscreen dissolve. [LocalScrollFadeSurface] when not given.
  */
 @Composable
 fun Modifier.scrollEdgeFade(
-    state: LazyListState,
+    state: ScrollableState,
     reverseLayout: Boolean = false,
     fadeHeight: Dp = CursorDimens.scrollFade,
-    surface: Color = Color.Unspecified,
+    surface: Color = LocalScrollFadeSurface.current,
 ): Modifier {
     val clippedAtTop = if (reverseLayout) state.canScrollForward else state.canScrollBackward
     val clippedAtBottom = if (reverseLayout) state.canScrollBackward else state.canScrollForward
     return scrollEdgeFade(clippedAtTop = clippedAtTop, clippedAtBottom = clippedAtBottom, fadeHeight = fadeHeight, surface = surface)
+}
+
+/**
+ * `verticalScroll` with the edge fade: the one way a column scrolls in this app, so none of them cuts its content off
+ * flat under a header or above the navigation bar. Chain it where `verticalScroll` would go — after the viewport's
+ * size and insets, before the content's own padding.
+ */
+@Composable
+fun Modifier.fadingVerticalScroll(
+    state: ScrollState = rememberScrollState(),
+    enabled: Boolean = true,
+    surface: Color = LocalScrollFadeSurface.current,
+): Modifier = scrollEdgeFade(state, surface = surface).verticalScroll(state, enabled)
+
+/**
+ * A [LazyColumn] that wears the edge fade, for the lists whose scroll state nothing else needs: the fade goes last on
+ * [modifier], over the list's viewport. A list whose modifier scrolls sideways as well puts [scrollEdgeFade] ahead of
+ * that scroll itself instead, so the fade stays on the viewport rather than riding along with the content.
+ */
+@Composable
+fun FadingLazyColumn(
+    modifier: Modifier = Modifier,
+    state: LazyListState = rememberLazyListState(),
+    contentPadding: PaddingValues = PaddingValues(0.dp),
+    verticalArrangement: Arrangement.Vertical = Arrangement.Top,
+    horizontalAlignment: Alignment.Horizontal = Alignment.Start,
+    surface: Color = LocalScrollFadeSurface.current,
+    content: LazyListScope.() -> Unit,
+) {
+    LazyColumn(
+        modifier = modifier.scrollEdgeFade(state, surface = surface),
+        state = state,
+        contentPadding = contentPadding,
+        verticalArrangement = verticalArrangement,
+        horizontalAlignment = horizontalAlignment,
+        content = content,
+    )
 }
 
 @Composable
@@ -63,7 +128,7 @@ fun Modifier.scrollEdgeFade(
     clippedAtTop: Boolean,
     clippedAtBottom: Boolean,
     fadeHeight: Dp = CursorDimens.scrollFade,
-    surface: Color = Color.Unspecified,
+    surface: Color = LocalScrollFadeSurface.current,
 ): Modifier {
     val top by animateFloatAsState(if (clippedAtTop) 1f else 0f, tween(FADE_DURATION_MS), label = "topFade")
     val bottom by animateFloatAsState(if (clippedAtBottom) 1f else 0f, tween(FADE_DURATION_MS), label = "bottomFade")

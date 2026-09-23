@@ -63,6 +63,7 @@ import com.cursorforandroid.ui.agents.SnoozeChatDialog
 import com.cursorforandroid.ui.components.ComposerBox
 import com.cursorforandroid.ui.components.CursorCard
 import com.cursorforandroid.ui.components.CursorHeader
+import com.cursorforandroid.ui.components.FadingLazyColumn
 import com.cursorforandroid.ui.components.CursorIcons
 import com.cursorforandroid.ui.components.CursorSheet
 import com.cursorforandroid.ui.components.Dot
@@ -475,7 +476,7 @@ private fun RepositorySheet(
         // app does not see), as does a selection the catalogue lacks: either must still show checked.
         val listedUrls = (recent + repos).map { it.url }.toSet()
         val unlisted = listOfNotNull(deviceRepo, selected?.takeIf { !noRepo }).distinctBy { it.url }.filter { it.url !in listedUrls && matches(it) }
-        LazyColumn(Modifier.fillMaxWidth().weight(1f, fill = false), contentPadding = PaddingValues(bottom = 12.dp)) {
+        FadingLazyColumn(Modifier.fillMaxWidth().weight(1f, fill = false), contentPadding = PaddingValues(bottom = 12.dp)) {
             if (device != null && filter.isEmpty()) {
                 item("device-note") {
                     Text(

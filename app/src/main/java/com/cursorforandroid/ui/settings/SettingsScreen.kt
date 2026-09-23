@@ -9,8 +9,6 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -60,6 +58,7 @@ import com.cursorforandroid.ui.components.FlatIconButton
 import com.cursorforandroid.ui.components.HairlineDivider
 import com.cursorforandroid.ui.components.RunStopCopy
 import com.cursorforandroid.ui.components.SheetHeader
+import com.cursorforandroid.ui.components.fadingVerticalScroll
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.ui.theme.ThemeMode
 import com.cursorforandroid.util.TimeFormat
@@ -158,7 +157,7 @@ fun SettingsScreen(
                 }
             },
         )
-        Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp).navigationBarsPadding().padding(bottom = 24.dp)) {
+        Column(Modifier.fillMaxSize().navigationBarsPadding().fadingVerticalScroll(surface = colors.canvas).padding(horizontal = 16.dp).padding(bottom = 24.dp)) {
             Group(SettingsCopy.GROUP_ACCOUNT)
             SettingsCard {
                 // The demo has no key to describe; a real account's row opens onto its key and where to manage it.

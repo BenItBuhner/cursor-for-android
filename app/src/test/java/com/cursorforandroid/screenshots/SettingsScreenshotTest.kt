@@ -6,6 +6,8 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.LocalRippleConfiguration
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
@@ -60,7 +62,7 @@ import java.util.TimeZone
 /**
  * Settings on a signed-in install — the demo walkthrough in [AppScreenshotTest] never shows the account's own rows
  * or the Advanced section. The whole list on one tall canvas, dark and light, so its structure reads in one image;
- * the bottom of the page with Extended mode off (the transcript engine beside it dimmed, with the reason) and on
+ * its scroll edges on a phone-height frame at the top, the middle and the end, dark and light; the bottom of the page with Extended mode off (the transcript engine beside it dimmed, with the reason) and on
  * (the engine live, Stable), and with Beta chosen; the account sheet, dark and light; and the debug sheet a long
  * press on the version row opens, with the exports, About and the credits that left the list, dark and light. Same
  * device qualifiers as [AppScreenshotTest], but for the tall frames.
@@ -137,21 +139,35 @@ class SettingsScreenshotTest {
         compose.waitForIdle()
     }
 
-    /** The bottom of the page: the Extended mode section, the version with its updater and the crash report consent, the disclaimer. */
+    /**
+     * The bottom of the page: the Extended mode section, the version with its updater and the crash report consent, the
+     * disclaimer — and the list's own bottom padding, so nothing is left past the edge to fade.
+     */
     private fun scrollToBottom() {
         compose.onNodeWithText(SettingsCopy.DISCLAIMER).performScrollTo()
+        scrollListTo(1f)
+    }
+
+    private fun list() = compose.onNode(SemanticsMatcher.keyIsDefined(SemanticsProperties.VerticalScrollAxisRange))
+
+    private fun listRange() = list().fetchSemanticsNode().config[SemanticsProperties.VerticalScrollAxisRange]
+
+    /** Scrolls the page to [fraction] of the way down its content, by the list's own scroll action. */
+    private fun scrollListTo(fraction: Float) {
+        val range = listRange()
+        list().performSemanticsAction(SemanticsActions.ScrollBy) { it(0f, range.maxValue() * fraction - range.value()) }
         compose.waitForIdle()
     }
 
     /** The whole list at once, on a canvas tall enough to hold it: the account first and the disclaimer last. */
     @Test
-    @Config(sdk = [35], qualifiers = "w411dp-h1360dp-night-420dpi")
+    @Config(sdk = [35], qualifiers = "w411dp-h1420dp-night-420dpi")
     fun settingsEssentials() {
         essentials(ThemeMode.Dark, "65_settings_essentials")
     }
 
     @Test
-    @Config(sdk = [35], qualifiers = "w411dp-h1360dp-notnight-420dpi")
+    @Config(sdk = [35], qualifiers = "w411dp-h1420dp-notnight-420dpi")
     fun settingsEssentialsLight() {
         essentials(ThemeMode.Light, "160_settings_essentials_light")
     }
@@ -163,6 +179,58 @@ class SettingsScreenshotTest {
         compose.onNode(hasTestTag(ExtendedModeTags.TOGGLE) and isOff()).assertIsDisplayed()
         compose.onNode(hasTestTag(ExtendedModeTags.ENGINE_TOGGLE) and isNotEnabled()).assertIsDisplayed()
         compose.onNodeWithText(SettingsCopy.DISCLAIMER).assertIsDisplayed()
+        // Tall enough that nothing is left past either edge, so neither fades.
+        assertThat(listRange().maxValue()).isEqualTo(0f)
+        capture(frame)
+    }
+
+    /**
+     * The page's edges on a phone-height frame, the way the transcript's read: at the top only the bottom edge
+     * dissolves (there is more below), in the middle both do, and at the end only the top one, the last row sharp.
+     */
+    @Test
+    fun scrollFadeTop() {
+        scrollFade(ThemeMode.Dark, 0f, "199_settings_scroll_fade_top")
+    }
+
+    @Test
+    fun scrollFadeMiddle() {
+        scrollFade(ThemeMode.Dark, 0.5f, "200_settings_scroll_fade_middle")
+    }
+
+    @Test
+    fun scrollFadeBottom() {
+        scrollFade(ThemeMode.Dark, 1f, "201_settings_scroll_fade_bottom")
+    }
+
+    @Test
+    @Config(sdk = [35], qualifiers = "w411dp-h914dp-notnight-420dpi")
+    fun scrollFadeTopLight() {
+        scrollFade(ThemeMode.Light, 0f, "202_settings_scroll_fade_top_light")
+    }
+
+    @Test
+    @Config(sdk = [35], qualifiers = "w411dp-h914dp-notnight-420dpi")
+    fun scrollFadeMiddleLight() {
+        scrollFade(ThemeMode.Light, 0.5f, "203_settings_scroll_fade_middle_light")
+    }
+
+    @Test
+    @Config(sdk = [35], qualifiers = "w411dp-h914dp-notnight-420dpi")
+    fun scrollFadeBottomLight() {
+        scrollFade(ThemeMode.Light, 1f, "204_settings_scroll_fade_bottom_light")
+    }
+
+    private fun scrollFade(mode: ThemeMode, fraction: Float, frame: String) {
+        composeSettings(mode)
+        if (fraction > 0f) scrollListTo(fraction)
+        val range = listRange()
+        assertThat(range.maxValue()).isGreaterThan(0f)
+        when (fraction) {
+            0f -> assertThat(range.value()).isEqualTo(0f)
+            1f -> assertThat(range.value()).isEqualTo(range.maxValue())
+            else -> assertThat(range.value()).apply { isGreaterThan(0f); isLessThan(range.maxValue()) }
+        }
         capture(frame)
     }
 

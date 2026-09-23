@@ -5,7 +5,6 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Text
@@ -21,6 +20,7 @@ import com.cursorforandroid.domain.KnownBranches
 import com.cursorforandroid.domain.Repository
 import com.cursorforandroid.ui.components.CursorIcons
 import com.cursorforandroid.ui.components.CursorSheet
+import com.cursorforandroid.ui.components.FadingLazyColumn
 import com.cursorforandroid.ui.components.HairlineDivider
 import com.cursorforandroid.ui.components.SheetHeader
 import com.cursorforandroid.ui.theme.CursorTheme
@@ -61,7 +61,7 @@ internal fun BranchSheet(
         val unlisted = typed.isNotEmpty() && typed != current && branches.none { it.name == typed }
         val offerTyped = unlisted && KnownBranches.isPlausibleRef(typed)
         val nothingToShow = typed.isNotEmpty() && visible.isEmpty() && !currentUnlisted && !offerTyped
-        LazyColumn(Modifier.fillMaxWidth().weight(1f, fill = false), contentPadding = PaddingValues(bottom = 12.dp)) {
+        FadingLazyColumn(Modifier.fillMaxWidth().weight(1f, fill = false), contentPadding = PaddingValues(bottom = 12.dp)) {
             if (typed.isEmpty()) {
                 item("default") {
                     SheetRow(title = "Default branch", subtitle = "The repository's default branch", checked = current.isEmpty(), icon = CursorIcons.GitBranch) { pick("") }
