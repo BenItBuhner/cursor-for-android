@@ -1,6 +1,7 @@
 package com.cursorforandroid.data.faults
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.cursorforandroid.data.api.DeviceNetwork
 import com.cursorforandroid.data.api.userMessage
 import com.cursorforandroid.data.faults.FaultServer.Fault
 import com.cursorforandroid.data.faults.FaultServer.Route
@@ -181,14 +182,16 @@ class SendFaultsTest {
     }
 
     @Test
-    fun `a host that does not resolve is said plainly, with nothing sent`() = runBlocking<Unit> {
+    fun `a host that does not resolve on a phone with no network is said plainly, with nothing sent`() = runBlocking<Unit> {
         val offline = FaultRig("http://cursor-for-android.invalid/", folder.newFolder("offline"))
         try {
+            DeviceNetwork.install { false }
             val result = offline.conversations.sendFollowUp("bc-1", "Now the tests")
             assertThat(result.isFailure).isTrue()
             assertThat(result.exceptionOrNull()!!.userMessage()).isEqualTo("You're offline. Check your connection.")
             offline.awaitUntil { offline.conversations.state("bc-1").value.error == "You're offline. Check your connection." }
         } finally {
+            DeviceNetwork.install { null }
             offline.close()
         }
     }

@@ -17,6 +17,8 @@ import com.cursorforandroid.data.api.dto.RunDto
 import com.cursorforandroid.data.api.dto.V0ConversationMessageDto
 import com.cursorforandroid.data.api.dto.V0ConversationResponseDto
 import com.cursorforandroid.data.api.ConnectRpcException
+import com.cursorforandroid.data.api.DeviceNetwork
+import com.cursorforandroid.data.api.isTransportFailure
 import com.cursorforandroid.data.api.isLostReply
 import com.cursorforandroid.data.api.toCursorError
 import com.cursorforandroid.data.api.userMessage
@@ -530,6 +532,8 @@ class ConversationRepository(
         var recordEmpty = false
         /** The last read of the record failed (the network); what stands is the copy last read, or the documented path. */
         var recordError: String? = null
+        /** [recordError]'s failure as it was thrown, its class and its own words, for the diagnostics. */
+        var recordCause: String? = null
         /**
          * Until when the record is not asked again after it refused or failed with nothing of it on screen: the pause
          * the server named, else [RECORD_RETRY_MS]. A load meanwhile is the documented path's at once, the refusal
@@ -563,6 +567,12 @@ class ConversationRepository(
         var serverErrorRereads = 0
         /** The account's word on the open chat while it is at rest: a turn started elsewhere is read in (see [watchWhileOpen]). */
         var watchJob: Job? = null
+        /**
+         * The last load could not reach Cursor (a lookup that failed, a connection that would not open or dropped),
+         * and what stands is the copy read before, with the failure said: the watch reads the chat again the moment
+         * the account answers it, rather than leaving the failure up until the reader taps Retry (see [watch]).
+         */
+        var unreached = false
         /**
          * When the account's word last confirmed the Beta engine's window current (the app clock): a live stream held
          * with nothing new to say, or a sync that found the chat at rest. A reopen or a return to the foreground
@@ -1718,6 +1728,9 @@ class ConversationRepository(
                     TranscriptLoadDiagnostics.RecordLine(
                         window?.total ?: 0, window?.firstStep ?: 0, window?.turns?.size ?: 0, window?.state?.turnCount, window?.state != null, e.recordEmpty, e.recordError,
                         read = if (window?.turnIndexed ?: (record?.readsTurns == true)) "turns" else "steps",
+                        cause = e.recordCause?.takeIf { e.recordError != null },
+                        online = DeviceNetwork.isOnline(),
+                        unreached = e.unreached,
                         fallback = fallback?.let { f ->
                             TranscriptLoadDiagnostics.FallbackLine(
                                 sinceIso = Instant.ofEpochMilli(f.sinceMillis).toString(),
@@ -2400,8 +2413,11 @@ class ConversationRepository(
                 loadFromRecord(e, agentId, recordApi, backend, tokens).also { handedRuns = it.runPage }.served
             } catch (t: Throwable) {
                 if (t is CancellationException) throw t
-                synchronized(e) { e.recordError = t.userMessage() }
-                synchronized(e) { e.recordWindow != null }.also { standing -> if (standing) e.publish(transform = { copy(isLoading = false, transcriptError = t.userMessage()) }) }
+                synchronized(e) {
+                    e.recordError = t.userMessage()
+                    e.recordCause = t.causeText()
+                }
+                synchronized(e) { e.recordWindow != null }.also { standing -> if (standing) e.publish(mutate = { unreached = t.isUnreached() }, transform = { copy(isLoading = false, transcriptError = t.userMessage()) }) }
             }
             if (served) return
         }
@@ -2484,6 +2500,7 @@ class ConversationRepository(
                             unavailable = transcriptFailed && messages.isEmpty()
                             this.transcriptUnavailable = unavailable
                             transcriptError = transcriptIssue
+                            unreached = (transcriptFailed && convResult.exceptionOrNull().isUnreached()) || (runsFailed && runResult.exceptionOrNull().isUnreached())
                             inputsUpdatedAt = agents.agent(agentId)?.updatedAtMillis ?: 0L
                             pruneLocal()
                             // The disk knows every filed prompt; only prompts still in flight exist solely in memory.
@@ -2689,7 +2706,10 @@ class ConversationRepository(
         if (rawWindow == null) {
             val failure = raw.exceptionOrNull()
             val message = failure?.userMessage() ?: "The account's record could not be read."
-            synchronized(e) { e.recordError = message }
+            synchronized(e) {
+                e.recordError = message
+                e.recordCause = failure.causeText()
+            }
             // Nothing on screen from the record and none to be had now — or, on the blob-backed record, a server that
             // refuses outright or names turns it will not give (a drift, not a blip): the documented path shows what
             // it can, and says so in the server's words, with the pause the refusal asked for kept, so the record is
@@ -2700,7 +2720,7 @@ class ConversationRepository(
                 recordFallBack(e, failure, message, readStartedAt, drifted)
                 return@coroutineScope RecordLoad(served = false, runPage = runPage.await())
             }
-            e.publish(transform = { copy(isLoading = false, transcriptError = message) })
+            e.publish(mutate = { unreached = failure.isUnreached() }, transform = { copy(isLoading = false, transcriptError = message) })
         } else {
             val sink = images?.forAgent(agentId)
             val now = AppClock.now()
@@ -2722,6 +2742,7 @@ class ConversationRepository(
                     recordError = null
                     recordRefusedUntil = 0L
                     serverErrorRereads = 0
+                    unreached = false
                     transcriptError = null
                     transcriptUnavailable = false
                     fetched = true
@@ -3125,6 +3146,7 @@ class ConversationRepository(
         // The list entry's last word: running, and when it was last active; null until its first answer since the chat came to rest.
         var listed: Pair<Boolean, Long?>? = null
         var movedAt = 0L
+        var rereads = 0
         while (true) {
             // A load under way, and the looks for the next run a turn's end sets off (a steer's, a queued message the
             // account delivers; see [keepFollowing]), finish first: the watch takes over where they leave off, and
@@ -3144,6 +3166,19 @@ class ConversationRepository(
             if (session.isDemo) return
             val caps = capabilities()
             if (!caps.accountSession) return
+            // The last load could not reach Cursor and its failure stands on the screen: there is nothing to watch for
+            // until a read gets through. The chat is read again, spaced out as the stream's reconnects are, and not at
+            // all while the phone says it has no network — the first read after it does clears the failure.
+            if (synchronized(e) { e.unreached }) {
+                if (DeviceNetwork.isOnline() == false) {
+                    delay(watchPollMs)
+                    continue
+                }
+                delay(watchRetryDelay(++rereads))
+                revalidateNow(e, force = true)
+                continue
+            }
+            rereads = 0
             val live = record?.takeIf { caps.accountTranscript && silentLive < WATCH_LIVE_FAILURES && e.state.value.recordFallback.let { it == null || it.serverError } }
             if (live != null) {
                 val start = since ?: restingPoint(e)
@@ -3657,7 +3692,10 @@ class ConversationRepository(
      * sent from here on screen it is a revalidation that did not work out, and the next one will.
      */
     private fun Entry.reportLoadFailure(cause: Throwable?) {
-        val standingIn = synchronized(this) { local.isNotEmpty() }
+        val standingIn = synchronized(this) {
+            unreached = cause.isUnreached()
+            local.isNotEmpty()
+        }
         state.update { it.copy(isLoading = false, error = if (standingIn) it.error else cause?.userMessage()) }
         // Republished: the traces the load did not get to ask for read as failed now, with their Retry (see [traceStatus]).
         publish()
@@ -3853,6 +3891,11 @@ class ConversationRepository(
 
     /** One network call of [kind] for the chat's counters (see [TranscriptPerf]). */
     private fun net(agentId: String, kind: String) = TranscriptPerf.session(agentId).network(kind)
+
+    /** A failure on the way to Cursor rather than an answer from it (see [Entry.unreached]). */
+    private fun Throwable?.isUnreached(): Boolean = this?.isTransportFailure() == true
+
+    private fun Throwable?.causeText(): String? = this?.let { "${it.javaClass.simpleName}: ${it.message ?: "-"}" }
 
     /** Builds a record turn's items (see [HeadlessTranscript.body]), timed for the chat's counters. */
     private fun turnBuilder(agentId: String, sink: GeneratedImageSink?): (HeadlessTranscript.Turn, String) -> List<TimelineItem> = { turn, key ->

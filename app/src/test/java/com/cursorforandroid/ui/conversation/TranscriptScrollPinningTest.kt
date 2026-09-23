@@ -6,6 +6,7 @@ import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Paint
 import androidx.activity.ComponentActivity
+import androidx.compose.foundation.layout.Column
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.LocalRippleConfiguration
 import androidx.compose.runtime.CompositionLocalProvider
@@ -441,7 +442,9 @@ class TranscriptScrollPinningTest {
         compose.onNode(transcript).performScrollToNode(hasTestTag("load-older") or hasTestTag("loading-older"))
         compose.waitForIdle()
         graph.conversations.loadOlder(agentId)
-        compose.waitUntil(10_000) { graph.conversations.state(agentId).value.isLoadingOlder }
+        // The screen's line rather than the repository's flag: the screen draws a state once it has been presented off
+        // the main thread, which on a slow runner is well after the repository has it.
+        compose.waitUntil(10_000) { compose.onAllNodes(hasTestTag("loading-older")).fetchSemanticsNodes().isNotEmpty() }
         compose.waitForIdle()
         assertThat(following()).isFalse()
         val before = visibleTexts().filterNot { it.text.startsWith("Loading") || it.text == "Older messages" }
@@ -452,6 +455,25 @@ class TranscriptScrollPinningTest {
         compose.waitUntil(10_000) { compose.onAllNodes(hasTestTag("load-older") or hasTestTag("loading-older") or hasTestTag("trace-status")).fetchSemanticsNodes().isEmpty() }
         compose.waitForIdle()
         assertUnmoved(before, 1, "older page landed")
+    }
+
+    /**
+     * Scrolled to the top, "Older messages" is the row the list holds still, and it turns into "Loading older…" as the
+     * load it sets off starts: were the two lines not one height, every row under it would move by the difference.
+     */
+    @Test
+    fun `"Older messages" and "Loading older…" are one height, so a load starting at the top moves nothing under them`() {
+        compose.setContent {
+            CursorTheme(mode = ThemeMode.Dark) {
+                Column {
+                    OlderTurnsRow(isLoading = false, onLoad = {})
+                    OlderTurnsRow(isLoading = true, onLoad = {})
+                }
+            }
+        }
+        val idle = compose.onNode(hasTestTag("load-older")).fetchSemanticsNode().size.height
+        val loading = compose.onNode(hasTestTag("loading-older")).fetchSemanticsNode().size.height
+        assertThat(loading).isEqualTo(idle)
     }
 
     // --- frames -----------------------------------------------------------------------------------------------------

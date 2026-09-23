@@ -57,6 +57,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.disabled
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.semantics.toggleableState
@@ -198,7 +199,9 @@ fun ComposerRoundButton(
     val tint by animateColorAsState(targetTint, tween(160), label = "tint")
     TouchTarget(size = size, touchSize = 40.dp, shape = CircleShape, onClick = onClick, enabled = enabled, modifier = modifier) {
         Box(Modifier.size(size).background(fill, CircleShape), contentAlignment = Alignment.Center) {
-            Icon(icon, contentDescription, tint = tint, modifier = Modifier.size(CursorDimens.roundButtonGlyph))
+            // The name is on the glyph rather than the hit layer (the composer's insets line up with the glyph), so
+            // the glyph says when the button takes no tap too: a "Send" that cannot send yet must not read as ready.
+            Icon(icon, contentDescription, tint = tint, modifier = Modifier.size(CursorDimens.roundButtonGlyph).then(if (enabled) Modifier else Modifier.semantics { disabled() }))
         }
     }
 }

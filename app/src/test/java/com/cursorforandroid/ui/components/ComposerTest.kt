@@ -1,5 +1,10 @@
 package com.cursorforandroid.ui.components
 
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.test.assertIsEnabled
+import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
@@ -73,5 +78,23 @@ class ComposerTest {
         // The description lives on the 17dp glyph, which is what the extra field inset is lining up with.
         assertThat(placeholder.left).isWithin(3f).of(plus.left)
         assertThat(placeholder.right).isLessThan(send.right)
+    }
+
+    /**
+     * "Send" is the glyph's name, and the tap lands on the hit layer beside it: the glyph says when that layer takes no
+     * tap, or a screen reader (and anything waiting for the button to be ready) hears a Send that does nothing.
+     */
+    @Test
+    fun `send reads as disabled until there is something it can send`() {
+        var canSend by mutableStateOf(false)
+        compose.setContent {
+            CursorTheme(mode = ThemeMode.Dark) {
+                ComposerBox(value = "Do the thing", onValueChange = {}, placeholder = "Ask Cursor to build, fix bugs, explore", onSend = {}, canSend = canSend)
+            }
+        }
+        compose.onNodeWithContentDescription("Send").assertIsNotEnabled()
+
+        canSend = true
+        compose.onNodeWithContentDescription("Send").assertIsEnabled()
     }
 }

@@ -2,6 +2,8 @@ package com.cursorforandroid.data.faults
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.cursorforandroid.data.api.CONNECTION_DROPPED
+import com.cursorforandroid.data.api.DeviceNetwork
+import com.cursorforandroid.data.api.LOOKUP_FAILED_ONLINE
 import com.cursorforandroid.data.api.dto.RunDto
 import com.cursorforandroid.data.api.dto.V0ConversationMessageDto
 import com.cursorforandroid.data.faults.FaultServer.Fault
@@ -226,13 +228,15 @@ class TranscriptFaultsTest {
     }
 
     @Test
-    fun `a host that does not resolve is said as being offline, with the way to ask again`() = runBlocking<Unit> {
+    fun `a host that does not resolve with the phone online is said as the lookup that failed, not as being offline, with the way to ask again`() = runBlocking<Unit> {
         val offline = FaultRig("http://cursor-for-android.invalid/", folder.newFolder("offline"))
         try {
+            DeviceNetwork.install { true }
             offline.conversations.attach("bc-1")
             offline.awaitUntil { !offline.conversations.state("bc-1").value.isLoading }
-            assertThat(offline.conversations.state("bc-1").value.error).isEqualTo("You're offline. Check your connection.")
+            assertThat(offline.conversations.state("bc-1").value.error).isEqualTo(LOOKUP_FAILED_ONLINE)
         } finally {
+            DeviceNetwork.install { null }
             offline.close()
         }
     }

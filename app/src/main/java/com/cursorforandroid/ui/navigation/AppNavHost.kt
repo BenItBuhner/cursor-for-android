@@ -34,6 +34,7 @@ import com.cursorforandroid.AppGraph
 import com.cursorforandroid.data.repo.NewChatDrafts
 import com.cursorforandroid.domain.AgentRow
 import com.cursorforandroid.domain.CursorUser
+import com.cursorforandroid.domain.NewChatHome
 import com.cursorforandroid.domain.UpdateState
 import com.cursorforandroid.notifications.NotificationPermissionPrompt
 import com.cursorforandroid.ui.agents.AgentListUiState
@@ -261,6 +262,8 @@ internal fun AppShell(
     // has been read the shell assumes the default, which only ever hides what the setting would allow.
     val extendedMode by graph.extendedMode.enabled.collectAsStateWithLifecycle(initialValue = false)
     val extendedNoticePending by graph.extendedMode.noticePending.collectAsStateWithLifecycle(initialValue = false)
+    // Null until read, so a pane set to Projects never shows the recents for a frame first.
+    val newChatHome by graph.prefs.newChatHome.collectAsStateWithLifecycle(initialValue = null)
     if (extendedNoticePending && !isDemo) {
         ExtendedModeUpgradeNotice(
             onOpenSettings = {
@@ -359,6 +362,10 @@ internal fun AppShell(
                         onOpenAgent = pane.onOpenAgent,
                         onLaunchOpen = ::openAgent,
                         rowActions = pane.rowActions,
+                        home = pane.newChatHome,
+                        projectsAvailable = pane.projectsAvailable,
+                        onNewProject = pane.onNewProject,
+                        onOpenSettings = { navigateTop(Screen.Settings) },
                     )
                     Screen.Settings -> SettingsScreen(
                         graph = graph,
@@ -367,6 +374,7 @@ internal fun AppShell(
                         onOpenSidebar = pane.openSidebar,
                         onBack = pane.onBack,
                         onOpenWhatsNew = ::openWhatsNew,
+                        newChatList = pane.listState,
                     )
                     // A page of its own under Settings (or the sidebar's card); back is the stack's in either layout.
                     Screen.WhatsNew -> WhatsNewScreen(graph = graph, onBack = { stack.pop() })
@@ -391,6 +399,9 @@ internal fun AppShell(
         onOpenAgent = rowActions.onOpen,
         rowActions = rowActions,
         backEnabled = !drawerState.isOpen,
+        newChatHome = newChatHome,
+        projectsAvailable = isDemo || extendedMode,
+        onNewProject = if (isDemo || extendedMode) ({ projectEditor = ProjectEditorTarget.Create }) else null,
     )
 
     // The media viewer is a layer over the whole shell — sidebar, chat and panel alike, in either layout — so a
@@ -464,4 +475,9 @@ private class DetailPane(
     val rowActions: AgentRowActions,
     /** False while the drawer is over the pane: the gesture is the drawer's to close, not the stack's to pop. */
     val backEnabled: Boolean,
+    /** Settings › New chat page; null until the preference has been read. */
+    val newChatHome: NewChatHome?,
+    /** Projects exist to pin: Extended mode is on, or this is the demo. */
+    val projectsAvailable: Boolean,
+    val onNewProject: (() -> Unit)?,
 )

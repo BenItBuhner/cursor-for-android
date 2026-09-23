@@ -826,6 +826,28 @@ class AgentListOrganizerTest {
     }
 
     @Test
+    fun `the new chat page's Project shortcuts are the Projects group, working counts included, loading stand-ins left out`() {
+        val agents = listOf(
+            agent("project", updatedAgo = hour, isProject = true),
+            agent("worker-a", updatedAgo = 0, parent = "project", runStatus = RunStatus.RUNNING, lifecycle = AgentLifecycle.ACTIVE),
+            agent("worker-b", updatedAgo = 0, parent = "project"),
+            agent("sub", updatedAgo = 0, parent = "worker-b", parentKind = AgentParentKind.SUBAGENT, runStatus = RunStatus.RUNNING, lifecycle = AgentLifecycle.ACTIVE),
+            agent("quiet", updatedAgo = 2 * hour, isProject = true),
+            agent("plain", updatedAgo = 3 * hour),
+        )
+        val roots = listOf(
+            KnownRoot("named-root", "Shipyard", ProjectAppearance("logo-github", "blue"), signal = LineageSignal.ACCOUNT_RECORD, lastSeenMillis = now - day),
+            KnownRoot("unnamed-root", signal = LineageSignal.ACCOUNT_RECORD, lastSeenMillis = now - day),
+        )
+        val sections = AgentListOrganizer.organize(agents, ListPreferences(), LocalAgentState(), nowMillis = now, zone = zone, knownRoots = roots)
+        val shortcuts = AgentListOrganizer.projectRows(sections)
+        // The registry's named root opens by its id like any Project; the one still "Project (loading)" has nothing to open.
+        assertThat(shortcuts.map { it.agent.id }).containsExactly("project", "quiet", "named-root").inOrder()
+        assertThat(shortcuts.map { it.workingCount }).containsExactly(2, 0, 0).inOrder()
+        assertThat(AgentListOrganizer.projectRows(AgentListOrganizer.organize(listOf(agent("plain")), ListPreferences(), LocalAgentState(), nowMillis = now, zone = zone))).isEmpty()
+    }
+
+    @Test
     fun `sorting by name and by created`() {
         val agents = listOf(agent("b", name = "Beta", updatedAgo = 0), agent("a", name = "alpha", updatedAgo = hour))
         val byName = AgentListOrganizer.organize(agents, ListPreferences(groupBy = GroupBy.None, sortOrder = SortOrder.Name), LocalAgentState(), nowMillis = now, zone = zone)

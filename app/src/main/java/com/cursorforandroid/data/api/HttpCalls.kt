@@ -1,10 +1,19 @@
 package com.cursorforandroid.data.api
 
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withContext
 import okhttp3.Call
 import okhttp3.Callback
 import okhttp3.Response
 import java.io.IOException
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
@@ -27,4 +36,33 @@ suspend fun Call.await(): Response = suspendCancellableCoroutine { continuation 
             }
         },
     )
+}
+
+/**
+ * [block] given the call's response on the IO dispatcher, the call cancelled whenever the coroutine is — its body
+ * included. [await] answers to cancellation only until the headers arrive; the body is read after that in blocking
+ * reads, which a cancelled coroutine cannot interrupt. A stream the server holds open (the account's live stream
+ * sends heartbeats for as long as it is read) was read on for good behind a screen that had left, with its thread,
+ * its HTTP/2 stream and its throttle permit; cancelling the call ends the read.
+ */
+suspend fun <T> Call.readCancellably(block: (Response) -> T): T = coroutineScope {
+    val call = this@readCancellably
+    val done = AtomicBoolean(false)
+    val cancelWithCaller = launch(Dispatchers.Unconfined, start = CoroutineStart.UNDISPATCHED) {
+        try {
+            awaitCancellation()
+        } finally {
+            if (!done.get()) call.cancel()
+        }
+    }
+    try {
+        withContext(Dispatchers.IO) { call.await().use(block) }
+    } catch (e: IOException) {
+        // The read the cancellation ended: the caller's cancellation, not a failure of the network.
+        currentCoroutineContext().ensureActive()
+        throw e
+    } finally {
+        done.set(true)
+        cancelWithCaller.cancel()
+    }
 }
