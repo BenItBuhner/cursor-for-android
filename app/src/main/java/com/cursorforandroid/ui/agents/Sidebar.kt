@@ -125,7 +125,8 @@ object SidebarTags {
  * new-chat ("+") + search + filter + sidebar-toggle icons in one header row (the web's separate "Chats" label is
  * folded into it), Projects / Pinned / date groups of 32dp rows, and the account footer. A chat's workers, side chats
  * and subagents sit under it as a tree, closed until its count is tapped. Each group folds closed from its header
- * (see [SidebarSectionHeader]), and stays folded across restarts. Surface is `--cursor-sidebar` (#181818).
+ * (see [SidebarSectionHeader]), and stays folded across restarts; a long Projects or Pinned group lists its first
+ * five rows until "Show N more" is tapped (see [SidebarShortList]). Surface is `--cursor-sidebar` (#181818).
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -149,6 +150,8 @@ fun Sidebar(
     extendedMode: Boolean = false,
     /** New chats written and not sent, most recent first: listed above every group (see [DraftRow.listed]). */
     drafts: List<DraftRow> = emptyList(),
+    /** Which long groups are listing every row; the shell's, so leaving the sidebar can cut them back (see [SidebarShortLists]). */
+    shortLists: SidebarShortLists = remember { SidebarShortLists() },
 ) {
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
@@ -297,7 +300,15 @@ fun Sidebar(
                     if (expanded) {
                         // A search shows every match where it sits in the tree, so the tree is open while one is typed.
                         val expandedIds = if (query.isNotBlank()) section.rows.flatMap { listOf(it) + it.descendants() }.mapTo(HashSet()) { it.agent.id } else expandedParents.toSet()
-                        items(AgentListOrganizer.flatten(section.rows, expandedIds), key = { "${section.key}:${it.row.agent.id}" }) { (row, depth) ->
+                        // A long Projects or Pinned group lists its first rows until "Show N more"; a search lists every match.
+                        val cut = if (state.shortenLongGroups && query.isBlank() && section.key in SidebarShortList.KEYS) {
+                            SidebarShortList.cut(section.rows, selectedAgentId).takeIf { it.hidden > 0 }
+                        } else {
+                            null
+                        }
+                        val listedInFull = shortLists.isExpanded(section.key)
+                        val rows = if (cut == null || listedInFull) section.rows else cut.rows
+                        items(AgentListOrganizer.flatten(rows, expandedIds), key = { "${section.key}:${it.row.agent.id}" }) { (row, depth) ->
                             val id = row.agent.id
                             AgentRowItem(
                                 row = row,
@@ -313,6 +324,19 @@ fun Sidebar(
                                     expandedParents = if (id in expandedIds) expandedParents - id else expandedParents + id
                                 },
                             )
+                        }
+                        if (cut != null) {
+                            item("more-${section.key}") {
+                                val shownIds = cut.rows.mapTo(HashSet()) { it.agent.id }
+                                SidebarShowMoreRow(
+                                    sectionKey = section.key,
+                                    expanded = listedInFull,
+                                    hidden = cut.hidden,
+                                    hasUnread = section.rows.any { it.agent.id !in shownIds && it.isUnread },
+                                    onClick = { if (listedInFull) shortLists.collapse(section.key) else shortLists.expand(section.key) },
+                                    modifier = Modifier.animateItem().padding(vertical = CursorDimens.sidebarRowGap / 2),
+                                )
+                            }
                         }
                     }
                 }

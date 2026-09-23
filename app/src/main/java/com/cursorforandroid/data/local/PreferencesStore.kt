@@ -159,6 +159,8 @@ class PreferencesStore(
         val modeChoicePending = booleanPreferencesKey("mode_choice_pending")
         /** The sidebar groups the reader has folded closed, by section key ("projects", "pinned", "date:Today", …). */
         val collapsedSidebarSections = stringSetPreferencesKey("sidebar_collapsed_sections")
+        /** Settings › Appearance › Shorten long Projects list; absent reads as on (see [shortenSidebarLists]). */
+        val shortenSidebarLists = booleanPreferencesKey("sidebar_shorten_long_lists")
         /** The transcript notices closed over each chat's composer: `agentId -> identities` (see `LoadNotice.identity`). */
         val dismissedNotices = stringPreferencesKey("dismissed_notices")
         /** Settings › Confirm before stopping; absent reads as on (see [confirmStop]). */
@@ -374,6 +376,14 @@ class PreferencesStore(
         val next = if (collapsed) current + sectionKey else current - sectionKey
         if (next.isEmpty()) p.remove(Keys.collapsedSidebarSections) else p[Keys.collapsedSidebarSections] = next
     }
+
+    /**
+     * Whether a long Projects or Pinned group lists only its first five rows until "Show N more" is tapped. On by
+     * default; a device preference like the folds, kept across sign-outs. Which rows are listed in full is never kept.
+     */
+    val shortenSidebarLists: Flow<Boolean> = data.map { it[Keys.shortenSidebarLists] ?: true }
+
+    suspend fun setShortenSidebarLists(enabled: Boolean) = edit { it[Keys.shortenSidebarLists] = enabled }
 
     /**
      * The notices about a transcript's load the reader has closed, by chat (`agentId -> identities`, see
