@@ -38,14 +38,17 @@ suspend fun <I> ConnectJsonClient.serverStreamWithSession(
     body: I,
     requestSerializer: KSerializer<I>,
     retryRefusals: Boolean = false,
+    /** The throttle's lane, and for a stream meant to stay open its silence limit (see [ConnectJsonClient.serverStream]). */
+    lane: ApiThrottle.Lane = ApiThrottle.Lane.CONTROL,
+    silenceMs: Long? = null,
     onMessage: (kotlinx.serialization.json.JsonObject) -> Boolean,
 ): Int {
     val token = tokens.accessToken()
     return try {
-        serverStream(service, method, token, body, requestSerializer, retryRefusals, onMessage)
+        serverStream(service, method, token, body, requestSerializer, retryRefusals, lane, silenceMs, onMessage)
     } catch (e: ConnectRpcException) {
         if (!e.isUnauthenticated) throw e
         tokens.invalidate()
-        serverStream(service, method, tokens.accessToken(), body, requestSerializer, retryRefusals, onMessage)
+        serverStream(service, method, tokens.accessToken(), body, requestSerializer, retryRefusals, lane, silenceMs, onMessage)
     }
 }

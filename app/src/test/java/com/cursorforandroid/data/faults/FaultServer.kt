@@ -165,7 +165,8 @@ class FaultServer(
     /** Connections still to be closed the moment they open, before a byte of the request is read (see [resetNextConnections]). */
     private val resets = AtomicInteger()
 
-    enum class Route { Me, ListAgents, ListAgentsV0, GetAgent, ListRuns, GetRun, CreateRun, CancelRun, Conversation, Stream, Auth, Record, RecordState, Blob, QueueAdd, QueueList, QueueDelete, QueueUpdate, QueueReorder, QueueSendNow, QueueEditing, Steer, AccountList, Workers, Children, Pins, Other }
+    /** [Live] is `StreamConversation` asked with `purpose = LIVE` (an open chat's watch); [RecordState] the same method's state read. */
+    enum class Route { Me, ListAgents, ListAgentsV0, GetAgent, ListRuns, GetRun, CreateRun, CancelRun, Conversation, Stream, Auth, Record, RecordState, Live, Blob, QueueAdd, QueueList, QueueDelete, QueueUpdate, QueueReorder, QueueSendNow, QueueEditing, Steer, AccountList, Workers, Children, Pins, Other }
 
     /**
      * One row of the account's own list (`ListBackgroundComposers`, Extended mode): the record the sidebar's rows
@@ -184,6 +185,8 @@ class FaultServer(
         val sideChatOf: String? = null,
     )
 
+    /** The ids `ListBackgroundComposers` was asked for one at a time (`bc_id`), in order. */
+    val composerReads = CopyOnWriteArrayList<String>()
     /** The account's list, by id; served newest first (see [Composer.activityMs]). */
     val composers: MutableMap<String, Composer> = ConcurrentHashMap()
     /** `ListWorkersForManager`: each coordinator's workers, as (workerId, spawnKind). */
@@ -326,7 +329,9 @@ class FaultServer(
             // The account service: the session handshake and the two record RPCs (Extended mode), on the same host.
             segments.size == 2 && segments[0] == "auth" && segments[1] == "exchange_user_api_key" -> Route.Auth
             segments.size == 2 && segments[0] == RECORD_SERVICE && segments[1] == "FetchBackgroundComposer" -> Route.Record
-            // The conversation state, however it is asked: the removed unary, or the stream the desktop reads it off.
+            // The conversation state, however it is asked: the removed unary, or the stream the desktop reads it off —
+            // which, asked with `purpose = LIVE`, is an open chat holding the stream rather than a read.
+            segments.size == 2 && segments[0] == RECORD_SERVICE && segments[1] == "StreamConversation" && isLive(request) -> Route.Live
             segments.size == 2 && segments[0] == RECORD_SERVICE && (segments[1] == "GetLatestAgentConversationState" || segments[1] == "StreamConversation") -> Route.RecordState
             segments.size == 2 && segments[0] == RECORD_SERVICE && segments[1] == "GetBlobForAgentKV" -> Route.Blob
             segments.size == 2 && segments[0] == RECORD_SERVICE && segments[1] == "AddAsyncFollowupBackgroundComposer" -> Route.QueueAdd
@@ -392,6 +397,8 @@ class FaultServer(
             Route.Auth -> json(200, """{"accessToken":"session-token","refreshToken":"refresh-token"}""")
             Route.Record -> record(request)
             Route.RecordState -> recordState(request)
+            // A refused live stream is refused at once, not held first.
+            Route.Live -> if (fault is Fault.Status || fault is Fault.Gateway) MockResponse() else live(request)
             Route.Blob -> blob(request)
             Route.QueueAdd -> queueAdd(request, processed)
             Route.QueueList -> queueList(request)
@@ -462,7 +469,14 @@ class FaultServer(
         return json(200, encode(CreateRunResponseDto.serializer(), CreateRunResponseDto(run)))
     }
 
-    private val Route.isAccount: Boolean get() = this == Route.Record || this == Route.RecordState || this == Route.Blob || this == Route.QueueAdd || this == Route.QueueList || this == Route.QueueDelete || this == Route.QueueUpdate || this == Route.QueueReorder || this == Route.QueueSendNow || this == Route.QueueEditing || this == Route.Steer || this == Route.AccountList || this == Route.Workers || this == Route.Children || this == Route.Pins
+    /** A `StreamConversation` request asking for the live stream: its body, read without consuming it. */
+    private fun isLive(request: RecordedRequest): Boolean = runCatching {
+        val body = request.body.clone().readByteArray()
+        val length = ((body[1].toInt() and 0xFF) shl 24) or ((body[2].toInt() and 0xFF) shl 16) or ((body[3].toInt() and 0xFF) shl 8) or (body[4].toInt() and 0xFF)
+        CursorJson.parseToJsonElement(String(body, 5, length, Charsets.UTF_8)).jsonObject["purpose"]?.jsonPrimitive?.contentOrNull == "STREAM_CONVERSATION_PURPOSE_LIVE"
+    }.getOrDefault(false)
+
+    private val Route.isAccount: Boolean get() = this == Route.Record || this == Route.RecordState || this == Route.Live || this == Route.Blob || this == Route.QueueAdd || this == Route.QueueList || this == Route.QueueDelete || this == Route.QueueUpdate || this == Route.QueueReorder || this == Route.QueueSendNow || this == Route.QueueEditing || this == Route.Steer || this == Route.AccountList || this == Route.Workers || this == Route.Children || this == Route.Pins
 
     // ---- the account's list ----------------------------------------------------------------------------------------
 
@@ -487,6 +501,7 @@ class FaultServer(
         val body = CursorJson.parseToJsonElement(request.body.readUtf8()).jsonObject
         val ordered = composers.values.sortedWith(compareByDescending<Composer> { it.activityMs }.thenBy { it.id })
         body["bcId"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }?.let { id ->
+            composerReads += id
             val one = composers[id]
             return json(200, """{"composers":[${one?.json() ?: ""}],"hasMore":false,"didLoadStatus":true}""")
         }
@@ -715,20 +730,7 @@ class FaultServer(
         val agentId = body["bcId"]?.jsonPrimitive?.contentOrNull ?: return json(400, connectError("invalid_argument", "bcId is required"))
         val held = (body["preFetchedBlobIds"] as? JsonArray)?.mapNotNull { it.jsonPrimitive.contentOrNull }?.toSet() ?: emptySet()
         streamRequests += body
-        val state = recordStates[agentId] ?: run {
-            val record = blobRecord(agentId) ?: return ConnectStreamFixtures.prewarmResponse("""{"turns":[],"turnTimings":[]}""")
-            val prompts = record.turnCount
-            val chatRuns = runs.values.filter { it.agentId == agentId }.sortedBy { it.createdAt }
-            val timings = (0 until prompts).joinToString(",") { t ->
-                val run = chatRuns.getOrNull(t)
-                val ended = run?.let { Instant.parse(it.updatedAt).toEpochMilli() } ?: 0L
-                """{"durationMs":"${run?.durationMs ?: 0}","timestampMs":"$ended"}"""
-            }
-            val ids = record.turnIds.joinToString(",") { "\"$it\"" }
-            // A Project's root when its prompts were sent in Project mode, as the account marks it.
-            val root = records[agentId].orEmpty().any { step -> (step["humanMessage"] as? JsonObject)?.get("agentMode")?.jsonPrimitive?.contentOrNull == "AGENT_MODE_PROJECT" }
-            """{"turns":[$ids],"turnTimings":[$timings]${if (root) ",\"isRootProjectConversation\":true" else ""}}"""
-        }
+        val state = stateJson(agentId) ?: return ConnectStreamFixtures.prewarmResponse("""{"turns":[],"turnTimings":[]}""", cloudAgentExtra = liveExtra(agentId), workflowStatus = workflowStatus(agentId))
         // The prefetch, as the desktop's request asks for it (`prefetch_only_last_step_per_turn`, `max_blobs_after_prefetch`):
         // the newest [prefetchTurns] turns' blobs — each turn's structure, its prompt, its last step — less what the
         // client says it holds, up to [prefetchBlobs] in all. A client holding them all is sent none.
@@ -750,7 +752,96 @@ class FaultServer(
             recordBytes.merge(agentId, bytes.size.toLong(), Long::plus)
             prefetchedIds.getOrPut(agentId) { ConcurrentHashMap.newKeySet() } += id
         }
-        return ConnectStreamFixtures.prewarmResponse(state, prefetched)
+        return ConnectStreamFixtures.prewarmResponse(state, prefetched, cloudAgentExtra = liveExtra(agentId), workflowStatus = workflowStatus(agentId))
+    }
+
+    /** The chat's `conversationState` JSON: the scripted one, else one turn per prompt of its record with the runs' timings; null when it has neither. */
+    private fun stateJson(agentId: String): String? = recordStates[agentId] ?: run {
+        val record = blobRecord(agentId) ?: return null
+        val prompts = record.turnCount
+        val chatRuns = runs.values.filter { it.agentId == agentId }.sortedBy { it.createdAt }
+        val timings = (0 until prompts).joinToString(",") { t ->
+            val run = chatRuns.getOrNull(t)
+            val ended = run?.let { Instant.parse(it.updatedAt).toEpochMilli() } ?: 0L
+            """{"durationMs":"${run?.durationMs ?: 0}","timestampMs":"$ended"}"""
+        }
+        val ids = record.turnIds.joinToString(",") { "\"$it\"" }
+        // A Project's root when its prompts were sent in Project mode, as the account marks it.
+        val root = records[agentId].orEmpty().any { step -> (step["humanMessage"] as? JsonObject)?.get("agentMode")?.jsonPrimitive?.contentOrNull == "AGENT_MODE_PROJECT" }
+        """{"turns":[$ids],"turnTimings":[$timings]${if (root) ",\"isRootProjectConversation\":true" else ""}}"""
+    }
+
+    // ---- the live stream -------------------------------------------------------------------------------------------
+
+    /** Every live `StreamConversation` request body seen (`purpose = LIVE`): what an open chat asked to hold. */
+    val liveRequests = CopyOnWriteArrayList<JsonObject>()
+    /** How long a live stream is held with nothing to say before the server sends a heartbeat and ends it. */
+    @Volatile var liveHoldMs: Long = 20_000L
+    private val liveVersions = ConcurrentHashMap<String, AtomicInteger>()
+    private val liveLock = Object()
+    @Volatile private var closed = false
+
+    private fun liveVersion(agentId: String): Int = liveVersions[agentId]?.get() ?: 0
+
+    /** Where the chat's live stream stands: the offset a stream resumes from, moved on by each change. */
+    fun offsetKey(agentId: String): String = "off-${liveVersion(agentId)}"
+
+    private fun liveExtra(agentId: String): String = """"lastInteractionUpdateOffsetKey":"${offsetKey(agentId)}""""
+
+    private fun workflowStatus(agentId: String): String =
+        if (agents[agentId]?.status == "ACTIVE" || agents[agentId]?.status == "RUNNING") "CLOUD_AGENT_WORKFLOW_STATUS_RUNNING" else "CLOUD_AGENT_WORKFLOW_STATUS_IDLE"
+
+    /** The chat moved on: its offset advances, and every live stream held on it hears so at once. */
+    private fun changed(agentId: String) {
+        liveVersions.getOrPut(agentId) { AtomicInteger() }.incrementAndGet()
+        synchronized(liveLock) { liveLock.notifyAll() }
+    }
+
+    /**
+     * `StreamConversation` with `purpose = LIVE`, as an open chat holds it (`ConversationStateReader.watch`): the
+     * state first unless the request resumes from the chat's current offset, then — the stream held open — the chat's
+     * next change the moment it comes (see [startTurnElsewhere]), else a heartbeat once [liveHoldMs] has passed, and
+     * the end of the stream. MockWebServer writes an answer whole, so the stream is held before its first byte rather
+     * than between frames; the frames the client reads are the same.
+     */
+    private fun live(request: RecordedRequest): MockResponse {
+        val body = CursorJson.parseToJsonElement(ConnectStreamFixtures.requestJson(request)).jsonObject
+        val agentId = body["bcId"]?.jsonPrimitive?.contentOrNull ?: return json(400, connectError("invalid_argument", "bcId is required"))
+        liveRequests += body
+        val from = liveVersion(agentId)
+        val messages = ArrayList<String>()
+        if (body["offsetKey"]?.jsonPrimitive?.contentOrNull != offsetKey(agentId)) {
+            messages += """{"initialState":{"blobId":"c3RhdGU=","cloudAgentState":{"conversationState":${stateJson(agentId) ?: """{"turns":[]}"""},${liveExtra(agentId)}},"workflowStatus":"${workflowStatus(agentId)}"}}"""
+        }
+        val deadline = System.nanoTime() + liveHoldMs * 1_000_000
+        synchronized(liveLock) {
+            while (liveVersion(agentId) == from && !closed) {
+                val left = (deadline - System.nanoTime()) / 1_000_000
+                if (left <= 0) break
+                liveLock.wait(left)
+            }
+        }
+        messages += if (liveVersion(agentId) != from) """{"workflowStatusWithOffset":{"offsetKey":"${offsetKey(agentId)}","workflowStatus":"${workflowStatus(agentId)}"}}""" else """{"streamHeartbeat":{}}"""
+        return ConnectStreamFixtures.streamResponse(messages)
+    }
+
+    /**
+     * Another client — the web, the desktop, a coordinator messaging this worker — starts a turn in [agentId] with
+     * [prompt]: the run is made running, the agent and its list entry say so, the transcript and the record take the
+     * prompt, and the chat's held live streams hear it at once. Returns the run.
+     */
+    fun startTurnElsewhere(agentId: String, prompt: String, runId: String = "run-elsewhere-${ids.incrementAndGet()}"): RunDto {
+        val at = Instant.ofEpochMilli(clock() + 60_000L).toString()
+        val run = RunDto(id = runId, agentId = agentId, status = "RUNNING", createdAt = at, updatedAt = at)
+        runs[runId] = run
+        logs[runId] = listOf("status" to """{"runId":"$runId","status":"RUNNING"}""")
+        agents[agentId] = agents.getValue(agentId).copy(status = "ACTIVE", latestRunId = runId, updatedAt = at)
+        v0[agentId]?.let { v0[agentId] = it.copy(status = "RUNNING") }
+        transcripts[agentId] = transcripts[agentId].orEmpty() + V0ConversationMessageDto("$runId-u", "user_message", prompt)
+        records[agentId]?.let { steps -> records[agentId] = steps + buildJsonObject { put("humanMessage", buildJsonObject { put("text", prompt) }) } }
+        composers[agentId]?.let { composers[agentId] = it.copy(running = true, activityMs = it.activityMs + 60_000L) }
+        changed(agentId)
+        return run
     }
 
     /** A step blob with its tool result's heavy strings emptied (over [HEAVY_CHARS] characters), as `filter_heavy_step_data` asks. */
@@ -858,6 +949,8 @@ class FaultServer(
 
     override fun close() {
         held.forEach { it.release() }
+        closed = true
+        synchronized(liveLock) { liveLock.notifyAll() }
         server.shutdown()
     }
 

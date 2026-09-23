@@ -177,7 +177,7 @@ class FaultRig(
     val record: ConversationRecordApi? = if (extended) HeadlessConversationApi(accountRpc, sessionTokens, blobs = blobs, waits = recordWaits) else null
     /** What the private surfaces may do; a test that switches the engine mid-run sets this, and the next load reads it (as the app's `ExtendedMode` would). */
     @Volatile var capabilities: Capabilities = Capabilities.of(extended, engine)
-    val conversations = ConversationRepository(session, agents, prefs, hub, attachments, conversationCache, traces, isForeground = { true }, prefetchLimit = 0, scope = scope, record = record, capabilities = { capabilities }, retryPassDelaysMs = recordWaits.passes)
+    val conversations = ConversationRepository(session, agents, prefs, hub, attachments, conversationCache, traces, isForeground = { true }, prefetchLimit = 0, scope = scope, record = record, capabilities = { capabilities }, retryPassDelaysMs = recordWaits.passes, composerStatus = { id -> accountAgents.status(id) })
     /** The account's controls on a chat — its queue above all — over the same host, wired as the app wires them (see AppGraph). */
     val steeringApi = SteeringApi(accountRpc, sessionTokens, blobs = blobs)
     val steering = SteeringRepository(
