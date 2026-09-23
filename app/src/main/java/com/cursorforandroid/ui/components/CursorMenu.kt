@@ -226,7 +226,7 @@ private fun Modifier.menuShadow(fill: Color, shadow: Color): Modifier = drawWith
 }
 
 /** Where the menu went, for its animation: the point it grows from, as fractions of the popup, and which side of the anchor it is on. */
-private data class MenuPlacement(val origin: TransformOrigin, val below: Boolean) {
+internal data class MenuPlacement(val origin: TransformOrigin, val below: Boolean) {
     companion object {
         val Initial = MenuPlacement(TransformOrigin(0.5f, 0f), below = true)
     }
@@ -258,7 +258,7 @@ private fun safeArea(view: View, insets: WindowInsets, density: Density, window:
  * side, so the offset returned is the surface's less that room. The insets behind [area] are state, read here, so
  * the menu is placed again when the keyboard moves.
  */
-private class MenuPositionProvider(
+internal class MenuPositionProvider(
     private val density: Density,
     private val offset: DpOffset,
     private val area: (IntSize) -> IntRect,
