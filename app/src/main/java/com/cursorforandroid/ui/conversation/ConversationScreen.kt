@@ -67,7 +67,6 @@ import com.cursorforandroid.domain.TranscriptRow
 import com.cursorforandroid.domain.DesktopEligibility
 import com.cursorforandroid.domain.EnvType
 import com.cursorforandroid.share.ShareTarget
-import com.cursorforandroid.domain.QueuePlacement
 import com.cursorforandroid.domain.RunStatus
 import com.cursorforandroid.domain.StorePath
 import com.cursorforandroid.ui.agents.MenuItem
@@ -124,12 +123,11 @@ internal fun ConversationState.showsWorkingRow(): Boolean {
 }
 
 /**
- * The working row's words. "Starting…" is a run the account has started and that is still booting; a message waiting
- * for the turn under way to end has no run started yet, and says so (Bennett's frame of 2026-09-22 19:42: his message
- * to a Project's busy coordinator under "Starting…" while that turn ran on).
+ * The working row's words. "Starting…" is a run the account has started and that is still booting — never the turn
+ * under way while a message waits behind it on the card (Bennett's frame of 2026-09-22 19:42: his message to a
+ * Project's busy coordinator under "Starting…" while that turn ran on).
  */
 internal fun ConversationState.workingCaption(): String = when {
-    queuedBehindTurn -> QueuePlacement.QUEUED_BEHIND_TURN
     runStatus == RunStatus.CREATING -> "Starting…"
     isReconnecting -> "Reconnecting…"
     else -> "Working…"

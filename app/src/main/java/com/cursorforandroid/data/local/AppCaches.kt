@@ -6,6 +6,7 @@ import com.cursorforandroid.domain.Agent
 import com.cursorforandroid.domain.KnownRoot
 import com.cursorforandroid.domain.LineageSignal
 import com.cursorforandroid.domain.MachineWorker
+import com.cursorforandroid.domain.MessageAttachment
 import com.cursorforandroid.domain.AgentSource
 import com.cursorforandroid.data.api.RecordFields
 import com.cursorforandroid.domain.AgentParentKind
@@ -37,6 +38,8 @@ class AppCaches(private val root: JsonDiskCache) {
     val slashCommands = SlashCommandCache(root.child("slashcommands"))
     /** Which store each Project's coordinator owns, and the context documents opened from a chat (see `StoreFileRepository`). */
     val storeFiles: JsonDiskCache = root.child("storefiles")
+    /** The account records' blobs (the Beta transcript engine's, see `BlobCache`). */
+    val blobs = BlobDiskStore(root.child("blobs"))
 
     /**
      * Stops the caches accepting writes, before the work that feeds them is cancelled. A blocking write already in
@@ -167,10 +170,12 @@ data class CachedLocalPrompt(
     val reply: V0ConversationMessageDto? = null,
     /** The prompt was steered into [run] under way: shown after this many of the run's rows (see `ConversationRepository.LocalPrompt.steeredAfter`). */
     val steeredAfter: Int? = null,
-    /** The run [run] waits behind, the account having named [run] mid-turn (see `ConversationRepository.LocalPrompt.waitsBehind`). */
+    /**
+     * Written by 0.3.70–0.3.75 alone, for a Project's message drawn in the transcript while it waited behind the turn
+     * under way: the run it waited behind. Never written now; a prompt read back with it is dropped, its message being
+     * on the account's queue card until its run starts.
+     */
     val waitsBehind: String? = null,
-    /** The account's id for the message, by which the card leaves the account's row out while the transcript shows it waiting. */
-    val followupId: String? = null,
 )
 
 /**
@@ -195,6 +200,31 @@ data class CachedConversation(
     val window: Int = 0,
     /** The window of the account's record that was open (Extended mode, see `RecordWindow`); null when the chat was read from `/v0` and `/v1` alone. */
     val record: CachedRecordWindow? = null,
+    /** The messages queued on the account from here that had not been delivered (see [CachedAwaiting]). */
+    val awaiting: List<CachedAwaiting> = emptyList(),
+)
+
+/**
+ * A message this device queued on the account behind a turn, not yet seen delivered (`ConversationRepository.Awaiting`):
+ * kept so that after a restart the card still knows it for this device's own, and hands it to the transcript in the
+ * frame its run's prompt appears — not both at once while the account's list trails the run it started.
+ */
+@Serializable
+data class CachedAwaiting(
+    val localId: String,
+    val text: String,
+    val stagedAtMillis: Long,
+    val placeholder: RunDto,
+    val behindRunId: String? = null,
+    val queuedAtMillis: Long,
+    val queuedOnAccount: Boolean = true,
+    val followupId: String? = null,
+    /** The run the account named for it when it took it (a Project's coordinator mid-turn). */
+    val runId: String? = null,
+    val priorCopies: Int = 0,
+    val priorTranscriptCopies: Int = 0,
+    /** Its staged copies (see `AttachmentStore.staged`), to be filed under the run it starts. */
+    val attachments: List<MessageAttachment> = emptyList(),
 )
 
 /**
@@ -214,8 +244,23 @@ data class CachedRecordWindow(
     val turnIndexed: Boolean = false,
 )
 
+/**
+ * One turn of the saved window. For the blob-backed record, [blobId] is the turn's own blob (content-addressed: a
+ * state naming the same id names the turn unchanged, and the next load does not read it), [complete] whether every
+ * step was read, and [stepTotal] / [messageSteps] what its structure listed.
+ */
 @Serializable
-data class CachedRecordTurn(val stepIndex: Int, val stepCount: Int, val prompt: String? = null, val projectMode: Boolean = false, val errorMessage: String? = null)
+data class CachedRecordTurn(
+    val stepIndex: Int,
+    val stepCount: Int,
+    val prompt: String? = null,
+    val projectMode: Boolean = false,
+    val errorMessage: String? = null,
+    val blobId: String? = null,
+    val complete: Boolean = true,
+    val stepTotal: Int? = null,
+    val messageSteps: Int? = null,
+)
 
 @Serializable
 data class CachedTurnTiming(val durationMs: Long? = null, val timestampMs: Long? = null)

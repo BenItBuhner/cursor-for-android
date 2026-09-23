@@ -94,6 +94,16 @@ class AttachmentStore(context: Context) {
     fun committed(agentId: String, runId: String, attachments: List<MessageAttachment>): StagedAttachments =
         if (attachments.isEmpty()) StagedAttachments.EMPTY else StagedAttachments(runDir(agentId, runId), attachments)
 
+    /**
+     * The set [stage] wrote for [attachments], read back after a restart — for a message still waiting on the account's
+     * queue, whose copies are to be filed under the run it starts; empty when they are gone.
+     */
+    fun staged(attachments: List<MessageAttachment>): StagedAttachments {
+        val dir = attachments.firstOrNull()?.let { File(it.path).parentFile } ?: return StagedAttachments.EMPTY
+        if (dir.parentFile != staging || attachments.any { !File(it.path).isFile }) return StagedAttachments.EMPTY
+        return StagedAttachments(dir, attachments)
+    }
+
     suspend fun discard(staged: StagedAttachments) = withContext(Dispatchers.IO) {
         staged.dir?.deleteRecursively()
         Unit

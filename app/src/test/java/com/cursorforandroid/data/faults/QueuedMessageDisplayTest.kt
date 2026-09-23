@@ -5,12 +5,14 @@ import com.cursorforandroid.data.api.AccountFollowup
 import com.cursorforandroid.data.api.dto.AgentDto
 import com.cursorforandroid.data.api.dto.RunDto
 import com.cursorforandroid.data.api.dto.V0AgentDto
+import com.cursorforandroid.data.api.dto.V0ConversationMessageDto
 import com.cursorforandroid.data.faults.FaultServer.Fault
 import com.cursorforandroid.data.faults.FaultServer.Route
+import com.cursorforandroid.data.local.CachedLocalPrompt
 import com.cursorforandroid.data.repo.ConversationState
 import com.cursorforandroid.domain.AssistantMessage
 import com.cursorforandroid.domain.ConversationControls
-import com.cursorforandroid.domain.QueuePlacement
+import com.cursorforandroid.domain.PendingFollowup
 import com.cursorforandroid.domain.RunFooter
 import com.cursorforandroid.domain.RunStatus
 import com.cursorforandroid.domain.TranscriptEngine
@@ -34,21 +36,20 @@ import org.robolectric.annotation.Config
 import java.util.concurrent.CopyOnWriteArrayList
 
 /**
- * Where a message sent while a chat is mid-turn is shown, by what the account answers and what Cursor's desktop
- * (3.21.18) shows, on both transcript engines:
+ * A message sent while a chat is mid-turn waits on the queue card above the composer until its own run starts, then
+ * moves into the transcript — a Project's coordinator exactly as an ordinary chat, on both transcript engines.
  *
- *  - A Project's coordinator: the account names the run the message will start the moment it takes the message
- *    (`AddAsyncFollowupBackgroundComposerResponse.run_id`), lists the message as waiting, and starts that very run once
- *    the turn under way is over. The desktop shows a message sent to a busy Project in the conversation straight away;
- *    so does the app — in the transcript from the tap, never on the card — reading "Queued · runs after the current
- *    turn" until its run starts, the turn under way followed to its end (its last words and its footer drawn above the
- *    message) and the named run neither followed nor streamed before then. Bennett's frame of 2026-09-22 19:42: his
- *    message to this very Project under "Starting…" while the coordinator was mid-turn, that turn's reply never drawn.
- *  - An ordinary chat: the desktop keeps the message on the queue tray until it is delivered; the app keeps it on the
- *    card, whether or not the account names a run for it, and the transcript takes it the moment its run starts.
+ * A Project's coordinator names the run a queued message will start the moment it takes the message
+ * (`AddAsyncFollowupBackgroundComposerResponse.run_id`), lists the message as waiting, and starts that very run once
+ * the turn under way is over. The card is still the message's place — with every action the card offers: reorder,
+ * edit, delete, steer into the turn, send now — and the transcript takes it in the frame its run starts (Bennett's
+ * frame of 2026-09-23 01:40: a Project's queued message drawn in the transcript, no card; "the purpose of a queue is
+ * so that it can actually show various options to edit, forward, delete, and more"). Meanwhile the turn under way is
+ * the chat's, followed to its end — its last words and its footer drawn — and the named run is neither followed nor
+ * streamed: "Starting…" is only ever a started run's word (his frame of 2026-09-22 19:42: the message under
+ * "Starting…" while the coordinator was mid-turn, that turn's reply never drawn).
  *
- * At every frame from the tap on each message is in exactly one of the two places, and "Starting…" never stands for a
- * run the account has not started.
+ * At every frame from the tap on each message is in exactly one of the two places, across a restart too.
  */
 @RunWith(AndroidJUnit4::class)
 @Config(sdk = [35])
@@ -67,9 +68,9 @@ class QueuedMessageDisplayTest {
 
     /** What the screen pairs: the account's queue as last read and the transcript's frame, with when the pair was seen. */
     private class Frame(val controls: ConversationControls, val state: ConversationState, val atNanos: Long) {
-        fun cardShows(followupId: String) = controls.placed(state.queuePlacement).queue.any { it.id == followupId }
-        fun transcriptShows(text: String) = state.items.any { it is UserMessage && it.text == text }
-        fun filed(text: String) = state.items.any { it is UserMessage && it.text == text && !it.isPending }
+        val card: List<PendingFollowup> get() = controls.placed(state.queuePlacement).queue
+        fun cardShows(followupId: String) = card.any { it.id == followupId }
+        fun transcriptShows(texts: Set<String>) = state.items.any { it is UserMessage && it.text in texts }
     }
 
     private val frames = CopyOnWriteArrayList<Frame>()
@@ -106,14 +107,15 @@ class QueuedMessageDisplayTest {
 
     private val state: ConversationState get() = rig!!.conversations.state(agentId).value
     private val controls: ConversationControls get() = rig!!.steering.state(agentId).value
+    private fun card(): List<PendingFollowup> = controls.placed(state.queuePlacement).queue
 
     private fun explain(label: String) {
         val s = state
-        println("== $label: items=${s.items.size} run=${s.runStatus} streaming=${s.isStreaming} active=${s.activeRunId} queuedBehind=${s.queuedBehindTurn} caption=${s.workingCaption()} placement=${s.queuePlacement}")
-        println("   card(raw)=${controls.queue.map { it.id }} card(placed)=${controls.placed(s.queuePlacement).queue.map { it.id }}")
+        println("== $label: items=${s.items.size} run=${s.runStatus} streaming=${s.isStreaming} active=${s.activeRunId} caption=${s.workingCaption()} placement=${s.queuePlacement}")
+        println("   card(raw)=${controls.queue.map { "${it.id}:${it.text.take(16)}" }} card(placed)=${card().map { "${it.id}${it.note?.let { n -> "[$n]" } ?: ""}" }}")
         println("   prompts=${s.items.filterIsInstance<UserMessage>().takeLast(4).map { "${it.id}:${it.text.take(20)}${if (it.isPending) "(pending)" else ""}" }} tail=${s.items.takeLast(6).map { it.id.take(40) }}")
         println("   server: pending=${server.pending[agentId]?.map { "${it.followupId}->${it.runId}@${it.consumedAtMs}" }} delivered=${server.delivered}")
-        rig!!.conversations.loadDiagnostics(agentId)?.let { d -> println("   load: source=${d.source} runs=${d.runsLoaded} live=${d.liveRunId} following=${d.following}") }
+        rig!!.conversations.loadDiagnostics(agentId)?.let { d -> println("   load: source=${d.source} runs=${d.runsLoaded} live=${d.liveRunId} following=${d.following} queued=${d.queued.map { it.text }}") }
     }
 
     private suspend fun FaultRig.awaitUntilOr(timeoutMs: Long, label: String, condition: suspend () -> Boolean) {
@@ -147,160 +149,272 @@ class QueuedMessageDisplayTest {
         return followupId
     }
 
+    /** The run the account named for [followupId] when it took it; null when it named none. */
+    private fun namedRun(followupId: String): String? = server.pending.getValue(agentId).single { it.followupId == followupId }.runId
+
     private fun streamed(runId: String): Boolean = server.seen.any { it.route == Route.Stream && it.path.contains("/$runId/") }
 
     /** The turn under way ends on the server and the account starts the next run on the oldest queued message. */
     private fun endTurnAndDeliver(): RunDto {
         server.endTurn(agentId)
-        val next = server.deliverNext(agentId, log = LongProject.turns(firstAt, turns = TURNS + 1).last().log)!!
+        val next = server.deliverNext(agentId, log = nextLog())!!
         server.outage(Route.Stream, Fault.StreamCut(events = 3), path = "/${next.id}/")
         return next
     }
 
-    /** Every frame since [sentAt] from the first that shows the message anywhere: in one place, never both, never neither. */
-    private fun assertOnePlace(followupId: String, sentAt: Long) {
-        val since = frames.filter { it.atNanos >= sentAt }
-        val first = since.indexOfFirst { it.transcriptShows(MESSAGE) || it.cardShows(followupId) }
+    private fun nextLog(): List<Pair<String, String>> = LongProject.turns(firstAt, turns = TURNS + 1).last().log
+
+    /**
+     * The card's row for [followupId] as a chat's card draws it: the account's own row once its list names the message
+     * — its words, no word of this device's under it, nothing being edited — the same row a chat shows.
+     */
+    private fun assertCardRowAsAChat(followupId: String, text: String) {
+        val row = card().singleOrNull { it.id == followupId }
+        assertWithMessage("the message on the card: ${card().map { it.id }}").that(row).isNotNull()
+        assertThat(row!!.text).isEqualTo(text)
+        assertThat(row.note).isNull()
+        assertThat(row.isEditing).isFalse()
+        assertThat(row).isEqualTo(controls.queue.single { it.id == followupId })
+    }
+
+    /** Every frame since [since] from the first that shows the message anywhere: in one place, never both, never neither. */
+    private fun assertOnePlace(followupId: String, texts: Set<String>, since: Long, until: Long = Long.MAX_VALUE) {
+        val seen = frames.filter { it.atNanos in since until until }
+        val first = seen.indexOfFirst { it.transcriptShows(texts) || it.cardShows(followupId) }
         assertWithMessage("the message was never shown").that(first).isAtLeast(0)
-        since.drop(first).forEachIndexed { i, f ->
+        seen.drop(first).forEachIndexed { i, f ->
             val card = f.cardShows(followupId)
-            val transcript = f.transcriptShows(MESSAGE)
-            assertWithMessage("frame $i: on the card and in the transcript at once — placement=${f.state.queuePlacement}").that(card && transcript).isFalse()
-            assertWithMessage("frame $i: in neither place — placement=${f.state.queuePlacement}").that(card || transcript).isTrue()
+            val transcript = f.transcriptShows(texts)
+            if (card && transcript) {
+                val all = seen.drop(first)
+                println("== BOTH at frame $i of ${all.size}")
+                for (j in maxOf(0, i - 5)..minOf(all.lastIndex, i + 2)) {
+                    val g = all[j]
+                    println("   frame $j @${(g.atNanos - since) / 1_000_000}ms raw=${g.controls.queue.map { it.id.take(12) }} load=${g.controls.queueLoad} placement=${g.state.queuePlacement} prompts=${g.state.items.filterIsInstance<UserMessage>().takeLast(2).map { "${it.id.take(24)}${if (it.isPending) "(pending)" else ""}" }} active=${g.state.activeRunId}")
+                }
+            }
+            assertWithMessage("frame $i: on the card and in the transcript at once — card=${f.card.map { it.id }} placement=${f.state.queuePlacement}").that(card && transcript).isFalse()
+            assertWithMessage("frame $i: in neither place — card=${f.card.map { it.id }} placement=${f.state.queuePlacement}").that(card || transcript).isTrue()
         }
     }
 
-    /** Every frame between [sentAt] and [endAt], the turn under way still running: never "Starting…", never the chat moved off that turn. */
-    private fun assertNeverStartingWhileTheTurnRan(sentAt: Long, endAt: Long) {
-        frames.filter { it.atNanos in sentAt until endAt }.forEachIndexed { i, f ->
+    /** Every frame between [since] and [until], the turn under way still running: never "Starting…", never the chat moved off that turn. */
+    private fun assertNeverStartingWhileTheTurnRan(since: Long, until: Long) {
+        frames.filter { it.atNanos in since until until }.forEachIndexed { i, f ->
             assertWithMessage("frame $i: \"Starting…\" for a run the account had not started").that(f.state.workingCaption()).isNotEqualTo("Starting…")
             assertWithMessage("frame $i: the chat left the turn under way").that(f.state.activeRunId).isEqualTo(live.runId)
         }
     }
 
-    // -- a Project's coordinator mid-turn: the account names the run at once --------------------------------------------
+    // -- the card until the message's own run starts: a Project's coordinator and a chat alike ------------------------
 
     @Test
-    fun `Stable - a message to a Project's busy coordinator stands in the transcript at once, queued behind the turn, which stays followed to its end`() = runBlocking<Unit> {
-        projectMessageQueuedBehindTheTurn(TranscriptEngine.STABLE)
+    fun `Stable - a message to a Project's busy coordinator waits on the card as a chat's does, and moves into the transcript when its own run starts`() = runBlocking<Unit> {
+        onTheCardUntilItsRunStarts(TranscriptEngine.STABLE, project = true, named = true)
     }
 
     @Test
-    fun `Beta - a message to a Project's busy coordinator stands in the transcript at once, queued behind the turn, which stays followed to its end`() = runBlocking<Unit> {
-        projectMessageQueuedBehindTheTurn(TranscriptEngine.BETA)
+    fun `Beta - a message to a Project's busy coordinator waits on the card as a chat's does, and moves into the transcript when its own run starts`() = runBlocking<Unit> {
+        onTheCardUntilItsRunStarts(TranscriptEngine.BETA, project = true, named = true)
     }
 
-    private suspend fun projectMessageQueuedBehindTheTurn(engine: TranscriptEngine) {
-        server.namesQueuedRuns = true
+    @Test
+    fun `Stable - an ordinary chat's message waits on the card although the account names its run, and moves into the transcript when that run starts`() = runBlocking<Unit> {
+        onTheCardUntilItsRunStarts(TranscriptEngine.STABLE, project = false, named = true)
+    }
+
+    @Test
+    fun `Beta - an ordinary chat's message waits on the card although the account names its run, and moves into the transcript when that run starts`() = runBlocking<Unit> {
+        onTheCardUntilItsRunStarts(TranscriptEngine.BETA, project = false, named = true)
+    }
+
+    @Test
+    fun `Stable - an ordinary chat's message the account names no run for waits on the card until it is delivered`() = runBlocking<Unit> {
+        onTheCardUntilItsRunStarts(TranscriptEngine.STABLE, project = false, named = false)
+    }
+
+    private suspend fun onTheCardUntilItsRunStarts(engine: TranscriptEngine, project: Boolean, named: Boolean) {
+        server.namesQueuedRuns = named
         val rig = rig(engine)
-        rig.open(project = true)
+        rig.open(project)
         val sentAt = System.nanoTime()
         val followupId = rig.sendMidTurn(MESSAGE)
-        val named = server.pending.getValue(agentId).single { it.followupId == followupId }.runId!!
+        val reserved = namedRun(followupId)
+        assertThat(reserved != null).isEqualTo(named)
         run {
             val s = state
-            // In the transcript at once, the newest thing in it, the account's: not pending, not on the card.
-            val at = s.items.indexOfLast { it is UserMessage && it.text == MESSAGE }
-            assertWithMessage("the message in the transcript").that(at).isAtLeast(0)
-            assertThat((s.items[at] as UserMessage).isPending).isFalse()
-            assertThat(at).isEqualTo(s.items.lastIndex)
-            // Queued behind the turn, said so: its run has not started.
-            assertThat(s.queuedBehindTurn).isTrue()
-            assertThat(s.workingCaption()).isEqualTo(QueuePlacement.QUEUED_BEHIND_TURN)
-            // The chat is on the turn under way: its run, its status, its stream.
+            // On the card from the account's answer on, from this device's own knowledge until the list names it; not in the transcript.
+            assertThat(s.items.none { it is UserMessage && it.text == MESSAGE }).isTrue()
+            assertThat(card().map { it.id }).contains(followupId)
+            // The chat is on the turn under way: its run, its status, its stream — and the row with it.
+            assertThat(s.workingCaption()).isEqualTo("Working…")
             assertThat(s.activeRunId).isEqualTo(live.runId)
             assertThat(s.runStatus).isEqualTo(RunStatus.RUNNING)
             assertThat(s.isStreaming).isTrue()
             assertThat(rig.conversations.loadDiagnostics(agentId)?.liveRunId).isEqualTo(live.runId)
-            // And so is the row: no "Starting" in the sidebar for a run nothing has started.
             assertThat(rig.agents.agent(agentId)?.latestRunId).isEqualTo(live.runId)
             assertThat(rig.agents.agent(agentId)?.runStatus).isNotEqualTo(RunStatus.CREATING)
         }
-        // The account lists it as waiting; the card leaves it out, the transcript being its place.
         rig.awaitUntilOr(10_000, "the list to name it") { controls.queue.any { it.id == followupId } }
-        assertThat(controls.placed(state.queuePlacement).queue.none { it.id == followupId }).isTrue()
-        // The turn under way goes on, and is drawn: its last words land above the message.
+        assertCardRowAsAChat(followupId, MESSAGE)
+        // The turn under way goes on, and is drawn: its last words land while the message waits on the card.
         server.logs[live.runId] = server.logs.getValue(live.runId) + ("assistant" to """{"text":"$LAST_WORDS"}""")
         rig.awaitUntilOr(30_000, "the turn's last words") { state.items.any { it is AssistantMessage && it.markdown.contains(LAST_WORDS) } }
-        run {
-            val s = state
-            val words = s.items.indexOfFirst { it is AssistantMessage && it.markdown.contains(LAST_WORDS) }
-            assertThat(words).isLessThan(s.items.indexOfLast { it is UserMessage && it.text == MESSAGE })
-            assertThat(s.queuedBehindTurn).isTrue()
-        }
-        assertWithMessage("the named run was streamed before it started").that(streamed(named)).isFalse()
+        assertThat(state.items.none { it is UserMessage && it.text == MESSAGE }).isTrue()
+        assertCardRowAsAChat(followupId, MESSAGE)
+        reserved?.let { assertWithMessage("the named run was streamed before it started").that(streamed(it)).isFalse() }
         val endAt = System.nanoTime()
-        // The turn ends; the account starts the run it named on the message.
+        // The turn ends; the account starts the next run on the message — the one it named, when it named one.
         val next = endTurnAndDeliver()
-        assertThat(next.id).isEqualTo(named)
-        rig.awaitUntilOr(45_000, "the named run followed") { state.activeRunId == named && !state.queuedBehindTurn && state.isStreaming }
+        reserved?.let { assertThat(next.id).isEqualTo(it) }
+        rig.awaitUntilOr(45_000, "the message filed under its run") { state.items.any { it is UserMessage && it.text == MESSAGE } && state.activeRunId == next.id }
         rig.awaitUntilOr(20_000, "the list to let it go") { controls.queue.none { it.id == followupId } }
         delay(1_500)
         val s = state
-        // Once, as its run's prompt; the turn it waited behind ended above it, with its footer.
+        // Once, as its run's prompt; the turn it waited behind ended above it, its last words and its footer drawn.
         assertThat(s.items.count { it is UserMessage && it.text == MESSAGE }).isEqualTo(1)
         val message = s.items.indexOfFirst { it is UserMessage && it.text == MESSAGE }
-        val footer = s.items.indexOfFirst { it is RunFooter && it.runId == live.runId }
-        assertWithMessage("the turn under way ended above the message: items=${s.items.map { it.id.take(32) }}").that(footer).isIn(0 until message)
-        assertThat(s.items.drop(message + 1).firstOrNull { it !is UserMessage }?.id).contains(named)
-        assertThat(s.workingCaption()).isNotEqualTo(QueuePlacement.QUEUED_BEHIND_TURN)
-        assertThat(controls.placed(s.queuePlacement).queue).isEmpty()
-        // From the tap: in the transcript, never on the card; filed, it read as queued for as long as the turn ran.
-        val since = frames.filter { it.atNanos >= sentAt }
-        val first = since.indexOfFirst { it.transcriptShows(MESSAGE) }
-        assertWithMessage("the recorder never saw the message").that(first).isAtLeast(0)
-        since.drop(first).forEachIndexed { i, f ->
-            assertWithMessage("frame $i: on the card").that(f.cardShows(followupId)).isFalse()
-            assertWithMessage("frame $i: not in the transcript").that(f.transcriptShows(MESSAGE)).isTrue()
-            if (f.atNanos < endAt && f.filed(MESSAGE)) assertWithMessage("frame $i: the caption under the queued message").that(f.state.workingCaption()).isEqualTo(QueuePlacement.QUEUED_BEHIND_TURN)
-        }
+        assertThat(s.items.indexOfFirst { it is AssistantMessage && it.markdown.contains(LAST_WORDS) }).isIn(0 until message)
+        assertWithMessage("the turn under way ended above the message: items=${s.items.map { it.id.take(32) }}").that(s.items.indexOfFirst { it is RunFooter && it.runId == live.runId }).isIn(0 until message)
+        rig.awaitUntilOr(20_000, "the run's rows") { state.items.drop(message + 1).any { it !is UserMessage && it.id.contains(next.id) } }
+        assertThat(card()).isEmpty()
         assertNeverStartingWhileTheTurnRan(sentAt, endAt)
-        assertOnePlace(followupId, sentAt)
+        assertOnePlace(followupId, setOf(MESSAGE), sentAt)
+    }
+
+    // -- every card action in a Project ----------------------------------------------------------------------------------
+
+    @Test
+    fun `Stable - a Project's queued messages take every card action, reorder, edit, delete, steer now and send now, each on the card until its own run starts`() = runBlocking<Unit> {
+        cardActionsInAProject(TranscriptEngine.STABLE)
     }
 
     @Test
-    fun `a run the account lists as CREATING while it waits behind the Project's turn is neither followed nor the chat's until the turn ends`() = runBlocking<Unit> {
+    fun `Beta - a Project's queued messages take every card action, reorder, edit, delete, steer now and send now, each on the card until its own run starts`() = runBlocking<Unit> {
+        cardActionsInAProject(TranscriptEngine.BETA)
+    }
+
+    private suspend fun cardActionsInAProject(engine: TranscriptEngine) {
+        server.namesQueuedRuns = true
+        server.queueLagMs = 1_500L
+        val rig = rig(engine)
+        rig.open(project = true)
+        val sentAt = System.nanoTime()
+        val first = rig.sendMidTurn(FIRST)
+        val second = rig.sendMidTurn(SECOND)
+        val third = rig.sendMidTurn(THIRD)
+        // Every send answered: from here each bubble shown at its tap has come down for the card.
+        val queuedAt = System.nanoTime()
+        val secondRun = namedRun(second)!!
+        rig.awaitUntilOr(20_000, "the list to name all three") { controls.queue.map { it.id }.containsAll(listOf(first, second, third)) }
+        assertThat(card().map { it.id }).containsExactly(first, second, third).inOrder()
+        assertCardRowAsAChat(first, FIRST)
+        assertCardRowAsAChat(second, SECOND)
+        assertCardRowAsAChat(third, THIRD)
+        assertThat(state.items.none { it is UserMessage && it.text in setOf(FIRST, SECOND, THIRD) }).isTrue()
+
+        // Reorder: the third moves up, ahead of the second.
+        rig.steering.movePending(agentId, third, up = true).getOrThrow()
+        rig.awaitUntilOr(10_000, "the new order") { card().map { it.id } == listOf(first, third, second) }
+
+        // Edit the second, as the card's editor does: marked while it is reworded, its row reading the new words under its id.
+        rig.steering.markEditing(agentId, second, editing = true).getOrThrow()
+        rig.steering.updatePending(agentId, second, EDITED).getOrThrow()
+        rig.steering.markEditing(agentId, second, editing = false).getOrThrow()
+        rig.awaitUntilOr(10_000, "the row to read the new words") { card().any { it.id == second && it.text == EDITED } }
+        assertThat(card().map { it.id }).containsExactly(first, third, second).inOrder()
+
+        // Delete the third: off the card at once, never "delivering", never in the transcript.
+        rig.steering.deletePending(agentId, third).getOrThrow()
+        rig.awaitUntilOr(10_000, "the deleted row to go") { card().none { it.id == third } }
+        delay(2_500)
+        assertWithMessage("a deleted message must not come back").that(card().map { it.id }).containsExactly(first, second).inOrder()
+        assertThat(card().none { it.note != null }).isTrue()
+
+        // Steer the first now: delivered into the turn under way, filed once among its rows, off the card. No run starts.
+        rig.steering.promotePending(agentId, first).getOrThrow()
+        rig.awaitUntilOr(45_000, "the steer filed") { state.items.any { it is UserMessage && it.text == FIRST } && card().none { it.id == first } }
+        delay(1_200)
+        run {
+            val s = state
+            assertThat(s.items.count { it is UserMessage && it.text == FIRST }).isEqualTo(1)
+            val at = s.items.indexOfFirst { it is UserMessage && it.text == FIRST }
+            assertWithMessage("among the running turn's rows").that(s.items.take(at).any { it.id.startsWith("activity-${live.runId}-") }).isTrue()
+            assertThat(s.activeRunId).isEqualTo(live.runId)
+            assertThat(card().map { it.id }).containsExactly(second)
+            assertCardRowAsAChat(second, EDITED)
+        }
+        assertWithMessage("the named run was streamed before it started").that(streamed(secondRun)).isFalse()
+        val sendNowAt = System.nanoTime()
+
+        // Send the second now: the account ends the turn under way for it and starts the run it named.
+        server.logs[secondRun] = nextLog()
+        server.outage(Route.Stream, Fault.StreamCut(events = 3), path = "/$secondRun/")
+        rig.steering.submitPendingNow(agentId, second).getOrThrow()
+        rig.awaitUntilOr(45_000, "the sent-now run followed with its message") { state.activeRunId == secondRun && state.items.any { it is UserMessage && it.text == EDITED } }
+        rig.awaitUntilOr(20_000, "the list to let it go") { controls.queue.none { it.id == second } }
+        delay(1_500)
+        run {
+            val s = state
+            assertThat(s.items.count { it is UserMessage && it.text == EDITED }).isEqualTo(1)
+            assertThat(s.items.none { it is UserMessage && (it.text == SECOND || it.text == THIRD) }).isTrue()
+            val at = s.items.indexOfFirst { it is UserMessage && it.text == EDITED }
+            rig.awaitUntilOr(20_000, "the run's rows") { state.items.drop(at + 1).any { it !is UserMessage && it.id.contains(secondRun) } }
+            assertThat(card()).isEmpty()
+        }
+        assertNeverStartingWhileTheTurnRan(sentAt, sendNowAt)
+        // Each message in one place at every frame; the deleted one on the card alone, then nowhere.
+        assertOnePlace(first, setOf(FIRST), sentAt)
+        assertOnePlace(second, setOf(SECOND, EDITED), sentAt)
+        assertWithMessage("the deleted message was in the transcript").that(frames.filter { it.atNanos >= queuedAt }.none { it.transcriptShows(setOf(THIRD)) }).isTrue()
+    }
+
+    // -- a run the list carries while it waits, a restart, an upgrade, an idle Project ---------------------------------
+
+    @Test
+    fun `a run the account lists as CREATING while it waits behind the Project's turn is neither followed nor the chat's, the message on the card until it starts`() = runBlocking<Unit> {
         server.namesQueuedRuns = true
         server.listsQueuedRuns = true
         val rig = rig(TranscriptEngine.STABLE)
         rig.open(project = true)
         val sentAt = System.nanoTime()
         val followupId = rig.sendMidTurn(MESSAGE)
-        val named = server.pending.getValue(agentId).single { it.followupId == followupId }.runId!!
+        val named = namedRun(followupId)!!
         // A load reads the run list, which now carries the named run as CREATING.
         rig.conversations.revalidate(agentId, force = true)
         rig.awaitUntilOr(30_000, "the run list read with the named run") { rig.conversations.loadDiagnostics(agentId)?.runsLoaded == TURNS + 1 && !state.isLoading }
+        rig.awaitUntilOr(10_000, "the list to name it") { controls.queue.any { it.id == followupId } }
         delay(1_500)
         run {
             val s = state
             assertThat(s.activeRunId).isEqualTo(live.runId)
             assertThat(s.isStreaming).isTrue()
-            assertThat(s.queuedBehindTurn).isTrue()
-            assertThat(s.workingCaption()).isEqualTo(QueuePlacement.QUEUED_BEHIND_TURN)
+            assertThat(s.workingCaption()).isEqualTo("Working…")
             assertThat(rig.conversations.loadDiagnostics(agentId)?.liveRunId).isEqualTo(live.runId)
-            assertThat(s.items.count { it is UserMessage && it.text == MESSAGE }).isEqualTo(1)
-            assertThat(s.items.indexOfLast { it is UserMessage && it.text == MESSAGE }).isEqualTo(s.items.lastIndex)
+            assertThat(s.items.none { it is UserMessage && it.text == MESSAGE }).isTrue()
+            assertCardRowAsAChat(followupId, MESSAGE)
         }
         assertWithMessage("the named run was streamed before it started").that(streamed(named)).isFalse()
         val endAt = System.nanoTime()
         val next = endTurnAndDeliver()
         assertThat(next.id).isEqualTo(named)
-        rig.awaitUntilOr(45_000, "the named run followed") { state.activeRunId == named && !state.queuedBehindTurn && state.isStreaming }
+        rig.awaitUntilOr(45_000, "the named run followed with its message") { state.activeRunId == named && state.items.any { it is UserMessage && it.text == MESSAGE } }
         rig.awaitUntilOr(20_000, "the list to let it go") { controls.queue.none { it.id == followupId } }
         delay(1_000)
         assertThat(state.items.count { it is UserMessage && it.text == MESSAGE }).isEqualTo(1)
+        assertThat(card()).isEmpty()
         assertNeverStartingWhileTheTurnRan(sentAt, endAt)
-        assertOnePlace(followupId, sentAt)
+        assertOnePlace(followupId, setOf(MESSAGE), sentAt)
     }
 
     @Test
-    fun `a message waiting behind a Project's turn is still in the transcript, queued and off the card, after the app restarts`() = runBlocking<Unit> {
+    fun `a message waiting behind a Project's turn is still on the card after the app restarts, and moves into the transcript in one frame when its run starts`() = runBlocking<Unit> {
         server.namesQueuedRuns = true
         val root = folder.newFolder("rig-restarted")
         val before = rig(TranscriptEngine.STABLE, root)
         before.open(project = true)
         val followupId = before.sendMidTurn(MESSAGE)
-        val named = server.pending.getValue(agentId).single { it.followupId == followupId }.runId!!
+        val named = namedRun(followupId)!!
         before.awaitUntilOr(10_000, "the list to name it") { controls.queue.any { it.id == followupId } }
         // The process goes; the chat was written to disk when the account took the message.
         recorder?.cancel()
@@ -309,28 +423,59 @@ class QueuedMessageDisplayTest {
         frames.clear()
         val after = rig(TranscriptEngine.STABLE, root)
         after.open(project = true)
-        // From the first frame of the reopened chat on its turn.
-        val sentAt = System.nanoTime()
+        val openedAt = System.nanoTime()
         after.awaitUntilOr(10_000, "the list to name it") { controls.queue.any { it.id == followupId } }
         delay(1_500)
         run {
             val s = state
-            assertThat(s.items.count { it is UserMessage && it.text == MESSAGE }).isEqualTo(1)
-            assertThat(s.items.indexOfLast { it is UserMessage && it.text == MESSAGE }).isEqualTo(s.items.lastIndex)
-            assertThat(s.queuedBehindTurn).isTrue()
-            assertThat(s.workingCaption()).isEqualTo(QueuePlacement.QUEUED_BEHIND_TURN)
+            assertThat(s.items.none { it is UserMessage && it.text == MESSAGE }).isTrue()
+            assertCardRowAsAChat(followupId, MESSAGE)
             assertThat(s.activeRunId).isEqualTo(live.runId)
-            assertThat(controls.placed(s.queuePlacement).queue.none { it.id == followupId }).isTrue()
+            assertThat(s.workingCaption()).isEqualTo("Working…")
         }
         assertWithMessage("the named run was streamed before it started").that(streamed(named)).isFalse()
         val endAt = System.nanoTime()
         endTurnAndDeliver()
-        after.awaitUntilOr(45_000, "the named run followed") { state.activeRunId == named && !state.queuedBehindTurn && state.isStreaming }
+        after.awaitUntilOr(45_000, "the named run followed with its message") { state.activeRunId == named && state.items.any { it is UserMessage && it.text == MESSAGE } }
+        after.awaitUntilOr(20_000, "the list to let it go") { controls.queue.none { it.id == followupId } }
+        delay(1_000)
         assertThat(state.items.count { it is UserMessage && it.text == MESSAGE }).isEqualTo(1)
-        assertNeverStartingWhileTheTurnRan(sentAt, endAt)
-        frames.filter { it.atNanos in sentAt until endAt }.forEachIndexed { i, f ->
-            if (f.transcriptShows(MESSAGE)) assertWithMessage("frame $i: on the card beside the transcript's copy").that(f.cardShows(followupId)).isFalse()
-        }
+        assertThat(card()).isEmpty()
+        assertNeverStartingWhileTheTurnRan(openedAt, endAt)
+        // The restored chat knows the message for its own: the frame its run's prompt appears is the frame the card lets it go.
+        assertOnePlace(followupId, setOf(MESSAGE), openedAt)
+    }
+
+    @Test
+    fun `a Project's message an earlier build kept in the transcript while it waited is on the card after the upgrade, and nothing follows its run`() = runBlocking<Unit> {
+        server.namesQueuedRuns = true
+        val root = folder.newFolder("rig-upgraded")
+        val before = rig(TranscriptEngine.STABLE, root)
+        before.open(project = true)
+        val followupId = before.sendMidTurn(MESSAGE)
+        val named = namedRun(followupId)!!
+        before.awaitUntilOr(10_000, "the list to name it") { controls.queue.any { it.id == followupId } }
+        val saved = before.conversationCache.read(agentId)!!.value
+        recorder?.cancel()
+        before.steering.detach(agentId)
+        before.close()
+        frames.clear()
+        // What 0.3.70–0.3.75 wrote instead: the message as a prompt filed under the named run, marked waiting behind the turn.
+        val at = LongProject.iso(1_800_000_000_000L)
+        val waiting = CachedLocalPrompt(V0ConversationMessageDto("local-1800000000000", "user_message", MESSAGE), RunDto(id = named, agentId = agentId, status = "CREATING", createdAt = at, updatedAt = at), waitsBehind = live.runId)
+        before.conversationCache.write(saved.copy(awaiting = emptyList(), local = saved.local + waiting))
+        val after = rig(TranscriptEngine.STABLE, root)
+        after.open(project = true)
+        val openedAt = System.nanoTime()
+        after.awaitUntilOr(10_000, "the list to name it") { controls.queue.any { it.id == followupId } }
+        delay(1_500)
+        val s = state
+        assertThat(s.items.none { it is UserMessage && it.text == MESSAGE }).isTrue()
+        assertCardRowAsAChat(followupId, MESSAGE)
+        assertThat(s.activeRunId).isEqualTo(live.runId)
+        assertThat(s.workingCaption()).isEqualTo("Working…")
+        assertWithMessage("the named run was streamed before it started").that(streamed(named)).isFalse()
+        assertNeverStartingWhileTheTurnRan(openedAt, System.nanoTime())
     }
 
     @Test
@@ -346,70 +491,18 @@ class QueuedMessageDisplayTest {
         val followupId = rig.sendMidTurn(MESSAGE)
         val run = server.delivered.single { it.first == followupId }.second
         val s = state
-        assertThat(s.queuedBehindTurn).isFalse()
         assertThat(s.activeRunId).isEqualTo(run)
-        assertThat(s.workingCaption()).isNotEqualTo(QueuePlacement.QUEUED_BEHIND_TURN)
         assertThat(s.items.count { it is UserMessage && it.text == MESSAGE }).isEqualTo(1)
-        assertThat(controls.placed(s.queuePlacement).queue.none { it.id == followupId }).isTrue()
-    }
-
-    // -- an ordinary chat mid-turn: the card until the run starts --------------------------------------------------------
-
-    @Test
-    fun `Stable - an ordinary chat's message waits on the card although the account names its run, and moves into the transcript when that run starts`() = runBlocking<Unit> {
-        chatMessageOnTheCard(TranscriptEngine.STABLE, named = true)
-    }
-
-    @Test
-    fun `Beta - an ordinary chat's message waits on the card although the account names its run, and moves into the transcript when that run starts`() = runBlocking<Unit> {
-        chatMessageOnTheCard(TranscriptEngine.BETA, named = true)
-    }
-
-    @Test
-    fun `Stable - an ordinary chat's message the account names no run for waits on the card until it is delivered`() = runBlocking<Unit> {
-        chatMessageOnTheCard(TranscriptEngine.STABLE, named = false)
-    }
-
-    private suspend fun chatMessageOnTheCard(engine: TranscriptEngine, named: Boolean) {
-        server.namesQueuedRuns = named
-        val rig = rig(engine)
-        rig.open(project = false)
-        val sentAt = System.nanoTime()
-        val followupId = rig.sendMidTurn(MESSAGE)
-        val reserved = server.pending.getValue(agentId).single { it.followupId == followupId }.runId
-        assertThat(reserved != null).isEqualTo(named)
-        run {
-            val s = state
-            // On the card, from this device's own knowledge until the list names it; not in the transcript.
-            assertThat(s.items.none { it is UserMessage && it.text == MESSAGE }).isTrue()
-            assertThat(controls.placed(s.queuePlacement).queue.map { it.id }).contains(followupId)
-            assertThat(s.queuedBehindTurn).isFalse()
-            assertThat(s.workingCaption()).isEqualTo("Working…")
-            assertThat(s.activeRunId).isEqualTo(live.runId)
-            assertThat(rig.agents.agent(agentId)?.latestRunId).isEqualTo(live.runId)
-            assertThat(rig.agents.agent(agentId)?.runStatus).isNotEqualTo(RunStatus.CREATING)
-        }
-        rig.awaitUntilOr(10_000, "the list to name it") { controls.queue.any { it.id == followupId } }
-        assertThat(controls.placed(state.queuePlacement).queue.map { it.id }).contains(followupId)
-        reserved?.let { assertWithMessage("the named run was streamed before it started").that(streamed(it)).isFalse() }
-        val endAt = System.nanoTime()
-        val next = endTurnAndDeliver()
-        reserved?.let { assertThat(next.id).isEqualTo(it) }
-        rig.awaitUntilOr(45_000, "the message filed under its run") { state.items.any { it is UserMessage && it.text == MESSAGE } && state.activeRunId == next.id }
-        rig.awaitUntilOr(20_000, "the list to let it go") { controls.queue.none { it.id == followupId } }
-        delay(1_500)
-        val s = state
-        assertThat(s.items.count { it is UserMessage && it.text == MESSAGE }).isEqualTo(1)
-        val at = s.items.indexOfFirst { it is UserMessage && it.text == MESSAGE }
-        rig.awaitUntilOr(20_000, "the run's rows") { state.items.drop(at + 1).any { it !is UserMessage && it.id.contains(next.id) } }
-        assertThat(controls.placed(s.queuePlacement).queue).isEmpty()
-        assertNeverStartingWhileTheTurnRan(sentAt, endAt)
-        assertOnePlace(followupId, sentAt)
+        assertThat(card().none { it.id == followupId }).isTrue()
     }
 
     private companion object {
         const val TURNS = 8
         const val MESSAGE = "Yeah, that stop the agent confirmation dialog looks perfect. I permit this."
         const val LAST_WORDS = "I've started a worker on it: Scroll pinning."
+        const val FIRST = "First: compare the free tiers."
+        const val SECOND = "Second: then the trial lengths."
+        const val EDITED = "Second: then the trial lengths, and the annual discounts."
+        const val THIRD = "Third: and file both under research."
     }
 }

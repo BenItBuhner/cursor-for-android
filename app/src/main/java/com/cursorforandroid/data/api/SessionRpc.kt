@@ -17,14 +17,16 @@ suspend fun <I, O> ConnectJsonClient.unaryWithSession(
     responseSerializer: KSerializer<O>,
     /** Whether a rate limit is waited out and the call made once more (see `ApiThrottle.call`); off for a call with a fallback. */
     retryRefusals: Boolean = true,
+    /** The throttle's lane the call waits in (see `ApiThrottle.Lane`). */
+    lane: ApiThrottle.Lane = ApiThrottle.Lane.CONTROL,
 ): O {
     val token = tokens.accessToken()
     return try {
-        unary(service, method, token, body, requestSerializer, responseSerializer, retryRefusals)
+        unary(service, method, token, body, requestSerializer, responseSerializer, retryRefusals, lane)
     } catch (e: ConnectRpcException) {
         if (!e.isUnauthenticated) throw e
         tokens.invalidate()
-        unary(service, method, tokens.accessToken(), body, requestSerializer, responseSerializer, retryRefusals)
+        unary(service, method, tokens.accessToken(), body, requestSerializer, responseSerializer, retryRefusals, lane)
     }
 }
 

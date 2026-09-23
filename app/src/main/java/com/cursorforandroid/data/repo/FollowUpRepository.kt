@@ -887,8 +887,8 @@ class FollowUpRepository(
                                     if (queued) {
                                         // The account holds it now, under its followup id: the transcript files it
                                         // under the run the account starts on it (see ConversationRepository.expectDelivery)
-                                        // — the card above the composer showing it meanwhile, or a Project's transcript
-                                        // under the run named for it — and is read again for the turn the account is on.
+                                        // — the card above the composer showing it meanwhile — and is read again for
+                                        // the turn the account is on.
                                         conversations.expectDelivery(e.agentId, item.previewText, item.images.map { it.image }, followupId = followupId, runId = runId)
                                         conversations.reload(e.agentId)
                                     }

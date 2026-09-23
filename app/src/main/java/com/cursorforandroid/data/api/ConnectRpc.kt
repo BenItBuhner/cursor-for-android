@@ -163,8 +163,18 @@ object ConnectRpc {
 class ApiThrottle(
     maxInFlight: Int = DEFAULT_MAX_IN_FLIGHT,
     private val now: () -> Long = System::currentTimeMillis,
+    blobsInFlight: Int = BLOBS_IN_FLIGHT,
 ) {
+    /**
+     * Where a call waits for its permit: [CONTROL], the account's lists, queues and writes, a few at a time; [BLOBS],
+     * the record's blobs (`GetBlobForAgentKV`) — a few hundred bytes each, content-addressed, read by the dozen when a
+     * long chat opens, as Cursor's own client reads them — in a lane of their own, so a chat's turns are not read three
+     * at a time behind the sidebar's refresh. Both lanes wait out the same pause.
+     */
+    enum class Lane { CONTROL, BLOBS }
+
     private val permits = Semaphore(maxInFlight)
+    private val blobPermits = Semaphore(blobsInFlight)
     @Volatile private var pausedUntilMillis = 0L
     private val refusals = java.util.concurrent.atomic.AtomicInteger()
 
@@ -186,14 +196,14 @@ class ApiThrottle(
      * documented endpoints can also give) hears the refusal at once rather than waiting the pause out for a second
      * try, and the pause still stands for everyone.
      */
-    suspend fun <T> call(retryRefusals: Boolean = true, block: suspend () -> T): T {
+    suspend fun <T> call(retryRefusals: Boolean = true, lane: Lane = Lane.CONTROL, block: suspend () -> T): T {
         var attempt = 0
         while (true) {
             attempt++
             val wait = pausedUntilMillis - now()
             if (wait > 0) delay(wait)
             try {
-                return permits.withPermit { block() }
+                return (if (lane == Lane.BLOBS) blobPermits else permits).withPermit { block() }
             } catch (e: ConnectRpcException) {
                 if (!e.isRateLimited) throw e
                 refusals.incrementAndGet()
@@ -206,6 +216,8 @@ class ApiThrottle(
     companion object {
         /** Calls on the wire at once: enough to overlap round trips, few enough that the account service does not refuse them. */
         const val DEFAULT_MAX_IN_FLIGHT = 3
+        /** Blob reads on the wire at once (see [Lane.BLOBS]). */
+        const val BLOBS_IN_FLIGHT = 8
         const val DEFAULT_PAUSE_MS = 1_500L
         const val MIN_PAUSE_MS = 250L
         const val MAX_PAUSE_MS = 15_000L
@@ -228,7 +240,9 @@ class ConnectJsonClient(private val client: OkHttpClient, private val baseUrl: S
         responseSerializer: KSerializer<O>,
         /** Whether a rate limit is waited out and the call made once more (see [ApiThrottle.call]); off for a call with a fallback. */
         retryRefusals: Boolean = true,
-    ): O = throttle.call(retryRefusals) {
+        /** Which of the throttle's lanes the call waits in (see [ApiThrottle.Lane]). */
+        lane: ApiThrottle.Lane = ApiThrottle.Lane.CONTROL,
+    ): O = throttle.call(retryRefusals, lane) {
         withContext(Dispatchers.IO) {
             val json = CursorJson.encodeToString(requestSerializer, body)
             val path = ConnectRpc.path(service, method)

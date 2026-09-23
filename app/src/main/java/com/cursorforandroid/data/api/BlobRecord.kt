@@ -13,6 +13,7 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.intOrNull
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * The account's blob-backed record of a chat read into the steps the step-indexed record used to give
@@ -32,8 +33,51 @@ object BlobRecord {
 
     /** How many blobs one turn read cost, and how many the state answer had carried already. */
     class Counter {
-        var blobs = 0
-        var prefetched = 0
+        val blobs = AtomicInteger()
+        val prefetched = AtomicInteger()
+    }
+
+    /** Where a turn read takes its blobs from (see `HeadlessConversationApi.readTurns`). */
+    interface Source {
+        /**
+         * The blob: as held — a prefetched partial copy too, unless [whole] — or from the network. Throws the
+         * record's refusal; `not_found` and an answer without a blob are the blob missing (see [read]).
+         */
+        suspend fun blob(id: String, whole: Boolean = false): ByteArray
+
+        /** The blob when it is held, in memory or on disk, the network not asked; null otherwise. */
+        suspend fun held(id: String): BlobCache.Held?
+
+        /** The blob [id] was read as a turn's structure or its prompt: a partial copy of it is whole (see [BlobCache.confirm]). */
+        suspend fun confirm(id: String)
+    }
+
+    /**
+     * What one turn read came to: its steps (the prompt first), whether every step was read, what the turn's
+     * structure lists ([stepTotal] steps, [messageSteps] of them the coordinator's messages to the user; null when the
+     * structure could not be read), and the blobs asked for and answered as missing or unreadable — the drift check's
+     * inputs (see `RecordPager.Raw.drift`).
+     */
+    class Read(
+        val steps: List<HeadlessStep>,
+        val complete: Boolean,
+        val stepTotal: Int?,
+        val messageSteps: Int?,
+        val asked: Int,
+        val missing: Int,
+        val lastMissing: ConnectRpcException?,
+    )
+
+    /** The blobs a read asked for and the ones it found missing or unreadable, and the last answer that said so. */
+    private class Tally {
+        val asked = AtomicInteger()
+        val missing = AtomicInteger()
+        @Volatile var last: ConnectRpcException? = null
+
+        fun unreadable(what: String) {
+            missing.incrementAndGet()
+            last = ConnectRpcException(200, ConnectRpcException.UNREADABLE_ANSWER, "A blob Cursor's GetBlobForAgentKV gave could not be read as $what.", path = ConnectRpc.path(HeadlessConversationApi.SERVICE, HeadlessConversationApi.BLOB_METHOD))
+        }
     }
 
     /**
@@ -41,17 +85,55 @@ object BlobRecord {
      * message and every step read through [read] — side by side, the caller's [read] bounding how many at once. A
      * blob that cannot be decoded is a step saying so in its shape, and the turn goes on without it.
      */
-    suspend fun turn(index: Int, turnBlobId: String, read: suspend (String) -> ByteArray): List<HeadlessStep> = coroutineScope {
-        val turnJson = fetch(read, turnBlobId)?.let { decodeOrNull(it, AgentSchemas.CONVERSATION_TURN) }
+    suspend fun turn(index: Int, turnBlobId: String, read: suspend (String) -> ByteArray): List<HeadlessStep> =
+        read(index, turnBlobId, object : Source {
+            override suspend fun blob(id: String, whole: Boolean): ByteArray = read(id)
+            override suspend fun held(id: String): BlobCache.Held? = null
+            override suspend fun confirm(id: String) = Unit
+        }).steps
+
+    /**
+     * Turn [index] from its blob [turnBlobId] through [source], to [plan]: the structure, the prompt (its text from a
+     * blob of its own when the message keeps it there), and the steps the plan reads — every one for
+     * [TurnPlan.FULL], a partial copy read again whole; for [TurnPlan.MESSAGES] the coordinator's messages and any
+     * step already held. A step of the turn left for later is not a step of it yet: the read says it is not complete.
+     */
+    suspend fun read(index: Int, turnBlobId: String, source: Source, plan: TurnPlan = TurnPlan.FULL): Read = coroutineScope {
+        val tally = Tally()
+        val turnBytes = fetch(source, turnBlobId, tally)
+        val turnJson = turnBytes?.let { decodeOrNull(it, AgentSchemas.CONVERSATION_TURN) }
+        if (turnBytes != null && turnJson == null) tally.unreadable("agent.v1.ConversationTurnStructure")
+        if (turnJson != null) source.confirm(turnBlobId)
         val agent = turnJson?.get("agentConversationTurn") as? JsonObject
         if (agent == null) {
             // A shell turn, or a shape this build does not read: a blank step carrying what the blob held.
-            return@coroutineScope listOf(HeadlessStep(shape = StepShape(0, "blob:turn[unread]", turnJson?.let { RecordShapes.describe(it) } ?: "unreadable"), turnIndex = index))
+            val blank = listOf(HeadlessStep(shape = StepShape(0, "blob:turn[unread]", turnJson?.let { RecordShapes.describe(it) } ?: "unreadable"), turnIndex = index))
+            return@coroutineScope Read(blank, complete = true, stepTotal = null, messageSteps = null, asked = tally.asked.get(), missing = tally.missing.get(), lastMissing = tally.last)
         }
         val promptId = agent.string("userMessage")
         val stepIds = (agent["steps"] as? JsonArray)?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull?.takeIf { id -> id.isNotBlank() } } ?: emptyList()
-        val prompt = async { promptId?.let { id -> fetch(read, id)?.let { decodeOrNull(it, AgentSchemas.USER_MESSAGE) } } }
-        val decodedSteps = stepIds.map { id -> async { fetch(read, id)?.let { decodeOrNull(it, AgentSchemas.CONVERSATION_STEP) } } }.awaitAll()
+        val messageIndices = (agent["sendMessageStepIndices"] as? JsonArray)?.mapNotNull { (it as? JsonPrimitive)?.intOrNull }?.toSet() ?: emptySet()
+        val prompt = async {
+            promptId?.let { id ->
+                val bytes = fetch(source, id, tally) ?: return@let null
+                val message = decodeOrNull(bytes, AgentSchemas.USER_MESSAGE)
+                if (message == null) tally.unreadable("agent.v1.UserMessage") else source.confirm(id)
+                message?.let { withBlobText(it, source, tally) }
+            }
+        }
+        // Null for a step left for later, a Pair of its id and what it decoded to (null: unreadable) otherwise.
+        val decodedSteps = stepIds.mapIndexed { i, id ->
+            async {
+                val bytes = when {
+                    plan == TurnPlan.FULL -> fetch(source, id, tally, whole = true)
+                    i in messageIndices -> fetch(source, id, tally)
+                    else -> source.held(id)?.bytes ?: return@async null
+                }
+                val decoded = bytes?.let { decodeOrNull(it, AgentSchemas.CONVERSATION_STEP) }
+                if (bytes != null && decoded == null) tally.unreadable("agent.v1.ConversationStep")
+                id to decoded
+            }
+        }.awaitAll()
         val out = ArrayList<HeadlessStep>(stepIds.size * 2 + 2)
         var position = 0
         val message = prompt.await()
@@ -60,7 +142,13 @@ object BlobRecord {
             message == null -> out += HeadlessStep(shape = StepShape(position++, "blob:user_message[unreadable]", "unreadable"), turnIndex = index)
             else -> out += promptStep(message, position++, index)
         }
-        decodedSteps.forEachIndexed { i, step ->
+        var complete = true
+        decodedSteps.forEachIndexed { i, entry ->
+            if (entry == null) {
+                complete = false
+                return@forEachIndexed
+            }
+            val step = entry.second
             if (step == null) {
                 out += HeadlessStep(shape = StepShape(position++, "blob:step[unreadable]", "unreadable"), turnIndex = index)
                 return@forEachIndexed
@@ -79,7 +167,32 @@ object BlobRecord {
                 else -> out += HeadlessStep(shape = StepShape(position++, "blob:step[unread]", shape), turnIndex = index)
             }
         }
-        out
+        // A turn is never without a step: the turn splitter cuts at them, and a turn with none would not be one.
+        if (out.isEmpty()) out += HeadlessStep(shape = StepShape(0, "blob:turn[empty]", "{}"), turnIndex = index)
+        Read(out, complete, stepTotal = stepIds.size, messageSteps = messageIndices.count { it in stepIds.indices }, asked = tally.asked.get(), missing = tally.missing.get(), lastMissing = tally.last)
+    }
+
+    /**
+     * A prompt that keeps its text in a blob of its own (`text_blob_id`, a long prompt's): the text read from there —
+     * the blob's bytes as UTF-8 text, or, when they read as a message, its `text` — under the key [promptStep] reads.
+     * Unchanged when the message carries its text, or the blob cannot be had.
+     */
+    private suspend fun withBlobText(message: JsonObject, source: Source, tally: Tally): JsonObject {
+        if (message.string("text") != null || message.string("richText") != null) return message
+        val id = message.string("textBlobId") ?: return message
+        val bytes = fetch(source, id, tally) ?: return message
+        val text = textOf(bytes) ?: return message
+        source.confirm(id)
+        return JsonObject(message + ("text" to JsonPrimitive(text)) + (TEXT_FROM_BLOB to JsonPrimitive(true)))
+    }
+
+    /** The text a prompt's text blob holds: the bytes as UTF-8 when they are text, else a message's `text` field. */
+    internal fun textOf(bytes: ByteArray): String? {
+        val decoder = Charsets.UTF_8.newDecoder()
+        val text = runCatching { decoder.decode(java.nio.ByteBuffer.wrap(bytes)).toString() }.getOrNull()
+        if (text != null && text.isNotBlank() && text.none { it.code < 0x20 && it != '\n' && it != '\r' && it != '\t' }) return text
+        val asMessage = runCatching { ProtoWire.decode(bytes, AgentSchemas.USER_MESSAGE) }.getOrNull()
+        return asMessage?.string("text")
     }
 
     /** The prompt step: `agent.v1.UserMessage`'s text, its mode (Project or not), and whether it was steered into a running turn. */
@@ -88,13 +201,18 @@ object BlobRecord {
         val mode = (message["mode"] as? JsonPrimitive)
         val project = mode?.intOrNull == AgentSchemas.AGENT_MODE_PROJECT || mode?.contentOrNull?.uppercase()?.let { it == "PROJECT" || it.endsWith("_PROJECT") } == true
         val steer = (message["turnSteer"] as? JsonPrimitive)?.booleanOrNull == true
+        val fromBlob = (message[TEXT_FROM_BLOB] as? JsonPrimitive)?.booleanOrNull == true
         val branch = when {
             text.isBlank() && message.string("textBlobId") != null -> "blob:user_message[text-in-blob]"
+            fromBlob -> "blob:user_message[text-blob]"
             steer -> "blob:user_message[steer]"
             else -> "blob:user_message"
         }
-        return HeadlessStep(userMessage = text.ifBlank { null }, projectMode = project, shape = StepShape(position, branch, RecordShapes.describe(message)), turnIndex = index, steer = steer)
+        return HeadlessStep(userMessage = text.ifBlank { null }, projectMode = project, shape = StepShape(position, branch, RecordShapes.describe(JsonObject(message - TEXT_FROM_BLOB))), turnIndex = index, steer = steer)
     }
+
+    /** The key [withBlobText] marks a prompt with whose text came from its text blob. */
+    private const val TEXT_FROM_BLOB = "_textFromBlob"
 
     /**
      * A tool call step as two of the step-indexed record's: the call with its arguments, and its result when the
@@ -136,10 +254,17 @@ object BlobRecord {
      * step is shown as unreadable and the turn goes on. Any other refusal — the session, a rate limit, the network —
      * is the record's refusal and is thrown for the caller to say.
      */
-    private suspend fun fetch(read: suspend (String) -> ByteArray, id: String): ByteArray? = try {
-        read(id)
+    private suspend fun fetch(source: Source, id: String, tally: Tally, whole: Boolean = false): ByteArray? = try {
+        tally.asked.incrementAndGet()
+        source.blob(id, whole)
     } catch (e: ConnectRpcException) {
-        if (e.httpCode == 404 || e.code == "not_found" || e.isUnreadableAnswer) null else throw e
+        if (e.httpCode == 404 || e.code == "not_found" || e.isUnreadableAnswer) {
+            tally.missing.incrementAndGet()
+            tally.last = e
+            null
+        } else {
+            throw e
+        }
     }
 
     private fun decodeOrNull(bytes: ByteArray, schema: ProtoWire.Schema): JsonObject? = runCatching { ProtoWire.decode(bytes, schema) }.getOrNull()

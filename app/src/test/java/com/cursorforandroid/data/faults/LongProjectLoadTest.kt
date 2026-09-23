@@ -130,13 +130,13 @@ class LongProjectLoadTest {
         val firstPaintMs = (System.nanoTime() - opened) / 1_000_000
         val atPaint = requests()
         report("record: first paint after ${firstPaintMs} ms", conversations.state(agentId).value, presenter)
-        // The handshake, the state (the turn list), then the newest three turns' blobs side by side, the run list
-        // beside them: a handful of round trips of the account service at 300–900 ms each, and those turns' bytes —
-        // never the removed step-indexed read (`FetchBackgroundComposer`), and never the window's every step before
-        // the first frame.
+        // The handshake and the state (the turn list, the newest turns' structures, prompts and last steps prefetched
+        // with it), then at most the message steps the prefetch did not carry, the run list beside them: a couple of
+        // round trips of the account service at 300–900 ms each — never the removed step-indexed read
+        // (`FetchBackgroundComposer`), and never the window's every step before the first frame.
         assertThat(atPaint[FaultServer.Route.Record]).isNull()
         assertThat(atPaint[FaultServer.Route.RecordState]).isAtLeast(1)
-        assertThat(atPaint[FaultServer.Route.Blob]).isAtLeast(3)
+        assertThat(atPaint[FaultServer.Route.Blob] ?: 0).isAtMost(12)
         assertThat(firstPaintMs).isLessThan(6_000L)
         assertThat(server.recordBytes[agentId] ?: 0L).isLessThan(400_000L)
         rig.awaitUntil(60_000) { !conversations.state(agentId).value.isLoading }

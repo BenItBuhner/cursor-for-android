@@ -53,6 +53,7 @@ import com.cursorforandroid.data.api.SlashCommandApi
 import com.cursorforandroid.data.api.SseRunStreamer
 import com.cursorforandroid.data.api.SteeringApi
 import com.cursorforandroid.data.api.StoreReadTarget
+import com.cursorforandroid.data.api.TurnPlan
 import com.cursorforandroid.data.api.WorkerLaunch
 import com.cursorforandroid.data.api.WorkspaceFilesApi
 import com.cursorforandroid.data.auth.CursorLogin
@@ -316,7 +317,7 @@ class AppGraph(
     private val lazyMachineApi = lazy { MachineApi(lazyAccountRpc.value, lazySessionTokens.value) }
     /** A chat's controls on the account: answering its question, its queue, steering and holding its run. */
     /** The account records' blobs, shared by the transcript's record reader and the goal strip's state read (see BlobCache). */
-    private val lazyBlobCache = lazy { BlobCache() }
+    private val lazyBlobCache = lazy { BlobCache(BlobCache.MEMORY_BLOBS_WITH_DISK, BlobCache.MEMORY_BYTES_WITH_DISK, disk = caches.blobs) }
     private val lazySteeringApi = lazy { SteeringApi(lazyAccountRpc.value, lazySessionTokens.value, blobs = lazyBlobCache.value) }
     /**
      * The account's own transcript of a chat (`FetchBackgroundComposer`), on the account client with the transcript's
@@ -642,6 +643,8 @@ class AppGraph(
         override suspend fun fetch(agentId: String, startIndex: Int, limit: Int): HeadlessPage = lazyHeadlessTranscript.value.fetch(agentId, startIndex, limit)
         override suspend fun state(agentId: String): RecordState = lazyHeadlessTranscript.value.state(agentId)
         override suspend fun turns(agentId: String, from: Int, limit: Int, state: RecordState?): HeadlessTurnPage? = lazyHeadlessTranscript.value.turns(agentId, from, limit, state)
+        override suspend fun readTurns(agentId: String, from: Int, limit: Int, state: RecordState?, plan: TurnPlan, held: Map<Int, String>): HeadlessTurnPage? = lazyHeadlessTranscript.value.readTurns(agentId, from, limit, state, plan, held)
+        override fun blobCounts(agentId: String) = if (lazyHeadlessTranscript.isInitialized()) lazyHeadlessTranscript.value.blobCounts(agentId) else null
         override val readsTurns: Boolean get() = true
     }
     val conversations: ConversationRepository get() = lazyConversations.value
@@ -891,6 +894,8 @@ class AppGraph(
             if (lazyAccountPullRequests.isInitialized()) lazyAccountPullRequests.value.reset()
             if (lazyPullRequests.isInitialized()) pullRequests.reset()
             caches.pullRequests.removeAll()
+            // The account records' blobs are the account's too.
+            caches.blobs.clear()
             if (lazySlashCommands.isInitialized()) slashCommands.reset()
             caches.slashCommands.removeAll()
             // The panel's account reads — a pull request the SCM service answered, a workspace listing, a diff — go too.

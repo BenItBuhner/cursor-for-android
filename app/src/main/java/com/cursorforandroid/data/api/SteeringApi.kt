@@ -131,6 +131,7 @@ class SteeringApi(
      * at all, is no goal.
      */
     override suspend fun goal(agentId: String): Goal? {
+        // The transcript's read of the same state, when one is in flight, serves: the state is the whole turn list.
         val conversation = states.read(agentId).conversationState ?: return null
         val state = runCatching { CursorJson.decodeFromJsonElement(ConversationStateDto.serializer(), conversation) }.getOrNull()?.goalState ?: return null
         val objective = state.objective?.trim()?.takeIf { it.isNotEmpty() } ?: return null
