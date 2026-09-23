@@ -52,6 +52,7 @@ import com.cursorforandroid.domain.TranscriptLoadDiagnostics
 import com.cursorforandroid.domain.TranscriptPerf
 import com.cursorforandroid.domain.UserMessage
 import com.cursorforandroid.domain.RunStatus
+import com.cursorforandroid.domain.SystemNotification
 import com.cursorforandroid.domain.SystemNotifications
 import com.cursorforandroid.domain.TimelineItem
 import com.cursorforandroid.util.AppClock
@@ -960,7 +961,10 @@ class ConversationRepository(
             // it among the record's turns — before the first turn that started after it, when the account's timings
             // say so, else after them all: a reply is never shown above the prompt it answers, whichever source each
             // came from (see [turnOf], and the order this keeps, `LocalEchoOrderTest`).
-            val trailing = local.filter { window.turnOf(it) == null }
+            // A prompt steered into a run under way is none of these: it has no turn of its own, and the run it went
+            // into keeps its place among the record's turns — it is drawn among that run's rows (see [steers] below).
+            val trailing = local.filter { it.steeredAfter == null && window.turnOf(it) == null }
+            val steers = local.filter { it.steeredAfter != null && window.turnOf(it) == null }.groupBy { it.run.id }
             val trailingIds = trailing.mapTo(HashSet()) { it.run.id }
             val paired = ordered.filter { it.id !in trailingIds }
             val offset = paired.size - window.turns.size
@@ -1025,7 +1029,9 @@ class ConversationRepository(
                 // everything downstream (the rows, the screen's rows) can tell it has not changed without reading it.
                 val rendered = renderedTurns[turn.stepIndex]?.takeIf { it.inputs.sameAs(inputs) }?.also { perf.turnRenderReused() }
                     ?: RenderedTurn(inputs, renderTurn(inputs)).also { renderedTurns[turn.stepIndex] = it; perf.turnRendered() }
+                val start = items.size
                 items.addAll(rendered.items)
+                run?.let { r -> steers[r.id]?.let { spliceSteersInTurn(items, start, r, it) } }
                 shown += turn.stepIndex
                 val texts = CoordinatorTranscript.messageTexts(rendered.items)
                 if (texts.isNotEmpty()) (messagesShown ?: HashSet<String>().also { messagesShown = it }).addAll(texts)
@@ -1033,8 +1039,28 @@ class ConversationRepository(
             // The cache holds the window's turns and nothing else: a turn paged out (see [trimWindow]) leaves it.
             if (renderedTurns.size > shown.size) renderedTurns.keys.retainAll(shown)
             appended.forEach { prompt -> items += echo(prompt) }
+            // A steer into a run the window does not show still stands, after everything.
+            val placed = window.turns.indices.mapNotNullTo(HashSet()) { paired.getOrNull(offset + it)?.id }
+            steers.filterKeys { it !in placed }.values.flatten().forEach { items += steerBubble(it) }
             return items.withUniqueIds()
         }
+
+        /**
+         * Puts [prompts] — steered into [run] — among the rows of [run]'s turn, which begin at [start] of [items]: after
+         * the turn's prompt and the first [LocalPrompt.steeredAfter] of its rows, where the account delivered each, and
+         * never below the turn's footer.
+         */
+        private fun spliceSteersInTurn(items: MutableList<TimelineItem>, start: Int, run: RunDto, prompts: List<LocalPrompt>) {
+            val end = items.size
+            val body = (start until end).firstOrNull { items[it] !is UserMessage && items[it] !is SystemNotification } ?: end
+            val footer = (start until end).firstOrNull { (items[it] as? RunFooter)?.runId == run.id } ?: end
+            prompts.sortedByDescending { it.steeredAfter ?: 0 }.forEach { steered ->
+                items.add((body + (steered.steeredAfter ?: 0)).coerceIn(body, footer), steerBubble(steered))
+            }
+        }
+
+        private fun steerBubble(steered: LocalPrompt): UserMessage =
+            UserMessage(steered.message.id, steered.message.text, parseIsoMillis(steered.run.createdAt).takeIf { it > 0 }, attachments = promptImages[steered.message.id] ?: emptyList())
 
         /** The rendered items of the window's turns, by step index; see [recordItems]. Under the entry's monitor. */
         private val renderedTurns = HashMap<Int, RenderedTurn>()
@@ -1143,7 +1169,7 @@ class ConversationRepository(
         fun recordTurnsNeedingReplay(): List<RunDto> {
             val window = recordWindow ?: return emptyList()
             val ordered = allRuns()
-            val trailing = local.filter { window.turnOf(it) == null }.mapTo(HashSet()) { it.run.id }
+            val trailing = window.trailingRunIds()
             val paired = ordered.filter { it.id !in trailing }
             val offset = paired.size - window.turns.size
             return window.turns.withIndex().mapNotNull { (i, turn) ->
@@ -1172,7 +1198,7 @@ class ConversationRepository(
             val window = recordWindow ?: return false
             if (runsComplete || olderRunsCursor == null) return false
             // The runs of prompts sent from here that the record has not caught up with pair with no turn of the window.
-            val trailing = local.count { window.turnOf(it) == null }
+            val trailing = window.trailingRunIds().size
             return allRuns().size - trailing < window.turns.size
         }
 
@@ -1190,6 +1216,12 @@ class ConversationRepository(
          * turn that merely started around the time the prompt was sent is another question asked a moment before or
          * after, and taking it for this one would make that question disappear.
          */
+        /**
+         * The runs of the prompts sent from here that the record has not caught up with: they pair with no turn of the
+         * window. Never a steer's: it went into a run under way, which keeps its turn (see [recordItems]).
+         */
+        fun RecordWindow.trailingRunIds(): Set<String> = local.filter { it.steeredAfter == null && turnOf(it) == null }.mapTo(HashSet()) { it.run.id }
+
         fun RecordWindow.turnOf(prompt: LocalPrompt): RecordTurn? {
             val text = normalizePrompt(prompt.message.text)
             if (text.isEmpty()) return null
@@ -1547,7 +1579,7 @@ class ConversationRepository(
                 // (paired as [recordItems] pairs them), and in a coordinator's chat the message's stages: what the
                 // record has of the coordinator's word, what reached the screen from which source, and which message
                 // call a stand-in carried that was an earlier turn's message again.
-                val trailing = with(e) { local.filter { window.turnOf(it) == null } }.mapTo(HashSet()) { it.run.id }
+                val trailing = with(e) { window.trailingRunIds() }
                 val paired = e.allRuns().filter { it.id !in trailing }
                 val offset = paired.size - window.turns.size
                 window.turns.mapIndexed { i, turn ->
@@ -2083,7 +2115,7 @@ class ConversationRepository(
      */
     private fun Entry.recordTraceStatus(window: RecordWindow): TraceStatus {
         val ordered = allRuns()
-        val trailing = local.filter { window.turnOf(it) == null }.mapTo(HashSet()) { it.run.id }
+        val trailing = window.trailingRunIds()
         val paired = ordered.filter { it.id !in trailing }
         val offset = paired.size - window.turns.size
         var shown = 0
@@ -3461,7 +3493,7 @@ class ConversationRepository(
         val (window, wanting) = synchronized(e) {
             val window = e.recordWindow ?: return
             val ordered = e.allRuns()
-            val trailing = with(e) { local.filter { window.turnOf(it) == null } }.mapTo(HashSet()) { it.run.id }
+            val trailing = with(e) { window.trailingRunIds() }
             val paired = ordered.filter { it.id !in trailing }
             val offset = paired.size - window.turns.size
             val chatRunning = e.isChatRunning()
