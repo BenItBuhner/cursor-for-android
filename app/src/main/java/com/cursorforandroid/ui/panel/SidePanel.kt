@@ -65,7 +65,10 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.unit.dp
+import com.cursorforandroid.ui.components.BackGestureEdges
 import com.cursorforandroid.ui.components.LocalScrollFadeSurface
+import com.cursorforandroid.ui.components.backGestureEdges
+import com.cursorforandroid.ui.components.rememberBackGestureEdges
 import com.cursorforandroid.ui.theme.CursorTheme
 import kotlin.coroutines.cancellation.CancellationException
 import kotlin.math.abs
@@ -84,9 +87,10 @@ import kotlinx.coroutines.launch
  * Closed, a drag toward the start edge anywhere on the content pulls the sheet in, once nothing inside has claimed it:
  * a horizontal scroller (a code block, a table, a row of attachments) scrolls until it reaches its end and only then
  * hands the rest of the drag over, a finger held before it moves is a selection or a message's menu, and a drag toward
- * the end edge is left to the sidebar drawer. Open, the scrim and the sheet take the drag, so a swipe anywhere puts it
- * away, the sheet's own scrollers handing over at their ends the same way. Back closes the sheet before anything behind
- * it goes back.
+ * the end edge is left to the sidebar drawer. A drag that starts in either of the window's back-gesture strips
+ * ([BackGestureEdges]) never opens it: from the end edge that is the system's back swipe, which runs the same way as
+ * the open drag. Open, the scrim and the sheet take the drag, so a swipe anywhere puts it away, the sheet's own
+ * scrollers handing over at their ends the same way. Back closes the sheet before anything behind it goes back.
  */
 @Composable
 fun SidePanelHost(
@@ -105,8 +109,9 @@ fun SidePanelHost(
     val widthPx = with(density) { panelWidth.toPx() }
     val flingThreshold = with(density) { FlingThreshold.toPx() } / widthPx
     val rtl = LocalLayoutDirection.current == LayoutDirection.Rtl
-    val opening = remember(state, scope) { ScrollerHandoff(state, scope, from = SidePanelValue.Closed) }
-    val closing = remember(state, scope) { ScrollerHandoff(state, scope, from = SidePanelValue.Open) }
+    val edges = rememberBackGestureEdges()
+    val opening = remember(state, scope, edges) { ScrollerHandoff(state, scope, from = SidePanelValue.Closed, edges = edges) }
+    val closing = remember(state, scope) { ScrollerHandoff(state, scope, from = SidePanelValue.Open, edges = null) }
     SideEffect {
         state.widthPx = widthPx
         opening.update(gesturesEnabled, rtl, flingThreshold)
@@ -126,11 +131,11 @@ fun SidePanelHost(
         onDragStopped = { velocity -> scope.launch { state.settle(velocity / widthPx, flingThreshold) } },
     )
 
-    Box(modifier.fillMaxSize()) {
+    Box(modifier.fillMaxSize().backGestureEdges(edges)) {
         Box(
             Modifier
                 .nestedScroll(opening)
-                .openDrag(state, scope, enabled = gesturesEnabled && !state.isOpen, rtl = rtl, flingThreshold = flingThreshold),
+                .openDrag(state, scope, edges, enabled = gesturesEnabled && !state.isOpen, rtl = rtl, flingThreshold = flingThreshold),
         ) { content() }
 
         PredictiveBackHandler(enabled = state.isOpen) { events ->
@@ -323,21 +328,33 @@ private val SidePanelValue.fraction: Float get() = if (this == SidePanelValue.Op
  * only on a pointer none of them has consumed: a horizontal scroller that took the drag keeps it (what it cannot scroll
  * comes through [ScrollerHandoff]), and so does the transcript's vertical scroll. A drag toward the end edge is left
  * unconsumed for the sidebar drawer around the chat, and so is one that only starts once the finger has been held past
- * the long-press timeout — a text selection or a message's menu, never the panel.
+ * the long-press timeout — a text selection or a message's menu, never the panel. A finger that went down in one of
+ * [edges]' back-gesture strips is left alone from the start: a swipe from the end edge toward the start is the system's
+ * back, not this.
  *
  * The velocity is the finger's from every sample it made, each event's history included, as `draggable` reads it. A
  * frame the app is slow to finish — the sheet's first, while its contents are composed — holds up the samples that
  * came in meanwhile, and Android hands them over at once as the history of one move: the event alone would say the
  * finger covered the whole way in an instant after standing still, and the fling that should open the sheet would
- * read as none at all, leaving it to settle back shut from where the lump of travel put it.
+ * read as none at all, leaving it to settle back shut from where the lump of travel put it. A drag taken away before
+ * the finger lifts — cancelled, as the system cancels the pointers of a gesture it has taken for itself — has no
+ * fling: the sheet settles by where it is, as `draggable` settles a cancelled drag.
  */
-private fun Modifier.openDrag(state: SidePanelState, scope: CoroutineScope, enabled: Boolean, rtl: Boolean, flingThreshold: Float): Modifier =
-    if (!enabled) this else pointerInput(state, rtl, flingThreshold) {
+private fun Modifier.openDrag(
+    state: SidePanelState,
+    scope: CoroutineScope,
+    edges: BackGestureEdges,
+    enabled: Boolean,
+    rtl: Boolean,
+    flingThreshold: Float,
+): Modifier =
+    if (!enabled) this else pointerInput(state, edges, rtl, flingThreshold) {
         val tracker = VelocityTracker()
         // Toward the start edge opens: the sheet's travel is the finger's, sign-flipped in LTR.
         val sign = if (rtl) 1f else -1f
         awaitEachGesture {
             val down = awaitFirstDown(requireUnconsumed = false)
+            if (edges.gestureStartedInEdge) return@awaitEachGesture
             tracker.addPointerInputChange(down)
             val slop = viewConfiguration.touchSlop
             var travel = 0f
@@ -363,10 +380,12 @@ private fun Modifier.openDrag(state: SidePanelState, scope: CoroutineScope, enab
                     state.draggableState.dispatchRawDelta(sign * change.positionChange().x)
                     change.consume()
                 }
-                // The lift itself: a finger that stopped before it let go flings nothing.
-                if (lifted) currentEvent.changes.firstOrNull { it.changedToUpIgnoreConsumed() }?.let(tracker::addPointerInputChange)
-                val maxVelocity = viewConfiguration.maximumFlingVelocity
-                velocity = sign * tracker.calculateVelocity().x.coerceIn(-maxVelocity, maxVelocity) / state.widthPx.coerceAtLeast(1f)
+                if (lifted) {
+                    // The lift itself: a finger that stopped before it let go flings nothing.
+                    currentEvent.changes.firstOrNull { it.changedToUpIgnoreConsumed() }?.let(tracker::addPointerInputChange)
+                    val maxVelocity = viewConfiguration.maximumFlingVelocity
+                    velocity = sign * tracker.calculateVelocity().x.coerceIn(-maxVelocity, maxVelocity) / state.widthPx.coerceAtLeast(1f)
+                }
             } finally {
                 // Settled on the composition's scope: the animation must not hold up the next gesture's detection.
                 scope.launch { state.settle(velocity, flingThreshold) }
@@ -379,9 +398,16 @@ private fun Modifier.openDrag(state: SidePanelState, scope: CoroutineScope, enab
  * attachments scrolls first, and once it is at its end the rest of the same drag pulls the sheet — open when it rests
  * [from] closed, shut when it rests open. From then until the finger lifts the sheet has the drag first, either way,
  * until it is back where it rested, when the scroller has it again; the release settles it like any other drag. Only
- * the finger's own scrolling hands over: a scroller's fling running into its end never moves the sheet.
+ * the finger's own scrolling hands over: a scroller's fling running into its end never moves the sheet. With [edges],
+ * the closed panel's, a drag that began in a back-gesture strip hands nothing over: a code block at the end edge that
+ * has scrolled to its end would otherwise pass the system's back swipe on as the open drag.
  */
-private class ScrollerHandoff(private val state: SidePanelState, private val scope: CoroutineScope, private val from: SidePanelValue) : NestedScrollConnection {
+private class ScrollerHandoff(
+    private val state: SidePanelState,
+    private val scope: CoroutineScope,
+    private val from: SidePanelValue,
+    private val edges: BackGestureEdges?,
+) : NestedScrollConnection {
     private var enabled = false
     /** The finger's travel that opens the sheet: toward the start edge. */
     private var openSign = -1f
@@ -406,7 +432,7 @@ private class ScrollerHandoff(private val state: SidePanelState, private val sco
         // under it) cannot carry over into the next one.
         if (atRest) {
             val awayFromRest = if (from == SidePanelValue.Closed) openSign * available.x > 0f else openSign * available.x < 0f
-            active = enabled && state.targetValue == from && !state.isAnimating && awayFromRest
+            active = enabled && state.targetValue == from && !state.isAnimating && awayFromRest && edges?.gestureStartedInEdge != true
         }
         return if (active) move(available.x) else Offset.Zero
     }
