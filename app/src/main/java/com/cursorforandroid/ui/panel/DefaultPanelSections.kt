@@ -4,7 +4,7 @@ import com.cursorforandroid.domain.AgentParentKind
 import com.cursorforandroid.domain.Capabilities
 import com.cursorforandroid.domain.TokenUsage
 import com.cursorforandroid.ui.components.CursorIcons
-import com.cursorforandroid.ui.projects.ProjectPanelSection
+import com.cursorforandroid.ui.projects.projectPanelItems
 
 /**
  * The panel's sections in order, each with the rule that puts it in a chat's panel or leaves it out. The set and
@@ -122,12 +122,13 @@ object DefaultPanelSections {
     )
 
     /**
-     * The Project section is a Cursor Project's one surface in the app ([ProjectPanelSection]): in its
+     * The Project section is a Cursor Project's one surface in the app ([projectPanelItems]): in its
      * coordinator's chat, the primaries with their live status and menus, New primary, Adopt a chat, the icon and
      * colour editor, the subagents and the shared context; in a primary's, side chat's or subagent's chat, the way
      * back to the coordinator's chat. It owns its view model, so it needs the graph the panel lives in
      * ([LocalPanelGraph]) and the host's navigation. Any other chat has no Project, and no Project section — a side
-     * chat of an ordinary chat included: its way back is the Overview's "Side chat of" row.
+     * chat of an ordinary chat included: its way back is the Overview's "Side chat of" row. A coordinator can have
+     * hundreds of primaries, so its rows are the panel list's own items ([PanelSection.items]).
      */
     val project = PanelSection(
         id = PanelSectionId.Project,
@@ -135,12 +136,12 @@ object DefaultPanelSections {
         visible = { _, state -> isProjectScoped(state) },
         hint = { state -> state.agent?.let { if (it.looksLikeProject) "Coordinator" else it.parent?.let { "In a Project" } } },
         expandedByDefault = true,
-        content = { state, actions ->
+        items = { state, actions ->
             val graph = LocalPanelGraph.current
             if (graph == null) {
-                EmptyRow("The Project section needs the app to render", "Nothing to show outside a running chat.")
+                { sectionRow("project-no-graph") { EmptyRow("The Project section needs the app to render", "Nothing to show outside a running chat.") } }
             } else {
-                ProjectPanelSection(graph, state.agentId, onOpenAgent = actions::openAgent, onNotify = actions::notify)
+                projectPanelItems(graph, state.agentId, onOpenAgent = actions::openAgent, onNotify = actions::notify)
             }
         },
     )

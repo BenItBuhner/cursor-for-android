@@ -29,6 +29,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.Stable
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -46,9 +47,11 @@ import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
 import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.input.pointer.PointerInputChange
+import androidx.compose.ui.input.pointer.changedToUpIgnoreConsumed
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.input.pointer.util.VelocityTracker
+import androidx.compose.ui.input.pointer.util.addPointerInputChange
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.testTag
@@ -142,7 +145,7 @@ fun SidePanelHost(
         }
 
         // Open, or on its way: the scrim covers the content and takes the drag, so the sheet can be swiped shut from anywhere.
-        if (state.isOpen || state.fraction > 0f) {
+        if (state.isVisible) {
             Scrim(
                 onClose = { if (gesturesEnabled) scope.launch { state.close() } },
                 fraction = { state.fraction },
@@ -173,7 +176,7 @@ fun SidePanelHost(
             // would otherwise be measured and kept up to date off screen for the whole of every chat. The surface runs
             // edge to edge, under the status bar and the navigation bar alike; the content insets itself
             // (`panelInsetPadding` at the panel's root), so the one consumption is the content's whichever host it is in.
-            if (state.isOpen || state.fraction > 0f) {
+            if (state.isVisible) {
                 Surface(color = containerColor, contentColor = contentColor, shape = RectangleShape, modifier = Modifier.fillMaxSize()) {
                     CompositionLocalProvider(LocalScrollFadeSurface provides containerColor, content = panelContent)
                 }
@@ -218,6 +221,12 @@ class SidePanelState(initialValue: SidePanelValue) {
         private set
 
     val isOpen: Boolean get() = targetValue == SidePanelValue.Open
+
+    /**
+     * Open, or anywhere on its way in or out: whether there is a sheet to compose. It changes as a slide begins and as
+     * it ends, not with every frame of it, so the host reads it without recomposing all the way through a drag.
+     */
+    val isVisible: Boolean by derivedStateOf { isOpen || fraction > 0f }
 
     var isAnimating by mutableStateOf(false)
         private set
@@ -315,6 +324,12 @@ private val SidePanelValue.fraction: Float get() = if (this == SidePanelValue.Op
  * comes through [ScrollerHandoff]), and so does the transcript's vertical scroll. A drag toward the end edge is left
  * unconsumed for the sidebar drawer around the chat, and so is one that only starts once the finger has been held past
  * the long-press timeout — a text selection or a message's menu, never the panel.
+ *
+ * The velocity is the finger's from every sample it made, each event's history included, as `draggable` reads it. A
+ * frame the app is slow to finish — the sheet's first, while its contents are composed — holds up the samples that
+ * came in meanwhile, and Android hands them over at once as the history of one move: the event alone would say the
+ * finger covered the whole way in an instant after standing still, and the fling that should open the sheet would
+ * read as none at all, leaving it to settle back shut from where the lump of travel put it.
  */
 private fun Modifier.openDrag(state: SidePanelState, scope: CoroutineScope, enabled: Boolean, rtl: Boolean, flingThreshold: Float): Modifier =
     if (!enabled) this else pointerInput(state, rtl, flingThreshold) {
@@ -323,12 +338,14 @@ private fun Modifier.openDrag(state: SidePanelState, scope: CoroutineScope, enab
         val sign = if (rtl) 1f else -1f
         awaitEachGesture {
             val down = awaitFirstDown(requireUnconsumed = false)
+            tracker.addPointerInputChange(down)
             val slop = viewConfiguration.touchSlop
             var travel = 0f
             var start: PointerInputChange? = null
             while (start == null) {
                 val change = awaitPointerEvent().changes.firstOrNull { it.id == down.id } ?: return@awaitEachGesture
                 if (!change.pressed || change.isConsumed) return@awaitEachGesture
+                tracker.addPointerInputChange(change)
                 travel += change.positionChange().x
                 if (abs(travel) < slop) continue
                 val held = change.uptimeMillis - down.uptimeMillis >= viewConfiguration.longPressTimeoutMillis
@@ -336,18 +353,18 @@ private fun Modifier.openDrag(state: SidePanelState, scope: CoroutineScope, enab
                 change.consume()
                 start = change
             }
-            tracker.resetTracking()
-            tracker.addPosition(start.uptimeMillis, start.position)
             // Raw deltas rather than a held drag: the gesture scope cannot suspend on the state's mutex, and a sheet at
             // rest closed has nothing animating to contend with.
             state.draggableState.dispatchRawDelta(sign * (travel - slop * travel.sign))
             var velocity = 0f
             try {
-                horizontalDrag(start.id) { change ->
-                    tracker.addPosition(change.uptimeMillis, change.position)
+                val lifted = horizontalDrag(start.id) { change ->
+                    tracker.addPointerInputChange(change)
                     state.draggableState.dispatchRawDelta(sign * change.positionChange().x)
                     change.consume()
                 }
+                // The lift itself: a finger that stopped before it let go flings nothing.
+                if (lifted) currentEvent.changes.firstOrNull { it.changedToUpIgnoreConsumed() }?.let(tracker::addPointerInputChange)
                 val maxVelocity = viewConfiguration.maximumFlingVelocity
                 velocity = sign * tracker.calculateVelocity().x.coerceIn(-maxVelocity, maxVelocity) / state.widthPx.coerceAtLeast(1f)
             } finally {

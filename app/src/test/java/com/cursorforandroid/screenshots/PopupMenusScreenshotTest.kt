@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.LocalRippleConfiguration
 import androidx.compose.runtime.Composable
@@ -77,7 +78,7 @@ import com.cursorforandroid.ui.conversation.TimelineItemView
 import com.cursorforandroid.ui.conversation.TranscriptControls
 import com.cursorforandroid.ui.customize.CustomizeSheet
 import com.cursorforandroid.ui.projects.ProjectActions
-import com.cursorforandroid.ui.projects.ProjectSectionBody
+import com.cursorforandroid.ui.projects.projectSection
 import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.ui.theme.ThemeMode
@@ -336,7 +337,7 @@ class PopupMenusScreenshotTest {
         )
         compose.setContent {
             Scene(mode) {
-                ProjectSectionBody(state = state, local = LocalAgentState(), busy = false, actions = actions, nowMillis = NOW, modifier = Modifier.padding(top = 24.dp))
+                LazyColumn(Modifier.padding(top = 24.dp)) { projectSection(state = state, local = LocalAgentState(), busy = false, actions = actions, nowMillis = NOW) }
             }
         }
         compose.waitForIdle()
