@@ -44,6 +44,7 @@ class OldestFirstRunsTest {
     @Before
     fun setUp() {
         server = FaultServer(rttMillis = 300L..900L).start()
+        server.bytesPerSecond = 600_000L
         server.pageSize = 100
         server.runsOldestFirst = true
         val turns = BigProject.turns(firstAt)
@@ -67,22 +68,27 @@ class OldestFirstRunsTest {
     fun `an oldest-first list of two thousand runs is read to its end, and the newest turns pair with their runs`() = runBlocking<Unit> {
         val rig = FaultRig(server.baseUrl, folder.newFolder("rig"), readTimeoutMs = 20_000L, extended = true, engine = TranscriptEngine.STABLE).also { it.now = now; rig = it }
         val conversations = rig.conversations
+        val opened = System.nanoTime()
         conversations.attach(agentId)
         // The prompts first, before the list has been read to its end.
         rig.awaitUntil(60_000) { conversations.state(agentId).value.items.any { it is SystemNotification } }
+        val paintMs = (System.nanoTime() - opened) / 1_000_000
         val pagesAtPaint = server.requests(FaultServer.Route.ListRuns).size
         rig.awaitUntil(120_000) {
             val state = conversations.state(agentId).value
             val load = conversations.loadDiagnostics(agentId)!!
             !state.isLoading && load.runsComplete && state.traceStatus.pending == 0 && load.traceQueue == 0 && load.traceInFlight == 0 && !load.traceWorkerRunning
         }
+        val fullMs = (System.nanoTime() - opened) / 1_000_000
         delay(1_000)
         val state = conversations.state(agentId).value
         val load = conversations.loadDiagnostics(agentId)!!
         val pages = server.requests(FaultServer.Route.ListRuns).size
+        println("paint=$paintMs ms full=$fullMs ms requests=${server.seen.size} bytes=${server.bytesByRoute.values.sum() / 1024} KB by route=${server.seen.groupingBy { it.route }.eachCount()}")
         println("pages at paint=$pagesAtPaint, all=$pages, runs=${load.runsLoaded} complete=${load.runsComplete} ${load.pairing?.text}")
         assertThat(pagesAtPaint).isLessThan(pages)
-        assertThat(pages).isEqualTo(BigProject.TURNS / 100)
+        // The first page (twenty runs), then the rest a hundred a page.
+        assertThat(pages).isEqualTo(1 + (BigProject.TURNS - 20 + 99) / 100)
         assertThat(load.runsLoaded).isEqualTo(BigProject.TURNS)
         assertThat(load.runsComplete).isTrue()
         // The window's turns stand with their runs: footers, and the activity their logs replay.

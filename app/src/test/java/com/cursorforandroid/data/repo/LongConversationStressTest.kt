@@ -324,7 +324,8 @@ class LongConversationStressTest {
     @Test
     fun `past the page bound on an oldest-first list, the newest run alone stands, fetched by id`() = runBlocking<Unit> {
         api.ascendingRuns = true
-        api.pageSize = 10
+        // Sixty-four pages, past the forty an oldest-first list is read to its end within (MAX_ASCENDING_RUN_PAGES).
+        api.pageSize = 5
         seed()
         val conversations = repository(hub())
         conversations.attach(agentId)
@@ -336,7 +337,7 @@ class LongConversationStressTest {
         assertThat(state.hasOlder).isTrue()
         assertThat(state.traceStatus).isEqualTo(TraceStatus())
         assertThat(api.getRunCalls).isAtLeast(1)
-        // Once fetched by id, a refresh does not read the sixteen pages again: the newest run is in hand.
+        // Once fetched by id, a refresh does not read the pages again: the newest run is in hand.
         val listCalls = api.listRunsCalls
         conversations.reload(agentId)
         awaitUntil { api.listRunsCalls > listCalls }
