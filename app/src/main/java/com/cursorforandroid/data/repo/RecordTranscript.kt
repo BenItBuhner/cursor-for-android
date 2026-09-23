@@ -1,10 +1,13 @@
 package com.cursorforandroid.data.repo
 
+import com.cursorforandroid.data.api.ConnectRpcException
 import com.cursorforandroid.data.api.ConversationRecordApi
 import com.cursorforandroid.data.api.HeadlessPage
 import com.cursorforandroid.data.api.HeadlessStep
+import com.cursorforandroid.data.api.HeadlessTurn
 import com.cursorforandroid.data.api.HeadlessTurnPage
 import com.cursorforandroid.data.api.RecordState
+import com.cursorforandroid.data.api.TurnPlan
 import com.cursorforandroid.data.api.TurnTiming
 import com.cursorforandroid.data.local.TraceCache
 import com.cursorforandroid.domain.ActivityGroup
@@ -64,6 +67,20 @@ class RecordTurn(
      * record's, whose indices are steps and would otherwise name another turn's file.
      */
     val turnIndexed: Boolean = false,
+    /**
+     * The turn's own blob id (blob-backed record): content-addressed, so a state naming the same id at the same index
+     * names this turn unchanged, and it is not read again (see `RecordPager.Raw.reused`). Null for the step-indexed record.
+     */
+    val blobId: String? = null,
+    /** Every step of the turn was read; false while a [TurnPlan.MESSAGES] read's other steps are still to come. */
+    val complete: Boolean = true,
+    /**
+     * What the turn's structure lists (blob-backed record): its steps, and how many of them are the coordinator's
+     * messages to the user (`send_message_step_indices`). Null when unknown — the step-indexed record, a structure
+     * that could not be read.
+     */
+    val stepTotal: Int? = null,
+    val messageSteps: Int? = null,
 ) {
     /** The key the turn's items are filed under on disk (see `TraceCache`); stable while the record is append-only. */
     val traceKey: String get() = traceKey(stepIndex, turnIndexed)
@@ -71,9 +88,16 @@ class RecordTurn(
     /** The record gave the agent's words for the turn: a reply, or a coordinator's message with its body. */
     val hasText: Boolean by lazy { items.any { it is AssistantMessage && it.markdown.isNotBlank() } || hasUserMessage }
 
+    /**
+     * The record's structure of the turn was read and names what it holds: whether the turn sent the user a message
+     * is the record's word then, not a guess from its steps — a turn without message steps sent none, and a turn the
+     * structure lists no steps for did nothing but take its prompt.
+     */
+    val structureKnown: Boolean get() = turnIndexed && messageSteps != null && stepTotal != null
+
     /** This turn with [replies] — the `/v0` transcript's — as its text, marked as such (see [textFromTranscript]). */
     fun withTranscriptText(replies: List<TimelineItem>): RecordTurn =
-        RecordTurn(stepIndex, stepCount, prompt, projectMode, items + replies, shape, errorMessage, textFromTranscript = true, stepsFromRecord = hasBody, turnIndexed = turnIndexed)
+        RecordTurn(stepIndex, stepCount, prompt, projectMode, items + replies, shape, errorMessage, textFromTranscript = true, stepsFromRecord = hasBody, turnIndexed = turnIndexed, blobId = blobId, complete = complete, stepTotal = stepTotal, messageSteps = messageSteps)
 
     /** The turn's steps are not to be had: the record gave none and the reply is the transcript's (see [withTranscriptText]). */
     val activityMissing: Boolean get() = textFromTranscript && !stepsFromRecord
@@ -122,7 +146,19 @@ class RecordTurn(
      * events (#228). Not asked: a Project's silent turns are most of its turns, and asking every one replayed a log
      * per turn to find the message that was not there (Bennett, 2026-09-20: "Loading the activity of 240 turns").
      */
-    val wantsLogForMessage: Boolean get() = hasRecoveredMessage || (!hasUserMessage && (isUserTurn || !hasCalls))
+    val wantsLogForMessage: Boolean get() = when {
+        // The structure says the turn sent nothing: the log would only carry an earlier turn's message again (#228).
+        structureKnown && messageSteps == 0 -> false
+        // The structure names the message and the record gave it whole: nothing the log would add.
+        structureKnown && hasUserMessage -> hasRecoveredMessage
+        else -> hasRecoveredMessage || (!hasUserMessage && (isUserTurn || !hasCalls))
+    }
+
+    /**
+     * The turn has nothing to read from its run's log: its steps are still being read (see [complete]), or the
+     * structure lists none — a turn that ended at its prompt is whole as it is.
+     */
+    val bodyIsTheRecords: Boolean get() = !complete || (structureKnown && stepTotal == 0)
 
     companion object {
         const val TRACE_KEY_PREFIX = TraceCache.RECORD_KEY_PREFIX
@@ -178,6 +214,18 @@ class RecordWindow(
 
     fun withState(state: RecordState): RecordWindow = RecordWindow(total, firstStep, turns, leading, state, readAtMillis, newestTurn, turnIndexed)
 
+    /** The blob-backed window's turns held whole, by whole-chat index to their blob id: what a read need not read again. */
+    val held: Map<Int, String> get() = if (!turnIndexed) emptyMap() else turns.filter { it.complete && it.blobId != null }.associate { it.stepIndex to it.blobId!! }
+
+    /** The blob-backed window's turns whose steps are still to be read (see [RecordTurn.complete]), newest first. */
+    val incomplete: List<Int> get() = turns.filter { !it.complete }.map { it.stepIndex }.asReversed()
+
+    /**
+     * What the reader came for, counted: the user's own prompts and the coordinator's messages to the user the
+     * window holds — by the structure's count where it was read, else by what the steps gave.
+     */
+    val words: Int get() = turns.sumOf { turn -> (if (turn.isUserTurn) 1 else 0) + (turn.messageSteps ?: if (turn.hasUserMessage) 1 else 0) }
+
     /** This window with [replacements] standing for the turns of the same step index. */
     fun withTurns(replacements: Map<Int, RecordTurn>): RecordWindow =
         if (replacements.isEmpty()) this else RecordWindow(total, firstStep, turns.map { replacements[it.stepIndex] ?: it }, leading, state, readAtMillis, newestTurn, turnIndexed)
@@ -195,19 +243,54 @@ object RecordPager {
      * record ([turnIndexed]), the steps of the turns [firstStep] until [firstStep] + the turns read, out of [total]
      * turns, each step carrying its turn's index (see [HeadlessStep.turnIndex]).
      */
-    class Raw(val steps: List<HeadlessStep>, val firstStep: Int, val total: Int, val turnIndexed: Boolean = false)
+    class Raw(
+        val steps: List<HeadlessStep>,
+        val firstStep: Int,
+        val total: Int,
+        val turnIndexed: Boolean = false,
+        /**
+         * A turn-indexed page's turns, oldest first: each read to its plan, or [HeadlessTurn.reused] — held already
+         * under the same blob id, not read, its steps not among [steps]. Empty for the step-indexed record.
+         */
+        val turns: List<HeadlessTurn> = emptyList(),
+    ) {
+        /** The whole-chat indices of the page's turns the reader held already. */
+        val reused: Set<Int> by lazy { turns.filter { it.reused }.mapTo(HashSet()) { it.index } }
+
+        /** The page's turns by whole-chat index. */
+        val byIndex: Map<Int, HeadlessTurn> by lazy { turns.associateBy { it.index } }
+
+        /**
+         * The page's blobs answered as missing or unreadable for most of what it asked — [DRIFT_MIN_MISSING] at
+         * least, and half or more: not a blob or two the account let go, but a server that names turns whose blobs it
+         * will not give, or gives in a shape this build does not read. The chat's documented endpoints are its account
+         * then, and the reason says what was asked and what came back (see `ConversationRepository.loadFromRecord`).
+         */
+        val drift: ConnectRpcException? get() {
+            val asked = turns.sumOf { it.asked }
+            val missing = turns.sumOf { it.missing }
+            if (missing < DRIFT_MIN_MISSING || missing * 2 < asked) return null
+            val last = turns.mapNotNull { it.lastMissing }.lastOrNull()
+            val said = last?.message?.takeIf { it.isNotBlank() }?.let { ": \"$it\"" } ?: ""
+            return ConnectRpcException(last?.httpCode ?: 200, last?.code ?: ConnectRpcException.UNREADABLE_ANSWER, "$missing of $asked blobs of the chat's turns were missing or unreadable$said", path = last?.path, cause = last)
+        }
+    }
+
+    /** Blobs answered as missing in one page before the page is read as the record's drift rather than a gap (see [Raw.drift]). */
+    const val DRIFT_MIN_MISSING = 3
 
     /**
      * The blob-backed record's newest [wantTurns] turns: the conversation state for the turn list (one round trip),
-     * then the turns' blobs side by side. Null when the chat has no turns. [state] when the caller read it a moment ago.
+     * then the turns' blobs side by side, to [plan], the turns [held] names by their blob id left unread. Null when the
+     * chat has no turns. [state] when the caller read it a moment ago.
      */
-    suspend fun tailTurns(api: ConversationRecordApi, agentId: String, wantTurns: Int, state: RecordState? = null): Raw? {
+    suspend fun tailTurns(api: ConversationRecordApi, agentId: String, wantTurns: Int, state: RecordState? = null, plan: TurnPlan = TurnPlan.FULL, held: Map<Int, String> = emptyMap()): Raw? {
         val known = state ?: api.countedState(agentId)
         val total = known.turnCount
         if (total <= 0) return null
         val from = (total - wantTurns).coerceAtLeast(0)
-        val page = api.countedTurns(agentId, from, total - from, known) ?: return null
-        return Raw(page.turns.flatMap { it.steps }, from, page.turnCount, turnIndexed = true)
+        val page = api.countedTurns(agentId, from, total - from, known, plan, held) ?: return null
+        return page.raw(from)
     }
 
     /**
@@ -215,30 +298,43 @@ object RecordPager {
      * grown — a turn under way, or one that ended since) and every turn after it. One round trip for the state when
      * nothing changed but the newest turn's blob. Null when the chat has fewer turns than it had (rewound).
      */
-    suspend fun sinceTurns(api: ConversationRecordApi, agentId: String, knownTotal: Int, state: RecordState? = null): Raw? {
+    suspend fun sinceTurns(api: ConversationRecordApi, agentId: String, knownTotal: Int, state: RecordState? = null, held: Map<Int, String> = emptyMap()): Raw? {
         val known = state ?: api.countedState(agentId)
         val total = known.turnCount
         if (total < knownTotal) return null
         val from = (knownTotal - 1).coerceAtLeast(0)
-        val page = api.countedTurns(agentId, from, total - from, known) ?: return null
-        return Raw(page.turns.flatMap { it.steps }, from, page.turnCount, turnIndexed = true)
+        val page = api.countedTurns(agentId, from, total - from, known, TurnPlan.FULL, held) ?: return null
+        return page.raw(from)
     }
 
-    /** The blob-backed record's [wantTurns] turns before turn [firstTurn]. */
-    suspend fun beforeTurns(api: ConversationRecordApi, agentId: String, firstTurn: Int, wantTurns: Int): Raw {
+    /** The blob-backed record's [wantTurns] turns before turn [firstTurn], to [plan]. */
+    suspend fun beforeTurns(api: ConversationRecordApi, agentId: String, firstTurn: Int, wantTurns: Int, plan: TurnPlan = TurnPlan.FULL, state: RecordState? = null): Raw {
         val from = (firstTurn - wantTurns).coerceAtLeast(0)
-        val page = api.countedTurns(agentId, from, firstTurn - from, null) ?: return Raw(emptyList(), firstTurn, 0, turnIndexed = true)
-        return Raw(page.turns.flatMap { it.steps }, from, page.turnCount, turnIndexed = true)
+        val page = api.countedTurns(agentId, from, firstTurn - from, state, plan, emptyMap()) ?: return Raw(emptyList(), firstTurn, 0, turnIndexed = true)
+        return page.raw(from)
     }
+
+    /**
+     * Turns [indices] of the blob-backed record read again whole — the ones a [TurnPlan.MESSAGES] read left steps of
+     * for later — in one read over their span, the turns of the span [held] names left unread.
+     */
+    suspend fun completeTurns(api: ConversationRecordApi, agentId: String, indices: Collection<Int>, state: RecordState, held: Map<Int, String>): Raw? {
+        if (indices.isEmpty()) return null
+        val from = indices.min()
+        val page = api.countedTurns(agentId, from, indices.max() - from + 1, state, TurnPlan.FULL, held.filterKeys { it !in indices }) ?: return null
+        return page.raw(from)
+    }
+
+    private fun HeadlessTurnPage.raw(from: Int): Raw = Raw(turns.flatMap { it.steps }, from, turnCount, turnIndexed = true, turns = turns)
 
     private suspend fun ConversationRecordApi.countedState(agentId: String): RecordState {
         TranscriptPerf.session(agentId).network("state")
         return state(agentId)
     }
 
-    private suspend fun ConversationRecordApi.countedTurns(agentId: String, from: Int, limit: Int, state: RecordState?): HeadlessTurnPage? {
+    private suspend fun ConversationRecordApi.countedTurns(agentId: String, from: Int, limit: Int, state: RecordState?, plan: TurnPlan, held: Map<Int, String>): HeadlessTurnPage? {
         TranscriptPerf.session(agentId).network("record")
-        return turns(agentId, from, limit, state)
+        return readTurns(agentId, from, limit, state, plan, held)
     }
 
     /**
@@ -370,6 +466,7 @@ object RecordTranscript {
      * [previous] lends the items of turns it already built with the same steps, so a re-read costs nothing for them.
      */
     fun window(raw: RecordPager.Raw, previous: RecordWindow?, state: RecordState?, now: Long, wantTurns: Int = Int.MAX_VALUE, build: (HeadlessTranscript.Turn, String) -> List<TimelineItem>): RecordWindow {
+        if (raw.turnIndexed && raw.turns.isNotEmpty()) return turnWindow(raw, previous, state, now, wantTurns, build)
         val cut = cut(raw.steps, raw.firstStep)
         // A turn-indexed read brings whole turns: a first turn without a prompt is a turn whose message could not be read, not another turn's tail.
         var leading = if (!raw.turnIndexed && raw.firstStep > 0 && cut.isNotEmpty() && cut.first().first.prompt == null) cut.first().first.steps else emptyList()
@@ -442,10 +539,62 @@ object RecordTranscript {
     const val SHAPE_TURNS = 6
 
     /**
+     * The blob-backed record's window from a page read turn by turn ([RecordPager.Raw.turns]): each turn the page
+     * read is built from its steps — or keeps [previous]'s items when it holds the turn under the same blob id and as
+     * whole — and each turn the page reused is [previous]'s as it stands. The newest [wantTurns] of them are the
+     * window, with [state] (the turns' timings) in place from the first frame.
+     */
+    private fun turnWindow(raw: RecordPager.Raw, previous: RecordWindow?, state: RecordState?, now: Long, wantTurns: Int, build: (HeadlessTranscript.Turn, String) -> List<TimelineItem>): RecordWindow {
+        val (turns, cut) = turnTurns(raw, previous, build)
+        val kept = if (turns.size > wantTurns) turns.takeLast(wantTurns) else turns
+        val newestIndex = kept.lastOrNull()?.stepIndex
+        val newest = newestIndex?.let { cut[it] } ?: previous?.newestTurn?.takeIf { previous.turns.lastOrNull()?.stepIndex == newestIndex }
+        return RecordWindow(raw.total, kept.firstOrNull()?.stepIndex ?: raw.firstStep, kept, emptyList(), state ?: previous?.state, now, newestTurn = newest, turnIndexed = true)
+    }
+
+    /** The turns of a turn-indexed page as [RecordTurn]s (see [turnWindow]), and the read ones' steps as turns by index. */
+    private fun turnTurns(raw: RecordPager.Raw, previous: RecordWindow?, build: (HeadlessTranscript.Turn, String) -> List<TimelineItem>): Pair<List<RecordTurn>, Map<Int, HeadlessTranscript.Turn>> {
+        val cut = cut(raw.steps, raw.firstStep).associate { it.second to it.first }
+        val old = previous?.takeIf { it.turnIndexed }?.turns?.associateBy { it.stepIndex }
+        val shapesFrom = raw.turns.size - SHAPE_TURNS
+        val turns = raw.turns.mapIndexedNotNull { i, read ->
+            val held = old?.get(read.index)
+            if (read.reused) return@mapIndexedNotNull held
+            val turn = cut[read.index] ?: return@mapIndexedNotNull null
+            val count = turn.steps.size + (if (turn.prompt != null) 1 else 0)
+            val same = held != null && held.blobId == read.blobId && held.complete == read.complete && held.stepCount == count && held.prompt == turn.prompt
+            val items = if (same) held!!.items else build(turn, RecordTurn.traceKey(read.index, true))
+            val shape = if (i >= shapesFrom) HeadlessTranscript.shape(turn, read.index) else held?.shape
+            RecordTurn(read.index, count, turn.prompt, turn.projectMode, items, shape, errorMessage = HeadlessTranscript.errorMessage(turn), turnIndexed = true, blobId = read.blobId, complete = read.complete, stepTotal = read.stepTotal, messageSteps = read.messageSteps)
+        }
+        return turns to cut
+    }
+
+    /** [window] with the turns [raw] read again (see `RecordPager.completeTurns`) standing for its own of the same index. */
+    fun completed(window: RecordWindow, raw: RecordPager.Raw, now: Long, build: (HeadlessTranscript.Turn, String) -> List<TimelineItem>): RecordWindow {
+        // Only onto the turns the page was read for: a turn the window holds under another blob id changed since, and its own read stands.
+        val held = window.turns.associateBy { it.stepIndex }
+        val read = RecordPager.Raw(raw.steps, raw.firstStep, raw.total, turnIndexed = true, turns = raw.turns.filter { !it.reused && held[it.index]?.blobId == it.blobId })
+        val (turns, cut) = turnTurns(read, window, build)
+        if (turns.isEmpty()) return window
+        val replaced = window.withTurns(turns.associateBy { it.stepIndex })
+        val newestIndex = window.turns.last().stepIndex
+        val newest = cut[newestIndex] ?: window.newestTurn
+        return RecordWindow(replaced.total, replaced.firstStep, replaced.turns, emptyList(), window.state, now, newest, turnIndexed = true)
+    }
+
+    /**
      * [older] (the steps before [window]) joined onto it: the window's leading steps complete the last turn of the
      * older page, and the older turns go before the window's.
      */
     fun prepend(window: RecordWindow, older: RecordPager.Raw, now: Long, wantTurns: Int = Int.MAX_VALUE, build: (HeadlessTranscript.Turn, String) -> List<TimelineItem>): RecordWindow {
+        if (window.turnIndexed && older.turnIndexed && older.turns.isNotEmpty()) {
+            val first = window.turns.firstOrNull()?.stepIndex ?: window.firstStep
+            // [wantTurns] bounds the page, as it does below: the window's own turns all stay.
+            val olderTurns = turnTurns(older, null, build).first.filter { it.stepIndex < first }.let { if (it.size > wantTurns) it.takeLast(wantTurns) else it }
+            if (olderTurns.isEmpty()) return window
+            return RecordWindow(window.total, olderTurns.first().stepIndex, olderTurns + window.turns, emptyList(), window.state, now, window.newestTurn, turnIndexed = true)
+        }
         val joined = RecordPager.Raw(older.steps + window.leading, older.firstStep, older.total.takeIf { it > 0 } ?: window.total, window.turnIndexed)
         val cut = cut(joined.steps, joined.firstStep)
         var leading = if (!joined.turnIndexed && joined.firstStep > 0 && cut.isNotEmpty() && cut.first().first.prompt == null) cut.first().first.steps else emptyList()

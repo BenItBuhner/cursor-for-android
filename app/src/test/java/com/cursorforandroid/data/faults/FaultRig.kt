@@ -3,6 +3,8 @@ package com.cursorforandroid.data.faults
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import com.cursorforandroid.data.api.AccountFollowup
+import com.cursorforandroid.data.api.BlobCache
+import com.cursorforandroid.data.local.BlobDiskStore
 import com.cursorforandroid.data.api.ConnectJsonClient
 import com.cursorforandroid.data.api.RootScan
 import com.cursorforandroid.data.api.ProjectLineageApi
@@ -133,6 +135,8 @@ class FaultRig(
         .callTimeout(60, TimeUnit.SECONDS)
         .dns(object : Dns { override fun lookup(hostname: String) = Dns.SYSTEM.lookup(hostname).let { it + it } })
         .build()
+        // As `AppGraph` widens the record's client: the blobs are read several at a time.
+        .also { it.dispatcher.maxRequestsPerHost = maxOf(it.dispatcher.maxRequestsPerHost, HeadlessConversationApi.BLOB_PARALLELISM + 2) }
     private val accountRpc = ConnectJsonClient(accountClient, baseUrl)
     private val sessionTokens = SessionTokenProvider(accountClient, key, apiUrl = baseUrl, now = { now })
     /** The account's list, pins and records (`BackgroundComposerService`), over [accountClient] on the same host. */
@@ -161,13 +165,18 @@ class FaultRig(
         agents.accountPrime = { pins.primeForFetch() }
         agents.accountPage = { pins.loadMore() }
     }
+    /**
+     * The record's blobs as the app keeps them: a small memory tier in front of a disk store under [root], so a rig
+     * made again on the same [root] is a new process on the same phone (see `AppGraph`).
+     */
+    val blobs = BlobCache(BlobCache.MEMORY_BLOBS_WITH_DISK, BlobCache.MEMORY_BYTES_WITH_DISK, disk = BlobDiskStore(JsonDiskCache(File(root, "blobs"), dispatcher = Dispatchers.IO)))
     /** The account service's record of a chat, over [accountClient] on the same host (Extended mode); null with the mode off. */
-    val record: ConversationRecordApi? = if (extended) HeadlessConversationApi(accountRpc, sessionTokens) else null
+    val record: ConversationRecordApi? = if (extended) HeadlessConversationApi(accountRpc, sessionTokens, blobs = blobs) else null
     /** What the private surfaces may do; a test that switches the engine mid-run sets this, and the next load reads it (as the app's `ExtendedMode` would). */
     @Volatile var capabilities: Capabilities = Capabilities.of(extended, engine)
     val conversations = ConversationRepository(session, agents, prefs, hub, attachments, conversationCache, traces, isForeground = { true }, prefetchLimit = 0, scope = scope, record = record, capabilities = { capabilities })
     /** The account's controls on a chat — its queue above all — over the same host, wired as the app wires them (see AppGraph). */
-    val steeringApi = SteeringApi(accountRpc, sessionTokens)
+    val steeringApi = SteeringApi(accountRpc, sessionTokens, blobs = blobs)
     val steering = SteeringRepository(
         session, agents,
         interactions = steeringApi, queueApi = steeringApi, runs = steeringApi, goals = steeringApi,

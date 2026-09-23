@@ -71,6 +71,12 @@ class JsonDiskCache(
      */
     fun token(): Int = epoch.current()
 
+    /** Whether a write taken under [token] would land behind a wipe (see [token]); for stores that write their own files here. */
+    fun isStale(token: Int): Boolean = epoch.isStale(token)
+
+    /** The directory this cache writes in, for a store that keeps files of its own under the same wipe (see `BlobDiskStore`). */
+    val root: File get() = directory
+
     suspend fun <T> write(key: String, serializer: KSerializer<T>, version: Int, value: T, token: Int = epoch.current()): Boolean = withContext(dispatcher) {
         if (epoch.isStale(token)) return@withContext false
         lockFor(key).withLock {

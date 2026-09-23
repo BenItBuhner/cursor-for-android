@@ -1,7 +1,12 @@
 package com.cursorforandroid.data.repo
 
+import com.cursorforandroid.data.api.BlobCache
+import com.cursorforandroid.data.api.ConnectRpc
+import com.cursorforandroid.data.api.ConversationStateReader
+import com.cursorforandroid.data.api.HeadlessConversationApi
 import com.cursorforandroid.data.api.ConversationRecordApi
 import com.cursorforandroid.data.api.RecordState
+import com.cursorforandroid.data.api.TurnPlan
 import com.cursorforandroid.data.api.TurnTiming
 import com.cursorforandroid.data.api.CursorApi
 import com.cursorforandroid.data.api.dto.ListRunsResponseDto
@@ -517,6 +522,15 @@ class ConversationRepository(
         var prefetchedOlder: RecordPager.Raw? = null
         var prefetchJob: Job? = null
         /**
+         * The blob-backed record's work behind what is on screen (see [startBlobWork]): the window reaching back to
+         * what the reader came for, then the steps the first read left for later. One at a time; the screen's alone.
+         */
+        var blobJob: Job? = null
+        /** The window is reaching back for what the reader came for (see [startBlobWork]): "Loading older…" says so. */
+        var extending = false
+        /** The last load of the blob-backed record, as the diagnostics report it (see [BetaLoad]). */
+        var betaLoad: BetaLoad? = null
+        /**
          * The story so far of the run [streamJob] is following, shown in place of the transcript it does not have
          * yet. The job owns it: it goes when following stops, and a snapshot from a job that is no longer the
          * follower is ignored. Left behind, it would keep standing in for a run that has since finished — hiding the
@@ -1010,7 +1024,13 @@ class ConversationRepository(
                 // Never for the turn being streamed: the record's copy of it lags the stream, so its own message
                 // would read as one it has not sent yet — and its own words are never a copy of anything.
                 val standIn = complete ?: liveItems ?: kept
-                val repeats = if (standIn != null && !turn.hasMessageCall && !(liveItems != null && liveNewest)) CoordinatorTranscript.messageCallsReading(standIn, messagesShown ?: emptySet()) else emptySet()
+                val repeats = when {
+                    standIn == null || turn.hasMessageCall || (liveItems != null && liveNewest) -> emptySet()
+                    // The record's structure of the turn lists no message: whatever message the stand-in carries is an
+                    // earlier turn's, said again, whether or not that turn is in the window to have drawn it.
+                    turn.structureKnown && turn.messageSteps == 0 && turn.complete -> CoordinatorTranscript.messageCallKeys(standIn)
+                    else -> CoordinatorTranscript.messageCallsReading(standIn, messagesShown ?: emptySet())
+                }
                 val inputs = TurnInputs(
                     turn = turn,
                     run = run,
@@ -1022,7 +1042,7 @@ class ConversationRepository(
                     partial = kept,
                     liveNewest = liveNewest,
                     // A turn without its steps says so; so does one whose reply the transcript gave while its log is gone.
-                    notice = if (complete == null && liveItems == null && kept == null && (!turn.hasBody || turn.activityMissing) && !liveNewest) turnBodyNotice(turn, run) else null,
+                    notice = if (complete == null && liveItems == null && kept == null && (!turn.hasBody || turn.activityMissing) && !liveNewest && !turn.bodyIsTheRecords) turnBodyNotice(turn, run) else null,
                     repeats = repeats,
                 )
                 // A turn whose inputs have not moved is the items it was last rendered to — the same instances, so
@@ -1180,7 +1200,7 @@ class ConversationRepository(
                 // RecordTurn.wantsLogForMessage): a message read leniently out of pieces, the user's turn without
                 // one, an injected turn the record holds without any call. An injected turn whose calls the record
                 // holds, none of them a message, sent none and is left as the record has it.
-                val wanting = !turn.hasBody || (if (projectMode) turn.wantsLogForMessage else !turn.hasText)
+                val wanting = !turn.bodyIsTheRecords && (!turn.hasBody || (if (projectMode) turn.wantsLogForMessage else !turn.hasText))
                 run.takeIf { wanting && statusOf(it).isTerminal && it.id !in traces }
             }.asReversed()
         }
@@ -1421,14 +1441,14 @@ class ConversationRepository(
             runsComplete = runsComplete,
             olderRunsCursor = olderRunsCursor,
             // The window the reader had open, within reason: the next start renders it from disk before the network answers.
-            window = window.coerceAtMost(MAX_RESTORED_WINDOW),
+            window = window.coerceAtMost(keptTurns(recordWindow)),
             record = recordWindow?.let { w ->
-                val kept = w.turns.takeLast(MAX_RESTORED_WINDOW)
+                val kept = w.turns.takeLast(keptTurns(w))
                 CachedRecordWindow(
                     total = w.total,
                     firstStep = kept.firstOrNull()?.stepIndex ?: w.firstStep,
                     turnCount = w.state?.turnCount ?: 0,
-                    turns = kept.map { CachedRecordTurn(it.stepIndex, it.stepCount, it.prompt, it.projectMode, it.errorMessage) },
+                    turns = kept.map { CachedRecordTurn(it.stepIndex, it.stepCount, it.prompt, it.projectMode, it.errorMessage, blobId = it.blobId, complete = it.complete, stepTotal = it.stepTotal, messageSteps = it.messageSteps) },
                     timings = w.state?.timings?.map { CachedTurnTiming(it.durationMs, it.timestampMs) } ?: emptyList(),
                     turnIndexed = w.turnIndexed,
                 )
@@ -1670,6 +1690,25 @@ class ConversationRepository(
                 shapes = window?.turns?.mapNotNull { it.shape }.orEmpty(),
                 // What the account answered for each message it holds behind a turn, and where that put the message.
                 queued = e.awaiting.map { a -> TranscriptLoadDiagnostics.QueuedLine(a.runId?.let(ProjectDiagnostics::tail), a.behindRunId?.let(ProjectDiagnostics::tail), a.queuedOnAccount) },
+                beta = e.betaLoad?.let { load ->
+                    val (counts, memoryBytes) = record?.blobCounts(agentId) ?: (BlobCache.Snapshot() to 0L)
+                    // The load's own share: what the counts rose by since it began, up to when its work behind the screen ended.
+                    val spent = (load.after?.first ?: counts) - load.before
+                    TranscriptLoadDiagnostics.BetaLine(
+                        turns = load.turnCount.takeIf { it > 0 } ?: (window?.turnCount ?: 0),
+                        windowStart = window?.turns?.firstOrNull()?.stepIndex ?: 0,
+                        windowEnd = (window?.turns?.lastOrNull()?.stepIndex ?: -1) + 1,
+                        reused = load.reused,
+                        incomplete = window?.incomplete?.size ?: 0,
+                        words = window?.words ?: 0,
+                        fetched = spent.fetched, fetchedBytes = spent.fetchedBytes, memory = spent.memory, disk = spent.disk, prefetched = spent.prefetched, missing = spent.missing,
+                        memoryKb = memoryBytes / 1024,
+                        firstPaintMs = load.firstPaintMs,
+                        fullLoadMs = load.fullMs,
+                        fallback = load.fallback,
+                    )
+                },
+>>>>>>> 12442d75 (Beta engine: big Projects paint from the prewarm, reach back to the last prompt and messages, and reopen from disk)
                 status = run {
                     val latest = e.latestRun()
                     val row = agents.agent(agentId)
@@ -1750,6 +1789,8 @@ class ConversationRepository(
             keepFollowing(e, endedRunId = null)
         }
         loadTraces(e, agentId, e.shownRuns().filter { it.statusEnum().isTerminal })
+        // The blob-backed record's work the screen's leaving cut short picks up where it was.
+        if (synchronized(e) { e.recordWindow?.turnIndexed == true } && record != null && capabilities().accountTranscript) startBlobWork(e, agentId)
     }
 
     /**
@@ -1778,6 +1819,9 @@ class ConversationRepository(
                 e.prefetchJob = null
                 e.prefetchedOlder = null
                 e.loadingOlder = false
+                e.blobJob?.cancel()
+                e.blobJob = null
+                e.extending = false
                 e.stopFollowing()
                 // The window the reader had open stays a while: a reader who comes straight back finds the chat as
                 // they left it, not cut to the newest turns and paging them back in (see [trimWindow]).
@@ -1797,13 +1841,14 @@ class ConversationRepository(
      * within [TRIM_AFTER_DETACH_MS] shows the transcript as it was, whole, from memory.
      */
     private fun Entry.trimWindow() {
-        if (window <= MAX_RESTORED_WINDOW) return
+        val keep = keptTurns(recordWindow)
+        if (window <= keep) return
         publish(
             mutate = {
-                window = MAX_RESTORED_WINDOW
+                window = keep
                 recordWindow?.let { w ->
-                    if (w.turns.size > MAX_RESTORED_WINDOW) {
-                        val kept = w.turns.takeLast(MAX_RESTORED_WINDOW)
+                    if (w.turns.size > keep) {
+                        val kept = w.turns.takeLast(keep)
                         recordWindow = RecordWindow(w.total, kept.first().stepIndex, kept, emptyList(), w.state, w.readAtMillis, w.newestTurn, w.turnIndexed)
                     }
                 }
@@ -2474,6 +2519,21 @@ class ConversationRepository(
     /** What [loadFromRecord] came to: whether the record served the chat, and the run list's first page it read meanwhile (handed on when it did not). */
     private class RecordLoad(val served: Boolean, val runPage: Result<ListRunsResponseDto>? = null)
 
+    /**
+     * One load of the blob-backed record (the Beta engine), for the diagnostics' `beta:` line: how many turns the
+     * chat has, how many of the window's were held and not read again, when the window was first painted and when
+     * everything behind it was in, the blobs read against [before] (see [BlobCache.Counts]), and the fallback's
+     * reason when the load ended on the documented path.
+     */
+    class BetaLoad(val startedAtNanos: Long, val before: BlobCache.Snapshot) {
+        @Volatile var turnCount = 0
+        @Volatile var reused = 0
+        @Volatile var firstPaintMs: Long? = null
+        @Volatile var fullMs: Long? = null
+        @Volatile var fallback: String? = null
+        @Volatile var after: Pair<BlobCache.Snapshot, Long>? = null
+    }
+
     private suspend fun loadFromRecord(e: Entry, agentId: String, api: ConversationRecordApi, backend: CursorBackend, tokens: CacheTokens): RecordLoad = coroutineScope {
         val cursorApi = backend.api
         val (known, wantTurns) = synchronized(e) { e.recordWindow to e.window }
@@ -2485,23 +2545,25 @@ class ConversationRepository(
         // round trip when nothing changed — rather than its newest page again: a reopen, a return to the foreground,
         // cost the steps the chat added since and not the megabytes it already has (see [RecordTranscript.append]).
         // A record shorter than the window knew it (rewound) is read from its end again, like a first open.
-        // The blob-backed record is read a turn's blobs at a time: a cold open paints its newest few turns first and
-        // brings the rest of the window right behind them (see [FIRST_PAINT_TURNS], the second stage below), so the
-        // first frame waits on a handful of round trips rather than the window's every step.
-        val stagedPaint = api.readsTurns && (known == null || !known.canAppend) && wantTurns > FIRST_PAINT_TURNS
-        val firstWant = if (stagedPaint) FIRST_PAINT_TURNS else wantTurns
+        // The blob-backed record (the Beta engine) is read a turn at a time: the state names every turn by its blob,
+        // a turn held under the same id is not read again (a reopen costs the state and the turns that changed), and
+        // the window's turns are read to what the reader sees first — their prompts and the coordinator's messages,
+        // most of it prefetched with the state — the rest of their steps behind what is on screen (see [startBlobWork]).
+        val blobBacked = api.readsTurns
+        val beta = if (blobBacked) BetaLoad(System.nanoTime(), api.blobCounts(agentId)?.first ?: BlobCache.Snapshot()).also { load -> synchronized(e) { e.betaLoad = load; e.blobJob?.cancel() } } else null
+        var drifted = false
         val stateRead = async { net(agentId, "state"); runCatching { api.state(agentId) } }
         val tail = async {
             runCatching {
-                if (api.readsTurns) {
-                    // The blob-backed record: the state read once names the turns; a refusal of it is the record's refusal.
+                if (blobBacked) {
+                    // A refusal of the state is the record's refusal.
                     val state = stateRead.await().getOrThrow()
-                    if (known != null && known.canAppend) RecordPager.sinceTurns(api, agentId, known.total, state) ?: RecordPager.tailTurns(api, agentId, wantTurns, state)
-                    else RecordPager.tailTurns(api, agentId, firstWant, state)
+                    RecordPager.tailTurns(api, agentId, wantTurns, state, plan = TurnPlan.MESSAGES, held = known?.held.orEmpty())
+                        ?.also { page -> page.drift?.let { drift -> drifted = true; throw drift } }
                 } else if (known != null && known.canAppend) {
                     RecordPager.since(api, agentId, known.total) ?: RecordPager.tail(api, agentId, wantTurns, null)
                 } else {
-                    RecordPager.tail(api, agentId, firstWant, known?.total)
+                    RecordPager.tail(api, agentId, wantTurns, known?.total)
                 }
             }
         }
@@ -2510,6 +2572,20 @@ class ConversationRepository(
         val raw = tail.await()
         val onDevice = stored.await()
         val rawWindow = raw.getOrNull()
+        if (raw.isSuccess && rawWindow == null && blobBacked) {
+            // No turns named for a chat with a finished run: not an empty chat but an answer in a shape this build did
+            // not expect (the state absent, or elsewhere) — said as such, never a silent switch to the documented path.
+            val page = runPage.await().getOrNull()
+            if (page?.items?.any { it.statusEnum().isTerminal } == true) {
+                val state = stateRead.await().getOrNull()
+                val shape = ConnectRpcException(200, SHAPE_MISMATCH, "Cursor's account named no turns for this chat (${state?.shape?.ifBlank { null } ?: "no state"})", path = ConnectRpc.path(HeadlessConversationApi.SERVICE, ConversationStateReader.METHOD))
+                val message = shape.message ?: SHAPE_MISMATCH
+                beta?.fallback = message
+                synchronized(e) { e.recordError = message }
+                recordFallBack(e, shape, message, readStartedAt, drifted = true)
+                return@coroutineScope RecordLoad(served = false, runPage = runPage.await())
+            }
+        }
         if (raw.isSuccess && rawWindow == null) {
             // Nothing in the record for this chat: the documented endpoints are its only account — with the run page
             // read beside the record, so the fallback does not ask for it again.
@@ -2521,37 +2597,30 @@ class ConversationRepository(
             val failure = raw.exceptionOrNull()
             val message = failure?.userMessage() ?: "The account's record could not be read."
             synchronized(e) { e.recordError = message }
-            if (known == null) {
-                // Nothing on screen from the record and none to be had now: the documented path shows what it can —
-                // and says so, in the server's words, with the pause the refusal asked for kept, so the record is not
-                // asked again on every open meanwhile (see [ConversationState.recordFallback]).
+            // Nothing on screen from the record and none to be had now — or, on the blob-backed record, a server that
+            // refuses outright or names turns it will not give (a drift, not a blip): the documented path shows what
+            // it can, and says so in the server's words, with the pause the refusal asked for kept, so the record is
+            // not asked again on every open meanwhile (see [ConversationState.recordFallback]).
+            if (known == null || (blobBacked && (drifted || failure.isHardRefusal()))) {
                 stateRead.cancel()
-                val now = AppClock.now()
-                val retryAfter = (failure as? ConnectRpcException)?.retryAfterMillis
-                val connect = failure as? ConnectRpcException
-                val fallback = RecordFallback(message, now, (System.nanoTime() - readStartedAt) / 1_000_000, retryAfter, path = connect?.path, httpCode = connect?.httpCode, code = connect?.code)
-                // A removal is not a pause: the server has said the read is gone, and asking every half minute
-                // costs a round trip on every open for nothing (see [RECORD_REMOVED_RETRY_MS]).
-                val pause = when {
-                    retryAfter != null -> retryAfter.coerceAtLeast(RECORD_RETRY_MIN_MS)
-                    failure.isRecordRemoved() -> RECORD_REMOVED_RETRY_MS
-                    else -> RECORD_RETRY_MS
-                }
-                e.publish(
-                    mutate = { recordRefusedUntil = now + pause },
-                    transform = { copy(recordFallback = fallback) },
-                )
+                beta?.fallback = message
+                recordFallBack(e, failure, message, readStartedAt, drifted)
                 return@coroutineScope RecordLoad(served = false, runPage = runPage.await())
             }
             e.publish(transform = { copy(isLoading = false, transcriptError = message) })
         } else {
             val sink = images?.forAgent(agentId)
             val now = AppClock.now()
-            // A turn-indexed delta starts at the newest known turn, read again whole (see RecordPager.sinceTurns).
-            val delta = known != null && known.canAppend && rawWindow.turnIndexed == known.turnIndexed &&
-                (rawWindow.firstStep == known.total || (rawWindow.turnIndexed && rawWindow.firstStep == known.total - 1))
-            var built = if (delta) RecordTranscript.append(known!!, rawWindow, now, wantTurns = wantTurns, build = turnBuilder(agentId, sink))
-            else RecordTranscript.window(rawWindow, known, state = null, now, wantTurns = wantTurns, build = turnBuilder(agentId, sink))
+            // A turn-indexed page is merged by turn and by blob id, never appended (see RecordTranscript.window).
+            val delta = !blobBacked && known != null && known.canAppend && rawWindow.turnIndexed == known.turnIndexed && rawWindow.firstStep == known.total
+            val state = if (blobBacked) stateRead.await().getOrNull() else null
+            val built = if (delta) RecordTranscript.append(known!!, rawWindow, now, wantTurns = wantTurns, build = turnBuilder(agentId, sink))
+            else RecordTranscript.window(rawWindow, known, state = state, now, wantTurns = wantTurns, build = turnBuilder(agentId, sink))
+            beta?.let { load ->
+                load.turnCount = built.turnCount
+                load.reused = rawWindow.reused.size
+                if (load.firstPaintMs == null) load.firstPaintMs = (System.nanoTime() - load.startedAtNanos) / 1_000_000
+            }
             var project = false
             e.publish(
                 mutate = {
@@ -2572,16 +2641,8 @@ class ConversationRepository(
                 transform = { copy(isLoading = false, error = null, transcriptError = null, transcriptUnavailable = false, isProjectConversation = project, recordFallback = null) },
             )
             persistRecord(e, built, known, backend, tokens)
-            // The second stage of a cold open on the blob-backed record: the rest of the window's turns, behind the ones on screen.
-            if (stagedPaint && built.hasOlder && built.turns.size < wantTurns) {
-                val older = runCatching { RecordPager.before(api, agentId, built.firstStep, wantTurns - built.turns.size) }.getOrElse { t -> if (t is CancellationException) throw t; null }
-                if (older != null && older.steps.isNotEmpty()) {
-                    val widened = RecordTranscript.prepend(built, older, AppClock.now(), wantTurns = wantTurns, build = turnBuilder(agentId, sink))
-                    e.publish(mutate = { if (recordWindow === built) recordWindow = widened; pruneLocal() })
-                    persistRecord(e, widened, built, backend, tokens)
-                    built = widened
-                }
-            }
+            // Behind what is on screen: the window reaching back to what the reader came for, then the steps left for later.
+            if (blobBacked) startBlobWork(e, agentId)
         }
         // The runs: each turn's status and footer, and the run to follow.
         val runResult = runPage.await()
@@ -2639,7 +2700,8 @@ class ConversationRepository(
             var project = false
             e.publish(
                 mutate = {
-                    recordWindow = recordWindow?.withState(state)
+                    // A blob-backed window carries the state it was read with from its first frame.
+                    recordWindow = recordWindow?.let { w -> if (w.turnIndexed && w.state != null) w else w.withState(state) }
                     if (state.isRootProject) projectMode = true
                     project = projectMode
                 },
@@ -2649,6 +2711,152 @@ class ConversationRepository(
         agents.agent(agentId)?.let { prefs.markRead(agentId, it.listedAtMillis) }
         persist(e, backend, tokens)
         RecordLoad(served = true)
+    }
+
+    /**
+     * The record refused, failed with nothing of it on screen, or drifted (see [RecordPager.Raw.drift]): the
+     * documented path is the chat's from here — the record's window, when one stood, goes with it — the notice naming
+     * the request and the answer, and the record left alone for the pause the answer asked for.
+     */
+    private fun recordFallBack(e: Entry, failure: Throwable?, message: String, readStartedAt: Long, drifted: Boolean) {
+        val now = AppClock.now()
+        val connect = failure as? ConnectRpcException
+        val retryAfter = connect?.retryAfterMillis
+        val fallback = RecordFallback(message, now, (System.nanoTime() - readStartedAt) / 1_000_000, retryAfter, path = connect?.path, httpCode = connect?.httpCode, code = connect?.code)
+        // A removal is not a pause: the server has said the read is gone, and asking every half minute
+        // costs a round trip on every open for nothing (see [RECORD_REMOVED_RETRY_MS]).
+        val pause = when {
+            retryAfter != null -> retryAfter.coerceAtLeast(RECORD_RETRY_MIN_MS)
+            failure.isRecordRemoved() -> RECORD_REMOVED_RETRY_MS
+            drifted -> RECORD_DRIFT_RETRY_MS
+            else -> RECORD_RETRY_MS
+        }
+        e.publish(
+            mutate = {
+                recordRefusedUntil = now + pause
+                recordError = message
+                recordWindow = null
+                extending = false
+            },
+            transform = { copy(recordFallback = fallback, isLoadingOlder = e.loadingOlder) },
+        )
+    }
+
+    /**
+     * The blob-backed record's work behind what is on screen, once a read has painted its window: in a
+     * coordinator's chat the window reaches back, a page of turns at a time, until it holds what the reader came
+     * for — the user's last prompt and a few of the coordinator's messages ([MIN_WINDOW_WORDS]), or
+     * [MAX_WINDOW_TURNS] turns — each page read to its prompts and messages alone; then every turn whose other
+     * steps were left for later is read whole, newest first, a page at a time. A drift or a refusal on the way puts
+     * the chat on the documented path with the notice, as at the open. One job per chat, cancelled by the next read
+     * and by the screen leaving.
+     */
+    private fun startBlobWork(e: Entry, agentId: String) {
+        val api = record ?: return
+        synchronized(e) {
+            e.blobJob?.cancel()
+            e.blobJob = e.scope.launch {
+                val startedAt = System.nanoTime()
+                try {
+                    runBlobWork(e, agentId, api)
+                    synchronized(e) { e.betaLoad }?.let { load -> if (load.fullMs == null) load.fullMs = (System.nanoTime() - load.startedAtNanos) / 1_000_000; load.after = api.blobCounts(agentId) }
+                } catch (t: Throwable) {
+                    if (t is CancellationException) throw t
+                    val drift = t as? RecordDrift
+                    val failure = drift?.cause ?: t
+                    val message = failure.userMessage()
+                    if (drift != null || failure.isHardRefusal()) {
+                        synchronized(e) { e.betaLoad }?.fallback = message
+                        recordFallBack(e, failure, message, startedAt, drifted = drift != null)
+                        // The documented path, now, for what the record could not give.
+                        load(e, agentId, force = true)
+                    } else {
+                        e.publish(transform = { copy(transcriptError = message) })
+                    }
+                } finally {
+                    withContext(NonCancellable) { e.publish(mutate = { extending = false }, transform = { copy(isLoadingOlder = e.loadingOlder) }) }
+                }
+            }
+        }
+    }
+
+    /** A drift the background work met (see [RecordPager.Raw.drift]), carried to [startBlobWork]'s handler. */
+    private class RecordDrift(override val cause: ConnectRpcException) : Exception(cause.message, cause)
+
+    private suspend fun runBlobWork(e: Entry, agentId: String, api: ConversationRecordApi) {
+        val build = turnBuilder(agentId, images?.forAgent(agentId))
+        val backend = session.current
+        // What the reader came for: in a coordinator's chat, the window's newest turns are often a run of reports
+        // answered in silence, and one screen of them is one stretch with nothing the reader wrote or was told. The
+        // first page is small, so the newest message lands a round trip or two after the paint; the rest are larger.
+        var pages = 0
+        while (true) {
+            val (window, project) = synchronized(e) { e.recordWindow?.takeIf { it.turnIndexed } to e.projectMode }
+            window ?: return
+            val coordinator = project || window.state?.isRootProject == true || window.turns.any { it.projectMode }
+            val enough = window.words >= MIN_WINDOW_WORDS && window.turns.any { it.isUserTurn }
+            if (!coordinator || enough || !window.hasOlder || window.turns.size >= MAX_WINDOW_TURNS) break
+            e.publish(mutate = { extending = true }, transform = { copy(isLoadingOlder = true) })
+            val pageTurns = if (pages++ == 0) FIRST_EXTEND_TURNS else EXTEND_TURNS
+            val older = RecordPager.beforeTurns(api, agentId, window.firstStep, minOf(pageTurns, MAX_WINDOW_TURNS - window.turns.size), TurnPlan.MESSAGES, window.state)
+            older.drift?.let { throw RecordDrift(it) }
+            if (older.turns.isEmpty()) break
+            val widened = RecordTranscript.prepend(window, older, AppClock.now(), build = build)
+            var applied: RecordWindow? = null
+            e.publish(mutate = {
+                // Onto the window as it stands: a publish meanwhile (the runs, the state) may have replaced the object
+                // without moving its start; a read that moved it has its own work.
+                val current = recordWindow
+                val next = when {
+                    current === window -> widened
+                    current != null && current.turnIndexed && current.firstStep == window.firstStep -> RecordTranscript.prepend(current, older, AppClock.now(), build = build)
+                    else -> null
+                }
+                if (next != null) {
+                    recordWindow = next
+                    this.window = maxOf(this.window, next.turns.size)
+                    pruneLocal()
+                    applied = next
+                }
+            })
+            val done = applied ?: return
+            persistRecord(e, done, window, backend, cacheTokens())
+        }
+        e.publish(mutate = { extending = false }, transform = { copy(isLoadingOlder = e.loadingOlder) })
+        // The steps the first read left for later, newest turn first: the stretches fill in behind what is on screen.
+        while (true) {
+            val window = synchronized(e) { e.recordWindow?.takeIf { it.turnIndexed } } ?: return
+            val pending = window.incomplete.take(COMPLETE_TURNS)
+            if (pending.isEmpty()) break
+            val state = window.state?.takeIf { it.turnBlobIds.isNotEmpty() } ?: return
+            val raw = RecordPager.completeTurns(api, agentId, pending, state, window.held) ?: break
+            raw.drift?.let { throw RecordDrift(it) }
+            var done: RecordWindow? = null
+            e.publish(mutate = {
+                val current = recordWindow
+                if (current != null && current.turnIndexed) {
+                    recordWindow = RecordTranscript.completed(current, raw, AppClock.now(), build)
+                    done = recordWindow
+                }
+            })
+            val completed = done ?: return
+            persistRecord(e, completed, window, backend, cacheTokens())
+            // A page read whole that did not complete what it was asked for (a turn the state no longer names): stop rather than ask again.
+            if (completed.incomplete.take(COMPLETE_TURNS) == pending) break
+        }
+        // What the record could not give — a turn with no readable steps — from its run's log, as ever.
+        loadTraces(e, agentId, e.shownRuns())
+    }
+
+    /**
+     * A refusal that is the server's answer rather than the weather: a 4xx other than a timeout or a rate limit, or an
+     * answer this build could not read. The blob-backed record falls back on it even with a window on screen; a
+     * rate limit, a timeout, a 5xx leaves the window standing and says so (see [loadFromRecord]).
+     */
+    private fun Throwable?.isHardRefusal(): Boolean {
+        val connect = this as? ConnectRpcException ?: return false
+        if (connect.isUnreadableAnswer) return true
+        return connect.httpCode in 400..499 && connect.httpCode != 408 && !connect.isRateLimited
     }
 
     /**
@@ -2754,7 +2962,15 @@ class ConversationRepository(
         val sink = images?.forAgent(e.agentId)
         val wantTurns = synchronized(e) { e.window }
         val built: RecordWindow
-        if (known.canAppend) {
+        if (known.turnIndexed) {
+            // The blob-backed record: the state, and the turns whose blob it names differently — the one under way, the new ones.
+            val want = maxOf(wantTurns, known.turns.size)
+            val state = runCatching { api.state(e.agentId) }.getOrElse { t -> if (t is CancellationException) throw t; return }
+            val raw = runCatching { RecordPager.tailTurns(api, e.agentId, want, state, TurnPlan.FULL, held = known.held) }.getOrElse { t -> if (t is CancellationException) throw t; return } ?: return
+            if (raw.drift != null) return
+            if (raw.turns.all { it.reused } && state.turnCount == known.turnCount) return
+            built = RecordTranscript.window(raw, known, state, AppClock.now(), wantTurns = want, build = turnBuilder(e.agentId, sink))
+        } else if (known.canAppend) {
             // The delta alone: one small read at the known end, the appended steps when there are any (see [RecordTranscript.append]).
             val delta = runCatching { RecordPager.since(api, e.agentId, known.total) }.getOrElse { t -> if (t is CancellationException) throw t; return }
             if (delta == null) {
@@ -2833,17 +3049,21 @@ class ConversationRepository(
         val backend = session.current
         val tokens = cacheTokens()
         // The page read ahead, when it is the one before this window; else read now.
+        val page = olderPageSize(e, window)
         val older = synchronized(e) { e.prefetchedOlder?.takeIf { it.isPageBefore(window) }?.also { e.prefetchedOlder = null } }
-            ?: RecordPager.before(api, e.agentId, window.firstStep, WINDOW_RUNS)
+            ?: if (window.turnIndexed) RecordPager.beforeTurns(api, e.agentId, window.firstStep, page, TurnPlan.MESSAGES, window.state).also { raw -> raw.drift?.let { throw RecordDrift(it) } }
+            else RecordPager.before(api, e.agentId, window.firstStep, WINDOW_RUNS)
         val sink = images?.forAgent(e.agentId)
-        val built = RecordTranscript.prepend(window, older, AppClock.now(), wantTurns = WINDOW_RUNS, build = turnBuilder(e.agentId, sink))
+        val built = RecordTranscript.prepend(window, older, AppClock.now(), wantTurns = page, build = turnBuilder(e.agentId, sink))
         e.publish(mutate = {
             // Only onto the window this was asked for: a re-read since replaced it, and its turns stand.
             if (recordWindow === window || recordWindow?.firstStep == window.firstStep) recordWindow = built
-            this.window += WINDOW_RUNS
+            this.window += if (window.turnIndexed) (built.turns.size - window.turns.size).coerceAtLeast(0) else WINDOW_RUNS
             // The page may hold the turn of a prompt sent from here that the newest turns did not: the echo hands over to it.
             pruneLocal()
         })
+        // The page's steps behind its prompts and messages, as at the open.
+        if (window.turnIndexed) startBlobWork(e, e.agentId)
         prefetchOlderRecord(e, built)
         persistRecord(e, built, window, backend, tokens)
         // The run list is read on to cover the widened window before the replays are asked for: a turn without
@@ -2852,6 +3072,10 @@ class ConversationRepository(
         loadTraces(e, e.agentId, e.shownRuns())
         fillTextFromTranscript(e, e.agentId)
     }
+
+    /** Turns one scroll up brings: more in a coordinator's chat on the blob-backed record, whose turns fold into a few rows. */
+    private fun olderPageSize(e: Entry, window: RecordWindow): Int =
+        if (window.turnIndexed && (synchronized(e) { e.projectMode } || window.turns.any { it.projectMode })) OLDER_COORDINATOR_TURNS else WINDOW_RUNS
 
     /** Whether this page ends exactly where [window] begins: the page before it. */
     private fun RecordPager.Raw.isPageBefore(window: RecordWindow): Boolean =
@@ -2869,8 +3093,10 @@ class ConversationRepository(
             if (e.prefetchedOlder?.isPageBefore(window) == true) return
             e.prefetchedOlder = null
             e.prefetchJob = e.scope.launch {
-                val raw = runCatching { RecordPager.before(api, e.agentId, window.firstStep, WINDOW_RUNS) }
-                    .getOrElse { t -> if (t is CancellationException) throw t; null } ?: return@launch
+                val raw = runCatching {
+                    if (window.turnIndexed) RecordPager.beforeTurns(api, e.agentId, window.firstStep, olderPageSize(e, window), TurnPlan.MESSAGES, window.state).takeIf { it.drift == null }
+                    else RecordPager.before(api, e.agentId, window.firstStep, WINDOW_RUNS)
+                }.getOrElse { t -> if (t is CancellationException) throw t; null } ?: return@launch
                 synchronized(e) { if (e.attached > 0 && e.recordWindow?.firstStep == window.firstStep) e.prefetchedOlder = raw }
             }
         }
@@ -2883,7 +3109,7 @@ class ConversationRepository(
      */
     private suspend fun persistRecord(e: Entry, window: RecordWindow, previous: RecordWindow?, backend: CursorBackend, tokens: CacheTokens) {
         val before = previous?.turns?.associateBy { it.stepIndex }
-        val changed = window.turns.takeLast(MAX_RESTORED_WINDOW).filter { turn ->
+        val changed = window.turns.takeLast(keptTurns(window)).filter { turn ->
             val old = before?.get(turn.stepIndex)
             old == null || old.stepCount != turn.stepCount || old.items !== turn.items
         }
@@ -2897,6 +3123,9 @@ class ConversationRepository(
     }
 
     private fun monotonicMillis(): Long = System.nanoTime() / 1_000_000
+
+    /** How many turns of a window are kept in memory past the screen and on disk: a blob-backed window may reach back further (see [MAX_WINDOW_TURNS]). */
+    private fun keptTurns(window: RecordWindow?): Int = if (window?.turnIndexed == true) MAX_WINDOW_TURNS else MAX_RESTORED_WINDOW
 
     /** The runs the window renders right now, newest last. */
     private fun Entry.shownRuns(): List<RunDto> = synchronized(this) { if (recordWindow != null) recordTurnsNeedingReplay() else layout().runs }
@@ -3080,13 +3309,21 @@ class ConversationRepository(
         if (!proceed) return
         e.state.update { it.copy(isLoadingOlder = true) }
         if (recordWindow != null) {
+            val startedAt = System.nanoTime()
             try {
                 loadOlderFromRecord(e, recordWindow)
             } catch (t: Throwable) {
                 if (t is CancellationException) throw t
-                e.publish(transform = { copy(transcriptError = t.userMessage()) })
+                val failure = (t as? RecordDrift)?.cause ?: t
+                if (recordWindow.turnIndexed && (t is RecordDrift || failure.isHardRefusal())) {
+                    e.publish(mutate = { loadingOlder = false })
+                    recordFallBack(e, failure, failure.userMessage(), startedAt, drifted = t is RecordDrift)
+                    load(e, e.agentId, force = true)
+                } else {
+                    e.publish(transform = { copy(transcriptError = t.userMessage()) })
+                }
             } finally {
-                e.publish(mutate = { loadingOlder = false }, transform = { copy(isLoadingOlder = false) })
+                e.publish(mutate = { loadingOlder = false }, transform = { copy(isLoadingOlder = e.extending) })
             }
             return
         }
@@ -3180,7 +3417,7 @@ class ConversationRepository(
                 runs = if (trusted) cached.runs else emptyList()
                 runsComplete = if (trusted) cached.runsComplete else false
                 olderRunsCursor = if (trusted) cached.olderRunsCursor else null
-                if (cached.window > 0) window = cached.window.coerceIn(WINDOW_RUNS, MAX_RESTORED_WINDOW)
+                if (cached.window > 0) window = cached.window.coerceIn(WINDOW_RUNS, if (cached.record?.turnIndexed == true) MAX_WINDOW_TURNS else MAX_RESTORED_WINDOW)
                 transcriptUnavailable = cached.transcriptUnavailable
                 inputsUpdatedAt = cached.agentUpdatedAtMillis
                 // The prompts sent from here go on standing in, exactly as they did when the copy was written — bar one
@@ -3212,7 +3449,14 @@ class ConversationRepository(
             val older = saved.turns.dropLast(newest.size)
             var restored: RecordWindow? = null
             fun publishRestored(turns: List<CachedRecordTurn>, files: Map<String, CachedTrace>, onlyOver: RecordWindow?) {
-                val built = turns.map { turn -> RecordTurn(turn.stepIndex, turn.stepCount, turn.prompt, turn.projectMode, files[RecordTurn.traceKey(turn.stepIndex, saved.turnIndexed)]?.items ?: emptyList(), errorMessage = turn.errorMessage, turnIndexed = saved.turnIndexed) }
+                val built = turns.map { turn ->
+                    val items = files[RecordTurn.traceKey(turn.stepIndex, saved.turnIndexed)]?.items
+                    // A turn whose file is gone is not held: its blob id is not named, and the next read reads it again.
+                    RecordTurn(
+                        turn.stepIndex, turn.stepCount, turn.prompt, turn.projectMode, items ?: emptyList(), errorMessage = turn.errorMessage, turnIndexed = saved.turnIndexed,
+                        blobId = turn.blobId.takeIf { items != null }, complete = turn.complete && items != null, stepTotal = turn.stepTotal, messageSteps = turn.messageSteps,
+                    )
+                }
                 val window = RecordWindow(saved.total, built.first().stepIndex, built, emptyList(), state, readAtMillis = 0L, turnIndexed = saved.turnIndexed)
                 var project = false
                 e.publish(
@@ -3499,6 +3743,9 @@ class ConversationRepository(
             val chatRunning = e.isChatRunning()
             window to window.turns.withIndex().filter { (i, turn) ->
                 if (turn.prompt == null || turn.hasText || turn.textFromTranscript) return@filter false
+                // Still being read; or a coordinator's turn whose structure the record gave: a silent turn has no
+                // words to find, and reading the whole `/v0` transcript to learn so is the cost this read is spared.
+                if (turn.bodyIsTheRecords || (turn.structureKnown && (e.projectMode || turn.projectMode))) return@filter false
                 // The newest turn while the chat runs is being written: its words are on their way.
                 if (i == window.turns.lastIndex && chatRunning) return@filter false
                 val run = paired.getOrNull(offset + i)
@@ -4204,7 +4451,8 @@ class ConversationRepository(
      */
     private fun Throwable?.isRecordRemoved(): Boolean {
         val connect = this as? ConnectRpcException ?: return false
-        return connect.httpCode == 404 || connect.code == "unimplemented" || connect.message?.contains("has been removed", ignoreCase = true) == true
+        // `not_found` is a resource the account does not have (a blob), not a method the server no longer routes.
+        return (connect.httpCode == 404 && connect.code != "not_found") || connect.code == "unimplemented" || connect.message?.contains("has been removed", ignoreCase = true) == true
     }
 
     private fun isNewer(run: RunDto, than: RunDto?): Boolean = than == null || parseIsoMillis(run.createdAt) > parseIsoMillis(than.createdAt)
@@ -4630,6 +4878,23 @@ class ConversationRepository(
          * hour asks about again (Bennett's 2026-09-20 export: the same refusal every thirty seconds, four in six minutes).
          */
         const val RECORD_REMOVED_RETRY_MS = 60 * 60_000L
+        /** How long the blob-backed record is left alone after it drifted (see [RecordPager.Raw.drift]): not a blip, not a removal. */
+        const val RECORD_DRIFT_RETRY_MS = 10 * 60_000L
+        /** The code of a record answer whose shape this build did not expect (see [loadFromRecord]): the answer came, the turns did not. */
+        const val SHAPE_MISMATCH = "shape_mismatch"
+        /**
+         * What a coordinator's window reaches back for (see [startBlobWork]): this many of the user's prompts and the
+         * coordinator's messages to the user, one of the user's among them — or [MAX_WINDOW_TURNS] turns, whichever
+         * comes first — a page of [EXTEND_TURNS] turns at a time.
+         */
+        const val MIN_WINDOW_WORDS = 4
+        const val MAX_WINDOW_TURNS = 60
+        const val EXTEND_TURNS = 24
+        const val FIRST_EXTEND_TURNS = 8
+        /** Turns the blob-backed record's completion reads whole in one page (see [startBlobWork]). */
+        const val COMPLETE_TURNS = 24
+        /** How many older turns a scroll up brings in a coordinator's chat on the blob-backed record: its turns fold, ten of them are often one line. */
+        const val OLDER_COORDINATOR_TURNS = 24
         /** How many times, a moment apart, the transcript is asked for a message the account delivered before it is given up (see [adoptDelivered]). */
         const val ADOPT_ATTEMPTS = 4
         /**
