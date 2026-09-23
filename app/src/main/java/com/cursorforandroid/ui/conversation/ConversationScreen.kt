@@ -215,6 +215,7 @@ fun ConversationScreen(
             onEditOutgoing = viewModel::editOutgoing,
             onDismissNotice = viewModel::dismissInlineNotice,
             onOpenFile = { openFile = it },
+            onAskToCopyFile = if (isDemo) null else viewModel::askToCopyFileIntoWorkspace,
         )
     }
     // The "+" menu's two pickers: the gallery — images alone in the default mode, images and videos as real files in
@@ -342,7 +343,7 @@ fun ConversationScreen(
     val panelViewModel: PanelViewModel = viewModel(key = "panel-$agentId", factory = PanelViewModel.Factory(graph, agentId))
     val panelState = rememberSidePanelState()
     val panel by panelViewModel.state.collectAsStateWithLifecycle()
-    val panelActions = rememberPanelActions(panelViewModel, onToast = viewModel::showMessage, onOpenAgent = onOpenAgent)
+    val panelActions = rememberPanelActions(panelViewModel, onToast = viewModel::showMessage, onOpenAgent = onOpenAgent, onAskToCopyFile = if (isDemo) null else viewModel::askToCopyFileIntoWorkspace)
     // Replies reference screenshots and recordings by their VM path; resolving them needs this agent's id. A path
     // into an Agent Store (`/cursor/stores/…`, a Project's context) is read through the account in Extended mode and
     // opens in the document sheet; without the account it points at the Project on cursor.com. A tapped figure opens
@@ -677,6 +678,7 @@ fun ConversationScreen(
             onClose = { openFile = null },
             // Bytes that turned out to be a picture, a recording or a sound are the media viewer's, never a text screen's.
             onOpenMedia = viewer?.let { v -> { entry -> openFile = null; v.open(agentId, listOf(entry), entry.src, null, fallback = entry, autoplay = entry.isPlayable) } },
+            onAskToCopy = if (isDemo) null else { path -> openFile = null; viewModel.askToCopyFileIntoWorkspace(path) },
         )
     }
 

@@ -57,6 +57,8 @@ interface PanelActions {
     fun closeFile()
     /** Asks the viewer's file again after a failure, waking the agent's machine first when [wake]. */
     fun retryFile(wake: Boolean) = Unit
+    /** Drafts a follow-up asking the agent to copy a file into the workspace (a picture the panel could not read outside it). */
+    fun askToCopyFile(path: String) = Unit
     fun openUrl(url: String)
     fun copyText(text: String, confirmation: String = "Copied")
     fun shareText(text: String)

@@ -112,14 +112,17 @@ data class SseFrame(
  */
 object SseParser {
     /**
-     * A line longer than this, or a frame whose data is, is more than this client has a use for: the SDK-shape
-     * `interaction_update` of a generated image carries the picture itself as base64, megabytes of it. Such a line
-     * is read past and its frame marked [SseFrame.oversized], never kept whole. It used to end the connection
-     * instead, and the next connection — resumed from the event before it — met the same frame again, so a run with
-     * one such event could never be replayed to its end: its tool calls never reached the transcript.
+     * A line longer than this, or a frame whose data is, is more than this client keeps: a read of an image, or the
+     * SDK-shape `interaction_update` of a generated one, carries the picture as base64 — a big screenshot is a few
+     * megabytes of it. The cap is high enough that a read result arrives whole (a read image the picture a tool call
+     * shows), and bounded so one giant frame cannot exhaust memory: past it the line is read past and the frame
+     * marked [SseFrame.oversized], never kept short. It used to end the connection instead, and the next connection —
+     * resumed from the event before it — met the same frame again, so a run with one such event could never be
+     * replayed to its end: its tool calls never reached the transcript. Raised from 1 MB (2026-09): the desktop's own
+     * read of an image over the documented stream is this size, and a base64 screenshot exceeded 1 MB.
      */
-    private const val MAX_LINE_BYTES = 1L shl 20
-    private const val MAX_DATA_CHARS = 4 shl 20
+    private const val MAX_LINE_BYTES = 16L shl 20
+    private const val MAX_DATA_CHARS = 24 shl 20
 
     /** What a `retry:` is honoured within: below a second it is a reconnect loop, past a minute the caller decides. */
     private const val MIN_RETRY_MS = 1_000L

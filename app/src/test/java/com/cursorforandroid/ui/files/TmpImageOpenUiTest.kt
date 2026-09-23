@@ -19,6 +19,9 @@ import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.cursorforandroid.data.FakeCursorApi
 import com.cursorforandroid.data.api.ConnectRpcException
+import com.cursorforandroid.data.api.CursorServer
+import com.cursorforandroid.data.api.CursorServerFiles
+import com.cursorforandroid.data.api.CursorServerReadException
 import com.cursorforandroid.data.api.DiffDetailsApi
 import com.cursorforandroid.data.api.WorkspaceFilesApi
 import com.cursorforandroid.data.media.MediaLoader
@@ -75,7 +78,6 @@ class TmpImageOpenUiTest {
     private val opened = mutableListOf<FileOpenRequest>()
     private val picture = ViewerFixtures.png("v02_mid.png", 240, 160, 0xFF335577.toInt())
     private val pictureBytes = File(URI(picture)).readBytes()
-    private val readPath = "/aiserver.v1.BackgroundComposerService/ReadBinaryFile"
     private val listPath = "/aiserver.v1.BackgroundComposerService/ListWorkspaceFiles"
 
     /** The agent's machine: asleep until woken, holding [files] by the path the read names. */
@@ -94,14 +96,30 @@ class TmpImageOpenUiTest {
     }
 
     private var wakes = 0
+    private val drafted = mutableListOf<String>()
 
-    private fun loader(machine: Machine, capabilities: Capabilities = Capabilities.EXTENDED): MediaLoader {
+    /** A cursor-server backed by the machine's own state: asleep until the machine is, serving its files by path. */
+    private class Server(private val machine: Machine, private val files: Map<String, ByteArray>) : CursorServerFiles {
+        val reads = mutableListOf<String>()
+        override suspend fun server(agentId: String, commit: String, connectionToken: String): CursorServer {
+            if (!machine.awake) throw ConnectRpcException(400, "failed_precondition", "pod is not running", path = "/aiserver.v1.BackgroundComposerService/GetCursorServerUrl")
+            return CursorServer("pod", 443, connectionToken, emptyList())
+        }
+        override suspend fun read(server: CursorServer, path: String): ByteArray {
+            reads += path
+            return files[path] ?: throw CursorServerReadException(404, "GET https://pod:443/vscode-remote-resource?path=$path → HTTP 404 \"File not found\"", "no such file")
+        }
+    }
+
+    private fun loader(machine: Machine, capabilities: Capabilities = Capabilities.EXTENDED, server: CursorServerFiles? = Server(machine, mapOf("/tmp/v02_mid.png" to pictureBytes, "/tmp/reel_frames_s.jpg" to pictureBytes))): MediaLoader {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val files = AgentFileRepository(
             WorkspaceRepository(machine, machine, capabilities = { capabilities }),
             repository = { _, _, _ -> Result.failure(IOException("not asked")) },
             agent = { agentOn(ViewerFixtures.AGENT) },
             wakeMachine = { wakes++; machine.awake = true; true },
+            cursorServer = server,
+            mintToken = { "minted" },
             // The fake machine is up the moment it is woken; a delay here would wait on the test looper's clock.
             wakePollMs = 0,
         )
@@ -113,7 +131,7 @@ class TmpImageOpenUiTest {
 
     private fun rows(loader: MediaLoader, vararg calls: ToolCall) = compose.setContent {
         ViewerScene(viewer, loader, entries = emptyList()) {
-            CompositionLocalProvider(LocalTranscriptControls provides TranscriptControls(onOpenFile = { opened += it })) {
+            CompositionLocalProvider(LocalTranscriptControls provides TranscriptControls(onOpenFile = { opened += it }, onAskToCopyFile = { drafted += it })) {
                 Column { calls.forEach { ToolCallLine(it) } }
             }
         }
@@ -138,22 +156,25 @@ class TmpImageOpenUiTest {
     }
 
     @Test
-    fun `a tmp picture only the machine holds opens from the path in the row's open card, read by that path`() {
-        val machine = Machine(awake = true, files = mapOf("/tmp/v02_mid.png" to pictureBytes))
-        rows(loader(machine), readOf("/tmp/v02_mid.png"))
+    fun `a tmp picture only the machine holds opens from the path in the row's open card, read off the cursor-server`() {
+        val machine = Machine(awake = true, files = emptyMap())
+        val server = Server(machine, mapOf("/tmp/v02_mid.png" to pictureBytes))
+        rows(loader(machine, server = server), readOf("/tmp/v02_mid.png"))
         // The verb opens the card, which shows the path whole: that path is a link too.
         compose.onNodeWithText("Read").performTouchInput { click(centerLeft + Offset(8f, 0f)) }
         settle { compose.onAllNodesWithTag("file-link").fetchSemanticsNodes().size == 2 }
         compose.onAllNodesWithTag("file-link")[1].performClick()
         settle { viewer.phase == MediaViewerState.Phase.Open && exists("viewer-image-0") }
-        assertThat(machine.reads).containsExactly("/tmp/v02_mid.png")
+        assertThat(server.reads).contains("/tmp/v02_mid.png")
+        assertThat(server.reads.toSet()).containsExactly("/tmp/v02_mid.png")
+        assertThat(machine.reads).isEmpty()
         assertThat(opened).isEmpty()
     }
 
     @Test
     fun `the machine asleep is the compact notice with the request refused, and Wake reads the picture`() {
-        val machine = Machine(awake = false, files = mapOf("/tmp/reel_frames_s.jpg" to pictureBytes))
-        rows(loader(machine), readOf("/tmp/reel_frames_s.jpg"))
+        val machine = Machine(awake = false, files = emptyMap())
+        rows(loader(machine, server = Server(machine, mapOf("/tmp/reel_frames_s.jpg" to pictureBytes))), readOf("/tmp/reel_frames_s.jpg"))
         compose.onNodeWithTag("file-link").performClick()
         settle { viewer.phase == MediaViewerState.Phase.Open && exists("viewer-error") }
         assertThat(compose.onNodeWithTag("viewer-error-title").fetchSemanticsNode().config.toString()).contains("The agent's machine is asleep")
@@ -163,20 +184,34 @@ class TmpImageOpenUiTest {
         compose.onNodeWithTag("viewer-wake").performClick()
         settle { exists("viewer-image-0") }
         assertThat(wakes).isEqualTo(1)
-        assertThat(machine.reads.last()).isEqualTo("/tmp/reel_frames_s.jpg")
     }
 
     @Test
     fun `a file the machine does not have says so with the request, and Retry asks again`() {
         val machine = Machine(awake = true, files = emptyMap())
-        rows(loader(machine), readOf("/tmp/reel_frames_s.jpg"))
+        val server = Server(machine, emptyMap())
+        rows(loader(machine, server = server), readOf("/tmp/reel_frames_s.jpg"))
         compose.onNodeWithTag("file-link").performClick()
         settle { viewer.phase == MediaViewerState.Phase.Open && exists("viewer-error") }
         assertThat(compose.onNodeWithTag("viewer-error-title").fetchSemanticsNode().config.toString()).contains("The agent's machine has no such file")
-        compose.onNodeWithText("Asked: POST $readPath → HTTP 404 not_found \"File not found\"", substring = true).assertExists()
-        val asked = machine.reads.size
+        compose.onNodeWithText("vscode-remote-resource?path=/tmp/reel_frames_s.jpg → HTTP 404", substring = true).assertExists()
+        val asked = server.reads.size
         compose.onNodeWithTag("viewer-retry").performClick()
-        settle { machine.reads.size > asked && exists("viewer-error") }
+        settle { server.reads.size > asked && exists("viewer-error") }
+    }
+
+    @Test
+    fun `a picture with no source offers to ask the agent to copy it into the workspace, which drafts a follow-up`() {
+        val machine = Machine(awake = true, files = emptyMap())
+        // No cursor-server: nothing this chat carries has the picture, so only the copy ask is left.
+        rows(loader(machine, server = null), readOf("/tmp/reel_frames_s.jpg"))
+        compose.onNodeWithTag("file-link").performClick()
+        settle { viewer.phase == MediaViewerState.Phase.Open && exists("viewer-error") }
+        assertThat(compose.onNodeWithTag("viewer-error-title").fetchSemanticsNode().config.toString()).contains("outside the agent's workspace")
+        assertThat(exists("viewer-ask-copy")).isTrue()
+        compose.onNodeWithTag("viewer-ask-copy").performClick()
+        settle { drafted.isNotEmpty() }
+        assertThat(drafted).containsExactly("/tmp/reel_frames_s.jpg")
     }
 
     @Test

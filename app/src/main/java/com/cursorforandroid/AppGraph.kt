@@ -9,48 +9,49 @@ import com.cursorforandroid.data.api.AccountApi
 import com.cursorforandroid.data.api.AccountFollowup
 import com.cursorforandroid.data.api.AccountList
 import com.cursorforandroid.data.api.AgentFilesApi
+import com.cursorforandroid.data.api.AgentStoreApi
 import com.cursorforandroid.data.api.BackgroundComposerApi
+import com.cursorforandroid.data.api.BlobCache
 import com.cursorforandroid.data.api.ComposerLifecycleApi
 import com.cursorforandroid.data.api.ComposerSnapshot
 import com.cursorforandroid.data.api.ConnectAgentStartApi
-import com.cursorforandroid.data.api.ConnectPromptUploadApi
-import com.cursorforandroid.data.api.RootScan
 import com.cursorforandroid.data.api.ConnectJsonClient
-import com.cursorforandroid.data.api.BlobCache
-import com.cursorforandroid.data.api.HeadlessPage
-import com.cursorforandroid.data.api.HeadlessTurnPage
-import com.cursorforandroid.data.api.RecordState
-import com.cursorforandroid.data.api.HeadlessConversationApi
+import com.cursorforandroid.data.api.ConnectProjectCreationApi
+import com.cursorforandroid.data.api.ConnectPromptUploadApi
 import com.cursorforandroid.data.api.ConversationRecordApi
 import com.cursorforandroid.data.api.CreatedPullRequest
 import com.cursorforandroid.data.api.CursorApiFactory
+import com.cursorforandroid.data.api.CursorServerApi
 import com.cursorforandroid.data.api.DashboardSlashCommandApi
 import com.cursorforandroid.data.api.DesktopProbe
 import com.cursorforandroid.data.api.DiffDetailsApi
 import com.cursorforandroid.data.api.FollowupQueueApi
-import com.cursorforandroid.data.api.GoalStateApi
 import com.cursorforandroid.data.api.GitHubApi
 import com.cursorforandroid.data.api.GitHubSlashCommandApi
-import com.cursorforandroid.data.api.AgentStoreApi
+import com.cursorforandroid.data.api.GoalStateApi
+import com.cursorforandroid.data.api.HeadlessConversationApi
+import com.cursorforandroid.data.api.HeadlessPage
+import com.cursorforandroid.data.api.HeadlessTurnPage
+import com.cursorforandroid.data.api.InteractionApi
 import com.cursorforandroid.data.api.MachineApi
 import com.cursorforandroid.data.api.MachineLookupApi
-import com.cursorforandroid.data.api.InteractionApi
-import com.cursorforandroid.data.api.PromptUploadApi
 import com.cursorforandroid.data.api.OriginApi
 import com.cursorforandroid.data.api.PinsApi
 import com.cursorforandroid.data.api.PresignedStoreRead
 import com.cursorforandroid.data.api.PresignedStoreWrite
-import com.cursorforandroid.data.api.StoreReadTarget
 import com.cursorforandroid.data.api.ProjectActionsApi
-import com.cursorforandroid.data.api.ConnectProjectCreationApi
 import com.cursorforandroid.data.api.ProjectApi
 import com.cursorforandroid.data.api.ProjectLineageApi
+import com.cursorforandroid.data.api.PromptUploadApi
 import com.cursorforandroid.data.api.PullRequestApi
 import com.cursorforandroid.data.api.PullRequestCreationApi
+import com.cursorforandroid.data.api.RecordState
+import com.cursorforandroid.data.api.RootScan
 import com.cursorforandroid.data.api.RunControlApi
 import com.cursorforandroid.data.api.SlashCommandApi
 import com.cursorforandroid.data.api.SseRunStreamer
 import com.cursorforandroid.data.api.SteeringApi
+import com.cursorforandroid.data.api.StoreReadTarget
 import com.cursorforandroid.data.api.WorkerLaunch
 import com.cursorforandroid.data.api.WorkspaceFilesApi
 import com.cursorforandroid.data.auth.CursorLogin
@@ -61,22 +62,22 @@ import com.cursorforandroid.data.demo.DemoData
 import com.cursorforandroid.data.demo.DemoPullRequests
 import com.cursorforandroid.data.demo.DemoReview
 import com.cursorforandroid.data.local.AppCaches
-import com.cursorforandroid.data.local.JsonDiskCache
 import com.cursorforandroid.data.local.AttachmentStore
 import com.cursorforandroid.data.local.DraftFiles
 import com.cursorforandroid.data.local.DraftStore
 import com.cursorforandroid.data.local.FollowUpStore
 import com.cursorforandroid.data.local.GeneratedMediaStore
+import com.cursorforandroid.data.local.JsonDiskCache
 import com.cursorforandroid.data.local.McpServerStore
 import com.cursorforandroid.data.local.PreferencesStore
 import com.cursorforandroid.data.local.SecureKeyStore
 import com.cursorforandroid.data.media.MediaLoader
-import com.cursorforandroid.data.repo.AgentRepository
 import com.cursorforandroid.data.repo.AgentFileRepository
+import com.cursorforandroid.data.repo.AgentRepository
 import com.cursorforandroid.data.repo.ArtifactRepository
 import com.cursorforandroid.data.repo.AttachmentUploads
-import com.cursorforandroid.data.repo.CatalogRepository
 import com.cursorforandroid.data.repo.CapabilityGatedPullRequestSource
+import com.cursorforandroid.data.repo.CatalogRepository
 import com.cursorforandroid.data.repo.ChatLauncher
 import com.cursorforandroid.data.repo.ConversationRepository
 import com.cursorforandroid.data.repo.CursorBackend
@@ -86,59 +87,59 @@ import com.cursorforandroid.data.repo.FollowUpRepository
 import com.cursorforandroid.data.repo.GeneratedImageStore
 import com.cursorforandroid.data.repo.GitHubPullRequestSource
 import com.cursorforandroid.data.repo.LiveRunHub
-import com.cursorforandroid.data.repo.Onboarding
 import com.cursorforandroid.data.repo.NewChatDrafts
+import com.cursorforandroid.data.repo.Onboarding
 import com.cursorforandroid.data.repo.PinRepository
 import com.cursorforandroid.data.repo.ProjectEditor
 import com.cursorforandroid.data.repo.ProjectRepository
-import com.cursorforandroid.data.repo.RefreshDepth
 import com.cursorforandroid.data.repo.PromptUploader
 import com.cursorforandroid.data.repo.PullRequestRepository
 import com.cursorforandroid.data.repo.PullRequestSource
+import com.cursorforandroid.data.repo.RefreshDepth
 import com.cursorforandroid.data.repo.RemoteRepository
 import com.cursorforandroid.data.repo.ReviewRepository
 import com.cursorforandroid.data.repo.RunMonitor
 import com.cursorforandroid.data.repo.SessionManager
 import com.cursorforandroid.data.repo.SessionState
 import com.cursorforandroid.data.repo.SlashCommandRepository
-import com.cursorforandroid.data.repo.WorkspaceRepository
-import com.cursorforandroid.domain.AgentDiff
 import com.cursorforandroid.data.repo.SteeringRepository
 import com.cursorforandroid.data.repo.StoreFileRepository
+import com.cursorforandroid.data.repo.WorkspaceRepository
+import com.cursorforandroid.data.update.GitHubReleasesClient
+import com.cursorforandroid.data.update.UpdateCache
+import com.cursorforandroid.data.update.UpdateManager
+import com.cursorforandroid.data.update.WhatsNewRepository
+import com.cursorforandroid.domain.AgentDiff
 import com.cursorforandroid.domain.AgentMode
 import com.cursorforandroid.domain.AgentScope
-import com.cursorforandroid.domain.PendingWork
-import com.cursorforandroid.domain.RefreshStats
 import com.cursorforandroid.domain.Capabilities
-import com.cursorforandroid.domain.ProjectDiagnostics
 import com.cursorforandroid.domain.ContextEntry
 import com.cursorforandroid.domain.DesktopPage
 import com.cursorforandroid.domain.DiagnosticsInbox
 import com.cursorforandroid.domain.InteractionResolution
 import com.cursorforandroid.domain.PendingFollowup
+import com.cursorforandroid.domain.PendingWork
 import com.cursorforandroid.domain.ProjectAppearance
+import com.cursorforandroid.domain.ProjectDiagnostics
+import com.cursorforandroid.domain.RefreshStats
+import com.cursorforandroid.domain.SendDiagnostics
 import com.cursorforandroid.domain.SlashCatalog
 import com.cursorforandroid.domain.SlashCommand
 import com.cursorforandroid.domain.SteerOutcome
 import com.cursorforandroid.domain.ToolPayload
-import com.cursorforandroid.domain.SendDiagnostics
 import com.cursorforandroid.domain.TranscriptDiagnostics
+import com.cursorforandroid.domain.TranscriptPresenters
 import com.cursorforandroid.domain.WorkerMembership
 import com.cursorforandroid.domain.WorkerSpawnKind
 import com.cursorforandroid.domain.WorkspaceTree
-import com.cursorforandroid.domain.TranscriptPresenters
-import com.cursorforandroid.share.ShareInbox
-import com.cursorforandroid.data.update.GitHubReleasesClient
-import com.cursorforandroid.data.update.UpdateCache
-import com.cursorforandroid.data.update.UpdateManager
-import com.cursorforandroid.data.update.WhatsNewRepository
 import com.cursorforandroid.notifications.LiveNotifications
+import com.cursorforandroid.share.ShareInbox
 import com.cursorforandroid.ui.conversation.AttachmentImages
 import com.cursorforandroid.ui.conversation.OutgoingSends
 import com.cursorforandroid.update.AndroidUpdatePlatform
 import com.cursorforandroid.update.allocatableBytes
-import kotlinx.coroutines.Dispatchers
 import com.cursorforandroid.util.AppClock
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -304,6 +305,8 @@ class AppGraph(
     private val lazyProjectApi = lazy { ProjectApi(lazyAccountRpc.value, lazySessionTokens.value) }
     /** The agent's live VM: its workspace files and its branch diff (the panel's Files › Workspace and Changes). */
     private val lazyAgentFiles = lazy { AgentFilesApi(lazyAccountRpc.value, lazySessionTokens.value) }
+    /** The machine's cursor-server, for a picture a tool call read outside the workspace (see [CursorServerApi]). */
+    private val lazyCursorServer = lazy { CursorServerApi(lazyAccountRpc.value, lazySessionTokens.value, CursorApiFactory.cursorServerClient()) }
     /** The account's view of a pull request on any host it connects, and opening one from here. */
     private val lazyPullRequestApi = lazy { PullRequestApi(lazyAccountRpc.value, lazySessionTokens.value) }
     /** Where the agent's machine is, for its desktop. */
@@ -371,6 +374,7 @@ class AppGraph(
             repository = { repoUrl, ref, path -> reviews.contents(repoUrl, ref, path) },
             agent = { id -> agents.agent(id) },
             wakeMachine = { id -> steering.wake(id).getOrDefault(false) },
+            cursorServer = lazyCursorServer.value,
         )
     }
     val agentFileReads: AgentFileRepository get() = lazyAgentFileReads.value

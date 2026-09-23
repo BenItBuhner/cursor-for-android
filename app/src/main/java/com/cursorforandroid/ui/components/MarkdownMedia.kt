@@ -56,6 +56,7 @@ import com.cursorforandroid.data.media.MediaProblem
 import com.cursorforandroid.domain.FileFormat
 import com.cursorforandroid.domain.MediaRef
 import com.cursorforandroid.domain.StorePath
+import com.cursorforandroid.ui.conversation.LocalTranscriptControls
 import com.cursorforandroid.ui.media.LocalMediaViewer
 import com.cursorforandroid.ui.media.MediaActions
 import com.cursorforandroid.ui.media.MediaEntry
@@ -399,8 +400,10 @@ internal fun MediaProblemRow(
     val elsewhere = media != null && problem.openable && problem !is MediaProblem.NotReadable && problem !is MediaProblem.Failed &&
         problem !is MediaProblem.LfsPointer && !(problem is MediaProblem.NotMedia && problem.actual == FileFormat.HTML)
     var notice by remember(ref) { mutableStateOf<String?>(null) }
+    val onCopy = (ref as? MediaRef.Workspace)?.path?.takeIf { problem is MediaProblem.OutsideWorkspace }?.let { path -> LocalTranscriptControls.current.onAskToCopyFile?.let { ask -> { ask(path) } } }
     val actions = buildList {
         onWake?.let { add("Wake the machine" to it) }
+        onCopy?.let { add("Ask the agent to copy it into the workspace" to it) }
         browserUrl?.let { url -> add("Open in browser" to { if (runCatching { uriHandler.openUri(url) }.isFailure) notice = "Nothing on this device opens links." }) }
         if (elsewhere && media != null) {
             add(

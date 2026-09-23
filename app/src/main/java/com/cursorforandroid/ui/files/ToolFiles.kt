@@ -77,7 +77,9 @@ fun rememberFileOpener(path: String, call: ToolCall? = null, line: Int? = null, 
         val src = carried ?: (call?.payload as? ToolPayload.ReadMedia)?.src ?: path
         val slot = rememberThumbnailSlot(src, CursorTheme.shapes.base, crop = true)
         val entry = MediaEntry(src, kind, fileName = name, mimeType = format?.mimeType)
-        return FileOpener(slot, { viewer.open(media.agentId, listOf(entry), src, slot, fallback = entry, autoplay = entry.isPlayable) }, "Open $name")
+        // A picture read outside the workspace may need the agent to copy it in; the viewer offers that from its notice.
+        val onAskToCopy = controls.onAskToCopyFile?.let { ask -> { p: String -> ask(p) } }
+        return FileOpener(slot, { viewer.open(media.agentId, listOf(entry), src, slot, fallback = entry, autoplay = entry.isPlayable, onAskToCopy = onAskToCopy) }, "Open $name")
     }
     // A file of an Agent Store (a Project's context) is the store sheet's: it reads the store, not the workspace.
     val store = StorePath.parse(path)

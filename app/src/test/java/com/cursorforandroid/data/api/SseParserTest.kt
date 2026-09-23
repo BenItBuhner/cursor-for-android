@@ -91,7 +91,7 @@ class SseParserTest {
      */
     @Test
     fun `a line longer than the parser will buffer is skipped, not the connection`() {
-        val huge = "A".repeat((1 shl 20) + 5_000)
+        val huge = "A".repeat((16 shl 20) + 5_000)
         val source = Buffer().writeUtf8(
             "id: 10-0\nevent: tool_call\ndata: {\"callId\":\"img-1\",\"name\":\"generate_image\",\"status\":\"completed\"}\n\n" +
                 "id: 10-0\nevent: interaction_update\ndata: {\"type\":\"tool-call-completed\",\"callId\":\"img-1\",\"toolCall\":{\"type\":\"generateImage\",\"result\":{\"status\":\"success\",\"value\":{\"imageData\":\"$huge\"}}}}\n\n" +
@@ -110,7 +110,7 @@ class SseParserTest {
     /** A stream that ends inside an oversized line has nothing after it: no frame, no resume position. */
     @Test
     fun `a stream cut off inside an oversized line ends without a frame`() {
-        val source = Buffer().writeUtf8("id: 10-0\nevent: heartbeat\ndata: {}\n\nid: 11-0\nevent: assistant\ndata: " + "B".repeat((1 shl 20) + 100))
+        val source = Buffer().writeUtf8("id: 10-0\nevent: heartbeat\ndata: {}\n\nid: 11-0\nevent: assistant\ndata: " + "B".repeat((16 shl 20) + 100))
         val frames = generateSequence { SseParser.readFrame(source) }.toList()
         assertThat(frames.map { it.id }).containsExactly("10-0")
     }
@@ -218,7 +218,7 @@ class SseParserTest {
     @Test
     fun `an oversized frame is skipped and resumed past, and the run still finishes`() = runTest {
         val server = MockWebServer()
-        val huge = "A".repeat((1 shl 20) + 5_000)
+        val huge = "A".repeat((16 shl 20) + 5_000)
         server.enqueue(
             MockResponse().setHeader("Content-Type", "text/event-stream").setBody(
                 "id: 10-0\nevent: tool_call\ndata: {\"callId\":\"img-1\",\"name\":\"generate_image\",\"status\":\"completed\"}\n\n" +

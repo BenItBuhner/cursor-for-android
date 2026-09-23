@@ -64,7 +64,7 @@ fun ConversationPanel(
     // runs edge to edge behind them.
     Column(modifier.fillMaxSize().panelInsetPadding().testTag("conversation-panel")) {
         if (file != null) {
-            FileViewerScreen(file, onBack = actions::closeFile, onOpenUrl = actions::openUrl, onRetry = actions::retryFile)
+            FileViewerScreen(file, onBack = actions::closeFile, onOpenUrl = actions::openUrl, onRetry = actions::retryFile, onAskToCopy = actions::askToCopyFile)
             return@Column
         }
         // The same header every pane wears: it pads for the status bar on its own, and finds it already consumed here.
@@ -129,12 +129,13 @@ fun rememberPanelActions(
     viewModel: PanelViewModel,
     onToast: (String) -> Unit,
     onOpenAgent: ((String) -> Unit)? = null,
+    onAskToCopyFile: ((String) -> Unit)? = null,
 ): PanelActions {
     val context = LocalContext.current
     val uriHandler = LocalUriHandler.current
     val clipboard = LocalClipboardManager.current
     val scope = rememberCoroutineScope()
-    return remember(viewModel, onOpenAgent) {
+    return remember(viewModel, onOpenAgent, onAskToCopyFile) {
         object : PanelActions {
             override fun loadPullRequest(force: Boolean) = viewModel.loadPullRequest(force)
             override fun loadArtifacts(force: Boolean) = viewModel.loadArtifacts(force)
@@ -146,6 +147,7 @@ fun rememberPanelActions(
             override fun openChange(change: TranscriptContent.FileChange) = viewModel.openChange(change)
             override fun closeFile() = viewModel.closeFile()
             override fun retryFile(wake: Boolean) = viewModel.retryFile(wake)
+            override fun askToCopyFile(path: String) { onAskToCopyFile?.invoke(path) ?: onToast("Open the chat to ask the agent to copy it in.") }
             override fun openUrl(url: String) {
                 runCatching { uriHandler.openUri(url) }.onFailure { onToast("Nothing on this device can open that link.") }
             }

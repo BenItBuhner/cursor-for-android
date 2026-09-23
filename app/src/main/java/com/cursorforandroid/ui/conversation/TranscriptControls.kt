@@ -55,6 +55,13 @@ data class TranscriptControls(
      * where the rows are rendered without a chat behind them, and the paths are plain text.
      */
     val onOpenFile: ((FileOpenRequest) -> Unit)? = null,
+    /**
+     * A picture a tool call read is outside the agent's workspace and no source this chat carries has it, so the
+     * reader asked the agent to copy it in (see `MediaProblem.OutsideWorkspace`): the composer is filled with a
+     * follow-up asking for the copy, not sent, so the reader can send it. [path] is the file to copy. Null where no
+     * composer stands behind the rows.
+     */
+    val onAskToCopyFile: ((path: String) -> Unit)? = null,
 )
 
 /** The transcript's controls, provided by the conversation screen around its list; the defaults where it is rendered alone. */

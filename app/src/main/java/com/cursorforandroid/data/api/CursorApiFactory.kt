@@ -278,6 +278,17 @@ object CursorApiFactory {
      * hourly and a `429` retried in seconds only spends more of it; the repositories behind these calls have their
      * own schedules.
      */
+    /**
+     * The client for a cloud agent's cursor-server (see [com.cursorforandroid.data.api.CursorServerApi]): a plain
+     * client with no API-key interceptor — the request carries only the connection token and the headers the server
+     * named — and bounded timeouts, since a picture off the machine should not hang a viewer.
+     */
+    fun cursorServerClient(): OkHttpClient = OkHttpClient.Builder()
+        .connectTimeout(20, TimeUnit.SECONDS)
+        .readTimeout(30, TimeUnit.SECONDS)
+        .callTimeout(60, TimeUnit.SECONDS)
+        .build()
+
     fun gitHubClient(): OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(20, TimeUnit.SECONDS)
         .readTimeout(30, TimeUnit.SECONDS)

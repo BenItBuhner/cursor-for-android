@@ -117,6 +117,8 @@ sealed interface FullFile {
         val detail: String? = null,
         val asked: String? = null,
         val wakeable: Boolean = false,
+        /** The file is outside the workspace: offer to ask the agent to copy it in. */
+        val copyable: Boolean = false,
     ) : FullFile {
         val message: String get() = listOfNotNull(title, detail).joinToString(" ")
     }
@@ -183,6 +185,7 @@ class FullFileResolver(
         FileRead.Reason.MachineAsleep -> FullFile.Failed("The agent's machine is asleep", retryable = true, detail = "Wake it and the file is read again.", asked = read.asked, wakeable = true)
         FileRead.Reason.MachineGone -> FullFile.Failed("The agent's machine is gone", retryable = false, detail = "The chat expired or was archived, and its VM went with it; only what the transcript carried can be shown.", asked = read.asked)
         FileRead.Reason.NotFound -> FullFile.Failed("The agent's machine has no such file", retryable = true, detail = "It was moved or deleted, or went with a machine that was replaced.", asked = read.asked)
+        FileRead.Reason.OutsideWorkspace -> FullFile.Failed("This file is outside the agent's workspace", retryable = false, detail = "It was saved outside the agent's workspace, and Cursor only lets apps read files inside it; this chat didn't include a copy.", asked = read.asked, copyable = true)
         FileRead.Reason.Other -> FullFile.Failed("Couldn't read this file", retryable = true, detail = read.message, asked = read.asked)
     }
 
@@ -216,9 +219,9 @@ class FullFileResolver(
 
 /** The full-file viewer, full screen in its own window over the chat; back and the arrow close it. */
 @Composable
-fun FullFileDialog(request: FileOpenRequest, load: suspend (FileLoad) -> FullFile, onClose: () -> Unit, onOpenMedia: ((MediaEntry) -> Unit)? = null) {
+fun FullFileDialog(request: FileOpenRequest, load: suspend (FileLoad) -> FullFile, onClose: () -> Unit, onOpenMedia: ((MediaEntry) -> Unit)? = null, onAskToCopy: ((path: String) -> Unit)? = null) {
     Dialog(onDismissRequest = onClose, properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
-        FullFileScreen(request, load, onClose, onOpenMedia = onOpenMedia)
+        FullFileScreen(request, load, onClose, onOpenMedia = onOpenMedia, onAskToCopy = onAskToCopy)
     }
 }
 
@@ -238,6 +241,7 @@ fun FullFileScreen(
     onClose: () -> Unit,
     modifier: Modifier = Modifier,
     onOpenMedia: ((MediaEntry) -> Unit)? = null,
+    onAskToCopy: ((path: String) -> Unit)? = null,
 ) {
     val colors = CursorTheme.colors
     val context = LocalContext.current
@@ -314,6 +318,7 @@ fun FullFileScreen(
                 ) {
                     if (shown.wakeable) NoticeAction("Wake the machine", { wake = true; attempt++ }, Modifier.testTag("full-file-wake"))
                     if (shown.retryable) NoticeAction("Retry", { attempt++ }, Modifier.testTag("full-file-retry"))
+                    if (shown.copyable && onAskToCopy != null) NoticeAction("Ask the agent to copy it into the workspace", { onAskToCopy(request.path) }, Modifier.testTag("full-file-ask-copy"))
                     shown.webUrl?.let { url -> NoticeAction("Open on the host", { runCatching { uriHandler.openUri(url) } }) }
                 }
             }

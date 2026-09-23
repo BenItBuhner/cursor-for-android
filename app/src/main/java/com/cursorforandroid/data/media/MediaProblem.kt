@@ -79,6 +79,18 @@ sealed interface MediaProblem {
         override val openable: Boolean get() = false
     }
 
+    /**
+     * The file is on the agent's machine outside its workspace, and no source this chat carries has it: the picture
+     * can only be had if the agent copies it under the workspace. [copyable] offers to draft that ask.
+     */
+    data class OutsideWorkspace(override val asked: String? = null) : MediaProblem {
+        override val title: String get() = "This picture is outside the agent's workspace"
+        override val detail: String get() = "It was saved outside the agent's workspace, and Cursor only lets apps read files inside it; this chat didn't include a copy."
+        override val openable: Boolean get() = false
+        /** Whether to offer "Ask the agent to copy it into the workspace", which drafts a follow-up. */
+        val copyable: Boolean get() = true
+    }
+
     companion object {
         /** What a format that sniffed as an image but did not decode means on this device. */
         fun undecodable(format: FileFormat?): MediaProblem = when {

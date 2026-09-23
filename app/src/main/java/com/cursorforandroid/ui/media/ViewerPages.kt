@@ -117,6 +117,10 @@ internal class PagePresentation(initial: ImageBitmap?) {
     fun displayed(dismiss: DismissState): Rect = ViewerGeometry.displayed(fitted, zoom.scale, zoom.pan, dismiss.drag, dismiss.scale)
 }
 
+/** The viewer's "ask to copy" for a page: closes the viewer, then drafts the follow-up its session carried; null when none was. */
+private fun MediaViewerState.Session.copyInto(state: MediaViewerState): ((path: String) -> Unit)? =
+    onAskToCopy?.let { ask -> { path -> state.close(); ask(path) } }
+
 /** Everything a page shares with the viewer: the loader, the dismiss drag, and what a tap or a dismissing drag does. */
 internal class PageEnvironment(
     val loader: MediaLoader,
@@ -238,7 +242,7 @@ internal fun ImagePage(
                         .testTag("viewer-image-$page"),
                 )
             }
-            presentation.problem != null -> PageProblem(presentation.problem!!, ref, entry, environment, onRetry = presentation::retry)
+            presentation.problem != null -> PageProblem(presentation.problem!!, ref, entry, environment, onRetry = presentation::retry, onCopyIntoWorkspace = session.copyInto(state))
             else -> PageSpinner(waking = presentation.waking)
         }
     }
@@ -344,7 +348,7 @@ internal fun VideoPage(
             }
             val problem = playback?.error?.let { MediaProblem.Failed(it, retryable = false) } ?: urlProblem
             when {
-                problem != null -> PageProblem(problem, ref, entry, environment, Modifier.align(Alignment.Center), onRetry = source::retry.takeIf { urlProblem != null && playback?.error == null })
+                problem != null -> PageProblem(problem, ref, entry, environment, Modifier.align(Alignment.Center), onRetry = source::retry.takeIf { urlProblem != null && playback?.error == null }, onCopyIntoWorkspace = session.copyInto(state))
                 playback == null && url == null -> PageSpinner(waking = source.waking, modifier = Modifier.align(Alignment.Center))
                 playback != null && !playback.isPlaying && !playback.isBuffering && state.phase == MediaViewerState.Phase.Open -> {
                     // Paused, not started, or ended: the play disc in the middle, the poster card's own control scaled up.
@@ -519,7 +523,7 @@ internal fun AudioPage(
             }
         }
         if (problem != null) {
-            PageProblem(problem, ref, entry, environment, Modifier.align(Alignment.BottomCenter).padding(bottom = 140.dp), onRetry = source::retry.takeIf { source.problem != null && playback?.error == null })
+            PageProblem(problem, ref, entry, environment, Modifier.align(Alignment.BottomCenter).padding(bottom = 140.dp), onRetry = source::retry.takeIf { source.problem != null && playback?.error == null }, onCopyIntoWorkspace = session.copyInto(state))
         }
     }
 }
@@ -583,10 +587,12 @@ internal fun PageProblem(
     environment: PageEnvironment,
     modifier: Modifier = Modifier,
     onRetry: ((wake: Boolean) -> Unit)? = null,
+    onCopyIntoWorkspace: ((path: String) -> Unit)? = null,
 ) {
     val browserUrl by produceState<String?>(null, ref) { value = environment.loader.browserUrl(ref) }
     val elsewhere = problem.openable && problem !is MediaProblem.NotReadable && problem !is MediaProblem.Failed &&
         !(problem is MediaProblem.NotMedia && problem.actual == FileFormat.HTML) && problem !is MediaProblem.LfsPointer
+    val copyPath = (ref as? MediaRef.Workspace)?.path?.takeIf { problem is MediaProblem.OutsideWorkspace && onCopyIntoWorkspace != null }
     val detail = listOfNotNull(problem.detail, problem.asked?.let { "Asked: $it" }).joinToString("\n").ifEmpty { null }
     val tone = when (problem) {
         is MediaProblem.MachineAsleep, is MediaProblem.NotReadable, is MediaProblem.Unsupported, is MediaProblem.LfsPointer -> NoticeTone.Warning
@@ -596,6 +602,7 @@ internal fun PageProblem(
         LoadNoticeCard(title = problem.title, detail = detail, tone = tone, docked = false, titleTag = "viewer-error-title") {
             if (onRetry != null && problem.wakeable) NoticeAction("Wake the machine", { onRetry(true) }, Modifier.testTag("viewer-wake"))
             if (onRetry != null && problem.retryable) NoticeAction("Retry", { onRetry(false) }, Modifier.testTag("viewer-retry"))
+            if (copyPath != null) NoticeAction("Ask the agent to copy it into the workspace", { onCopyIntoWorkspace?.invoke(copyPath) }, Modifier.testTag("viewer-ask-copy"))
             browserUrl?.let { url -> NoticeAction("Open in browser", { environment.onOpenInBrowser(url) }, Modifier.testTag("viewer-open-browser")) }
             if (elsewhere) NoticeAction("Open with\u2026", { environment.onOpenElsewhere(ref, entry) }, Modifier.testTag("viewer-open-elsewhere"))
         }
