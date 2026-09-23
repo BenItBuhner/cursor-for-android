@@ -21,10 +21,8 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -221,7 +219,7 @@ private fun SkillsPage(prompt: String, catalog: SlashCatalog, recent: List<Strin
     PageHeader("Skills", onBack)
     MenuSearchField(query, onValueChange = { query = it }, placeholder = "Search or type a skill name")
     HairlineDivider(Modifier.padding(top = 6.dp, bottom = 2.dp))
-    Column(Modifier.heightIn(max = PageListMaxHeight).verticalScroll(rememberScrollState())) {
+    Column(Modifier.heightIn(max = PageListMaxHeight).fadingVerticalScroll()) {
         if (results.isEmpty()) {
             Text("Skill names use lowercase letters, digits and hyphens.", style = type.small, color = colors.textQuaternary, modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp))
         }
@@ -258,7 +256,7 @@ private fun McpServersPage(
             modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
         )
     } else {
-        Column(Modifier.heightIn(max = PageListMaxHeight).verticalScroll(rememberScrollState())) {
+        Column(Modifier.heightIn(max = PageListMaxHeight).fadingVerticalScroll()) {
             servers.forEach { server ->
                 MenuRow(
                     icon = CursorIcons.Plug,
@@ -403,7 +401,7 @@ fun McpServerSheet(
     }
 
     CursorSheet(onDismiss = onDismiss, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
-        Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).navigationBarsPadding().imePadding().padding(bottom = 16.dp)) {
+        Column(Modifier.fillMaxWidth().fadingVerticalScroll().navigationBarsPadding().imePadding().padding(bottom = 16.dp)) {
             Row(Modifier.fillMaxWidth().heightIn(min = CursorDimens.headerHeight).padding(start = 16.dp, end = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                 Text(if (server == null) "New MCP server" else "Edit MCP server", style = type.title, color = colors.textPrimary, modifier = Modifier.weight(1f))
                 if (onDelete != null) {

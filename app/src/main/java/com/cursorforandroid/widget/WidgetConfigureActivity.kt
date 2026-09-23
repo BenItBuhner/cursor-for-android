@@ -18,8 +18,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -48,6 +46,7 @@ import com.cursorforandroid.ui.components.CursorHeader
 import com.cursorforandroid.ui.components.CursorIcons
 import com.cursorforandroid.ui.components.FlatIconButton
 import com.cursorforandroid.ui.components.HairlineDivider
+import com.cursorforandroid.ui.components.fadingVerticalScroll
 import com.cursorforandroid.ui.components.pressable
 import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
@@ -118,7 +117,7 @@ fun WidgetConfigureScreen(selected: WidgetMode?, onPick: (WidgetMode) -> Unit, o
             subtitle = stringResource(R.string.widget_configure_subtitle),
             leading = { FlatIconButton(CursorIcons.Close, "Close", onClick = onClose) },
         )
-        Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp).navigationBarsPadding().padding(bottom = 24.dp)) {
+        Column(Modifier.fillMaxSize().navigationBarsPadding().fadingVerticalScroll(surface = colors.canvas).padding(horizontal = 16.dp).padding(bottom = 24.dp)) {
             Text(
                 stringResource(R.string.widget_configure_group),
                 style = type.small,

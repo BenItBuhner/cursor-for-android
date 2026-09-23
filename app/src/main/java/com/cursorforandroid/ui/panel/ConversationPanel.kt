@@ -9,7 +9,6 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -36,6 +35,7 @@ import com.cursorforandroid.domain.ToolPayload
 import com.cursorforandroid.domain.TranscriptContent
 import com.cursorforandroid.ui.components.CursorHeader
 import com.cursorforandroid.ui.components.CursorIcons
+import com.cursorforandroid.ui.components.FadingLazyColumn
 import com.cursorforandroid.ui.components.FlatIconButton
 import com.cursorforandroid.ui.components.HairlineDivider
 import com.cursorforandroid.ui.components.panelInsetPadding
@@ -74,7 +74,7 @@ fun ConversationPanel(
             trailing = { FlatIconButton(CursorIcons.Close, "Close panel", onClick = onClose) },
         )
         HairlineDivider()
-        LazyColumn(Modifier.fillMaxSize().testTag("panel-sections"), contentPadding = PaddingValues(vertical = 4.dp)) {
+        FadingLazyColumn(Modifier.fillMaxSize().testTag("panel-sections"), contentPadding = PaddingValues(vertical = 4.dp)) {
             items(sections, key = { it.id.name }) { section ->
                 PanelSectionView(section, state, actions)
             }
