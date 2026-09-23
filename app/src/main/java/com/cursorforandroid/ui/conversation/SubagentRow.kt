@@ -9,7 +9,6 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -41,6 +40,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.style.LineHeightStyle
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -101,7 +101,7 @@ internal fun SubagentRowView(call: ToolCall, subagent: SubagentCall, modifier: M
             model = model,
             placement = placement,
             modifier = Modifier
-                .offset(x = (-6).dp)
+                .offset(x = -(ROW_PADDING + ROW_OUTSET))
                 .pressable(
                     {
                         if (open != null) open() else { taps.toggling(opening = !expanded); expanded = !expanded }
@@ -109,13 +109,13 @@ internal fun SubagentRowView(call: ToolCall, subagent: SubagentCall, modifier: M
                     CursorTheme.shapes.base,
                     enabled = open != null || details != null,
                 )
-                .padding(horizontal = 6.dp, vertical = 3.dp)
+                .padding(horizontal = ROW_PADDING, vertical = 3.dp)
                 .testTag("subagent-row")
                 .semantics { contentDescription = "Subagent $title, ${look.status}" },
         )
         if (details != null) {
             AnimatedVisibility(visible = expanded) {
-                Box(Modifier.padding(start = SLOT_WIDTH + SLOT_GAP, top = 2.dp, bottom = 6.dp)) { details() }
+                Box(Modifier.padding(start = SLOT_WIDTH + SLOT_GAP - ROW_OUTSET, top = 2.dp, bottom = 6.dp)) { details() }
             }
         }
     }
@@ -138,14 +138,14 @@ private fun subagentDetails(call: ToolCall, subagent: SubagentCall): (@Composabl
 internal fun SubagentRowContent(title: String, look: SubagentLook, model: SubagentModel?, placement: SubagentPlacement?, modifier: Modifier = Modifier) {
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
-    val line = type.base.copy(lineHeight = LINE_HEIGHT)
+    val line = type.base.copy(lineHeight = LINE_HEIGHT, lineHeightStyle = FULL_LINE)
     Row(modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
         Box(
             Modifier
                 .width(SLOT_WIDTH)
-                .padding(start = 2.dp, top = 6.dp)
+                .padding(top = (LINE_HEIGHT_DP - GLYPH_SIZE) / 2)
                 .alpha(if (look.dimmed) DIMMED_ALPHA else 1f),
-            contentAlignment = Alignment.TopCenter,
+            contentAlignment = Alignment.TopStart,
         ) {
             Box(Modifier.size(GLYPH_SIZE), contentAlignment = Alignment.Center) {
                 when (look.indicator) {
@@ -157,7 +157,7 @@ internal fun SubagentRowContent(title: String, look: SubagentLook, model: Subage
             }
         }
         Spacer(Modifier.width(SLOT_GAP))
-        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Column(Modifier.weight(1f)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(title, style = line, color = colors.textPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
                 if (model != null) {
@@ -167,7 +167,7 @@ internal fun SubagentRowContent(title: String, look: SubagentLook, model: Subage
                         Spacer(Modifier.width(4.dp))
                         Icon(ProjectIcons.vector("brain"), null, tint = colors.iconTertiary, modifier = Modifier.size(12.dp))
                         Spacer(Modifier.width(3.dp))
-                        Text(FAST, style = type.tiny.copy(lineHeight = LINE_HEIGHT), color = colors.textTertiary, maxLines = 1, modifier = Modifier.testTag("subagent-fast"))
+                        Text(FAST, style = type.tiny.copy(lineHeight = LINE_HEIGHT, lineHeightStyle = FULL_LINE), color = colors.textTertiary, maxLines = 1, modifier = Modifier.testTag("subagent-fast"))
                     }
                 }
                 placement?.let { place ->
@@ -229,12 +229,19 @@ private fun placementLabel(place: SubagentPlacement): String = when (place) {
     SubagentPlacement.Local -> "Local"
 }
 
+/**
+ * Measured off the desktop's row beside a reply: the dots start just left of the text column and the title
+ * 18 in; each line is a whole 22 box, title and status one under the other, the glyph centred on the first.
+ */
 private val SLOT_WIDTH = 20.dp
-private val SLOT_GAP = 8.dp
-private val GLYPH_SIZE = 10.dp
+private val SLOT_GAP = 2.dp
+private val ROW_OUTSET = 4.dp
+private val ROW_PADDING = 6.dp
+private val GLYPH_SIZE = 12.dp
 private val DOT_SIZE = 6.dp
 private val LINE_HEIGHT = 22.sp
 private val LINE_HEIGHT_DP = 22.dp
+private val FULL_LINE = LineHeightStyle(LineHeightStyle.Alignment.Center, LineHeightStyle.Trim.None)
 private const val DIMMED_ALPHA = 0.65f
 private const val HOLD_MS = 1_200L
 private const val ROLL_MS = 220
