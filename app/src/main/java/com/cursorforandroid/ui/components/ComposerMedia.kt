@@ -9,6 +9,8 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
@@ -28,6 +30,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -35,6 +38,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
@@ -44,6 +49,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.cursorforandroid.data.media.MediaLoader
@@ -160,7 +166,11 @@ class ComposerMediaPreviews(private val dir: File) {
     }
 }
 
-/** A recording's poster frame and length, as the platform reads them off a copy. */
+/**
+ * A recording's poster frame and length, as the platform reads them off a copy: the frame the viewer's own poster is
+ * read at ([MediaLoader.POSTER_AT_MS]), so the one fades into the other without the picture changing, and at the
+ * tile's preview size ([chipPreviewBox]), which the open grows it to.
+ */
 internal object VideoPreview {
     /** From the provider's copy (a picker's URI), while the grant lasts. */
     fun of(context: Context, uri: Uri): Pair<ImageBitmap?, Long?>? = probe { it.setDataSource(context, uri) }
@@ -171,12 +181,14 @@ internal object VideoPreview {
             open(retriever)
             val durationMs = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull()
             // A frame a moment in, not the black first frame recordings tend to start on.
-            val timeUs = (durationMs?.let { minOf(it / 3, 1_000L) } ?: 0L) * 1_000
+            val timeUs = (durationMs?.let { minOf(it / 3, MediaLoader.POSTER_AT_MS) } ?: 0L) * 1_000
             val frame = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
-                retriever.getScaledFrameAtTime(timeUs, MediaMetadataRetriever.OPTION_CLOSEST, POSTER_PX, POSTER_PX)
+                val box = displayedBox(retriever)
+                retriever.getScaledFrameAtTime(timeUs, MediaMetadataRetriever.OPTION_CLOSEST, box.width, box.height)
             } else {
                 retriever.getFrameAtTime(timeUs, MediaMetadataRetriever.OPTION_CLOSEST)
             }
+            frame?.setHasMipMap(true)
             if (frame == null && durationMs == null) null else frame?.asImageBitmap() to durationMs
         } catch (_: Throwable) {
             null
@@ -185,7 +197,13 @@ internal object VideoPreview {
         }
     }
 
-    private const val POSTER_PX = 192
+    /** [chipPreviewBox] for the recording as it is shown: a portrait recording stored sideways, with its rotation, is portrait. */
+    private fun displayedBox(retriever: MediaMetadataRetriever): IntSize {
+        val width = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toIntOrNull() ?: 0
+        val height = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toIntOrNull() ?: 0
+        val sideways = (retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION)?.toIntOrNull() ?: 0) % 180 != 0
+        return if (sideways) chipPreviewBox(height, width) else chipPreviewBox(width, height)
+    }
 }
 
 /**
@@ -214,6 +232,8 @@ fun MediaChip(
     /** The reference the viewer will open the item under (see [ComposerMediaPreviews.src]); the tile registers for it. */
     src: String,
     modifier: Modifier = Modifier,
+    /** A finger down on the picture, before it is known to be a tap: the viewer's decode can start now (see [ComposerMediaOpener.warm]). */
+    onPress: (() -> Unit)? = null,
 ) {
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
@@ -230,6 +250,7 @@ fun MediaChip(
         else -> null
     }
     val slot = rememberThumbnailSlot(src, shape, crop = true)
+    val press by rememberUpdatedState(onPress)
     Box(modifier.size(MediaSlot).testTag("media-chip")) {
         Box(
             Modifier
@@ -237,6 +258,14 @@ fun MediaChip(
                 .thumbnailSlot(slot)
                 .size(MediaTile)
                 .cursorSurface(colors.fill, colors.stroke, shape)
+                // The down itself, seen on the way in and left for the click: a tap's press lasts a tenth of a second
+                // or so before the click, which is most of a screen-sized decode.
+                .pointerInput(Unit) {
+                    awaitEachGesture {
+                        awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                        press?.invoke()
+                    }
+                }
                 .combinedClickable(
                     interactionSource = remember { MutableInteractionSource() },
                     indication = ripple(color = colors.base),
@@ -332,30 +361,45 @@ val MediaBadgeOut: Dp = 3.dp
 /** The badge's hit target, a square in the slot's top-end corner. */
 val MediaBadgeHit: Dp = 20.dp
 
+/** What the composer's tiles and sound chips do with the app's viewer (see [rememberComposerMediaOpener]). */
+internal class ComposerMediaOpener(
+    /** A press on a tile: the viewer starts decoding the item's page at the screen's size, before the tap is a tap. */
+    val warm: (ComposerMediaItem) -> Unit,
+    /** A tap: the viewer opens on the item among the row's media, out of the tile's slot. */
+    val open: (ComposerMediaItem, ThumbnailSlot) -> Unit,
+)
+
 /**
  * Opens the app's media viewer on one of the composer's media, out of its tile and among the rest of the row's, the
- * way a transcript's picture opens: the tile's picture drawn first, the page grown out of the tile's box, and shrunk
- * back into it on dismiss. The keyboard steps aside first — the viewer covers everything. Every page's copy is on
- * disk before the viewer opens — [media], the row's media, sounds included — not only the tapped one's: a page
- * swiped to reads its own. A tap where no viewer is hosted (a preview, a test) does nothing.
+ * way a transcript's picture opens: the page grown out of the tile's box and shrunk back into it on dismiss. The
+ * keyboard steps aside first — the viewer covers everything. A press starts the page's screen-sized decode
+ * ([com.cursorforandroid.ui.media.MediaViewerState.preload]), so the open grows out of that picture rather than the
+ * tile's, or fades up to it on the way when the tap beats it. Every page's copy is on disk before the viewer opens —
+ * [media], the row's media, sounds included — not only the tapped one's: a page swiped to reads its own. A tap where
+ * no viewer is hosted (a preview, a test) does nothing.
  */
 @Composable
-internal fun rememberOpenComposerMedia(
+internal fun rememberComposerMediaOpener(
     /** The pages, in order: the row's pictures and recordings. */
     items: List<ComposerMediaItem>,
     /** Everything that opens in the viewer: [items] and the row's sounds, each its own page. */
     media: List<ComposerMediaItem>,
     previews: ComposerMediaPreviews,
     agentId: String?,
-): (ComposerMediaItem, ThumbnailSlot) -> Unit {
+): ComposerMediaOpener {
     val viewer = LocalMediaViewer.current
     val scope = rememberCoroutineScope()
     val keyboard = LocalSoftwareKeyboardController.current
     val focus = LocalFocusManager.current
-    return { item, slot ->
+    val warm: (ComposerMediaItem) -> Unit = { item ->
+        if (viewer != null && !viewer.isOpen) viewer.preload(item.entry(previews), agentId) { previews.ensure(item.id, item.mimeType, item.bytes) }
+    }
+    return ComposerMediaOpener(warm) { item, slot ->
         if (viewer != null && !viewer.isOpen) {
             val src = previews.src(item.id, item.mimeType)
             val entries = items.map { it.entry(previews) }
+            // A tap no press came before (a screen reader's, the menu's Open) starts the decode here.
+            warm(item)
             scope.launch {
                 runCatching { previews.ensureAll((media + item).distinctBy { it.id }) }
                 keyboard?.hide()
@@ -393,11 +437,10 @@ internal fun rememberVideoPreview(item: ComposerMediaItem, previews: ComposerMed
     LaunchedEffect(item.id, media) {
         if (!item.isVideo || (item.thumbnail != null && item.durationMs != null) || media == null) return@LaunchedEffect
         val src = runCatching { previews.ensure(item.id, item.mimeType, item.bytes) }.getOrNull() ?: return@LaunchedEffect
-        val ref = MediaRef.parse(src, null) ?: return@LaunchedEffect
-        val poster = runCatching { media.videoPoster(ref, POSTER_TARGET_PX) }.getOrNull() ?: return@LaunchedEffect
-        preview = poster.frame?.asImageBitmap() to poster.durationMs
+        val ref = MediaRef.parse(src, null)
+        val box = chipPreviewBox(0, 0)
+        val poster = runCatching { media.videoPoster(ref, maxOf(box.width, box.height)) }.getOrNull() ?: return@LaunchedEffect
+        preview = poster.frame?.apply { setHasMipMap(true) }?.asImageBitmap() to poster.durationMs
     }
     return preview
 }
-
-private const val POSTER_TARGET_PX = 192

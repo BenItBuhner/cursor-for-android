@@ -38,7 +38,7 @@ class MediaViewerState internal constructor(restored: Session?) {
         val initialIndex: Int,
         /** The thumbnail the viewer grew out of, to shrink back into when the same page is closed. */
         internal val origin: ThumbnailSlot?,
-        /** The thumbnail's own decode, drawn until the page's full-size one lands. */
+        /** The best picture there was at the open — the thumbnail's own decode, or a screen-sized one started ahead of it ([preload]) — drawn until a sharper one lands. */
         internal val seen: ImageBitmap?,
         /** The size of the picture behind [seen], or of the thumbnail if nothing was decoded, for the transform's first frame. */
         internal val seenSize: IntSize,
@@ -87,6 +87,9 @@ class MediaViewerState internal constructor(restored: Session?) {
     /** The host's own coordinates, the frame every thumbnail box is expressed in. */
     internal var hostCoordinates: LayoutCoordinates? = null
 
+    /** The host's decodes ahead of an open ([preload]); null where no host is composed. */
+    internal var preloads: ViewerPreloads? = null
+
     private val slots = LinkedHashMap<Int, ThumbnailSlot>()
     private var nextSlotId = 1
     private var nextSessionId = 1L
@@ -113,8 +116,22 @@ class MediaViewerState internal constructor(restored: Session?) {
     fun isHidden(slot: ThumbnailSlot): Boolean = phase != Phase.Closed && slot.src == currentSrc
 
     /**
+     * Starts decoding [entry] the way its page will, before the viewer opens on it: a press on a thumbnail calls
+     * this, so that the open grows out of a screen-sized picture — or, when the tap beats the decode, fades up to it
+     * on the way. [prepare] runs first (the composer writes the copy the page reads). A sound has nothing to decode,
+     * and where no viewer is hosted nothing happens.
+     */
+    fun preload(entry: MediaEntry, agentId: String?, prepare: suspend () -> Unit = {}) {
+        preloads?.start(entry, agentId, prepare)
+    }
+
+    /** The decode [preload] started for [src], if one was. */
+    internal fun preloaded(src: String): Preload? = preloads?.get(src)
+
+    /**
      * Opens the viewer on [src] among [entries] (the conversation's media, in order; a reference not among them is
-     * shown on its own). [slot] is the thumbnail tapped, when there is one to grow out of.
+     * shown on its own). [slot] is the thumbnail tapped, when there is one to grow out of; [seen] its picture, which
+     * the open starts from unless a sharper one was decoded for it ahead of the open ([preload]).
      */
     fun open(
         agentId: String?,
@@ -130,15 +147,17 @@ class MediaViewerState internal constructor(restored: Session?) {
         val index = entries.indexOfFirst { it.src == src }
         val list = if (index >= 0) entries else listOf(fallback ?: MediaEntry(src, MediaEntry.Kind.Image))
         val at = if (index >= 0) index else 0
+        val early = preloaded(src)?.bitmap
+        val first = if (early != null && (seen == null || early.width > seen.width)) early else seen
         val seenSize = when {
-            seen != null -> IntSize(seen.width, seen.height)
+            first != null -> IntSize(first.width, first.height)
             else -> slot?.coordinates?.takeIf { it.isAttached }?.size ?: IntSize.Zero
         }
         currentIndex = at
         controlsVisible = true
         // The count is the session's: a close asked of the last session must not close this one as it opens.
         closeRequests = 0
-        session = Session(nextSessionId++, agentId, list, at, slot, seen, seenSize, autoplay, onAskToCopy)
+        session = Session(nextSessionId++, agentId, list, at, slot, first, seenSize, autoplay, onAskToCopy)
         phase = Phase.Opening
     }
 

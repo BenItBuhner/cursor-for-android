@@ -92,7 +92,7 @@ fun ComposerAttachments(
     // A sound stays a chip, and opens the viewer's player out of it.
     val sounds = remember(files) { files.filter { !it.isMedia && it.file.kind == PromptFileKind.Audio }.associate { it.id to ComposerMediaItem.of(it, null) } }
     val openable = mediaItems + sounds.values
-    val open = rememberOpenComposerMedia(mediaItems, openable, previews, agentId)
+    val opener = rememberComposerMediaOpener(mediaItems, openable, previews, agentId)
     // Every copy the viewer can page to is written as soon as its tile is shown, so a page reached by a swipe never
     // finds its file missing; keyed by what is attached, not by an upload's progress.
     if (LocalMediaViewer.current != null) {
@@ -108,10 +108,11 @@ fun ComposerAttachments(
             val shown = if (preview != null) ComposerMediaItem(item.id, item.bytes, item.mimeType, item.name, preview.first ?: item.thumbnail, item.isVideo, preview.second ?: item.durationMs, item.upload) else item
             MediaChip(
                 shown,
-                onOpen = { slot -> open(shown, slot) },
+                onOpen = { slot -> opener.open(shown, slot) },
                 onRemove = { imageById[item.id]?.let(onRemoveImage) ?: file?.let(onRemoveFile) },
                 onRetry = if (file != null && onRetryFile != null) ({ onRetryFile(file) }) else null,
                 src = previews.src(item.id, item.mimeType),
+                onPress = { opener.warm(shown) },
             )
         }
         items(files.filterNot { it.isMedia }, key = { "file:${it.id}" }) { file ->
@@ -121,7 +122,7 @@ fun ComposerAttachments(
                 upload = uploads[file.id],
                 onRemove = { onRemoveFile(file) },
                 onRetry = onRetryFile?.let { retry -> { retry(file) } },
-                onOpen = sound?.let { item -> { slot -> open(item, slot) } },
+                onOpen = sound?.let { item -> { slot -> opener.open(item, slot) } },
                 openSrc = sound?.let { previews.src(it.id, it.mimeType) },
             )
         }
