@@ -19,8 +19,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.material3.ripple
@@ -331,23 +329,12 @@ fun MediaChip(
                 Icon(CursorIcons.Close, "Remove attachment", tint = colors.canvas, modifier = Modifier.size(10.dp))
             }
         }
-        DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }, containerColor = colors.elevated, shape = CursorTheme.shapes.lg) {
-            MediaMenuItem("Open", CursorIcons.Eye) { menuOpen = false; onOpen(slot) }
-            if (failed && onRetry != null) MediaMenuItem("Retry upload", CursorIcons.Refresh) { menuOpen = false; onRetry() }
-            MediaMenuItem("Remove", CursorIcons.Trash, tint = colors.red) { menuOpen = false; onRemove() }
+        CursorMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+            CursorMenuItem("Open", CursorIcons.Eye) { menuOpen = false; onOpen(slot) }
+            if (failed && onRetry != null) CursorMenuItem("Retry upload", CursorIcons.Refresh) { menuOpen = false; onRetry() }
+            CursorMenuItem("Remove", CursorIcons.Trash, tint = colors.red) { menuOpen = false; onRemove() }
         }
     }
-}
-
-@Composable
-private fun MediaMenuItem(label: String, icon: androidx.compose.ui.graphics.vector.ImageVector, tint: Color = CursorTheme.colors.textPrimary, onClick: () -> Unit) {
-    DropdownMenuItem(
-        text = { Text(label, style = CursorTheme.typography.base, color = tint) },
-        leadingIcon = { Icon(icon, null, tint = if (tint == CursorTheme.colors.textPrimary) CursorTheme.colors.iconSecondary else tint, modifier = Modifier.size(16.dp)) },
-        onClick = onClick,
-        contentPadding = androidx.compose.foundation.layout.PaddingValues(start = 12.dp, end = 20.dp),
-        modifier = Modifier.size(width = 200.dp, height = 40.dp),
-    )
 }
 
 /** The slot a media tile takes in the row: the tile, and room above and to its end for the badge to overhang. */

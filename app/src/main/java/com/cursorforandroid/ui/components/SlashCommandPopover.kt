@@ -1,15 +1,12 @@
 package com.cursorforandroid.ui.components
 
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -17,15 +14,12 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.TextFieldValue
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.window.PopupProperties
 import com.cursorforandroid.domain.SlashCatalog
 import com.cursorforandroid.domain.SlashCommand
 import com.cursorforandroid.domain.SlashCommands
@@ -116,14 +110,13 @@ fun SlashCommandPopover(
         if (token != null && results.isEmpty() && !catalog.pending) onDismiss()
     }
 
-    DropdownMenu(
+    // Anchored to the text, which stands [CursorDimens.composerTextInset] in from the composer's padding: drawn back
+    // out by that much, the popover's corners are concentric with the composer's, as the "+" menu's are.
+    CursorMenu(
         expanded = expanded,
         onDismissRequest = onDismiss,
-        offset = DpOffset(0.dp, 4.dp),
-        shape = CursorTheme.shapes.lg,
-        containerColor = colors.elevated,
-        border = BorderStroke(CursorDimens.hairline, colors.stroke),
-        properties = PopupProperties(focusable = false),
+        offset = DpOffset(-CursorDimens.composerTextInset, 0.dp),
+        focusable = false,
         modifier = Modifier.semantics { contentDescription = "Slash commands" },
     ) {
         Column(Modifier.width(PopoverWidth).heightIn(max = PopoverMaxHeight).fadingVerticalScroll(surface = colors.elevated)) {
@@ -132,7 +125,7 @@ fun SlashCommandPopover(
             }
         }
         if (catalog.pending) {
-            Row(Modifier.width(PopoverWidth).padding(horizontal = 12.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+            Row(Modifier.width(PopoverWidth).padding(horizontal = CursorDimens.menuTextInset, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
                 SpinnerRing(size = 10.dp)
                 Spacer(Modifier.width(6.dp))
                 Text("Looking for the agent's own skills…", style = type.small, color = colors.textQuaternary, maxLines = 1)
@@ -144,31 +137,16 @@ fun SlashCommandPopover(
 /** One suggestion: `/name` with its argument hint, and the description (or origin) beneath. */
 @Composable
 private fun SlashCommandRow(entry: SlashCommand, onClick: () -> Unit) {
-    val colors = CursorTheme.colors
-    val type = CursorTheme.typography
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .pressable(onClick, RectangleShape)
-            .heightIn(min = 34.dp)
-            .padding(horizontal = 12.dp, vertical = 6.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Column(Modifier.weight(1f)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(entry.command, style = type.base, color = colors.textPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                entry.argumentHint?.let {
-                    Spacer(Modifier.width(6.dp))
-                    Text(it, style = type.base, color = colors.textQuaternary, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                }
-            }
-            Text(entry.summary, style = type.small, color = colors.textTertiary, maxLines = 1, overflow = TextOverflow.Ellipsis)
-        }
-        commandGlyph(entry)?.let {
-            Spacer(Modifier.width(8.dp))
-            Icon(it, null, tint = colors.iconQuaternary, modifier = Modifier.size(14.dp))
-        }
-    }
+    val glyph = commandGlyph(entry)
+    CursorMenuItem(
+        entry.command,
+        icon = null,
+        subtitle = entry.summary,
+        hint = entry.argumentHint,
+        subtitleMaxLines = 1,
+        trailing = if (glyph != null) ({ Icon(glyph, null, tint = CursorTheme.colors.iconQuaternary, modifier = Modifier.size(CursorDimens.menuIcon)) }) else null,
+        onClick = onClick,
+    )
 }
 
 /** Commands get a glyph on the right — the goal's target, multitask's loop, plan's checklist, a terminal for a machine command; skills none, as on the Skills page. */

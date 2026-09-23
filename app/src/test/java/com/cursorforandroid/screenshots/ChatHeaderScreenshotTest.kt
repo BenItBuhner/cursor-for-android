@@ -42,7 +42,7 @@ import java.util.TimeZone
 /**
  * A chat's header under a 24dp status bar, in the demo's chat with a pull request and in its Project's coordinator
  * chat, dark and light: back, the pull request where there is one, the panel and the menu in a 40dp row, and the
- * transcript from right under it; and the chat's menu open, dark. Same device qualifiers as [AppScreenshotTest];
+ * transcript from right under it; and the chat's menu open, dark and light. Same device qualifiers as [AppScreenshotTest];
  * written to `screenshots/` and compared pixel for pixel in CI.
  */
 @RunWith(AndroidJUnit4::class)
@@ -143,6 +143,9 @@ class ChatHeaderScreenshotTest {
 
     @Test
     fun chatMenuDark() = chat(ThemeMode.Dark, "196_chat_menu_dark", menuOpen = true)
+
+    @Test
+    fun chatMenuLight() = chat(ThemeMode.Light, "240_chat_menu_light", menuOpen = true)
 
     @Test
     fun projectDark() = project(ThemeMode.Dark, "129_slim_header_project_dark")

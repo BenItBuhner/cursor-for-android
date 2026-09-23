@@ -24,7 +24,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.material3.ripple
@@ -81,9 +80,10 @@ import com.cursorforandroid.domain.ToolKind
 import com.cursorforandroid.domain.ToolOutput
 import com.cursorforandroid.domain.ToolPayload
 import com.cursorforandroid.domain.UserMessage
-import com.cursorforandroid.ui.agents.MenuItem
 import com.cursorforandroid.ui.components.CursorCard
 import com.cursorforandroid.ui.components.CursorIcons
+import com.cursorforandroid.ui.components.CursorMenu
+import com.cursorforandroid.ui.components.CursorMenuItem
 import com.cursorforandroid.ui.components.HairlineDivider
 import com.cursorforandroid.ui.components.LocalMarkdownMedia
 import com.cursorforandroid.ui.components.MarkdownText
@@ -323,8 +323,8 @@ internal fun MessageActions(
         content()
         // A zero-size anchor at the press point, so the menu opens under the finger rather than below a tall reply.
         Box(Modifier.offset { pressedAt }) {
-            DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }, containerColor = colors.elevated, shape = CursorTheme.shapes.lg) {
-                MenuItem("Copy message", CursorIcons.Copy) {
+            CursorMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                CursorMenuItem("Copy message", CursorIcons.Copy) {
                     menuOpen = false
                     clipboard.setText(AnnotatedString(text))
                     // Android 13+ confirms clipboard writes with its own overlay; earlier versions show nothing.

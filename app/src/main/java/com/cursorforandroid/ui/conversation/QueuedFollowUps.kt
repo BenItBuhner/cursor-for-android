@@ -5,20 +5,16 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.BasicTextField
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -47,6 +43,8 @@ import androidx.compose.ui.unit.dp
 import com.cursorforandroid.domain.PendingFollowup
 import com.cursorforandroid.domain.QueuedFollowUp
 import com.cursorforandroid.ui.components.CursorIcons
+import com.cursorforandroid.ui.components.CursorMenu
+import com.cursorforandroid.ui.components.CursorMenuItem
 import com.cursorforandroid.ui.components.SlashCommandVisualTransformation
 import com.cursorforandroid.ui.components.SpinnerRing
 import com.cursorforandroid.ui.components.TouchTarget
@@ -344,9 +342,10 @@ private fun AccountQueueRow(
                     if (onMove != null) {
                         Box {
                             GlyphButton(CursorIcons.More, "Reorder queued follow-up", colors.iconTertiary) { menuOpen = true }
-                            DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }, containerColor = colors.elevated, shape = CursorTheme.shapes.lg) {
-                                MenuItem("Move up", CursorIcons.ArrowUp, enabled = position > 1) { menuOpen = false; onMove(true) }
-                                MenuItem("Move down", CursorIcons.ArrowDown, enabled = position < count) { menuOpen = false; onMove(false) }
+                            CursorMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                                // Dimmed at the end of the queue it cannot move past.
+                                CursorMenuItem("Move up", CursorIcons.ArrowUp, enabled = position > 1) { menuOpen = false; onMove(true) }
+                                CursorMenuItem("Move down", CursorIcons.ArrowDown, enabled = position < count) { menuOpen = false; onMove(false) }
                             }
                         }
                     }
@@ -371,21 +370,6 @@ private fun AttachedFileNames(names: List<String>) {
         softWrap = false,
         overflow = TextOverflow.Ellipsis,
         modifier = Modifier.testTag("queued-attachments"),
-    )
-}
-
-/** One line of the reorder menu: the direction's glyph and word, dimmed at the end of the queue it cannot move past. */
-@Composable
-private fun MenuItem(label: String, icon: ImageVector, enabled: Boolean, onClick: () -> Unit) {
-    val colors = CursorTheme.colors
-    val tint = if (enabled) colors.textPrimary else colors.textQuaternary
-    DropdownMenuItem(
-        text = { Text(label, style = CursorTheme.typography.base, color = tint) },
-        leadingIcon = { Icon(icon, null, tint = if (enabled) colors.iconSecondary else colors.iconQuaternary, modifier = Modifier.size(16.dp)) },
-        onClick = onClick,
-        enabled = enabled,
-        contentPadding = PaddingValues(start = 12.dp, end = 20.dp),
-        modifier = Modifier.height(40.dp),
     )
 }
 
