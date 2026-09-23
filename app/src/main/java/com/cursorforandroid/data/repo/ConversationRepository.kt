@@ -2167,6 +2167,12 @@ class ConversationRepository(
                 // A turn whose reply the transcript gave and whose steps the record never had has its words, not its
                 // activity: counted by its log's state below.
                 (turn.hasBody && !turn.activityMissing) || (run != null && run.id in traces) || (run != null && live?.runId == run.id) -> shown++
+                // The record's structure lists no steps: the turn ended at its prompt, and it is whole as it is.
+                turn.structureKnown && turn.stepTotal == 0 -> shown++
+                // Its steps are still being read from the record (see [startBlobWork]).
+                !turn.complete -> pending++
+                // Read from the record with nothing readable, and no run to replay its log: not on its way, missing.
+                run == null && turn.structureKnown -> if (i == window.turns.lastIndex && isChatRunning()) shown++ else failed++
                 run == null -> if (i == window.turns.lastIndex && isChatRunning()) shown++ else pending++
                 run.statusEnum().isActive -> shown++
                 run.id in traceQueue || run.id in traceInFlight -> pending++

@@ -13,6 +13,7 @@ import com.cursorforandroid.domain.ToolPayload
 import com.cursorforandroid.domain.UserMessage
 import com.cursorforandroid.fixtures.BigProject
 import com.google.common.truth.Truth.assertThat
+import com.google.common.truth.Truth.assertWithMessage
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import okhttp3.mockwebserver.MockResponse
@@ -109,6 +110,7 @@ class BigProjectLoadTest {
         var firstMessageMs: Long? = null
         val startMillis = server.nowMillis()
         val deadline = System.nanoTime() + limitMs * 1_000_000
+        var settled = false
         while (System.nanoTime() < deadline) {
             val state = conversations.state(agentId).value
             if (newestPaintMs == null && newestPainted(state)) newestPaintMs = elapsed()
@@ -116,9 +118,10 @@ class BigProjectLoadTest {
             val last = server.seen.drop(seenBefore).maxOfOrNull { it.atMillis } ?: startMillis
             val quiet = server.nowMillis() - last >= quietMs
             val loading = state.isLoading || state.isLoadingOlder || state.traceStatus.pending > 0
-            if (quiet && !loading && state.items.isNotEmpty()) break
+            if (quiet && !loading && state.items.isNotEmpty()) { settled = true; break }
             delay(25)
         }
+        conversations.state(agentId).value.let { s -> assertWithMessage("$label never settled: loading=${s.isLoading} loadingOlder=${s.isLoadingOlder} traces=${s.traceStatus}").that(settled).isTrue() }
         val lastRequest = server.seen.drop(seenBefore).maxOfOrNull { it.atMillis } ?: startMillis
         val fullMs = (lastRequest - startMillis).coerceAtLeast(newestPaintMs ?: 0L)
         val state = conversations.state(agentId).value
