@@ -13,6 +13,7 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.intOrNull
+import java.io.IOException
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
@@ -66,6 +67,14 @@ object BlobRecord {
         val asked: Int,
         val missing: Int,
         val lastMissing: ConnectRpcException?,
+        /**
+         * Pieces the server failed to give after their retries (a 5xx, a dropped connection; see [ServerRetry]) and
+         * the last such failure: left for later, the turn not complete — never the read's failure.
+         */
+        val unavailable: Int = 0,
+        val lastUnavailable: Throwable? = null,
+        /** The turn's structure was read: what the turn is, if not yet all it holds. */
+        val readable: Boolean = true,
     )
 
     /** The blobs a read asked for and the ones it found missing or unreadable, and the last answer that said so. */
@@ -73,6 +82,8 @@ object BlobRecord {
         val asked = AtomicInteger()
         val missing = AtomicInteger()
         @Volatile var last: ConnectRpcException? = null
+        val unavailable = AtomicInteger()
+        @Volatile var lastUnavailable: Throwable? = null
 
         fun unreadable(what: String) {
             missing.incrementAndGet()
@@ -100,7 +111,13 @@ object BlobRecord {
      */
     suspend fun read(index: Int, turnBlobId: String, source: Source, plan: TurnPlan = TurnPlan.FULL): Read = coroutineScope {
         val tally = Tally()
-        val turnBytes = fetch(source, turnBlobId, tally)
+        val turn = fetch(source, turnBlobId, tally)
+        if (turn === LATER) {
+            // The server failed to give the turn's structure: nothing of the turn is known yet, and it is read again later.
+            val blank = listOf(HeadlessStep(shape = StepShape(0, "blob:turn[unavailable]", "unavailable"), turnIndex = index))
+            return@coroutineScope Read(blank, complete = false, stepTotal = null, messageSteps = null, asked = tally.asked.get(), missing = tally.missing.get(), lastMissing = tally.last, unavailable = tally.unavailable.get(), lastUnavailable = tally.lastUnavailable, readable = false)
+        }
+        val turnBytes = turn
         val turnJson = turnBytes?.let { decodeOrNull(it, AgentSchemas.CONVERSATION_TURN) }
         if (turnBytes != null && turnJson == null) tally.unreadable("agent.v1.ConversationTurnStructure")
         if (turnJson != null) source.confirm(turnBlobId)
@@ -113,9 +130,11 @@ object BlobRecord {
         val promptId = agent.string("userMessage")
         val stepIds = (agent["steps"] as? JsonArray)?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull?.takeIf { id -> id.isNotBlank() } } ?: emptyList()
         val messageIndices = (agent["sendMessageStepIndices"] as? JsonArray)?.mapNotNull { (it as? JsonPrimitive)?.intOrNull }?.toSet() ?: emptySet()
+        // The prompt, or [LATER] when the server failed to give it: the turn is shown without it until it is read again.
         val prompt = async {
             promptId?.let { id ->
                 val bytes = fetch(source, id, tally) ?: return@let null
+                if (bytes === LATER) return@let LATER
                 val message = decodeOrNull(bytes, AgentSchemas.USER_MESSAGE)
                 if (message == null) tally.unreadable("agent.v1.UserMessage") else source.confirm(id)
                 message?.let { withBlobText(it, source, tally) }
@@ -129,6 +148,7 @@ object BlobRecord {
                     i in messageIndices -> fetch(source, id, tally)
                     else -> source.held(id)?.bytes ?: return@async null
                 }
+                if (bytes === LATER) return@async null
                 val decoded = bytes?.let { decodeOrNull(it, AgentSchemas.CONVERSATION_STEP) }
                 if (bytes != null && decoded == null) tally.unreadable("agent.v1.ConversationStep")
                 id to decoded
@@ -137,12 +157,12 @@ object BlobRecord {
         val out = ArrayList<HeadlessStep>(stepIds.size * 2 + 2)
         var position = 0
         val message = prompt.await()
+        var complete = message !== LATER
         when {
-            promptId == null -> Unit
+            promptId == null || message === LATER -> Unit
             message == null -> out += HeadlessStep(shape = StepShape(position++, "blob:user_message[unreadable]", "unreadable"), turnIndex = index)
-            else -> out += promptStep(message, position++, index)
+            else -> out += promptStep(message as JsonObject, position++, index)
         }
-        var complete = true
         decodedSteps.forEachIndexed { i, entry ->
             if (entry == null) {
                 complete = false
@@ -168,9 +188,15 @@ object BlobRecord {
             }
         }
         // A turn is never without a step: the turn splitter cuts at them, and a turn with none would not be one.
-        if (out.isEmpty()) out += HeadlessStep(shape = StepShape(0, "blob:turn[empty]", "{}"), turnIndex = index)
-        Read(out, complete, stepTotal = stepIds.size, messageSteps = messageIndices.count { it in stepIds.indices }, asked = tally.asked.get(), missing = tally.missing.get(), lastMissing = tally.last)
+        if (out.isEmpty()) out += HeadlessStep(shape = StepShape(0, if (complete) "blob:turn[empty]" else "blob:turn[pending]", "{}"), turnIndex = index)
+        Read(
+            out, complete, stepTotal = stepIds.size, messageSteps = messageIndices.count { it in stepIds.indices },
+            asked = tally.asked.get(), missing = tally.missing.get(), lastMissing = tally.last, unavailable = tally.unavailable.get(), lastUnavailable = tally.lastUnavailable,
+        )
     }
+
+    /** What [fetch] answers for a piece the server failed to give after its retries: read again later, not missing. */
+    private val LATER = ByteArray(0)
 
     /**
      * A prompt that keeps its text in a blob of its own (`text_blob_id`, a long prompt's): the text read from there —
@@ -257,13 +283,20 @@ object BlobRecord {
     private suspend fun fetch(source: Source, id: String, tally: Tally, whole: Boolean = false): ByteArray? = try {
         tally.asked.incrementAndGet()
         source.blob(id, whole)
-    } catch (e: ConnectRpcException) {
-        if (e.httpCode == 404 || e.code == "not_found" || e.isUnreadableAnswer) {
-            tally.missing.incrementAndGet()
-            tally.last = e
-            null
-        } else {
-            throw e
+    } catch (e: IOException) {
+        when {
+            e is ConnectRpcException && (e.httpCode == 404 || e.code == "not_found" || e.isUnreadableAnswer) -> {
+                tally.missing.incrementAndGet()
+                tally.last = e
+                null
+            }
+            // The server's own failure, its retries spent (see HeadlessConversationApi.fetchBlob): this piece waits, the rest go on.
+            ServerRetry.isTransient(e) -> {
+                tally.unavailable.incrementAndGet()
+                tally.lastUnavailable = e
+                LATER
+            }
+            else -> throw e
         }
     }
 

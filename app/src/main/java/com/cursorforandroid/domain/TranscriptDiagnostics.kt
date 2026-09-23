@@ -72,9 +72,10 @@ data class TranscriptLoadDiagnostics(
      * One load of the blob-backed record, in the numbers that pin a gap from one export: the chat's turns and the
      * window over them, how many of the window's turns were held and not read again, how many still wait for their
      * steps, the prompts and messages the window holds ([words]); the blobs the load asked the network for (and their
-     * bytes), took from memory, from disk, from the state read's prefetch, and found missing; the memory tier's size;
-     * when the window was first painted and when everything behind it was in; and the fallback's reason, if the load
-     * ended on the documented path.
+     * bytes), took from memory, from disk, from the state read's prefetch, and found missing; the reads asked again
+     * after the server's failure ([retried]) and the ones it still failed after their retries ([failed]); the memory
+     * tier's size; when the window was first painted and when everything behind it was in; and the fallback's
+     * reason, if the load ended on the documented path.
      */
     data class BetaLine(
         val turns: Int,
@@ -93,10 +94,12 @@ data class TranscriptLoadDiagnostics(
         val firstPaintMs: Long?,
         val fullLoadMs: Long?,
         val fallback: String?,
+        val retried: Int = 0,
+        val failed: Int = 0,
     ) {
         val text: String get() =
             "beta: engine=beta turns=$turns window=[$windowStart,$windowEnd) reused=$reused incomplete=$incomplete words=$words" +
-                " blobs fetched=$fetched/${fetchedBytes / 1024}KB memory=$memory disk=$disk prefetched=$prefetched missing=$missing memKb=$memoryKb" +
+                " blobs fetched=$fetched/${fetchedBytes / 1024}KB memory=$memory disk=$disk prefetched=$prefetched missing=$missing retried=$retried failed=$failed memKb=$memoryKb" +
                 " firstPaintMs=${firstPaintMs ?: "-"} fullLoadMs=${fullLoadMs ?: "-"} fallback=${fallback?.let { "\"$it\"" } ?: "-"}"
     }
 

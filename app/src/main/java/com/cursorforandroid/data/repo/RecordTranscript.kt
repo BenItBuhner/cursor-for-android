@@ -81,6 +81,11 @@ class RecordTurn(
      */
     val stepTotal: Int? = null,
     val messageSteps: Int? = null,
+    /**
+     * Pieces of the turn the server failed to give in its last read, their retries spent (a 5xx, a dropped
+     * connection): the turn shows what did load and is read again (see `ConversationRepository.startBlobWork`).
+     */
+    val unavailable: Int = 0,
 ) {
     /** The key the turn's items are filed under on disk (see `TraceCache`); stable while the record is append-only. */
     val traceKey: String get() = traceKey(stepIndex, turnIndexed)
@@ -97,7 +102,11 @@ class RecordTurn(
 
     /** This turn with [replies] — the `/v0` transcript's — as its text, marked as such (see [textFromTranscript]). */
     fun withTranscriptText(replies: List<TimelineItem>): RecordTurn =
-        RecordTurn(stepIndex, stepCount, prompt, projectMode, items + replies, shape, errorMessage, textFromTranscript = true, stepsFromRecord = hasBody, turnIndexed = turnIndexed, blobId = blobId, complete = complete, stepTotal = stepTotal, messageSteps = messageSteps)
+        RecordTurn(stepIndex, stepCount, prompt, projectMode, items + replies, shape, errorMessage, textFromTranscript = true, stepsFromRecord = hasBody, turnIndexed = turnIndexed, blobId = blobId, complete = complete, stepTotal = stepTotal, messageSteps = messageSteps, unavailable = unavailable)
+
+    /** This turn as it stands, [pieces] of it having failed on the server in the last read (see [unavailable]). */
+    fun withUnavailable(pieces: Int): RecordTurn =
+        RecordTurn(stepIndex, stepCount, prompt, projectMode, items, shape, errorMessage, textFromTranscript, stepsFromRecord, turnIndexed, blobId, complete, stepTotal, messageSteps, unavailable = pieces)
 
     /** The turn's steps are not to be had: the record gave none and the reply is the transcript's (see [withTranscriptText]). */
     val activityMissing: Boolean get() = textFromTranscript && !stepsFromRecord
@@ -261,6 +270,17 @@ object RecordPager {
         val byIndex: Map<Int, HeadlessTurn> by lazy { turns.associateBy { it.index } }
 
         /**
+         * The page is nothing but the server's failures, their retries spent: no turn of it held, none whose
+         * structure it gave. The last failure, then — the page has nothing to paint, and the caller hears why; a page
+         * with any turn to show paints it and leaves the rest for later (see [RecordTurn.unavailable]).
+         */
+        val outage: Throwable? get() =
+            if (turns.isEmpty() || turns.any { it.reused || it.readable }) null else turns.mapNotNull { it.lastUnavailable }.lastOrNull()
+
+        /** Pieces of the page the server failed to give after their retries (see [HeadlessTurn.unavailable]). */
+        val unavailable: Int get() = turns.sumOf { it.unavailable }
+
+        /**
          * The page's blobs answered as missing or unreadable for most of what it asked — [DRIFT_MIN_MISSING] at
          * least, and half or more: not a blob or two the account let go, but a server that names turns whose blobs it
          * will not give, or gives in a shape this build does not read. The chat's documented endpoints are its account
@@ -284,12 +304,12 @@ object RecordPager {
      * then the turns' blobs side by side, to [plan], the turns [held] names by their blob id left unread. Null when the
      * chat has no turns. [state] when the caller read it a moment ago.
      */
-    suspend fun tailTurns(api: ConversationRecordApi, agentId: String, wantTurns: Int, state: RecordState? = null, plan: TurnPlan = TurnPlan.FULL, held: Map<Int, String> = emptyMap()): Raw? {
+    suspend fun tailTurns(api: ConversationRecordApi, agentId: String, wantTurns: Int, state: RecordState? = null, plan: TurnPlan = TurnPlan.FULL, held: Map<Int, String> = emptyMap(), patient: Boolean = true): Raw? {
         val known = state ?: api.countedState(agentId)
         val total = known.turnCount
         if (total <= 0) return null
         val from = (total - wantTurns).coerceAtLeast(0)
-        val page = api.countedTurns(agentId, from, total - from, known, plan, held) ?: return null
+        val page = api.countedTurns(agentId, from, total - from, known, plan, held, patient) ?: return null
         return page.raw(from)
     }
 
@@ -308,9 +328,9 @@ object RecordPager {
     }
 
     /** The blob-backed record's [wantTurns] turns before turn [firstTurn], to [plan]. */
-    suspend fun beforeTurns(api: ConversationRecordApi, agentId: String, firstTurn: Int, wantTurns: Int, plan: TurnPlan = TurnPlan.FULL, state: RecordState? = null): Raw {
+    suspend fun beforeTurns(api: ConversationRecordApi, agentId: String, firstTurn: Int, wantTurns: Int, plan: TurnPlan = TurnPlan.FULL, state: RecordState? = null, patient: Boolean = true): Raw {
         val from = (firstTurn - wantTurns).coerceAtLeast(0)
-        val page = api.countedTurns(agentId, from, firstTurn - from, state, plan, emptyMap()) ?: return Raw(emptyList(), firstTurn, 0, turnIndexed = true)
+        val page = api.countedTurns(agentId, from, firstTurn - from, state, plan, emptyMap(), patient) ?: return Raw(emptyList(), firstTurn, 0, turnIndexed = true)
         return page.raw(from)
     }
 
@@ -332,9 +352,9 @@ object RecordPager {
         return state(agentId)
     }
 
-    private suspend fun ConversationRecordApi.countedTurns(agentId: String, from: Int, limit: Int, state: RecordState?, plan: TurnPlan, held: Map<Int, String>): HeadlessTurnPage? {
+    private suspend fun ConversationRecordApi.countedTurns(agentId: String, from: Int, limit: Int, state: RecordState?, plan: TurnPlan, held: Map<Int, String>, patient: Boolean = true): HeadlessTurnPage? {
         TranscriptPerf.session(agentId).network("record")
-        return readTurns(agentId, from, limit, state, plan, held)
+        return readTurns(agentId, from, limit, state, plan, held, patient)
     }
 
     /**
@@ -560,12 +580,14 @@ object RecordTranscript {
         val turns = raw.turns.mapIndexedNotNull { i, read ->
             val held = old?.get(read.index)
             if (read.reused) return@mapIndexedNotNull held
+            // The server failed to give the turn's structure this time: what was read of it before stays on screen.
+            if (!read.readable && held != null) return@mapIndexedNotNull held.withUnavailable(read.unavailable)
             val turn = cut[read.index] ?: return@mapIndexedNotNull null
             val count = turn.steps.size + (if (turn.prompt != null) 1 else 0)
             val same = held != null && held.blobId == read.blobId && held.complete == read.complete && held.stepCount == count && held.prompt == turn.prompt
             val items = if (same) held!!.items else build(turn, RecordTurn.traceKey(read.index, true))
             val shape = if (i >= shapesFrom) HeadlessTranscript.shape(turn, read.index) else held?.shape
-            RecordTurn(read.index, count, turn.prompt, turn.projectMode, items, shape, errorMessage = HeadlessTranscript.errorMessage(turn), turnIndexed = true, blobId = read.blobId, complete = read.complete, stepTotal = read.stepTotal, messageSteps = read.messageSteps)
+            RecordTurn(read.index, count, turn.prompt, turn.projectMode, items, shape, errorMessage = HeadlessTranscript.errorMessage(turn), turnIndexed = true, blobId = read.blobId, complete = read.complete, stepTotal = read.stepTotal, messageSteps = read.messageSteps, unavailable = read.unavailable)
         }
         return turns to cut
     }

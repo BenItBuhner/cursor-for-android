@@ -15,6 +15,7 @@ import com.cursorforandroid.data.api.ConversationRecordApi
 import com.cursorforandroid.data.api.CursorApi
 import com.cursorforandroid.data.api.CursorApiFactory
 import com.cursorforandroid.data.api.HeadlessConversationApi
+import com.cursorforandroid.data.api.ServerRetry
 import com.cursorforandroid.data.api.SseRunStreamer
 import com.cursorforandroid.data.api.SteeringApi
 import com.cursorforandroid.data.auth.SessionTokenProvider
@@ -91,6 +92,8 @@ class FaultRig(
     engine: TranscriptEngine = TranscriptEngine.BETA,
     /** How often the account's queue is read while a chat is attached (production: 10 s): the card's staleness. */
     queuePollMs: Long = 10_000L,
+    /** The record's waits between attempts of a read the server failed, and between its passes (production's by default; see `ServerRetry.Waits`). */
+    recordWaits: ServerRetry.Waits = ServerRetry.Waits(),
 ) : AutoCloseable {
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     var now: Long = 1_800_000_000_000L
@@ -171,10 +174,10 @@ class FaultRig(
      */
     val blobs = BlobCache(BlobCache.MEMORY_BLOBS_WITH_DISK, BlobCache.MEMORY_BYTES_WITH_DISK, disk = BlobDiskStore(JsonDiskCache(File(root, "blobs"), dispatcher = Dispatchers.IO)))
     /** The account service's record of a chat, over [accountClient] on the same host (Extended mode); null with the mode off. */
-    val record: ConversationRecordApi? = if (extended) HeadlessConversationApi(accountRpc, sessionTokens, blobs = blobs) else null
+    val record: ConversationRecordApi? = if (extended) HeadlessConversationApi(accountRpc, sessionTokens, blobs = blobs, waits = recordWaits) else null
     /** What the private surfaces may do; a test that switches the engine mid-run sets this, and the next load reads it (as the app's `ExtendedMode` would). */
     @Volatile var capabilities: Capabilities = Capabilities.of(extended, engine)
-    val conversations = ConversationRepository(session, agents, prefs, hub, attachments, conversationCache, traces, isForeground = { true }, prefetchLimit = 0, scope = scope, record = record, capabilities = { capabilities })
+    val conversations = ConversationRepository(session, agents, prefs, hub, attachments, conversationCache, traces, isForeground = { true }, prefetchLimit = 0, scope = scope, record = record, capabilities = { capabilities }, retryPassDelaysMs = recordWaits.passes)
     /** The account's controls on a chat — its queue above all — over the same host, wired as the app wires them (see AppGraph). */
     val steeringApi = SteeringApi(accountRpc, sessionTokens, blobs = blobs)
     val steering = SteeringRepository(

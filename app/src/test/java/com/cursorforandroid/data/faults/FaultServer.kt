@@ -199,6 +199,12 @@ class FaultServer(
         data object Pass : Fault
         /** An HTTP refusal in the API's own words, with the `Retry-After` the server names when it does (seconds, or an HTTP-date). */
         data class Status(val code: Int, val errorCode: String, val message: String, val retryAfter: String? = null) : Fault
+        /**
+         * The load balancer's own answer when the backend behind it failed or reset: a bare [code] with its HTML page
+         * and no Connect body — what Bennett's phone met on `GetBlobForAgentKV` on 2026-09-23 ("HTTP 502"). Nothing
+         * was processed.
+         */
+        data class Gateway(val code: Int = 502, val retryAfter: String? = null) : Fault
         /** The request is read — and processed when [processed] — and the connection closes without a byte of the reply. */
         data class LostReply(val processed: Boolean = true) : Fault
         /** The reply's body is cut half-way; the request was processed. */
@@ -343,14 +349,14 @@ class FaultServer(
     private fun serve(request: RecordedRequest): MockResponse {
         val route = route(request)
         val url = request.requestUrl!!
-        val fault = faults[route]?.let { queue -> queue.firstOrNull { it.matches(url.encodedPath) }?.also { queue.remove(it) } }?.fault
+        val fault = faults[route]?.let { queue -> take(queue, url.encodedPath) }?.fault
             ?: standing[route]?.takeIf { it.matches(url.encodedPath) }?.fault
         seen += Seen(route, request.method ?: "", request.path ?: "", nowMillis(), fault, request.getHeader("Last-Event-ID"))
         val segments = url.encodedPath.trimStart('/').split('/')
         val processed = when (fault) {
             is Fault.LostReply -> fault.processed
             is Fault.Silence -> fault.processed
-            is Fault.Status -> false
+            is Fault.Status, is Fault.Gateway -> false
             else -> true
         }
         val answer: MockResponse = when (route) {
@@ -413,6 +419,7 @@ class FaultServer(
             null, Fault.Pass, is Fault.StreamCut -> answer.withWeather()
             // A refusal from the account service is a Connect error body; from the documented API, the API's own.
             is Fault.Status -> json(fault.code, if (route.isAccount) connectError(fault.errorCode, fault.message) else error(fault.errorCode, fault.message)).apply { fault.retryAfter?.let { setHeader("Retry-After", it) } }.withWeather()
+            is Fault.Gateway -> gateway(fault.code, fault.retryAfter).withWeather()
             is Fault.LostReply -> MockResponse().setSocketPolicy(SocketPolicy.DISCONNECT_AFTER_REQUEST)
             Fault.TruncatedBody -> answer.setSocketPolicy(SocketPolicy.DISCONNECT_DURING_RESPONSE_BODY).withWeather()
             is Fault.Silence -> MockResponse().setSocketPolicy(SocketPolicy.NO_RESPONSE)
@@ -421,6 +428,14 @@ class FaultServer(
                 fault.await()
                 answer.withWeather()
             }
+        }
+    }
+
+    /** The next fault queued for [path], taken by one request only: requests served side by side never share one. */
+    private fun take(queue: ConcurrentLinkedQueue<Scripted>, path: String): Scripted? {
+        while (true) {
+            val next = queue.firstOrNull { it.matches(path) } ?: return null
+            if (queue.remove(next)) return next
         }
     }
 
@@ -760,7 +775,7 @@ class FaultServer(
     @Volatile var prefetchTurns: Int = 10
 
     /** The chat's blob-backed record: made from its legacy steps (and made again whenever they change), else as scripted. */
-    private fun blobRecord(agentId: String): BlobFixtures.Record? {
+    fun blobRecord(agentId: String): BlobFixtures.Record? {
         val steps = records[agentId] ?: return blobRecords[agentId]
         synchronized(blobRecordsFrom) {
             if (blobRecordsFrom[agentId] !== steps) {
@@ -777,11 +792,23 @@ class FaultServer(
         val body = CursorJson.parseToJsonElement(request.body.readUtf8()).jsonObject
         val agentId = body["bcId"]?.jsonPrimitive?.contentOrNull ?: return json(400, connectError("invalid_argument", "bcId is required"))
         val blobId = body["blobId"]?.jsonPrimitive?.contentOrNull ?: return json(400, connectError("invalid_argument", "blobId is required"))
+        blobRequests += body
         blobReads.getOrPut(blobId) { AtomicInteger() }.incrementAndGet()
         blobAnswer?.invoke(agentId, blobId)?.let { return it }
         val bytes = blobRecord(agentId)?.blobs?.get(blobId) ?: return json(404, connectError("not_found", "blob not found"))
         recordBytes.merge(agentId, bytes.size.toLong(), Long::plus)
         return json(200, """{"blobData":"${java.util.Base64.getEncoder().encodeToString(bytes)}"}""")
+    }
+
+    /** Every `GetBlobForAgentKV` request body seen, faults and scripted answers included: what the client asked with. */
+    val blobRequests = CopyOnWriteArrayList<JsonObject>()
+
+    /** The load balancer's page for a backend that failed (see [Fault.Gateway]), for a scripted [blobAnswer] too. */
+    fun gateway(code: Int = 502, retryAfter: String? = null): MockResponse {
+        val reason = when (code) { 502 -> "Bad Gateway"; 503 -> "Service Temporarily Unavailable"; 504 -> "Gateway Time-out"; else -> "Error" }
+        return MockResponse().setResponseCode(code).setHeader("Content-Type", "text/html")
+            .setBody("<html>\r\n<head><title>$code $reason</title></head>\r\n<body>\r\n<center><h1>$code $reason</h1></center>\r\n</body>\r\n</html>\r\n")
+            .apply { retryAfter?.let { setHeader("Retry-After", it) } }
     }
 
     /** A Connect error body, as the account service writes one. */

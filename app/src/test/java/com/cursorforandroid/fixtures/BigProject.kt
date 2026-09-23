@@ -142,6 +142,41 @@ object BigProject {
         return out
     }
 
+    /**
+     * One of the Project's workers' own chat (one of [WORKERS]), the kind Bennett opened on 2026-09-23 when the notice
+     * read "HTTP 502": [turns] turns, each the coordinator's word as its prompt — an ordinary prompt, not Project
+     * mode, for the worker is not a coordinator — a read of the notes, an edit, and the worker's reply.
+     */
+    fun workerTurns(firstAt: Long, turns: Int = 40, seed: Int = 7): List<Turn> {
+        val random = Random(seed)
+        return (1..turns).map { i ->
+            val startedAt = firstAt + (i - 1) * TURN_SPACING_MS
+            val prompt = "Next: the order book depth check on market ${100 + i}, then the fee table (#$i)."
+            val reply = "Market ${100 + i}: the book is ${2 + i % 5} levels deep within 1% of the mid; the fee table row is filed."
+            val calls = listOf(
+                Call(i - 1, 1, "read_file", buildJsonObject { put("target_file", "/cursor/stores/bc-big/notes.md") }, readResult(random, 1_200)),
+                Call(i - 1, 2, "search_replace", edit("notes.md"), edited(1, 1)),
+            )
+            val runId = "run-worker-$i"
+            val record = ArrayList<JsonObject>()
+            record += buildJsonObject { put("humanMessage", buildJsonObject { put("text", prompt); put("createdAt", startedAt.toString()) }) }
+            val log = ArrayList<Pair<String, String>>()
+            log += "status" to """{"runId":"$runId","status":"RUNNING"}"""
+            for (c in calls) {
+                record += buildJsonObject { put("toolCall", buildJsonObject { put("tool", "CLIENT_SIDE_TOOL_V2_UNSPECIFIED"); put("toolCallId", "toolu_worker_${c.turn}_${c.step}"); put("name", c.name); put("rawArgs", c.args.toString()); put("modelCallId", "model_worker_${c.turn}_${c.step}") }) }
+                record += buildJsonObject { put("finalToolResult", buildJsonObject { put("toolCallId", "toolu_worker_${c.turn}_${c.step}"); put("result", c.result) }) }
+                log += "tool_call" to toolCallEvent(c.streamId, c.streamName, "running", c.args, null)
+                log += "tool_call" to toolCallEvent(c.streamId, c.streamName, "completed", c.args, c.result)
+            }
+            record += buildJsonObject { put("text", reply) }
+            log += "assistant" to """{"text":${quote(reply)}}"""
+            val durationMs = 20_000L + random.nextLong(0, 50_000L)
+            record += buildJsonObject { put("text", ""); put("isMessageDone", true) }
+            log += "result" to """{"runId":"$runId","status":"FINISHED","text":${quote(reply)},"durationMs":$durationMs}"""
+            Turn(i, runId, prompt, isUser = true, startedAt, durationMs, message = null, narration = listOf(reply), record, log, calls.map { it.name })
+        }
+    }
+
     /** The `/v0` transcript: each turn's prompt as a `user_message`, its narration as the `assistant_message`. */
     fun v0Transcript(turns: List<Turn>): List<V0ConversationMessageDto> = turns.flatMap { turn ->
         listOf(V0ConversationMessageDto("${turn.runId}-u", "user_message", turn.prompt)) +
