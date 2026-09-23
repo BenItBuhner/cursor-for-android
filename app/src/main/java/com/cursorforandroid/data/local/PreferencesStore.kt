@@ -21,6 +21,7 @@ import com.cursorforandroid.domain.CursorUser
 import com.cursorforandroid.domain.DeviceTarget
 import com.cursorforandroid.domain.EnvType
 import com.cursorforandroid.domain.ListPreferences
+import com.cursorforandroid.domain.NewChatHome
 import com.cursorforandroid.domain.ProjectNotificationPrefs
 import com.cursorforandroid.domain.LocalAgentState
 import com.cursorforandroid.domain.SignInMethod
@@ -161,6 +162,8 @@ class PreferencesStore(
         val collapsedSidebarSections = stringSetPreferencesKey("sidebar_collapsed_sections")
         /** Settings › Appearance › Shorten long Projects list; absent reads as on (see [shortenSidebarLists]). */
         val shortenSidebarLists = booleanPreferencesKey("sidebar_shorten_long_lists")
+        /** Settings › New chat page: what the New Chat pane lists under its composer (`recent` / `projects`); absent is Recent. */
+        val newChatHome = stringPreferencesKey("new_chat_home")
         /** The transcript notices closed over each chat's composer: `agentId -> identities` (see `LoadNotice.identity`). */
         val dismissedNotices = stringPreferencesKey("dismissed_notices")
         /** Settings › Confirm before stopping; absent reads as on (see [confirmStop]). */
@@ -384,6 +387,14 @@ class PreferencesStore(
     val shortenSidebarLists: Flow<Boolean> = data.map { it[Keys.shortenSidebarLists] ?: true }
 
     suspend fun setShortenSidebarLists(enabled: Boolean) = edit { it[Keys.shortenSidebarLists] = enabled }
+
+    /**
+     * Settings › New chat page: the recent chats under the New Chat composer, or the Projects (see [NewChatHome]).
+     * Recent until changed; a device preference, kept across sign-outs like the sidebar's folds.
+     */
+    val newChatHome: Flow<NewChatHome> = data.map { NewChatHome.parse(it[Keys.newChatHome]) }.distinctUntilChanged()
+
+    suspend fun setNewChatHome(home: NewChatHome) = edit { it[Keys.newChatHome] = home.key }
 
     /**
      * The notices about a transcript's load the reader has closed, by chat (`agentId -> identities`, see
