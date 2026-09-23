@@ -149,7 +149,7 @@ class FaultServer(
     /** Connections still to be closed the moment they open, before a byte of the request is read (see [resetNextConnections]). */
     private val resets = AtomicInteger()
 
-    enum class Route { Me, ListAgents, ListAgentsV0, GetAgent, ListRuns, GetRun, CreateRun, CancelRun, Conversation, Stream, Auth, Record, RecordState, Blob, QueueAdd, QueueList, QueueDelete, QueueUpdate, Steer, AccountList, Workers, Children, Pins, Other }
+    enum class Route { Me, ListAgents, ListAgentsV0, GetAgent, ListRuns, GetRun, CreateRun, CancelRun, Conversation, Stream, Auth, Record, RecordState, Blob, QueueAdd, QueueList, QueueDelete, QueueUpdate, QueueReorder, QueueSendNow, QueueEditing, Steer, AccountList, Workers, Children, Pins, Other }
 
     /**
      * One row of the account's own list (`ListBackgroundComposers`, Extended mode): the record the sidebar's rows
@@ -311,6 +311,9 @@ class FaultServer(
             segments.size == 2 && segments[0] == RECORD_SERVICE && segments[1] == "ListPendingFollowups" -> Route.QueueList
             segments.size == 2 && segments[0] == RECORD_SERVICE && segments[1] == "DeletePendingFollowup" -> Route.QueueDelete
             segments.size == 2 && segments[0] == RECORD_SERVICE && segments[1] == "UpdatePendingFollowup" -> Route.QueueUpdate
+            segments.size == 2 && segments[0] == RECORD_SERVICE && segments[1] == "ReorderPendingFollowup" -> Route.QueueReorder
+            segments.size == 2 && segments[0] == RECORD_SERVICE && segments[1] == "SubmitPendingFollowupNow" -> Route.QueueSendNow
+            segments.size == 2 && segments[0] == RECORD_SERVICE && segments[1] == "MarkFollowupEditing" -> Route.QueueEditing
             segments.size == 2 && segments[0] == RECORD_SERVICE && segments[1] == "InjectBackgroundComposerContext" -> Route.Steer
             // The account's list and the Projects' memberships (the sidebar's account layer, Extended mode).
             segments.size == 2 && segments[0] == RECORD_SERVICE && segments[1] == "ListBackgroundComposers" -> Route.AccountList
@@ -371,6 +374,9 @@ class FaultServer(
             Route.QueueList -> queueList(request)
             Route.QueueDelete -> queueDelete(request)
             Route.QueueUpdate -> queueUpdate(request)
+            Route.QueueReorder -> queueReorder(request)
+            Route.QueueSendNow -> queueSendNow(request)
+            Route.QueueEditing -> json(200, """{"success":true}""")
             Route.Steer -> steer(request)
             Route.AccountList -> accountList(request)
             Route.Workers -> {
@@ -423,7 +429,7 @@ class FaultServer(
         return json(200, encode(CreateRunResponseDto.serializer(), CreateRunResponseDto(run)))
     }
 
-    private val Route.isAccount: Boolean get() = this == Route.Record || this == Route.RecordState || this == Route.Blob || this == Route.QueueAdd || this == Route.QueueList || this == Route.QueueDelete || this == Route.QueueUpdate || this == Route.Steer || this == Route.AccountList || this == Route.Workers || this == Route.Children || this == Route.Pins
+    private val Route.isAccount: Boolean get() = this == Route.Record || this == Route.RecordState || this == Route.Blob || this == Route.QueueAdd || this == Route.QueueList || this == Route.QueueDelete || this == Route.QueueUpdate || this == Route.QueueReorder || this == Route.QueueSendNow || this == Route.QueueEditing || this == Route.Steer || this == Route.AccountList || this == Route.Workers || this == Route.Children || this == Route.Pins
 
     // ---- the account's list ----------------------------------------------------------------------------------------
 
@@ -525,6 +531,47 @@ class FaultServer(
         val at = list.indexOfFirst { it.followupId == followupId }
         if (at < 0) return json(404, connectError("not_found", "no such followup"))
         list[at] = list[at].copy(text = text)
+        return json(200, """{"success":true}""")
+    }
+
+    /** `ReorderPendingFollowup {bcId, followupId, targetFollowupId, insertAfter}`: the message moved next to the target. */
+    private fun queueReorder(request: RecordedRequest): MockResponse {
+        val body = CursorJson.parseToJsonElement(request.body.readUtf8()).jsonObject
+        val agentId = body["bcId"]?.jsonPrimitive?.contentOrNull ?: return json(400, connectError("invalid_argument", "bcId is required"))
+        val followupId = body["followupId"]?.jsonPrimitive?.contentOrNull ?: ""
+        val target = body["targetFollowupId"]?.jsonPrimitive?.contentOrNull ?: ""
+        val after = body["insertAfter"]?.jsonPrimitive?.booleanOrNull == true
+        val list = pending[agentId] ?: return json(404, connectError("not_found", "no such followup"))
+        synchronized(list) {
+            val moved = list.firstOrNull { it.followupId == followupId } ?: return json(404, connectError("not_found", "no such followup"))
+            list.remove(moved)
+            val at = list.indexOfFirst { it.followupId == target }.takeIf { it >= 0 } ?: return json(404, connectError("not_found", "no such target"))
+            list.add(if (after) at + 1 else at, moved)
+        }
+        return json(200, """{"success":true}""")
+    }
+
+    /**
+     * `SubmitPendingFollowupNow {bcId, followupId}`: the message sent in place of the turn under way — that turn's run
+     * ends cancelled, and the message's run starts now (the one named for it when it was queued), its log whatever
+     * [logs] holds for it; the followup consumed, still listed for [queueLagMs].
+     */
+    private fun queueSendNow(request: RecordedRequest): MockResponse {
+        val body = CursorJson.parseToJsonElement(request.body.readUtf8()).jsonObject
+        val agentId = body["bcId"]?.jsonPrimitive?.contentOrNull ?: return json(400, connectError("invalid_argument", "bcId is required"))
+        val followupId = body["followupId"]?.jsonPrimitive?.contentOrNull ?: ""
+        val p = pending[agentId]?.firstOrNull { it.followupId == followupId && it.consumedAtMs == null } ?: return json(404, connectError("not_found", "no such followup"))
+        val agent = agents[agentId] ?: return json(404, connectError("not_found", "no such composer"))
+        agent.latestRunId?.let { id ->
+            runs[id]?.takeIf { com.cursorforandroid.domain.RunStatus.parse(it.status).isActive }?.let { run ->
+                runs[id] = run.copy(status = "CANCELLED", updatedAt = Instant.ofEpochMilli(clock()).toString())
+                logs[id] = logs[id].orEmpty() + ("result" to """{"runId":"$id","status":"CANCELLED","text":""}""")
+            }
+        }
+        val run = startRun(agentId, p.text, named = p.runId)
+        p.consumedAtMs = clock()
+        p.consumedAtServerMs = nowMillis()
+        delivered += p.followupId to run.id
         return json(200, """{"success":true}""")
     }
 

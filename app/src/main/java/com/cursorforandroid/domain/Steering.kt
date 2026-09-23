@@ -110,9 +110,7 @@ data class QueuePlacement(
      * Messages the transcript shows as bubbles ahead of their requests — the composer's, from the tap until the send
      * is answered (see `ConversationRepository.sendStagedVia`) — by the account's followup id when the send minted
      * one, and by their [textKey]s: the account may already list one, its send's reply still on its way back, before
-     * the bubble has come down for the card to take it. The bubble is its place; the card leaves the row out. The same
-     * for a message the transcript shows under a run the account named and has not started (a Project's coordinator
-     * mid-turn), which the account lists as queued until that run starts.
+     * the bubble has come down for the card to take it. The bubble is its place; the card leaves the row out.
      */
     val shownIds: Set<String> = emptySet(),
     val shownTexts: Set<String> = emptySet(),
@@ -137,8 +135,6 @@ data class QueuePlacement(
         const val RETURNED_NOTE = "Still queued on your account: the last turn ended without it."
         /** What the card says under a message the account has taken from its list and the transcript is about to show (see [waiting]). */
         const val DELIVERING_NOTE = "Being delivered to the agent."
-        /** What the transcript says under a message it shows while the message waits for the turn under way to end (`ConversationState.queuedBehindTurn`). */
-        const val QUEUED_BEHIND_TURN = "Queued · runs after the current turn"
     }
 }
 

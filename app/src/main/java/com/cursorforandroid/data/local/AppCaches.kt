@@ -5,6 +5,7 @@ import com.cursorforandroid.data.api.dto.V0ConversationMessageDto
 import com.cursorforandroid.domain.Agent
 import com.cursorforandroid.domain.KnownRoot
 import com.cursorforandroid.domain.LineageSignal
+import com.cursorforandroid.domain.MessageAttachment
 import com.cursorforandroid.domain.AgentSource
 import com.cursorforandroid.data.api.RecordFields
 import com.cursorforandroid.domain.AgentParentKind
@@ -166,10 +167,12 @@ data class CachedLocalPrompt(
     val reply: V0ConversationMessageDto? = null,
     /** The prompt was steered into [run] under way: shown after this many of the run's rows (see `ConversationRepository.LocalPrompt.steeredAfter`). */
     val steeredAfter: Int? = null,
-    /** The run [run] waits behind, the account having named [run] mid-turn (see `ConversationRepository.LocalPrompt.waitsBehind`). */
+    /**
+     * Written by 0.3.70–0.3.75 alone, for a Project's message drawn in the transcript while it waited behind the turn
+     * under way: the run it waited behind. Never written now; a prompt read back with it is dropped, its message being
+     * on the account's queue card until its run starts.
+     */
     val waitsBehind: String? = null,
-    /** The account's id for the message, by which the card leaves the account's row out while the transcript shows it waiting. */
-    val followupId: String? = null,
 )
 
 /**
@@ -194,6 +197,31 @@ data class CachedConversation(
     val window: Int = 0,
     /** The window of the account's record that was open (Extended mode, see `RecordWindow`); null when the chat was read from `/v0` and `/v1` alone. */
     val record: CachedRecordWindow? = null,
+    /** The messages queued on the account from here that had not been delivered (see [CachedAwaiting]). */
+    val awaiting: List<CachedAwaiting> = emptyList(),
+)
+
+/**
+ * A message this device queued on the account behind a turn, not yet seen delivered (`ConversationRepository.Awaiting`):
+ * kept so that after a restart the card still knows it for this device's own, and hands it to the transcript in the
+ * frame its run's prompt appears — not both at once while the account's list trails the run it started.
+ */
+@Serializable
+data class CachedAwaiting(
+    val localId: String,
+    val text: String,
+    val stagedAtMillis: Long,
+    val placeholder: RunDto,
+    val behindRunId: String? = null,
+    val queuedAtMillis: Long,
+    val queuedOnAccount: Boolean = true,
+    val followupId: String? = null,
+    /** The run the account named for it when it took it (a Project's coordinator mid-turn). */
+    val runId: String? = null,
+    val priorCopies: Int = 0,
+    val priorTranscriptCopies: Int = 0,
+    /** Its staged copies (see `AttachmentStore.staged`), to be filed under the run it starts. */
+    val attachments: List<MessageAttachment> = emptyList(),
 )
 
 /**

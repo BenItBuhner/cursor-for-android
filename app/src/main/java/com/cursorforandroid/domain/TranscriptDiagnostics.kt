@@ -67,12 +67,12 @@ data class TranscriptLoadDiagnostics(
     val queued: List<QueuedLine> = emptyList(),
 ) {
     /**
-     * One message the account took behind a turn: where it is shown ([place]: `transcript`, a Project's; `card`, a
-     * chat's), the run the account named for it when it answered ([runTail], null when it named none), the run it waits
-     * behind ([behindTail]), and whether the account's last list still named it ([listed], null when not known here).
+     * One message the account took behind a turn, on the card until its run starts: the run the account named for it
+     * when it answered ([runTail], null when it named none), the run it waits behind ([behindTail]), and whether the
+     * account's last list still named it ([listed]).
      */
-    data class QueuedLine(val place: String, val runTail: String?, val behindTail: String?, val listed: Boolean?) {
-        val text: String get() = "[$place run=${runTail ?: "none"} behind=${behindTail ?: "-"}" + (listed?.let { " listed=$it" } ?: "") + "]"
+    data class QueuedLine(val runTail: String?, val behindTail: String?, val listed: Boolean) {
+        val text: String get() = "[run=${runTail ?: "none"} behind=${behindTail ?: "-"} listed=$listed]"
     }
 
     /**
