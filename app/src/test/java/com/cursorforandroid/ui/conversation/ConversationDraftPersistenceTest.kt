@@ -2,8 +2,11 @@ package com.cursorforandroid.ui.conversation
 
 import android.content.Context
 import android.content.SharedPreferences
+import android.os.Handler
+import android.os.Looper
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.ViewModelStore
+import androidx.lifecycle.viewModelScope
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.cursorforandroid.AppGraph
@@ -21,9 +24,13 @@ import com.cursorforandroid.domain.ModelParam
 import com.cursorforandroid.ui.components.ModePills
 import com.cursorforandroid.util.MainDispatcherRule
 import com.google.common.truth.Truth.assertThat
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.android.asCoroutineDispatcher
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.launchIn
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import org.junit.After
@@ -31,6 +38,7 @@ import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
+import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
 import java.io.File
 
@@ -42,6 +50,11 @@ import java.io.File
  *
  * A real (not demo) account: the demo's chats are never written to disk. The catalogue is the demo's, which is shaped
  * like the live one (Claude Fable 5.1's context × effort grid, Cursor Grok 4.6's effort × fast).
+ *
+ * The view models run where the app runs them: on the main thread — the test's own — their coroutines dispatched
+ * through its looper, which turns only while the test waits ([runOnMain]). Under an unconfined Main a view model's
+ * coroutine carries on on whichever worker resumed it, beside the test's calls into the view model, and the restored
+ * draft's adoption can land in the middle of a pick, which no tap in the app can.
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 @RunWith(AndroidJUnit4::class)
@@ -49,7 +62,7 @@ import java.io.File
 class ConversationDraftPersistenceTest {
 
     @get:Rule
-    val mainDispatcher = MainDispatcherRule()
+    val mainDispatcher = MainDispatcherRule { Handler(Looper.getMainLooper()).asCoroutineDispatcher() }
 
     private val context = ApplicationProvider.getApplicationContext<Context>()
 
@@ -76,6 +89,8 @@ class ConversationDraftPersistenceTest {
     @After
     fun tearDown() = runBlocking {
         stores.forEach { it.clear() }
+        // Nothing of this test is left queued on the looper for Robolectric to drop under the next one.
+        shadowOf(Looper.getMainLooper()).idle()
         FollowUpStore(context).clear()
         File(context.filesDir, "parked-drafts").deleteRecursively()
         keys.edit().clear().commit()
@@ -86,7 +101,7 @@ class ConversationDraftPersistenceTest {
      * A process: a new graph on the same disk, as a cold start builds it, its session restored from the stored key —
      * or, the first time, signed in.
      */
-    private fun process(signIn: Boolean = false): AppGraph = runBlocking {
+    private fun process(signIn: Boolean = false): AppGraph = runOnMain {
         val graph = AppGraph(context, keyStore = SecureKeyStore(context) { keys }, real = CursorBackend(api, FakeRunStreamer(), isDemo = false))
         if (signIn) graph.session.signIn("key_abc").getOrThrow() else graph.session.restoreIfNeeded()
         check(graph.session.state.value is SessionState.SignedIn) { "The session did not come back: ${graph.session.state.value}" }
@@ -94,16 +109,32 @@ class ConversationDraftPersistenceTest {
         graph
     }
 
-    /** The chat's composer as its screen holds one, the catalogue loaded. */
-    private fun AppGraph.open(agentId: String, store: ViewModelStore = ViewModelStore()): ConversationViewModel = runBlocking {
+    /** The chat's composer as its screen holds one — the picker collected for as long as it is open — the catalogue loaded. */
+    private fun AppGraph.open(agentId: String, store: ViewModelStore = ViewModelStore()): ConversationViewModel {
         stores += store
         val vm = ViewModelProvider(store, ConversationViewModel.Factory(this@open, agentId))[ConversationViewModel::class.java]
-        withTimeout(20_000) { vm.modelPicker.first { it.models.isNotEmpty() && !it.isLoading } }
-        vm
+        vm.modelPicker.launchIn(vm.viewModelScope)
+        runOnMain { withTimeout(20_000) { vm.modelPicker.first { it.models.isNotEmpty() && !it.isLoading } } }
+        return vm
     }
 
     private fun ConversationViewModel.picker(condition: (FollowUpModelState) -> Boolean): FollowUpModelState =
-        runBlocking { withTimeout(20_000) { modelPicker.first(condition) } }
+        runOnMain { withTimeout(20_000) { modelPicker.first(condition) } }
+
+    /** [runBlocking] on the main thread that keeps turning its looper, so the app's main-thread work goes on while the test waits. */
+    private fun <T> runOnMain(block: suspend CoroutineScope.() -> T): T = runBlocking {
+        val looper = launch {
+            while (true) {
+                shadowOf(Looper.getMainLooper()).idle()
+                delay(5)
+            }
+        }
+        try {
+            block()
+        } finally {
+            looper.cancel()
+        }
+    }
 
     // Generous, as in FollowUpRepositoryTest: a loaded runner has been seen to take several times longer than a quiet one.
     private suspend fun awaitUntil(timeoutMs: Long = 20_000, condition: suspend () -> Boolean) = withTimeout(timeoutMs) {
@@ -130,7 +161,7 @@ class ConversationDraftPersistenceTest {
         // The app leaves the screen — the only state a process is ended in — and the process is ended there: no
         // screen is cleared, nothing more is written.
         first.flushDrafts()
-        runBlocking { awaitUntil { onDisk()?.let { it.text == "Half a thought" && it.model != null && it.mode != null } == true } }
+        runOnMain { awaitUntil { onDisk()?.let { it.text == "Half a thought" && it.model != null && it.mode != null } == true } }
 
         val revived = process().open(AGENT)
         val picker = revived.picker { it.override != null }
@@ -140,7 +171,8 @@ class ConversationDraftPersistenceTest {
         assertThat(picker.chipLabel).isEqualTo("Claude Fable 5.1")
         assertThat(picker.mode).isEqualTo(AgentMode.PLAN)
         assertThat(picker.modePill).isEqualTo(ModePills.Pill.Plan)
-        assertThat(revived.draftText.value).isEqualTo("Half a thought")
+        // The text follows once its attachments' previews (none here) have been decoded off the main thread.
+        runOnMain { awaitUntil { revived.draftText.value == "Half a thought" } }
     }
 
     @Test
@@ -165,7 +197,7 @@ class ConversationDraftPersistenceTest {
         assertThat(firstFrame.chipLabel).isEqualTo("Cursor Grok 4.6")
         assertThat(firstFrame.mode).isEqualTo(AgentMode.PLAN)
         // The text follows once its attachments' previews (none here) have been decoded off the main thread.
-        runBlocking { awaitUntil { back.draftText.value == "Keep this" } }
+        runOnMain { awaitUntil { back.draftText.value == "Keep this" } }
     }
 
     @Test
@@ -180,7 +212,7 @@ class ConversationDraftPersistenceTest {
         // The chat is left the moment send is tapped.
         store.clear()
 
-        runBlocking {
+        runOnMain {
             awaitUntil { api.runRequests.any { it.prompt.text == "Switch and go" } }
             awaitUntil { graph.followUps.state(AGENT).value.draft.model == null }
             awaitUntil { onDisk()?.model == null }
@@ -210,18 +242,18 @@ class ConversationDraftPersistenceTest {
         val graph = process(signIn = true)
         val vm = graph.open(AGENT)
 
-        runBlocking { awaitUntil { vm.draftText.value == "Typed on 0.3.61" && vm.pendingAttachments.value.size == 1 } }
+        runOnMain { awaitUntil { vm.draftText.value == "Typed on 0.3.61" && vm.pendingAttachments.value.size == 1 } }
         assertThat(vm.pendingAttachments.value.single().image.bytes.toList()).containsExactly(9.toByte(), 8.toByte(), 7.toByte()).inOrder()
         assertThat(vm.modelPicker.value.override).isNull()
         assertThat(vm.modelPicker.value.mode).isNull()
         // The queued message goes out as it was queued, on the model and mode it was queued with.
-        runBlocking { awaitUntil { api.runRequests.any { it.prompt.text == "Queued on 0.3.61" } } }
+        runOnMain { awaitUntil { api.runRequests.any { it.prompt.text == "Queued on 0.3.61" } } }
         val sent = api.runRequests.single { it.prompt.text == "Queued on 0.3.61" }
         assertThat(sent.model?.id).isEqualTo("composer-2.5")
         assertThat(sent.model?.params?.map { it.id to it.value }).containsExactly("fast" to "false")
         assertThat(sent.mode).isEqualTo("plan")
 
-        runBlocking { awaitUntil { File(dir, "state.json").readText().contains("\"schema\":${FollowUpStore.SCHEMA}") } }
+        runOnMain { awaitUntil { File(dir, "state.json").readText().contains("\"schema\":${FollowUpStore.SCHEMA}") } }
         val rewritten = onDisk()!!
         assertThat(rewritten.text).isEqualTo("Typed on 0.3.61")
         assertThat(rewritten.images.single().image.bytes.toList()).containsExactly(9.toByte(), 8.toByte(), 7.toByte()).inOrder()
@@ -239,27 +271,27 @@ class ConversationDraftPersistenceTest {
         store.clear()
 
         // Signed out the moment after typing, the last words still inside the save's debounce.
-        runBlocking { graph.session.signOut() }
+        runOnMain { graph.session.signOut() }
         // Nothing of it is left where the composers read.
         assertThat(onDisk()).isNull()
 
         // Another account signs in on the same device: it finds nothing.
         email = SOMEONE_ELSE
-        runBlocking { graph.session.signIn("key_other").getOrThrow() }
-        runBlocking { graph.agents.refresh() }
+        runOnMain { graph.session.signIn("key_other").getOrThrow() }
+        runOnMain { graph.agents.refresh() }
         val theirs = graph.open(AGENT)
-        runBlocking { awaitUntil { graph.followUps.state(AGENT).value.restored } }
+        runOnMain { awaitUntil { graph.followUps.state(AGENT).value.restored } }
         assertThat(theirs.draftText.value).isEmpty()
         assertThat(theirs.modelPicker.value.override).isNull()
         stores.forEach { it.clear() }
-        runBlocking { graph.session.signOut() }
+        runOnMain { graph.session.signOut() }
 
         // The same account signs back in: everything it left is there.
         email = BENNETT
-        runBlocking { graph.session.signIn("key_again").getOrThrow() }
-        runBlocking { graph.agents.refresh() }
+        runOnMain { graph.session.signIn("key_again").getOrThrow() }
+        runOnMain { graph.agents.refresh() }
         val back = graph.open(AGENT)
-        runBlocking { awaitUntil { back.draftText.value == "Before signing out" } }
+        runOnMain { awaitUntil { back.draftText.value == "Before signing out" } }
         val picker = back.picker { it.override != null }
         assertThat(picker.override).isEqualTo(picked)
         assertThat(picker.mode).isEqualTo(AgentMode.PLAN)
