@@ -1,5 +1,6 @@
 package com.cursorforandroid.data.faults
 
+import com.cursorforandroid.data.api.ConnectRpc
 import com.cursorforandroid.data.api.ConnectStreamFixtures
 import com.cursorforandroid.data.api.CursorJson
 import com.cursorforandroid.data.api.dto.AgentDto
@@ -27,11 +28,16 @@ import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
+import okhttp3.Protocol
+import okhttp3.internal.http2.Http2Stream
 import okhttp3.mockwebserver.Dispatcher
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import okhttp3.mockwebserver.RecordedRequest
 import okhttp3.mockwebserver.SocketPolicy
+import okhttp3.mockwebserver.internal.duplex.DuplexResponseBody
+import okio.buffer
+import java.io.IOException
 import java.time.Instant
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentLinkedQueue
@@ -58,6 +64,12 @@ import kotlin.random.Random
 class FaultServer(
     rttMillis: LongRange = 300L..900L,
     seed: Int = 7,
+    /**
+     * Served over HTTP/2 (prior knowledge), as `api2.cursor.sh` and `api.cursor.com` answer: every call a client makes
+     * to the host shares one connection, and a stream stays open while the other calls come and go beside it. The
+     * rig's clients must speak it too (see `FaultRig`'s `http2`).
+     */
+    private val http2: Boolean = false,
 ) : AutoCloseable {
     private val server = MockWebServer()
     private val random = Random(seed)
@@ -152,6 +164,8 @@ class FaultServer(
     data class Seen(val route: Route, val method: String, val path: String, val atMillis: Long, val fault: Fault?, val lastEventId: String?)
 
     val seen = CopyOnWriteArrayList<Seen>()
+    /** Connections the clients opened, all told: each one a name lookup and a handshake on a phone. */
+    val connections = AtomicInteger()
     private val startedAt = System.nanoTime()
     private val ids = AtomicInteger()
     private val faults = ConcurrentHashMap<Route, ConcurrentLinkedQueue<Scripted>>()
@@ -230,8 +244,10 @@ class FaultServer(
     }
 
     fun start(): FaultServer {
+        if (http2) server.protocols = listOf(Protocol.H2_PRIOR_KNOWLEDGE)
         server.dispatcher = object : Dispatcher() {
             override fun dispatch(request: RecordedRequest): MockResponse = try {
+                if (request.sequenceNumber == 0) connections.incrementAndGet()
                 serve(request)
             } catch (t: Throwable) {
                 json(500, error("harness_error", t.toString()))
@@ -777,6 +793,17 @@ class FaultServer(
     val liveRequests = CopyOnWriteArrayList<JsonObject>()
     /** How long a live stream is held with nothing to say before the server sends a heartbeat and ends it. */
     @Volatile var liveHoldMs: Long = 20_000L
+    /**
+     * Over [http2], a live stream held as the account holds one: its first words at once, then a heartbeat every this
+     * long and each change of the chat the moment it comes, for as long as the client reads — the server never ends
+     * it. 0: held before its first byte and ended after one word, as MockWebServer answers otherwise (see [live]).
+     */
+    @Volatile var liveHeartbeatMs: Long = 0L
+    /** The live streams held open at this moment, per chat (see [liveHeartbeatMs]): one the client gave up on and did not close still counts. */
+    val liveOpen: MutableMap<String, AtomicInteger> = ConcurrentHashMap()
+
+    fun liveOpen(agentId: String): Int = liveOpen[agentId]?.get() ?: 0
+    fun liveOpenCount(): Int = liveOpen.values.sumOf { it.get() }
     private val liveVersions = ConcurrentHashMap<String, AtomicInteger>()
     private val liveLock = Object()
     @Volatile private var closed = false
@@ -813,6 +840,7 @@ class FaultServer(
         if (body["offsetKey"]?.jsonPrimitive?.contentOrNull != offsetKey(agentId)) {
             messages += """{"initialState":{"blobId":"c3RhdGU=","cloudAgentState":{"conversationState":${stateJson(agentId) ?: """{"turns":[]}"""},${liveExtra(agentId)}},"workflowStatus":"${workflowStatus(agentId)}"}}"""
         }
+        if (http2 && liveHeartbeatMs > 0) return heldLive(agentId, messages, from)
         val deadline = System.nanoTime() + liveHoldMs * 1_000_000
         synchronized(liveLock) {
             while (liveVersion(agentId) == from && !closed) {
@@ -824,6 +852,43 @@ class FaultServer(
         messages += if (liveVersion(agentId) != from) """{"workflowStatusWithOffset":{"offsetKey":"${offsetKey(agentId)}","workflowStatus":"${workflowStatus(agentId)}"}}""" else """{"streamHeartbeat":{}}"""
         return ConnectStreamFixtures.streamResponse(messages)
     }
+
+    /**
+     * The live stream as the account holds it (see [liveHeartbeatMs]): the headers and [first] at once, then a
+     * heartbeat every [liveHeartbeatMs] and each change as it comes, until the client resets the stream — which a
+     * write then fails on — or the server closes.
+     */
+    private fun heldLive(agentId: String, first: List<String>, from: Int): MockResponse =
+        // No length: a MockResponse starts out as an empty body of `Content-Length: 0`, which the client would hold the stream's first frame against.
+        MockResponse().setResponseCode(200).removeHeader("Content-Length").setHeader("Content-Type", "application/connect+json").setBody(object : DuplexResponseBody {
+            override fun onRequest(request: RecordedRequest, http2Stream: Http2Stream) {
+                val open = liveOpen.getOrPut(agentId) { AtomicInteger() }
+                open.incrementAndGet()
+                try {
+                    val sink = http2Stream.getSink().buffer()
+                    first.forEach { sink.write(ConnectRpc.envelope(0, it.toByteArray(Charsets.UTF_8))) }
+                    sink.flush()
+                    var version = from
+                    while (!closed) {
+                        synchronized(liveLock) { if (liveVersion(agentId) == version && !closed) liveLock.wait(liveHeartbeatMs) }
+                        if (closed) break
+                        val now = liveVersion(agentId)
+                        val message = if (now != version) {
+                            version = now
+                            """{"workflowStatusWithOffset":{"offsetKey":"${offsetKey(agentId)}","workflowStatus":"${workflowStatus(agentId)}"}}"""
+                        } else {
+                            """{"streamHeartbeat":{}}"""
+                        }
+                        sink.write(ConnectRpc.envelope(0, message.toByteArray(Charsets.UTF_8)))
+                        sink.flush()
+                    }
+                } catch (_: IOException) {
+                    // The client reset the stream: it is gone.
+                } finally {
+                    open.decrementAndGet()
+                }
+            }
+        })
 
     /**
      * Another client — the web, the desktop, a coordinator messaging this worker — starts a turn in [agentId] with

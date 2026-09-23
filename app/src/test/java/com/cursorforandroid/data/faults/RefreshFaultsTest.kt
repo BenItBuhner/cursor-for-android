@@ -2,6 +2,8 @@ package com.cursorforandroid.data.faults
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.cursorforandroid.data.api.CONNECTION_DROPPED
+import com.cursorforandroid.data.api.DeviceNetwork
+import com.cursorforandroid.data.api.LOOKUP_FAILED_ONLINE
 import com.cursorforandroid.data.faults.FaultServer.Fault
 import com.cursorforandroid.data.faults.FaultServer.Route
 import com.google.common.truth.Truth.assertThat
@@ -183,13 +185,19 @@ class RefreshFaultsTest {
     }
 
     @Test
-    fun `a host that does not resolve is said as being offline`() = runBlocking<Unit> {
+    fun `a host that does not resolve is said as being offline when the phone has no network, and as the lookup when it has`() = runBlocking<Unit> {
         val offline = FaultRig("http://cursor-for-android.invalid/", folder.newFolder("offline"))
         try {
+            DeviceNetwork.install { false }
             offline.agents.refresh()
             assertThat(offline.agents.state.value.error).isEqualTo("You're offline. Check your connection.")
             assertThat(offline.agents.state.value.isRefreshing).isFalse()
+            DeviceNetwork.install { true }
+            offline.agents.refresh()
+            assertThat(offline.agents.state.value.error).isEqualTo(LOOKUP_FAILED_ONLINE)
+            assertThat(offline.agents.state.value.isRefreshing).isFalse()
         } finally {
+            DeviceNetwork.install { null }
             offline.close()
         }
     }
