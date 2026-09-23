@@ -55,9 +55,10 @@ import java.io.File
 /**
  * Bennett's 2026-09-23 frame, the fixture's way (see [BigProject]): a Project of two thousand turns, the newest
  * fourteen silent worker reports, its run list served oldest first, opened under the Beta transcript engine through
- * the real pipeline on the fault harness. The screen opens on its newest rows with "Older messages" above them: the
- * coordinator's messages between the stretches of reports, the user's last prompt among them — not one stretch of
- * ten events. Written to `screenshots/` and compared pixel for pixel in CI.
+ * the real pipeline on the fault harness. The screen opens on its newest rows with "Older messages" above them: each
+ * report's stretch and the worker the coordinator queued work for after it, a subagent row as the desktop draws
+ * every SendToAgent — not one stretch of ten events; the coordinator's messages are above them. Written to
+ * `screenshots/` and compared pixel for pixel in CI.
  */
 @RunWith(AndroidJUnit4::class)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
@@ -168,9 +169,12 @@ class BigProjectBetaScreenshotTest {
         AppClock.nowMillis = { now }
         val state = open(TranscriptEngine.BETA)
         val rows = TranscriptPresenter().present(state.items, coordinatorMode = true, runActive = false).rows
-        // The newest rows, as the screen opens on them: messages between the stretches, not one stretch of events.
+        // The newest rows, as the screen opens on them: stretches of reports with the workers queued between them, not
+        // one stretch of events; the coordinator's messages further up.
         val shown = rows.takeLast(SHOWN_ROWS)
-        assertThat(shown.count { it is TranscriptRow.Message }).isAtLeast(2)
+        assertThat(shown.count { it is TranscriptRow.Stretch }).isAtLeast(2)
+        assertThat(shown.count { it is TranscriptRow.Subagent }).isAtLeast(2)
+        assertThat(rows.count { it is TranscriptRow.Message }).isAtLeast(2)
         show(shown)
         capture("195_big_project_beta")
     }
