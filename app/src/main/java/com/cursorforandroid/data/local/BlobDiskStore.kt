@@ -61,6 +61,25 @@ class BlobDiskStore(private val cache: JsonDiskCache, private val maxBytes: Long
         files.sortedByDescending { it.lastModified() }.asSequence().mapNotNull { idOf(it.name) }.take(max).toList()
     }
 
+    /** The ids the server last prefetched for [agentId] (see `BlobCache.notePrefetched`), newest first; empty when none were noted. */
+    suspend fun readIndex(agentId: String): List<String> = withContext(Dispatchers.IO) {
+        val file = File(chatDir(agentId), INDEX)
+        if (!file.isFile) return@withContext emptyList()
+        runCatching { file.readLines().filter { it.isNotBlank() } }.getOrDefault(emptyList())
+    }
+
+    suspend fun writeIndex(agentId: String, ids: List<String>, token: Int = cache.token()) = withContext(Dispatchers.IO) {
+        if (cache.isStale(token)) return@withContext
+        val file = File(chatDir(agentId), INDEX)
+        val tmp = File(file.parentFile, "$INDEX.tmp")
+        runCatching {
+            file.parentFile?.mkdirs()
+            tmp.writeText(ids.joinToString("\n"))
+            if (!tmp.renameTo(file)) throw java.io.IOException("rename failed")
+        }.onFailure { tmp.delete() }
+        Unit
+    }
+
     private fun counted(): Long {
         val known = bytes.get()
         if (known >= 0) return known
@@ -89,6 +108,8 @@ class BlobDiskStore(private val cache: JsonDiskCache, private val maxBytes: Long
     companion object {
         /** Blobs on disk across every chat, all told. */
         const val MAX_BYTES = 96L * 1024 * 1024
+        /** A chat's note of what the server prefetches for it; never a blob's name (those start `x` or `h`). */
+        private const val INDEX = "prefetched"
 
         /** A file name for a blob id: its characters in hex, reversible whatever the id's alphabet; a hash for an id too long for a name. */
         internal fun nameOf(blobId: String): String {

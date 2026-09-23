@@ -221,8 +221,8 @@ class HeadlessConversationApi(
      * is gone from the server (2026-09-21) and is not asked.
      */
     override suspend fun state(agentId: String): RecordState {
-        // A read in flight is joined, one a moment old taken: the goal strip reads the same state as the chat opens.
-        val initial = states.read(agentId, acceptAgeMs = STATE_ACCEPT_AGE_MS)
+        // A read in flight is joined: the goal strip reads the same state as the chat opens.
+        val initial = states.read(agentId)
         // The state inline, as the desktop takes it; else the state's own blob (`initial_state.blob_id`), read as the structure.
         var source = if (initial.conversationState != null) "inline" else "absent"
         val stateJson = initial.conversationState ?: initial.stateBlobId?.let { id ->
@@ -446,8 +446,6 @@ class HeadlessConversationApi(
     companion object {
         const val SERVICE = "aiserver.v1.BackgroundComposerService"
         const val BLOB_METHOD = "GetBlobForAgentKV"
-        /** How old a state read the transcript takes rather than reading again: one the goal strip made as the chat opened. */
-        const val STATE_ACCEPT_AGE_MS = 2_000L
         /** Blob reads in flight at once for one page of turns: a few hundred bytes each, so the round trip is the cost, not the body. */
         const val BLOB_PARALLELISM = 8
 

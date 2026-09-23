@@ -710,7 +710,9 @@ class FaultServer(
                 """{"durationMs":"${run?.durationMs ?: 0}","timestampMs":"$ended"}"""
             }
             val ids = record.turnIds.joinToString(",") { "\"$it\"" }
-            """{"turns":[$ids],"turnTimings":[$timings],"isRootProjectConversation":true}"""
+            // A Project's root when its prompts were sent in Project mode, as the account marks it.
+            val root = records[agentId].orEmpty().any { step -> (step["humanMessage"] as? JsonObject)?.get("agentMode")?.jsonPrimitive?.contentOrNull == "AGENT_MODE_PROJECT" }
+            """{"turns":[$ids],"turnTimings":[$timings]${if (root) ",\"isRootProjectConversation\":true" else ""}}"""
         }
         // The prefetch, as the desktop's request asks for it (`prefetch_only_last_step_per_turn`, `max_blobs_after_prefetch`):
         // the newest [prefetchTurns] turns' blobs — each turn's structure, its prompt, its last step — less what the

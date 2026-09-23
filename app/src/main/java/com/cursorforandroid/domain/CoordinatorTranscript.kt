@@ -294,19 +294,6 @@ object CoordinatorTranscript {
         return out ?: emptySet()
     }
 
-    /** Every message call of [items], by its [messageKey]: what a stand-in carries of a turn the record says sent none. */
-    fun messageCallKeys(items: List<TimelineItem>): Set<String> {
-        var out: MutableSet<String>? = null
-        for (item in items) {
-            if (item !is ActivityGroup) continue
-            for (step in item.steps) {
-                if (step !is ToolCall || reinterpret(step).payload !is ToolPayload.CoordinatorMessage) continue
-                (out ?: HashSet<String>().also { out = it }) += messageKey(item, step)
-            }
-        }
-        return out ?: emptySet()
-    }
-
     /** The ids of the message calls of [items] keyed in [keys] (see [messageKey]), in order, for the diagnostics. */
     fun messageCallIds(items: List<TimelineItem>, keys: Set<String>): List<String> {
         if (keys.isEmpty()) return emptyList()

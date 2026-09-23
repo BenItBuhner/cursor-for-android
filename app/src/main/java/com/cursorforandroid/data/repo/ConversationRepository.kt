@@ -1024,13 +1024,7 @@ class ConversationRepository(
                 // Never for the turn being streamed: the record's copy of it lags the stream, so its own message
                 // would read as one it has not sent yet — and its own words are never a copy of anything.
                 val standIn = complete ?: liveItems ?: kept
-                val repeats = when {
-                    standIn == null || turn.hasMessageCall || (liveItems != null && liveNewest) -> emptySet()
-                    // The record's structure of the turn lists no message: whatever message the stand-in carries is an
-                    // earlier turn's, said again, whether or not that turn is in the window to have drawn it.
-                    turn.structureKnown && turn.messageSteps == 0 && turn.complete -> CoordinatorTranscript.messageCallKeys(standIn)
-                    else -> CoordinatorTranscript.messageCallsReading(standIn, messagesShown ?: emptySet())
-                }
+                val repeats = if (standIn != null && !turn.hasMessageCall && !(liveItems != null && liveNewest)) CoordinatorTranscript.messageCallsReading(standIn, messagesShown ?: emptySet()) else emptySet()
                 val inputs = TurnInputs(
                     turn = turn,
                     run = run,
@@ -2558,7 +2552,10 @@ class ConversationRepository(
                 if (blobBacked) {
                     // A refusal of the state is the record's refusal.
                     val state = stateRead.await().getOrThrow()
-                    RecordPager.tailTurns(api, agentId, wantTurns, state, plan = TurnPlan.MESSAGES, held = known?.held.orEmpty())
+                    // A coordinator's turns are read to their prompts and messages first; an ordinary chat's reply is
+                    // a step like any other, which no structure names, so its turns are read whole at once.
+                    val coordinator = state.isRootProject || synchronized(e) { e.projectMode } || known?.turns?.any { it.projectMode } == true
+                    RecordPager.tailTurns(api, agentId, wantTurns, state, plan = if (coordinator) TurnPlan.MESSAGES else TurnPlan.FULL, held = known?.held.orEmpty())
                         ?.also { page -> page.drift?.let { drift -> drifted = true; throw drift } }
                 } else if (known != null && known.canAppend) {
                     RecordPager.since(api, agentId, known.total) ?: RecordPager.tail(api, agentId, wantTurns, null)
@@ -2821,6 +2818,9 @@ class ConversationRepository(
             })
             val done = applied ?: return
             persistRecord(e, done, window, backend, cacheTokens())
+            // The widened window pairs its turns with runs the list's first page does not reach: the older pages
+            // behind it, as a scroll up has them read (each turn's run for its status and footer).
+            if (synchronized(e) { e.recordNeedsRuns() }) pageOlderRuns(e, agentId)
         }
         e.publish(mutate = { extending = false }, transform = { copy(isLoadingOlder = e.loadingOlder) })
         // The steps the first read left for later, newest turn first: the stretches fill in behind what is on screen.

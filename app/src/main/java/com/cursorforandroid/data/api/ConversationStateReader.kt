@@ -5,6 +5,8 @@ import com.cursorforandroid.data.local.BlobDiskStore
 import com.cursorforandroid.domain.TranscriptPerf
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.serialization.EncodeDefault
 import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.Serializable
@@ -133,13 +135,30 @@ class BlobCache(
      * request would outweigh the prefetch it saves.
      */
     suspend fun heldIds(agentId: String, max: Int = MAX_HELD_IDS): List<String> {
+        // What the server prefetched last time, where it is still held: the blobs it will want to send again.
+        val noted = prefetched[agentId] ?: disk?.readIndex(agentId).orEmpty()
+        val held = noted.filter { id -> held(agentId, id) != null || disk?.has(agentId, id) == true }
         val memory = synchronized(this) {
             val prefix = "$agentId/"
             blobs.keys.filter { it.startsWith(prefix) }.map { it.removePrefix(prefix) }.asReversed()
         }
-        if (memory.size >= max || disk == null) return memory.take(max)
-        val fromDisk = disk.recentIds(agentId, max)
-        return (memory + fromDisk).distinct().take(max)
+        val known = (held + memory).distinct()
+        if (known.size >= max || disk == null) return known.take(max)
+        return (known + disk.recentIds(agentId, max)).distinct().take(max)
+    }
+
+    private val prefetched = ConcurrentHashMap<String, List<String>>()
+
+    /**
+     * The blobs a state read prefetched for [agentId] this time, noted with the ones noted before (newest first,
+     * [MAX_HELD_IDS] at most) in memory and on disk: the next read names them as held, so the server sends only what
+     * changed — in this process or the next.
+     */
+    suspend fun notePrefetched(agentId: String, ids: List<String>) {
+        if (ids.isEmpty()) return
+        val merged = (ids + (prefetched[agentId] ?: disk?.readIndex(agentId).orEmpty())).distinct().take(MAX_HELD_IDS)
+        prefetched[agentId] = merged
+        disk?.writeIndex(agentId, merged)
     }
 
     companion object {
@@ -193,36 +212,38 @@ class ConversationStateReader(
         val stateBlobId: String? = null,
     )
 
-    /** A chat's latest state read: done when [answer] completes, at [atMillis] (monotonic). */
-    internal class Recent(val answer: CompletableDeferred<InitialState>, @Volatile var atMillis: Long)
+    /** A chat's state read in flight: its readers wait on [answer]. */
+    internal class Recent(val answer: CompletableDeferred<InitialState>)
 
     /**
      * One PREWARM read of [agentId]'s conversation: the stream is left the moment `initial_state` has been read. A
-     * read of the chat already in flight is joined; one that finished within [acceptAgeMs] is taken as it is (the
-     * goal strip's reads, which can wait; the transcript asks for 0 and always reads afresh). Throws
-     * [ConnectRpcException] with the request path when the server refuses, or when the stream ends without a state.
+     * read of the chat already in flight — the goal strip's as the chat opens, the transcript's — is joined, not
+     * repeated; a read that has finished is never taken for a new one. Throws [ConnectRpcException] with the request
+     * path when the server refuses, or when the stream ends without a state.
      */
-    suspend fun read(agentId: String, acceptAgeMs: Long = 0L): InitialState {
+    suspend fun read(agentId: String): InitialState {
         while (true) {
-            val recent = blobs.states[agentId]
-            if (recent != null) {
-                if (!recent.answer.isCompleted) return recent.answer.await()
-                val fresh = acceptAgeMs > 0 && monotonic() - recent.atMillis <= acceptAgeMs && !recent.answer.isCancelled
-                if (fresh) runCatching { return recent.answer.await() }
+            val inFlight = blobs.states[agentId]
+            if (inFlight != null) {
+                try {
+                    return inFlight.answer.await()
+                } catch (e: CancellationException) {
+                    // The reader that owned it was cancelled (its screen left), not this one: read afresh.
+                    currentCoroutineContext().ensureActive()
+                    continue
+                }
             }
-            val mine = Recent(CompletableDeferred(), monotonic())
-            val won = if (recent == null) blobs.states.putIfAbsent(agentId, mine) == null else blobs.states.replace(agentId, recent, mine)
-            if (!won) continue
+            val mine = Recent(CompletableDeferred())
+            if (blobs.states.putIfAbsent(agentId, mine) != null) continue
             try {
                 val state = readNow(agentId)
-                mine.atMillis = monotonic()
                 mine.answer.complete(state)
                 return state
             } catch (t: Throwable) {
                 mine.answer.completeExceptionally(t)
-                blobs.states.remove(agentId, mine)
-                if (t is CancellationException) throw t
                 throw t
+            } finally {
+                blobs.states.remove(agentId, mine)
             }
         }
     }
@@ -234,18 +255,19 @@ class ConversationStateReader(
         var state: InitialState? = null
         var prefetched = 0
         var prefetchedBytes = 0L
+        val prefetchedIds = ArrayList<String>()
         val kinds = ArrayList<String>()
         rpc.serverStreamWithSession(SERVICE, METHOD, tokens, request, StreamConversationRequestDto.serializer(), retryRefusals = false) { message ->
             val case = message.keys.firstOrNull { it != "@type" } ?: "empty"
             kinds += case
             when (case) {
                 "prefetchedBlobs" -> {
-                    store(agentId, (message["prefetchedBlobs"] as? JsonObject)?.get("preFetchedBlobs")).let { (n, size) -> prefetched += n; prefetchedBytes += size }
+                    store(agentId, (message["prefetchedBlobs"] as? JsonObject)?.get("preFetchedBlobs"), prefetchedIds).let { (n, size) -> prefetched += n; prefetchedBytes += size }
                     true
                 }
                 "initialState" -> {
                     val initial = message["initialState"] as? JsonObject
-                    store(agentId, initial?.get("preFetchedBlobs")).let { (n, size) -> prefetched += n; prefetchedBytes += size }
+                    store(agentId, initial?.get("preFetchedBlobs"), prefetchedIds).let { (n, size) -> prefetched += n; prefetchedBytes += size }
                     val cloud = initial?.get("cloudAgentState") as? JsonObject
                     state = InitialState(
                         conversationState = cloud?.get("conversationState") as? JsonObject,
@@ -263,11 +285,12 @@ class ConversationStateReader(
             }
         }
         blobs.counts(agentId).prefetched.addAndGet(prefetched)
+        blobs.notePrefetched(agentId, prefetchedIds)
         return state ?: throw ConnectRpcException(200, ConnectRpcException.UNREADABLE_ANSWER, "The conversation stream ended without an initial state (${kinds.ifEmpty { listOf("no messages") }.joinToString(",")}).", path = ConnectRpc.path(SERVICE, METHOD))
     }
 
-    /** The `PreFetchedBlob[]` of [element] into the cache, as partial copies; how many landed and their bytes. */
-    private fun store(agentId: String, element: kotlinx.serialization.json.JsonElement?): Pair<Int, Long> {
+    /** The `PreFetchedBlob[]` of [element] into the cache, as partial copies, their ids onto [prefetchedIds]; how many landed and their bytes. */
+    private fun store(agentId: String, element: kotlinx.serialization.json.JsonElement?, prefetchedIds: MutableList<String>): Pair<Int, Long> {
         val items = element as? JsonArray ?: return 0 to 0L
         var count = 0
         var size = 0L
@@ -276,13 +299,12 @@ class ConversationStateReader(
             val id = (blob["id"] as? JsonPrimitive)?.contentOrNull?.takeIf { it.isNotBlank() } ?: continue
             val value = (blob["value"] as? JsonPrimitive)?.contentOrNull?.let { runCatching { Base64.getDecoder().decode(it) }.getOrNull() } ?: continue
             blobs.put(agentId, id, value, partial = true)
+            prefetchedIds += id
             count++
             size += value.size
         }
         return count to size
     }
-
-    private fun monotonic(): Long = System.nanoTime() / 1_000_000
 
     /**
      * `aiserver.v1.StreamConversationRequest` as the desktop's prewarm sends it (`cloudAgentStreamPrefetch.js`, 3.21.16):
@@ -307,7 +329,5 @@ class ConversationStateReader(
         const val METHOD = "StreamConversation"
         /** `aiserver.v1.StreamConversationPurpose.STREAM_CONVERSATION_PURPOSE_PREWARM` (2), by name as proto3 JSON writes enums. */
         const val PURPOSE_PREWARM = "STREAM_CONVERSATION_PURPOSE_PREWARM"
-        /** How old a state read the goal strip takes rather than reading again: its poll is every 30 s. */
-        const val GOAL_ACCEPT_AGE_MS = 25_000L
     }
 }
