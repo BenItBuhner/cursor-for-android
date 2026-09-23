@@ -4,6 +4,7 @@ import com.cursorforandroid.data.auth.SessionTokenProvider
 import com.cursorforandroid.domain.AgentMode
 import com.cursorforandroid.domain.AgentSource
 import com.cursorforandroid.domain.InteractionResolution
+import com.cursorforandroid.domain.ModelParam
 import com.cursorforandroid.domain.PendingAttachment
 import com.cursorforandroid.domain.PendingFollowup
 import com.cursorforandroid.domain.PromptImage
@@ -87,7 +88,14 @@ class SteeringApiTest {
         server.enqueue(MockResponse().setBody("{}"))
 
         val image = PromptImage(byteArrayOf(1, 2, 3), "image/PNG")
-        val followup = AccountFollowup("  Explain the cache miss  ", listOf(image), mode = AgentMode.ASK, modelId = "claude-4", followupId = "fu-1")
+        val followup = AccountFollowup(
+            "  Explain the cache miss  ",
+            listOf(image),
+            mode = AgentMode.ASK,
+            modelId = "claude-opus-5.5",
+            modelParams = listOf(ModelParam("effort", "max"), ModelParam("fast", "true")),
+            followupId = "fu-1",
+        )
         assertThat(api.addFollowup("bc-1", followup, synchronous = false)).isEqualTo("run-7")
         assertThat(api.addFollowup("bc-1", AccountFollowup("Stop and do this instead"), synchronous = true)).isNull()
 
@@ -100,7 +108,11 @@ class SteeringApiTest {
         assertThat(body["synchronous"]?.jsonPrimitive?.content).isEqualTo("false")
         assertThat(body["followupSource"]?.jsonPrimitive?.content).isEqualTo("BACKGROUND_COMPOSER_SOURCE_API")
         assertThat(body["followupId"]?.jsonPrimitive?.content).isEqualTo("fu-1")
-        assertThat(body["requestedModel"]!!.jsonObject["modelId"]?.jsonPrimitive?.content).isEqualTo("claude-4")
+        // `agent.v1.RequestedModel` as the desktop's own follow-up fills it: the id and the picked variant's parameters.
+        val requested = body["requestedModel"]!!.jsonObject
+        assertThat(requested["modelId"]?.jsonPrimitive?.content).isEqualTo("claude-opus-5.5")
+        assertThat(requested["parameters"]!!.jsonArray.map { it.jsonObject["id"]!!.jsonPrimitive.content to it.jsonObject["value"]!!.jsonPrimitive.content })
+            .containsExactly("effort" to "max", "fast" to "true").inOrder()
         val message = body["followupMessage"]!!.jsonObject
         assertThat(message["text"]?.jsonPrimitive?.content).isEqualTo("Explain the cache miss")
         assertThat(message["agentMode"]?.jsonPrimitive?.content).isEqualTo("AGENT_MODE_ASK")
