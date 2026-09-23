@@ -22,9 +22,12 @@ import com.cursorforandroid.data.api.dto.V0ConversationMessageDto
  *     report, a goal continuing) — started the run created at that time;
  *  2. this device's own echoes — a prompt sent from here knows the run the server answered with — anchor the
  *     transcript's newest copy of their words;
- *  3. the chat's newest prompt and its newest run, while that run is under way, are each other's;
- *  4. a run's `result` is the transcript's reply to the prompt that started it — the same words, or one cut short
+ *  3. a run's `result` is the transcript's reply to the prompt that started it — the same words, or one cut short
  *     of the other — matched in order within each gap the anchors leave, newest first;
+ *  4. the chat's newest prompt, if nothing settled it, and its newest run, while that run is under way, are each
+ *     other's — but where the runs carry no results, only while the gap they close holds no more runs than
+ *     prompts: once the run is over, position alone pairs that gap, and the turn under way is not drawn another
+ *     way while it lasts;
  *  5. what is left pairs by position within the gaps — a gap's prompts with its first runs, the runs past them
  *     prompt-less; a gap with more prompts than runs leaves the newest prompts without a run (their run not listed
  *     yet), except the chat's oldest gap when the list is not complete, where the oldest prompts are the ones
@@ -143,11 +146,7 @@ object TurnPairing {
                 if (prompt != null) anchor(prompt, run, Evidence.ECHO) else if (runs[run].id in reserved) kept += run
             }
         }
-        // 3. The turn under way: the chat's newest run, still running, on its newest prompt.
-        if (p > 0 && r > 0 && runs[r - 1].statusEnum().isActive && (r - 1) !in kept && fits(p - 1, r - 1)) {
-            anchor(p - 1, r - 1, Evidence.LIVE)
-        }
-        // 4. A run's result is the reply to its prompt: within each gap the anchors leave, the newest prompt first
+        // 3. A run's result is the reply to its prompt: within each gap the anchors leave, the newest prompt first
         //    takes the newest run before it whose result says its reply, and so on down — the same words said
         //    twice pair in order, and a run no prompt started (its result the transcript never carried) is passed over.
         val resultWords = runs.map { normalize(it.result ?: "") }
@@ -167,8 +166,20 @@ object TurnPairing {
                 upperRun = lowerRun
             }
         }
+        // 4. The turn under way: the chat's newest run, still running, on its newest prompt — after the results, so a
+        //    newest prompt whose own run is over and says its reply keeps it: the run under way is then one no prompt
+        //    of the transcript's started yet, a worker's report the coordinator is answering. Anchored, the newest
+        //    prompt drew the report's run and left its own, reply and all, under the prompt before it. Runs without
+        //    results say nothing either way; there a gap with more runs than prompts is left to position, as it will
+        //    be once the run is over, and the run under way stands alone until its prompt lands.
+        if (p > 0 && r > 0 && runs[r - 1].statusEnum().isActive && (r - 1) !in kept && fits(p - 1, r - 1)) {
+            val below = byRun.lowerEntry(r - 1)
+            val gapPrompts = p - 1 - (below?.value ?: -1)
+            val gapRuns = ((below?.key ?: -1) + 1 until r - 1).count { it !in kept }
+            if (resultWords.any { it.isNotEmpty() } || gapRuns < gapPrompts) anchor(p - 1, r - 1, Evidence.LIVE)
+        }
 
-        // 4. The gaps between the anchors, by position.
+        // 5. The gaps between the anchors, by position.
         val turns = ArrayList<Turn>(p + r)
         if (leading.isNotEmpty()) turns += Turn(null, -1, null, leading, Evidence.NONE)
         fun turnOf(prompt: Int, run: Int, how: Evidence) = Turn(groups[prompt].prompt, prompt, runs[run], groups[prompt].replies, how)
