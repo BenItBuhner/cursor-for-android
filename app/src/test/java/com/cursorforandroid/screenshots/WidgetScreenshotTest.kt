@@ -6,6 +6,8 @@ import android.content.Context
 import android.view.ViewGroup
 import androidx.activity.ComponentActivity
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.performClick
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import androidx.glance.appwidget.ExperimentalGlanceRemoteViewsApi
@@ -27,10 +29,12 @@ import com.cursorforandroid.ui.theme.ThemeMode
 import com.cursorforandroid.util.AppClock
 import com.cursorforandroid.widget.ChatsWidgetContent
 import com.cursorforandroid.widget.ChatsWidgetOptions
+import com.cursorforandroid.widget.ProjectsWidgetFixture
 import com.cursorforandroid.widget.WidgetConfigureScreen
 import com.cursorforandroid.widget.WidgetData
 import com.cursorforandroid.widget.WidgetSizes
 import com.cursorforandroid.widget.WidgetSnapshot
+import com.github.takahirom.roborazzi.ExperimentalRoborazziApi
 import com.github.takahirom.roborazzi.RoborazziOptions
 import com.github.takahirom.roborazzi.captureRoboImage
 import com.github.takahirom.roborazzi.captureScreenRoboImage
@@ -111,6 +115,62 @@ class WidgetScreenshotTest {
             defaults.copy(mode = WidgetMode.Project, projectId = project.id, density = RowDensity.Compact, cornerStyle = CornerStyle.Tinted, elements = setOf(com.cursorforandroid.domain.RowElement.Status, com.cursorforandroid.domain.RowElement.UnreadDot)),
             DpSize(320.dp, 158.dp),
         )
+    }
+
+    /**
+     * The Projects list ([ProjectsWidgetFixture]: a coordinator at work, a Project whose chats are, one unread under a
+     * long name, one failed, one in the default tone, a registry stand-in) in every arrangement, and what it says empty.
+     */
+    @Test
+    fun projectsWidgets() {
+        val dark = ProjectsWidgetFixture.snapshot(ThemeMode.Dark, FIXED_NOW)
+        val projects = ChatsWidgetSettings(mode = WidgetMode.Projects)
+        capture("274_widget_projects", dark, projects, DpSize(320.dp, 158.dp))
+        capture("275_widget_projects_light", ProjectsWidgetFixture.snapshot(ThemeMode.Light, FIXED_NOW), projects, DpSize(320.dp, 158.dp))
+        capture("276_widget_projects_large", dark, projects, WidgetSizes.sizeFor(WidgetLayout.Large))
+        // One row high: a strip of Project icons as wide as the cell allows, "+N" for the rest; a 2x1 says it in words.
+        capture("277_widget_projects_small", dark, projects, WidgetSizes.sizeFor(WidgetLayout.Small))
+        capture("278_widget_projects_small_narrow", dark, projects, DpSize(250.dp, 60.dp))
+        capture("279_widget_projects_small_2x1", dark, projects, DpSize(110.dp, 60.dp))
+        // A 3x2 cell, where the long name gives way to the metadata and the count.
+        capture("280_widget_projects_narrow", dark, projects, DpSize(250.dp, 158.dp))
+        capture("281_widget_projects_extended_off", ProjectsWidgetFixture.withoutProjects(ThemeMode.Dark, FIXED_NOW, extendedMode = false), projects, DpSize(320.dp, 158.dp))
+        capture("282_widget_projects_empty", ProjectsWidgetFixture.withoutProjects(ThemeMode.Dark, FIXED_NOW, extendedMode = true), projects, DpSize(320.dp, 158.dp))
+        capture("283_widget_projects_small_extended_off", ProjectsWidgetFixture.withoutProjects(ThemeMode.Dark, FIXED_NOW, extendedMode = false), projects, WidgetSizes.sizeFor(WidgetLayout.Small))
+    }
+
+    /** The settings screen set to the Projects list, then its sheet of choices: every Project, or one Project's chats. */
+    @OptIn(ExperimentalRoborazziApi::class)
+    @Test
+    fun configureProjects() {
+        showOptions(ProjectsWidgetFixture.snapshot(ThemeMode.Dark, FIXED_NOW), ChatsWidgetSettings(mode = WidgetMode.Projects))
+        captureScreenRoboImage(File(outDir, "284_widget_configure_projects.png").path, RoborazziOptions())
+        compose.onNodeWithTag("option-project").performClick()
+        compose.waitForIdle()
+        compose.mainClock.advanceTimeBy(500)
+        compose.waitForIdle()
+        captureScreenRoboImage(File(outDir, "285_widget_configure_projects_sheet.png").path, RoborazziOptions())
+    }
+
+    /** Without Extended mode, the Projects choice says where the Projects come from. */
+    @OptIn(ExperimentalRoborazziApi::class)
+    @Test
+    fun configureProjectsExtendedOff() {
+        showOptions(ProjectsWidgetFixture.withoutProjects(ThemeMode.Dark, FIXED_NOW, extendedMode = false), ChatsWidgetSettings(mode = WidgetMode.Projects))
+        captureScreenRoboImage(File(outDir, "286_widget_configure_projects_extended_off.png").path, RoborazziOptions())
+    }
+
+    private fun showOptions(snapshot: WidgetSnapshot, settings: ChatsWidgetSettings) {
+        compose.setContent {
+            CursorTheme(mode = ThemeMode.Dark) {
+                WidgetConfigureScreen(title = "Chats widget", subtitle = "What it shows and how it looks", onDone = {}, onClose = {}) {
+                    ChatsWidgetOptions(settings = settings, snapshot = snapshot, onChange = {})
+                }
+            }
+        }
+        compose.waitForIdle()
+        compose.mainClock.advanceTimeBy(500)
+        compose.waitForIdle()
     }
 
     /**
