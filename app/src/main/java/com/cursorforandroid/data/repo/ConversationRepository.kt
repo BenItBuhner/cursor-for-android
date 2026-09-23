@@ -1361,7 +1361,13 @@ class ConversationRepository(
                 if (it.first === window && it.second === ordered && it.third === local && recordPairingEchoes === recordEchoes && recordPairingWaiting == waiting) return recordPairingCache!!
             }
             val trailing = window.trailingRunIds()
-            val candidates = if (trailing.isEmpty() && waiting.isEmpty()) ordered else ordered.filter { it.id !in trailing && it.id !in waiting }
+            val kept = if (trailing.isEmpty() && waiting.isEmpty()) ordered else ordered.filter { it.id !in trailing && it.id !in waiting }
+            // A turn before the window whose run its echo named: that run, and every run created before it, belong to
+            // turns before the window. A window with no anchor of its own would otherwise lay its turns over them.
+            val first = window.turns.firstOrNull()?.stepIndex
+            val behind = if (first == null) emptySet() else recordEchoes.filterKeys { it < first }.values.mapTo(HashSet()) { it.runId }
+            val floor = if (behind.isEmpty()) -1 else kept.indexOfLast { it.id in behind }
+            val candidates = if (floor < 0) kept else kept.subList(floor + 1, kept.size)
             val echoes = java.util.IdentityHashMap<RecordTurn, String>()
             if (recordEchoes.isNotEmpty()) window.turns.forEach { turn ->
                 val echo = recordEchoes[turn.stepIndex] ?: return@forEach
