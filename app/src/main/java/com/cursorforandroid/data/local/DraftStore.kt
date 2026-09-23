@@ -83,6 +83,8 @@ class DraftStore(context: Context) {
         val launchedAs: String? = null,
         /** Why its launch did not go through, in the server's words, until the draft is written into again. */
         val error: String? = null,
+        /** With [error], the call the account refused and what it answered (see `FailedLaunch.asked`). */
+        val errorAsked: String? = null,
     ) {
         /** Something typed or attached: a draft without it is not kept. */
         val hasContent: Boolean get() = prompt.isNotBlank() || images.isNotEmpty() || files.isNotEmpty()

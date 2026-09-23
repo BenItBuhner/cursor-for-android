@@ -90,7 +90,7 @@ class NewChatDrafts(
 
     init {
         scope.launch { launcher.accepted.collect { agentId -> settleAccepted(agentId) } }
-        scope.launch { launcher.failures.collect { failed -> settleFailed(failed.agentId, failed.reason) } }
+        scope.launch { launcher.failures.collect { failed -> settleFailed(failed.agentId, failed.reason, failed.asked) } }
     }
 
     /** Reads the drafts from disk, once per account; later calls return at once. */
@@ -163,7 +163,7 @@ class NewChatDrafts(
      */
     fun markLaunched(id: String, agentId: String) {
         var marked: DraftStore.Record? = null
-        _state.update { s -> s.copy(drafts = s.drafts.map { if (it.id == id) it.copy(launchedAs = agentId, error = null).also { m -> marked = m } else it }) }
+        _state.update { s -> s.copy(drafts = s.drafts.map { if (it.id == id) it.copy(launchedAs = agentId, error = null, errorAsked = null).also { m -> marked = m } else it }) }
         marked?.let { record -> work.launch { store.write(record) } }
     }
 
@@ -193,9 +193,9 @@ class NewChatDrafts(
         remove(sent.id)
     }
 
-    private suspend fun settleFailed(agentId: String, reason: String?) {
+    private suspend fun settleFailed(agentId: String, reason: String?, asked: String?) {
         val sent = launchedAs(agentId) ?: return
-        val back = sent.copy(launchedAs = null, error = reason)
+        val back = sent.copy(launchedAs = null, error = reason, errorAsked = asked?.takeIf { reason != null })
         _state.update { s -> s.copy(drafts = sorted(s.drafts.map { if (it.id == sent.id) back else it })) }
         _requests.tryEmit(Request.Returned(sent.id))
         store.write(back)

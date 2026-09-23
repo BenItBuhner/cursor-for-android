@@ -748,7 +748,8 @@ class NewAgentViewModelTest {
             agentId = id
             atOpen = DraftRow.listed(graph.newChatDrafts.state.value.drafts, open = null).any { it.id == parked.id } to (graph.agents.agent(id) != null)
         })
-        awaitUntil { agentId != null }
+        // Set on the launch's thread after the id: waiting on the id alone can read it before it is written.
+        awaitUntil { atOpen != null }
         assertThat(atOpen).isEqualTo(false to true)
         awaitUntil { accepted(agentId!!) }
         awaitUntil { onDisk().none { it.id == parked.id } }

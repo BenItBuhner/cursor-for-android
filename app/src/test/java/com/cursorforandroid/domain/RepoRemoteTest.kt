@@ -26,6 +26,19 @@ class RepoRemoteTest {
         assertThat(RepoRemote.canonical("git.internal:8080/team/app")).isEqualTo("https://git.internal:8080/team/app")
     }
 
+    /** The worker's `repo=` label for its checkout, and the desktop's for a request (`af` / `T1t`): the host dropped on the well-known ones and Origin. */
+    @Test
+    fun `the repo label is owner and name on the well-known hosts and Origin, host and path elsewhere`() {
+        assertThat(RepoRemote.label("https://github.com/bennett/codex-poly-bot")).isEqualTo("bennett/codex-poly-bot")
+        assertThat(RepoRemote.label("git@github.com:Acme/App.git")).isEqualTo("Acme/App")
+        assertThat(RepoRemote.label("https://gitlab.com/group/sub/app")).isEqualTo("group/sub/app")
+        assertThat(RepoRemote.label("https://git.acme.gitlab.com/team/app")).isEqualTo("team/app")
+        assertThat(RepoRemote.label("https://origin.cursor.com/bennett/codex-poly-bot.git")).isEqualTo("bennett/codex-poly-bot")
+        assertThat(RepoRemote.label("https://origin.cursor.com/git/bennett/codex-poly-bot")).isEqualTo("bennett/codex-poly-bot")
+        assertThat(RepoRemote.label("https://git.internal:8080/team/app")).isEqualTo("git.internal:8080/team/app")
+        assertThat(RepoRemote.label("codex-poly-bot")).isNull()
+    }
+
     @Test
     fun `a remote without an owner and a repository is not a url to send`() {
         assertThat(RepoRemote.canonical(null)).isNull()

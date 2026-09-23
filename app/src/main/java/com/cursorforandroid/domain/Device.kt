@@ -48,6 +48,20 @@ data class DeviceTarget(
     }
 }
 
+/**
+ * One of the user's machines as the desktop names it when it starts a chat there (`RRe` in `workbench.glass.main.js`):
+ * [workerId] for `selected_private_worker_id`, [name] — the worker's `name` label, else its id (`Ael`) — for the
+ * `name=` label, [repoLabel] the `repo=owner/name` it registered for its checkout, and [ownerUserId] for
+ * `private_worker_owner_filter`.
+ */
+@Serializable
+data class MachineWorker(
+    val workerId: String,
+    val name: String,
+    val repoLabel: String? = null,
+    val ownerUserId: Long? = null,
+)
+
 /** How the device picker groups a row. Cloud is always first; this phone is never a row. */
 enum class DeviceSection { Cloud, Machines, Pools }
 
@@ -68,6 +82,8 @@ data class DeviceOption(
     val lastUsedAtMillis: Long = 0L,
     val section: DeviceSection,
     val repoUrl: String? = null,
+    /** The machine's worker as `GET /v0/private-workers` last listed it; null for pools and machines never listed. */
+    val worker: MachineWorker? = null,
 ) {
     val key: String get() = keyOf(target)
 

@@ -7,9 +7,11 @@ import com.cursorforandroid.data.FakeRunStreamer
 import com.cursorforandroid.data.api.dto.ModelListItemDto
 import com.cursorforandroid.data.api.dto.PoolDto
 import com.cursorforandroid.data.api.dto.WorkerDto
+import com.cursorforandroid.data.api.dto.WorkerLabelDto
 import com.cursorforandroid.data.api.userMessage
 import com.cursorforandroid.data.local.CatalogCache
 import com.cursorforandroid.domain.DeviceTarget
+import com.cursorforandroid.domain.MachineWorker
 import com.cursorforandroid.data.local.JsonDiskCache
 import com.cursorforandroid.data.local.PreferencesStore
 import com.cursorforandroid.data.local.SecureKeyStore
@@ -277,5 +279,30 @@ class CatalogRepositoryTest {
         assertThat(devbox.subtitle).isEqualTo("acme/infra")
         assertThat(listed.first { it.target == DeviceTarget.pool("payments") }.repoUrl).isEqualTo("https://github.com/acme/payments-service")
         assertThat(listed.first { it.target == DeviceTarget.pool("sandbox") }.repoUrl).isNull()
+    }
+
+    /**
+     * Each machine's row carries its worker the way the desktop keeps one (`RRe`): the id, the `name` label over the
+     * listed name (`Ael`), the repository it registered, the owner. A machine a later listing leaves out — gone
+     * offline — is still known by the worker it was last listed as, in this session and, from disk, the next.
+     */
+    @Test
+    fun `a machine's worker rides on its row and outlives the machine going offline`() = runBlocking<Unit> {
+        api.workers = listOf(
+            WorkerDto(workerId = "5f1c9d2a", name = "bennett", repoOwner = "bennett", repoName = "codex-poly-bot", workspaceRootPath = "/home/bennett/projects/codex-poly-bot", userId = 42, scope = "personal"),
+            WorkerDto(workerId = "9e8d7c6b", name = "Studio.local", repoOwner = "", repoName = "", userId = 42, labels = listOf(WorkerLabelDto("name", "studio")), scope = "personal"),
+        )
+        val catalog = CatalogRepository(session, cache)
+        val listed = catalog.loadDevices().getOrThrow()
+
+        assertThat(listed.first { it.target == DeviceTarget.machine("bennett") }.worker)
+            .isEqualTo(MachineWorker(workerId = "5f1c9d2a", name = "bennett", repoLabel = "bennett/codex-poly-bot", ownerUserId = 42))
+        assertThat(listed.first { it.target == DeviceTarget.machine("Studio.local") }.worker)
+            .isEqualTo(MachineWorker(workerId = "9e8d7c6b", name = "studio", repoLabel = null, ownerUserId = 42))
+
+        api.workers = emptyList()
+        assertThat(catalog.loadDevices().getOrThrow()).isEmpty()
+        assertThat(catalog.lastSeenWorker(DeviceTarget.machine("bennett"))?.workerId).isEqualTo("5f1c9d2a")
+        assertThat(CatalogRepository(session, cache).also { it.loadDevices() }.lastSeenWorker(DeviceTarget.machine("bennett"))?.workerId).isEqualTo("5f1c9d2a")
     }
 }

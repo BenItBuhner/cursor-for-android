@@ -116,6 +116,8 @@ data class NewAgentUiState(
     val isLoadingRepos: Boolean = false,
     val isLoadingModels: Boolean = false,
     val error: String? = null,
+    /** With [error], the call the account refused and what it answered: the composer then shows it as a compact notice with an `Asked:` line. */
+    val errorAsked: String? = null,
     val reposUnavailable: Boolean = false,
     /** `GET /v1/models` failed and nothing is cached; the picker offers a retry. */
     val modelsUnavailable: Boolean = false,
@@ -362,6 +364,7 @@ class NewAgentViewModel(
                     else -> !record.repoPicked
                 },
                 error = record.error,
+                errorAsked = record.errorAsked,
             ).withDraftModel(record).withExclusiveModes().withPickerLists().withModelSelection(settleOnAuto = false)
         }
     }
@@ -432,7 +435,7 @@ class NewAgentViewModel(
             launchedAs = existing?.launchedAs,
         )
         // Written into since its launch came back: the reason goes with the change; unchanged, it stays.
-        if (record.sameContentAs(existing?.copy(error = null))) return@withLock
+        if (record.sameContentAs(existing?.copy(error = null, errorAsked = null))) return@withLock
         createdAtMillis = record.createdAtMillis
         drafts.save(record)
     }
@@ -476,6 +479,7 @@ class NewAgentViewModel(
                     attachments = emptyList(),
                     files = emptyList(),
                     error = null,
+                    errorAsked = null,
                     planMode = false,
                     autoCreatePr = saved.autoCreatePr,
                     selectedDevice = saved.env,
@@ -492,7 +496,7 @@ class NewAgentViewModel(
         _state.value.files.forEach { graph.attachmentUploads.cancel(it.id) }
         switchTo(newDraftId())
         launchNonce = LaunchIdempotency.newNonce()
-        _state.update { it.copy(prompt = "", attachments = emptyList(), files = emptyList(), error = null) }
+        _state.update { it.copy(prompt = "", attachments = emptyList(), files = emptyList(), error = null, errorAsked = null) }
     }
 
     override fun onCleared() {
@@ -684,8 +688,8 @@ class NewAgentViewModel(
         return copy(selectedModel = resolved.choice.model, selectedVariant = resolved.choice.variant)
     }
 
-    fun setPrompt(value: String) = _state.update { it.copy(prompt = value, error = null).withExclusiveModes() }
-    fun addAttachments(items: List<PendingAttachment>) = _state.update { it.copy(attachments = (it.attachments + items).take(PromptImage.MAX_COUNT), error = null) }
+    fun setPrompt(value: String) = _state.update { it.copy(prompt = value, error = null, errorAsked = null).withExclusiveModes() }
+    fun addAttachments(items: List<PendingAttachment>) = _state.update { it.copy(attachments = (it.attachments + items).take(PromptImage.MAX_COUNT), error = null, errorAsked = null) }
     /**
      * Drops a share into this composer: the incoming text is appended under whatever is already written, images
      * fill the remaining attachment slots, and a warning from the share (an unsupported file, too many images)
@@ -696,6 +700,7 @@ class NewAgentViewModel(
             prompt = ShareDraft.mergeText(s.prompt, text),
             attachments = (s.attachments + items).take(PromptImage.MAX_COUNT),
             error = warning,
+            errorAsked = null,
         ).withExclusiveModes()
     }
     fun removeAttachment(item: PendingAttachment) = _state.update { s -> s.copy(attachments = s.attachments.filterNot { it.id == item.id }) }
@@ -707,7 +712,7 @@ class NewAgentViewModel(
             return
         }
         var kept: List<PendingFile> = emptyList()
-        _state.update { s -> s.copy(files = (s.files + items).withinSlots(imagesElsewhere = s.attachments.size).also { kept = it }, error = null) }
+        _state.update { s -> s.copy(files = (s.files + items).withinSlots(imagesElsewhere = s.attachments.size).also { kept = it }, error = null, errorAsked = null) }
         // Up they go, the moment they are attached; the launch waits on nothing once they are.
         kept.filter { f -> items.any { it.id == f.id } }.forEach { graph.attachmentUploads.start(it.id, it.file) }
     }
@@ -721,7 +726,8 @@ class NewAgentViewModel(
         if (_state.value.files.none { it.id == item.id }) return
         graph.attachmentUploads.retry(item.id)
     }
-    fun reportError(message: String) = _state.update { it.copy(error = message) }
+    fun reportError(message: String) = _state.update { it.copy(error = message, errorAsked = null) }
+    fun dismissError() = _state.update { it.copy(error = null, errorAsked = null) }
     /**
      * A repository picked here (see [NewAgentUiState.withRepo] for the branch). On a machine or pool it is a pick
      * over the device's own repository — allowed, since a worker may serve more roots than the one it reports
@@ -777,7 +783,7 @@ class NewAgentViewModel(
         _state.update { it.copy(isLoadingRepos = true) }
         graph.catalog.loadRepositories(force = true)
             .onSuccess { applyRepos(it, _state.value.selectedRepo?.url) }
-            .onFailure { t -> _state.update { it.copy(error = t.userMessage()) } }
+            .onFailure { t -> _state.update { it.copy(error = t.userMessage(), errorAsked = null) } }
         _state.update { it.copy(isLoadingRepos = false) }
     }
 
@@ -817,7 +823,7 @@ class NewAgentViewModel(
         }
         val nonce = launchNonce
         // Held only for as long as the draft takes to pack and put on screen, so a second tap cannot send it twice.
-        _state.update { it.copy(isLaunching = true, error = null) }
+        _state.update { it.copy(isLaunching = true, error = null, errorAsked = null) }
         viewModelScope.launch {
             val remembered = defaults?.takeIf { it.modelChosen }
             val draft = LaunchRequest(
@@ -839,6 +845,10 @@ class NewAgentViewModel(
                 planMode = s.planMode,
                 mcpServers = graph.mcpServers.enabled(),
                 env = s.selectedDevice,
+                // A machine that has dropped off the listing is still asked for by the worker it was last listed as.
+                worker = s.selectedDevice.takeIf { it.type == EnvType.MACHINE }?.let { device ->
+                    s.devices.firstOrNull { it.key == DeviceOption.keyOf(device) }?.worker ?: graph.catalog.lastSeenWorker(device)
+                },
             )
             // Same draft, same id: retrying after a timeout or a cancel adopts the agent the first attempt may have
             // created instead of launching a duplicate. It is also what the chat is shown under before the server answers.

@@ -11,6 +11,7 @@ import com.cursorforandroid.domain.Agent
 import com.cursorforandroid.domain.DeviceOption
 import com.cursorforandroid.domain.DeviceSection
 import com.cursorforandroid.domain.DeviceTarget
+import com.cursorforandroid.domain.MachineWorker
 import com.cursorforandroid.domain.ModelOption
 import com.cursorforandroid.domain.Repository
 import com.cursorforandroid.util.AppClock
@@ -60,6 +61,9 @@ class CatalogRepository(
     private var reposSeededOnly = false
     private var modelsFetchedFor: Any? = null
     @Volatile private var restoredFor: CursorBackend? = null
+    /** Each machine's worker as last listed, by [DeviceOption.key]: kept when a later listing leaves the machine out. */
+    private val lastSeenWorkers = HashMap<String, MachineWorker>()
+    @Volatile private var workersRestoredFor: CursorBackend? = null
     private val restoreMutex = Mutex()
     private val modelsMutex = Mutex()
     private val reposMutex = Mutex()
@@ -177,13 +181,32 @@ class CatalogRepository(
     suspend fun loadDevices(): Result<List<DeviceOption>> {
         val backend = session.current
         val startedIn = token()
+        val cacheToken = cache?.token() ?: 0
+        restoreWorkers(backend, startedIn)
         val personal = runCatching { backend.api.listWorkers(scope = "personal") }.getOrDefault(ListWorkersResponseDto())
         val team = runCatching { backend.api.listWorkers(scope = "team_pool") }.getOrDefault(ListWorkersResponseDto())
         val pools = runCatching { backend.api.listPools() }.getOrDefault(ListPoolsResponseDto())
         val listed = devicesOf(personal, team, pools)
+        val seen = listed.mapNotNull { option -> option.worker?.let { option.key to it } }.toMap()
         // A sign-out or a backend swap while the fleet calls were out means this answer belongs to nobody.
-        if (!publish(startedIn, backend) { _devices.value = listed }) return Result.success(emptyList())
+        if (!publish(startedIn, backend) { _devices.value = listed; lastSeenWorkers.putAll(seen) }) return Result.success(emptyList())
+        if (seen.isNotEmpty() && !backend.isDemo) cache?.writeWorkers(synchronized(publishLock) { HashMap(lastSeenWorkers) }, cacheToken)
         return Result.success(listed)
+    }
+
+    /**
+     * [target]'s worker as the fleet endpoint last listed it, this session or an earlier one: what a machine that has
+     * gone offline is still asked for by (`selected_private_worker_id`), as the desktop keeps its recent machines.
+     */
+    fun lastSeenWorker(target: DeviceTarget): MachineWorker? = synchronized(publishLock) { lastSeenWorkers[DeviceOption.keyOf(target)] }
+
+    private suspend fun restoreWorkers(backend: CursorBackend, startedIn: Int) {
+        if (cache == null || backend.isDemo || workersRestoredFor === backend) return
+        val saved = cache.readWorkers().orEmpty()
+        publish(startedIn, backend) {
+            saved.forEach { (key, worker) -> lastSeenWorkers.putIfAbsent(key, worker) }
+            workersRestoredFor = backend
+        }
     }
 
     fun reset() {
@@ -198,6 +221,8 @@ class CatalogRepository(
             reposSeededOnly = false
             modelsFetchedFor = null
             restoredFor = null
+            lastSeenWorkers.clear()
+            workersRestoredFor = null
         }
     }
 
@@ -258,7 +283,21 @@ class CatalogRepository(
                 repo != null -> repo
                 else -> "Online"
             }
-            return DeviceOption(target = target, subtitle = subtitle, online = true, section = DeviceSection.Machines, repoUrl = repoUrl)
+            return DeviceOption(target = target, subtitle = subtitle, online = true, section = DeviceSection.Machines, repoUrl = repoUrl, worker = machineWorker(raw))
+        }
+
+        /** The desktop's `RRe`: the id, the `name` label else the listed name else the id (`Ael`), `repoOwner/repoName`, the owner. */
+        private fun WorkerDto.machineWorker(listedName: String): MachineWorker? {
+            val id = (workerId ?: id)?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+            val nameLabel = labels.firstOrNull { it.key == "name" }?.value?.trim()?.takeIf { it.isNotEmpty() }
+            val owner = repoOwner?.trim().orEmpty()
+            val repo = repoName?.trim().orEmpty()
+            return MachineWorker(
+                workerId = id,
+                name = nameLabel ?: name?.trim()?.takeIf { it.isNotEmpty() } ?: listedName.ifBlank { id },
+                repoLabel = if (owner.isNotEmpty() && repo.isNotEmpty()) "$owner/$repo" else null,
+                ownerUserId = userId?.takeIf { it > 0 },
+            )
         }
 
         fun PoolDto.toPoolOption(): DeviceOption? {

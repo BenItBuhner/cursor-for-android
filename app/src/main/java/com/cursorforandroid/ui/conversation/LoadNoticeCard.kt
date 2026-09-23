@@ -60,7 +60,7 @@ internal fun LoadNoticeCard(
     docked: Boolean = true,
     onDismiss: (() -> Unit)? = null,
     titleTag: String = "load-notice-title",
-    actions: @Composable RowScope.() -> Unit,
+    actions: (@Composable RowScope.() -> Unit)? = null,
 ) {
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
@@ -98,7 +98,7 @@ internal fun LoadNoticeCard(
                 Text(title, style = type.base, color = colors.textPrimary, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.testTag(titleTag))
                 // Four lines: the record's refusal says what was asked (one line, two when the path wraps) and what is on screen because of it.
                 detail?.let { Text(it, style = type.small, color = colors.textTertiary, maxLines = 4, overflow = TextOverflow.Ellipsis) }
-                Row(Modifier.padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) { actions() }
+                actions?.let { Row(Modifier.padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) { it() } }
             }
             if (onDismiss != null) {
                 Spacer(Modifier.width(8.dp))
