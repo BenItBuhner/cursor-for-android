@@ -56,6 +56,28 @@ class WidgetPalette private constructor(private val mode: ThemeMode, private val
         ThemeMode.System -> R.layout.widget_working_indicator
     }
 
+    /** `--cursor-sidebar` at full strength, whatever the widget's opacity: the ring that sets a badge off its icon. */
+    val halo: ColorProvider = token { it.sidebar }
+
+    /** A Project's tone, as the sidebar paints its icon ([CursorColors.projectTone]): the secondary icon tone for `default`. */
+    fun projectTone(colorId: String?): ColorProvider = token { it.projectTone(colorId) }
+
+    /** [projectTone] as a day and a night colour, for the working glyph's tint (see [tints]). */
+    fun projectToneTints(colorId: String?): Pair<Color, Color> = tints { it.projectTone(colorId) }
+
+    /** [iconTertiary] as a day and a night colour, for the working glyph's tint (see [tints]). */
+    val iconTertiaryTints: Pair<Color, Color> get() = tints { it.iconTertiary }
+
+    /**
+     * A token as the day and night colours a view's tint list is set to from Android 12 (`RemoteViews`'
+     * night-aware setters): the same colour twice for a fixed theme, the pair for "Match system".
+     */
+    private fun tints(pick: (CursorColors) -> Color): Pair<Color, Color> = when (mode) {
+        ThemeMode.Dark -> pick(darkColors).let { it to it }
+        ThemeMode.Light -> pick(CursorLightColors).let { it to it }
+        ThemeMode.System -> pick(CursorLightColors) to pick(darkColors)
+    }
+
     /** The corner button's disc for [style]. */
     fun cornerFill(style: CornerStyle): ColorProvider = when (style) {
         CornerStyle.White -> ColorProvider(Color.White)

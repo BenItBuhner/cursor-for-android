@@ -2,16 +2,19 @@
 <!--
   The animated "working" glyph of a running row, for RemoteViews (see @drawable/widget_working_steps): an
   indeterminate ProgressBar whose indeterminate drawable is the frame animation, which it starts itself on first
-  draw. Sized to the 16dp glyph slot; tinted `iconSecondary` — this variant Cursor Dark's icon tone, whatever the system mode.
+  draw. Fills the slot it is placed in (the 16dp glyph slot, the 12dp one beside a Project's count); tinted
+  `iconSecondary` — this variant Cursor Dark's icon tone, whatever the system mode — unless the widget sets a tint on
+  @id/widget_working_glyph, as it does from Android 12 for a Project's own colour.
 -->
 <ProgressBar xmlns:android="http://schemas.android.com/apk/res/android"
-    android:layout_width="16dp"
-    android:layout_height="16dp"
+    android:id="@+id/widget_working_glyph"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
     android:indeterminate="true"
     android:indeterminateDrawable="@drawable/widget_working_steps"
     android:indeterminateOnly="true"
     android:indeterminateTint="@color/widget_icon_secondary_dark"
     android:maxHeight="16dp"
     android:maxWidth="16dp"
-    android:minHeight="16dp"
-    android:minWidth="16dp" />
+    android:minHeight="0dp"
+    android:minWidth="0dp" />

@@ -44,19 +44,23 @@
 
     <!-- Home-screen widget -->
     <string name="widget_label">Chats</string>
-    <string name="widget_description">Recent, running or pinned chats, one tap from the home screen.</string>
+    <string name="widget_description">Recent, running or pinned chats, or your Projects, one tap from the home screen.</string>
     <string name="widget_loading">Loading chats…</string>
     <string name="widget_sign_in">Sign in to see your chats</string>
     <string name="widget_open_app">Open Cursor to load your chats</string>
     <string name="widget_new_chat">New chat</string>
     <string name="widget_refresh">Refresh</string>
     <string name="widget_pick_project">Tap to choose a Project</string>
+    <string name="widget_projects_extended_mode">Turn on Extended mode to list your Projects</string>
+    <string name="widget_projects_extended_mode_short">Needs Extended mode</string>
     <string name="widget_configure_done">Done</string>
     <string name="widget_configure_preview">Preview</string>
     <string name="widget_configure_layout">Layout</string>
-    <string name="widget_configure_list">Chats</string>
-    <string name="widget_configure_project">Project</string>
+    <string name="widget_configure_list">List</string>
+    <string name="widget_configure_project">Projects</string>
     <string name="widget_configure_project_none">Choose a Project</string>
+    <string name="widget_configure_projects_all">All Projects</string>
+    <string name="widget_configure_projects_extended_mode">Projects are listed in Extended mode. Turn it on in Settings, then come back here.</string>
     <string name="widget_configure_appearance">Appearance</string>
     <string name="widget_configure_theme">Theme</string>
     <string name="widget_configure_opacity">Background</string>
@@ -70,6 +74,7 @@
     <string name="widget_configure_subtitle">What it shows and how it looks</string>
     <string name="widget_configure_group">Show</string>
     <string name="widget_configure_note">Tap a chat to open it. The lists follow the Chats filters in the sidebar; tap the widget\'s title to come back here.</string>
+    <string name="widget_configure_note_projects">Tap a Project to open its coordinator. Every Project is listed whatever the Chats filters say; tap the widget\'s title to come back here.</string>
     <!-- Sample rows of the widget preview in the launcher's widget picker. -->
     <string name="widget_preview_title">Recent</string>
     <string name="widget_preview_row_1">Cli exploration</string>
