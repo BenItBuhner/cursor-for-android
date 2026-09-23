@@ -65,7 +65,41 @@ data class TranscriptLoadDiagnostics(
     val shapes: List<TurnShape> = emptyList(),
     /** The messages sent from here that the account holds behind a turn (see [QueuedLine]); empty when none. */
     val queued: List<QueuedLine> = emptyList(),
+    /** The last load of the blob-backed record (the Beta engine), when there was one (see [BetaLine]). */
+    val beta: BetaLine? = null,
 ) {
+    /**
+     * One load of the blob-backed record, in the numbers that pin a gap from one export: the chat's turns and the
+     * window over them, how many of the window's turns were held and not read again, how many still wait for their
+     * steps, the prompts and messages the window holds ([words]); the blobs the load asked the network for (and their
+     * bytes), took from memory, from disk, from the state read's prefetch, and found missing; the memory tier's size;
+     * when the window was first painted and when everything behind it was in; and the fallback's reason, if the load
+     * ended on the documented path.
+     */
+    data class BetaLine(
+        val turns: Int,
+        val windowStart: Int,
+        val windowEnd: Int,
+        val reused: Int,
+        val incomplete: Int,
+        val words: Int,
+        val fetched: Int,
+        val fetchedBytes: Long,
+        val memory: Int,
+        val disk: Int,
+        val prefetched: Int,
+        val missing: Int,
+        val memoryKb: Long,
+        val firstPaintMs: Long?,
+        val fullLoadMs: Long?,
+        val fallback: String?,
+    ) {
+        val text: String get() =
+            "beta: engine=beta turns=$turns window=[$windowStart,$windowEnd) reused=$reused incomplete=$incomplete words=$words" +
+                " blobs fetched=$fetched/${fetchedBytes / 1024}KB memory=$memory disk=$disk prefetched=$prefetched missing=$missing memKb=$memoryKb" +
+                " firstPaintMs=${firstPaintMs ?: "-"} fullLoadMs=${fullLoadMs ?: "-"} fallback=${fallback?.let { "\"$it\"" } ?: "-"}"
+    }
+
     /**
      * One message the account took behind a turn, on the card until its run starts: the run the account named for it
      * when it answered ([runTail], null when it named none), the run it waits behind ([behindTail]), and whether the
@@ -276,6 +310,7 @@ object TranscriptDiagnostics {
         load.record?.let { r ->
             appendLine("record: read=${r.read} total=${r.total} firstStep=${r.firstStep} turnsLoaded=${r.turnsLoaded} turnCount=${r.turnCount ?: "-"} state=${if (r.stateRead) "read" else "-"} empty=${r.empty}" + (r.error?.let { " error=\"${redact(it)}\"" } ?: "") + (r.fallback?.let { " ${it.text}" } ?: ""))
         }
+        load.beta?.let { appendLine(it.copy(fallback = it.fallback?.let(::redact)).text) }
         load.status?.let { st ->
             appendLine(
                 "status: shown=${st.shown} latestRun=${st.latestRun} streaming=${st.streaming} rowRunning=${st.rowRunning} accountRunning=${st.accountRunning}${st.accountAtIso?.let { "@$it" } ?: ""} rowNewerThanRecordMs=${st.rowNewerThanRecordMs ?: "-"}" +

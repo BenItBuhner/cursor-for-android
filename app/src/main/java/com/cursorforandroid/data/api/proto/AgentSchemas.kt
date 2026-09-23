@@ -34,6 +34,21 @@ object AgentSchemas {
 
     // -- the record's structure ---------------------------------------------------------------------------------
 
+    /**
+     * `agent.v1.ConversationStateStructure`, in the fields the record reads: the turns (blob ids, oldest first), their
+     * timings, the pending calls, whether the chat is a Project's root. For a state that comes as a blob rather than
+     * inline on `StreamConversation`'s `initial_state` (see `HeadlessConversationApi.state`).
+     */
+    val CONVERSATION_STATE: Schema = msg(
+        "agent.v1.ConversationStateStructure",
+        str(4, "pendingToolCalls", repeated = true),
+        bytes(8, "turns", repeated = true),
+        enum(10, "mode"),
+        sub(14, "turnTimings", repeated = true) { msg("agent.v1.StepTiming", u64(1, "durationMs"), u64(2, "timestampMs")) },
+        u64(26, "conversationStartedTimestampMs"),
+        bool(33, "isRootProjectConversation"),
+    )
+
     /** `agent.v1.ConversationTurnStructure`: one turn blob (`ConversationStateStructure.turns[i]` names it). */
     val CONVERSATION_TURN: Schema = msg(
         "agent.v1.ConversationTurnStructure",

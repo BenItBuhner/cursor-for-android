@@ -37,6 +37,8 @@ class AppCaches(private val root: JsonDiskCache) {
     val slashCommands = SlashCommandCache(root.child("slashcommands"))
     /** Which store each Project's coordinator owns, and the context documents opened from a chat (see `StoreFileRepository`). */
     val storeFiles: JsonDiskCache = root.child("storefiles")
+    /** The account records' blobs (the Beta transcript engine's, see `BlobCache`). */
+    val blobs = BlobDiskStore(root.child("blobs"))
 
     /**
      * Stops the caches accepting writes, before the work that feeds them is cancelled. A blocking write already in
@@ -241,8 +243,23 @@ data class CachedRecordWindow(
     val turnIndexed: Boolean = false,
 )
 
+/**
+ * One turn of the saved window. For the blob-backed record, [blobId] is the turn's own blob (content-addressed: a
+ * state naming the same id names the turn unchanged, and the next load does not read it), [complete] whether every
+ * step was read, and [stepTotal] / [messageSteps] what its structure listed.
+ */
 @Serializable
-data class CachedRecordTurn(val stepIndex: Int, val stepCount: Int, val prompt: String? = null, val projectMode: Boolean = false, val errorMessage: String? = null)
+data class CachedRecordTurn(
+    val stepIndex: Int,
+    val stepCount: Int,
+    val prompt: String? = null,
+    val projectMode: Boolean = false,
+    val errorMessage: String? = null,
+    val blobId: String? = null,
+    val complete: Boolean = true,
+    val stepTotal: Int? = null,
+    val messageSteps: Int? = null,
+)
 
 @Serializable
 data class CachedTurnTiming(val durationMs: Long? = null, val timestampMs: Long? = null)
