@@ -1,10 +1,8 @@
 package com.cursorforandroid.data.api
 
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
-import kotlinx.coroutines.withContext
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.JsonArray
@@ -258,30 +256,28 @@ class ConnectJsonClient(private val client: OkHttpClient, private val baseUrl: S
         /** Which of the throttle's lanes the call waits in (see [ApiThrottle.Lane]). */
         lane: ApiThrottle.Lane = ApiThrottle.Lane.CONTROL,
     ): O = throttle.call(retryRefusals, lane) {
-        withContext(Dispatchers.IO) {
-            val json = CursorJson.encodeToString(requestSerializer, body)
-            val path = ConnectRpc.path(service, method)
-            client.newCall(ConnectRpc.request(baseUrl, service, method, accessToken, json)).await().use { response ->
-                val text = response.body?.string().orEmpty()
-                if (!response.isSuccessful) {
-                    throw ConnectRpcException(
-                        httpCode = response.code,
-                        code = ConnectRpc.errorCode(text),
-                        message = ConnectRpc.errorReason(text) ?: "HTTP ${response.code}",
-                        retryAfterMillis = response.retryAfterMillis(),
-                        path = path,
-                    )
-                }
-                try {
-                    CursorJson.decodeFromString(responseSerializer, text.ifBlank { "{}" })
-                } catch (e: SerializationException) {
-                    // The server answered; this build could not read the answer. Said as that — the call and the
-                    // reason — rather than as the serializer's own words about a field, which is what a composer
-                    // showed when the account's environment list carried a shape the DTO refused.
-                    throw ConnectRpcException(response.code, ConnectRpcException.UNREADABLE_ANSWER, "Cursor's answer to $method could not be read: ${e.message ?: e.javaClass.simpleName}", cause = e, path = path)
-                } catch (e: IllegalArgumentException) {
-                    throw ConnectRpcException(response.code, ConnectRpcException.UNREADABLE_ANSWER, "Cursor's answer to $method could not be read: ${e.message ?: e.javaClass.simpleName}", cause = e, path = path)
-                }
+        val json = CursorJson.encodeToString(requestSerializer, body)
+        val path = ConnectRpc.path(service, method)
+        client.newCall(ConnectRpc.request(baseUrl, service, method, accessToken, json)).readCancellably { response ->
+            val text = response.body?.string().orEmpty()
+            if (!response.isSuccessful) {
+                throw ConnectRpcException(
+                    httpCode = response.code,
+                    code = ConnectRpc.errorCode(text),
+                    message = ConnectRpc.errorReason(text) ?: "HTTP ${response.code}",
+                    retryAfterMillis = response.retryAfterMillis(),
+                    path = path,
+                )
+            }
+            try {
+                CursorJson.decodeFromString(responseSerializer, text.ifBlank { "{}" })
+            } catch (e: SerializationException) {
+                // The server answered; this build could not read the answer. Said as that — the call and the
+                // reason — rather than as the serializer's own words about a field, which is what a composer
+                // showed when the account's environment list carried a shape the DTO refused.
+                throw ConnectRpcException(response.code, ConnectRpcException.UNREADABLE_ANSWER, "Cursor's answer to $method could not be read: ${e.message ?: e.javaClass.simpleName}", cause = e, path = path)
+            } catch (e: IllegalArgumentException) {
+                throw ConnectRpcException(response.code, ConnectRpcException.UNREADABLE_ANSWER, "Cursor's answer to $method could not be read: ${e.message ?: e.javaClass.simpleName}", cause = e, path = path)
             }
         }
     }
@@ -308,48 +304,46 @@ class ConnectJsonClient(private val client: OkHttpClient, private val baseUrl: S
         silenceMs: Long? = null,
         onMessage: (JsonObject) -> Boolean,
     ): Int = throttle.call(retryRefusals, lane) {
-        withContext(Dispatchers.IO) {
-            val json = CursorJson.encodeToString(requestSerializer, body)
-            val path = ConnectRpc.path(service, method)
-            val caller = silenceMs?.let { ms -> openClients.getOrPut(ms) { client.newBuilder().readTimeout(ms, TimeUnit.MILLISECONDS).callTimeout(0, TimeUnit.MILLISECONDS).build() } } ?: client
-            caller.newCall(ConnectRpc.streamRequest(baseUrl, service, method, accessToken, json)).await().use { response ->
-                if (!response.isSuccessful) {
-                    val text = response.body?.string().orEmpty()
-                    throw ConnectRpcException(
-                        httpCode = response.code,
-                        code = ConnectRpc.errorCode(text),
-                        message = ConnectRpc.errorReason(text) ?: "HTTP ${response.code}",
-                        retryAfterMillis = response.retryAfterMillis(),
-                        path = path,
-                    )
-                }
-                val responseBody = response.body ?: return@use 0
-                val contentType = response.header("Content-Type").orEmpty()
-                if (!contentType.startsWith("application/connect+json")) {
-                    // A unary-shaped answer to a streaming call: an error body the server wrote plainly, or a shape this build does not read.
-                    val text = responseBody.string()
-                    val code = ConnectRpc.errorCode(text)
-                    throw ConnectRpcException(response.code, code ?: ConnectRpcException.UNREADABLE_ANSWER, ConnectRpc.errorReason(text) ?: "Cursor answered $path with '$contentType', not a Connect stream.", path = path)
-                }
-                val source = responseBody.source()
-                var messages = 0
-                while (true) {
-                    val frame = ConnectRpc.readFrame(source, path, response.code) ?: break
-                    if (frame.isEndStream) {
-                        ConnectRpc.endStreamError(frame, path, response.code)?.let { throw it }
-                        break
-                    }
-                    if (frame.isCompressed) throw ConnectRpcException(response.code, ConnectRpcException.UNREADABLE_ANSWER, "A frame of $path came compressed, which was not offered.", path = path)
-                    val message = try {
-                        CursorJson.parseToJsonElement(String(frame.data, Charsets.UTF_8)).jsonObject
-                    } catch (e: Exception) {
-                        throw ConnectRpcException(response.code, ConnectRpcException.UNREADABLE_ANSWER, "A message of $path could not be read: ${e.message ?: e.javaClass.simpleName}", cause = e, path = path)
-                    }
-                    messages++
-                    if (!onMessage(message)) break
-                }
-                messages
+        val json = CursorJson.encodeToString(requestSerializer, body)
+        val path = ConnectRpc.path(service, method)
+        val caller = silenceMs?.let { ms -> openClients.getOrPut(ms) { client.newBuilder().readTimeout(ms, TimeUnit.MILLISECONDS).callTimeout(0, TimeUnit.MILLISECONDS).build() } } ?: client
+        caller.newCall(ConnectRpc.streamRequest(baseUrl, service, method, accessToken, json)).readCancellably { response ->
+            if (!response.isSuccessful) {
+                val text = response.body?.string().orEmpty()
+                throw ConnectRpcException(
+                    httpCode = response.code,
+                    code = ConnectRpc.errorCode(text),
+                    message = ConnectRpc.errorReason(text) ?: "HTTP ${response.code}",
+                    retryAfterMillis = response.retryAfterMillis(),
+                    path = path,
+                )
             }
+            val responseBody = response.body ?: return@readCancellably 0
+            val contentType = response.header("Content-Type").orEmpty()
+            if (!contentType.startsWith("application/connect+json")) {
+                // A unary-shaped answer to a streaming call: an error body the server wrote plainly, or a shape this build does not read.
+                val text = responseBody.string()
+                val code = ConnectRpc.errorCode(text)
+                throw ConnectRpcException(response.code, code ?: ConnectRpcException.UNREADABLE_ANSWER, ConnectRpc.errorReason(text) ?: "Cursor answered $path with '$contentType', not a Connect stream.", path = path)
+            }
+            val source = responseBody.source()
+            var messages = 0
+            while (true) {
+                val frame = ConnectRpc.readFrame(source, path, response.code) ?: break
+                if (frame.isEndStream) {
+                    ConnectRpc.endStreamError(frame, path, response.code)?.let { throw it }
+                    break
+                }
+                if (frame.isCompressed) throw ConnectRpcException(response.code, ConnectRpcException.UNREADABLE_ANSWER, "A frame of $path came compressed, which was not offered.", path = path)
+                val message = try {
+                    CursorJson.parseToJsonElement(String(frame.data, Charsets.UTF_8)).jsonObject
+                } catch (e: Exception) {
+                    throw ConnectRpcException(response.code, ConnectRpcException.UNREADABLE_ANSWER, "A message of $path could not be read: ${e.message ?: e.javaClass.simpleName}", cause = e, path = path)
+                }
+                messages++
+                if (!onMessage(message)) break
+            }
+            messages
         }
     }
 
