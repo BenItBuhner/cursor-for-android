@@ -111,6 +111,10 @@ sealed interface ToolPayload {
         val durationMs: Long? = null,
         val isBackground: Boolean = false,
         val subagentType: String? = null,
+        /** The model the call asked the subagent to run on (`TaskArgs.model`), as the call spelt it. */
+        val model: String? = null,
+        /** Where the call asked the subagent to run (`TaskArgs.environment`: `SUBAGENT_ENVIRONMENT_CLOUD`, `local`…). */
+        val environment: String? = null,
     ) : ToolPayload {
         override val path: String? get() = transcriptPath
 
@@ -180,8 +184,16 @@ sealed interface ToolPayload {
          * listed as the coordinator's — rather than from its arguments: the coordinator's own word that they are its.
          */
         val reported: Boolean = false,
+        /** The model a created worker was asked to run on (`CreateAgentArgs.model`). */
+        val model: String? = null,
+        /** How a message was to reach its worker (`SendToAgentArgs.delivery`): steering the turn under way, or queued behind it. */
+        val delivery: Delivery? = null,
+        /** The self-hosted machine a created worker was sent to (`CreateAgentArgs.worker_id`), when it was sent to one. */
+        val workerId: String? = null,
     ) : ToolPayload {
         enum class Kind { Created, Messaged, Status, Stopped, ReadTranscript }
+
+        enum class Delivery { Followup, Queue }
 
         /** The worker the call was about, for the calls about one. */
         val worker: WorkerStatus? get() = workers.firstOrNull()

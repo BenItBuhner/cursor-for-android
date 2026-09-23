@@ -79,6 +79,7 @@ import com.cursorforandroid.data.local.SecureKeyStore
 import com.cursorforandroid.data.media.MediaLoader
 import com.cursorforandroid.data.repo.AgentFileRepository
 import com.cursorforandroid.data.repo.AgentRepository
+import com.cursorforandroid.data.repo.SubagentActivity
 import com.cursorforandroid.data.repo.ArtifactRepository
 import com.cursorforandroid.data.repo.AttachmentUploads
 import com.cursorforandroid.data.repo.CapabilityGatedPullRequestSource
@@ -623,6 +624,10 @@ class AppGraph(
     }
     val liveRuns: LiveRunHub get() = lazyLiveRuns.value
 
+    /** Where each cloud subagent a transcript's rows stand for is, live, off the list and the hub's shared streams. */
+    private val lazySubagentActivity = lazy { SubagentActivity(agents, liveRuns, catalog.models) }
+    val subagentActivity: SubagentActivity get() = lazySubagentActivity.value
+
     private val lazyConversations = lazy {
         ConversationRepository(
             session = session,
@@ -967,6 +972,7 @@ class AppGraph(
             "slashCommands" to lazySlashCommands,
             "generatedMedia" to lazyGeneratedMedia,
             "liveRuns" to lazyLiveRuns,
+            "subagentActivity" to lazySubagentActivity,
             "conversations" to lazyConversations,
             "launcher" to lazyLauncher,
             "outgoing" to lazyOutgoing,

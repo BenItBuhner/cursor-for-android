@@ -34,6 +34,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.cursorforandroid.domain.Agent
 import com.cursorforandroid.domain.RunStatus
+import com.cursorforandroid.domain.SubagentCall
 import com.cursorforandroid.domain.ToolCall
 import com.cursorforandroid.domain.ToolPayload
 import com.cursorforandroid.domain.WorkerStatus
@@ -41,7 +42,6 @@ import com.cursorforandroid.ui.components.CursorCard
 import com.cursorforandroid.ui.components.CursorIcons
 import com.cursorforandroid.ui.components.HairlineDivider
 import com.cursorforandroid.ui.components.MarkdownText
-import com.cursorforandroid.ui.components.Pill
 import com.cursorforandroid.ui.components.ShimmerText
 import com.cursorforandroid.ui.components.pressable
 import com.cursorforandroid.ui.theme.CursorTheme
@@ -50,20 +50,25 @@ import com.cursorforandroid.ui.theme.CursorTheme
  * A Project coordinator's steps as what they are. The coordinator works through its workers — it creates them,
  * messages them, asks how they stand, stops them, reads their transcripts — and speaks to the user through a tool of
  * its own; on the documented stream each of those is a tool call like any other, and as plain lines they read
- * "Created agent", "Sent message" with nothing to open. Here each is first-class: a card per worker created, naming
- * it and saying where it stands (live, from the list's row, once the worker is loaded here) that opens its
- * conversation; a row per worker in a status check; a compact row for a message or a stop, opening onto the message;
- * and the coordinator's own words to the user as a plain reply, exactly as any agent's reads.
+ * "Created agent", "Sent message" with nothing to open. Here each is first-class: a worker created, messaged or
+ * stopped is the desktop's subagent row, saying where the worker stands and opening its conversation (see
+ * [SubagentRowView]); a status check is a row per worker; a transcript read a compact row opening onto the excerpt;
+ * and the coordinator's own words to the user are a plain reply, exactly as any agent's reads.
  */
 @Composable
 internal fun CoordinatorStep(call: ToolCall, modifier: Modifier = Modifier): Boolean {
+    // A worker created, messaged or stopped — and a task's subagent — is the desktop's subagent row (see SubagentRow.kt).
+    SubagentCall.of(call)?.let { subagent ->
+        SubagentRowView(call, subagent, modifier)
+        return true
+    }
     // The cards take a little more air than a line in the step list's 2dp rhythm.
     when (val payload = call.payload) {
         is ToolPayload.CoordinatorMessage -> CoordinatorMessageView(call, payload, modifier.padding(vertical = 4.dp))
         is ToolPayload.WorkerAction -> when (payload.kind) {
-            ToolPayload.WorkerAction.Kind.Created -> WorkerTaskCard(call, payload, modifier.padding(vertical = 3.dp))
             ToolPayload.WorkerAction.Kind.Status -> WorkerStatusRows(call, payload, modifier)
-            ToolPayload.WorkerAction.Kind.Messaged, ToolPayload.WorkerAction.Kind.Stopped, ToolPayload.WorkerAction.Kind.ReadTranscript -> WorkerActionRow(call, payload, modifier)
+            ToolPayload.WorkerAction.Kind.ReadTranscript -> WorkerActionRow(call, payload, modifier)
+            ToolPayload.WorkerAction.Kind.Created, ToolPayload.WorkerAction.Kind.Messaged, ToolPayload.WorkerAction.Kind.Stopped -> return false
         }
         else -> return false
     }
@@ -99,72 +104,6 @@ internal fun workerState(agent: Agent?, reported: WorkerStatus?): WorkerState? {
         "Failed" -> of(label, colors.red)
         "Needs input" -> of(label, colors.orange)
         else -> of(label, colors.textTertiary)
-    }
-}
-
-/**
- * The card of a worker the coordinator created: the worker's name (the list's, once it is loaded; the coordinator's
- * until then), where it stands, and the first lines of what it was asked. Tapping it opens the worker's conversation
- * when the worker's id is known and the screen can navigate; while the call is still running the card says so.
- */
-@Composable
-internal fun WorkerTaskCard(call: ToolCall, action: ToolPayload.WorkerAction, modifier: Modifier = Modifier) {
-    val colors = CursorTheme.colors
-    val type = CursorTheme.typography
-    val controls = LocalTranscriptControls.current
-    val reported = action.worker
-    val agentId = reported?.agentId
-    val agent = agentId?.let(controls.agentById)
-    val name = agent?.name?.takeIf { it.isNotBlank() } ?: reported?.name?.takeIf { it.isNotBlank() } ?: action.title?.takeIf { it.isNotBlank() } ?: agentId ?: "New agent"
-    val state = if (call.isRunning) WorkerState("Creating", colors.textTertiary, colors.fill, busy = true) else workerState(agent, reported)
-    val open = controls.onOpenAgent?.takeIf { agentId != null && reported.isCloudAgent }?.let { handler -> { handler(agentId!!) } }
-    CursorCard(
-        modifier
-            .fillMaxWidth()
-            .testTag("worker-card")
-            .semantics { contentDescription = "Worker $name" + (state?.let { ", ${it.label}" } ?: "") },
-        fill = colors.fillFaint,
-        border = Color.Transparent,
-    ) {
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .pressable({ open?.invoke() }, CursorTheme.shapes.lg, enabled = open != null)
-                .padding(start = 12.dp, end = 10.dp, top = 10.dp, bottom = 10.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Icon(CursorIcons.Multitask, null, tint = colors.iconTertiary, modifier = Modifier.size(15.dp))
-            Spacer(Modifier.width(10.dp))
-            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    ShimmerText(
-                        if (call.isRunning) "Creating $name" else name,
-                        style = type.baseMedium,
-                        color = colors.textPrimary,
-                        active = call.isRunning,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f, fill = false),
-                    )
-                    if (state != null && !call.isRunning) {
-                        Spacer(Modifier.width(8.dp))
-                        Pill(state.label, tint = state.tint, fill = state.fill)
-                    }
-                }
-                action.text?.trim()?.takeIf { it.isNotEmpty() }?.let { prompt ->
-                    Text(prompt, style = type.small, color = colors.textTertiary, maxLines = 3, overflow = TextOverflow.Ellipsis)
-                }
-                val facts = listOfNotNull(
-                    agent?.branchName?.let { "on $it" },
-                    (agent?.prUrl ?: reported?.prUrl)?.let { "PR open" },
-                )
-                if (facts.isNotEmpty()) Text(facts.joinToString(" \u00B7 "), style = type.small, color = colors.textQuaternary, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            }
-            if (open != null) {
-                Spacer(Modifier.width(6.dp))
-                Icon(CursorIcons.ChevronRight, null, tint = colors.iconQuaternary, modifier = Modifier.size(14.dp))
-            }
-        }
     }
 }
 

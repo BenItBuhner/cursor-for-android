@@ -101,9 +101,21 @@ class CoordinatorMessagesOnceScreenshotTest {
         assertThat(rows.filterIsInstance<TranscriptRow.Message>().map { (it.call.payload as ToolPayload.CoordinatorMessage).message })
             .containsExactly(SevenRunCoordinator.M1, SevenRunCoordinator.M2, SevenRunCoordinator.M6).inOrder()
         val stretches = rows.filterIsInstance<TranscriptRow.Stretch>()
-        assertThat(stretches.map { it.summary.text }).containsExactly("Worked 59s · 2 agents · 2 notes", "Worked 3m 10s · 1 edit · 7 agents · 6 notes", "Working · 1 edit · 5 agents · 1 note").inOrder()
+        // Every SendToAgent is a subagent row of its own; the stretches around them close each run with its footer.
+        assertThat(rows.count { it is TranscriptRow.Subagent }).isEqualTo(11)
+        assertThat(stretches.map { it.summary.text }).containsExactly(
+            "1 note",
+            "Worked 59s · 1 note",
+            "1 note",
+            "Worked 20s · 1 edit · 1 agent · 2 notes",
+            "Worked 21s · 1 edit · 1 agent · 1 note",
+            "Worked 22s · 1 edit · 1 agent · 1 note",
+            "Worked 2m 7s · 1 note",
+            "Worked 1m 1s · 1 edit · 1 note",
+            "Working · 1 step",
+        ).inOrder()
         show(rows)
-        compose.waitUntil(10_000) { compose.onAllNodesWithText("Worked 3m 10s").fetchSemanticsNodes().isNotEmpty() }
+        compose.waitUntil(10_000) { compose.onAllNodesWithText("Worked 2m 7s").fetchSemanticsNodes().isNotEmpty() }
         compose.onAllNodes(hasTestTag("coordinator-message")).assertCountEquals(3)
         capture("97_coordinator_messages_once")
     }
