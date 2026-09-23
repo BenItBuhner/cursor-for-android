@@ -2048,7 +2048,7 @@ class ConversationRepository(
             e.scope.cancel()
             null
         }
-        attached?.emptyInPlace()
+        attached?.emptyInPlace(deleted = true)
         diskIndex[agentId] = ABSENT
         scope.launch {
             cache?.remove(agentId)
@@ -2056,7 +2056,11 @@ class ConversationRepository(
         }
     }
 
-    private fun Entry.emptyInPlace() {
+    /**
+     * Only a [deleted] agent's shown messages are forgotten: a reload reads the chat back in under the ones it showed,
+     * so none leaves the screen while its turn is read again, and a newer reading of a call replaces its words.
+     */
+    private fun Entry.emptyInPlace(deleted: Boolean = false) {
         streamJob?.cancel()
         traceJob?.cancel()
         loadJob?.cancel()
@@ -2099,7 +2103,7 @@ class ConversationRepository(
                 projectMode = false
                 recordWindow = null
                 recordEchoes = emptyMap()
-                shownMessages.clear()
+                if (deleted) shownMessages.clear()
                 recordEmpty = false
                 recordError = null
                 recordRefusedUntil = 0L
