@@ -21,6 +21,9 @@ import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.cursorforandroid.data.FakeCursorApi
 import com.cursorforandroid.data.api.ConnectRpcException
+import com.cursorforandroid.data.api.CursorServer
+import com.cursorforandroid.data.api.CursorServerFiles
+import com.cursorforandroid.data.api.CursorServerReadException
 import com.cursorforandroid.data.api.DiffDetailsApi
 import com.cursorforandroid.data.api.WorkspaceFilesApi
 import com.cursorforandroid.data.media.MediaLoader
@@ -80,12 +83,21 @@ class TmpImageOpenScreenshotTest {
         override suspend fun diffDetails(agentId: String) = AgentDiff(null, null, emptyList())
     }
 
-    private fun loader(machine: Machine): MediaLoader {
+    /** A cursor-server that answers `not_found` for the remote-resource read (a /tmp file the machine no longer has). */
+    private class MissingServer : CursorServerFiles {
+        override suspend fun server(agentId: String, commit: String, connectionToken: String) = CursorServer("pod", 443, connectionToken, emptyList())
+        override suspend fun read(server: CursorServer, path: String): ByteArray =
+            throw CursorServerReadException(404, "GET https://pod:443/vscode-remote-resource?path=$path → HTTP 404 \"File not found\"", "no such file")
+    }
+
+    private fun loader(machine: Machine, server: CursorServerFiles? = null): MediaLoader {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val files = AgentFileRepository(
             WorkspaceRepository(machine, machine, capabilities = { Capabilities.EXTENDED }),
             repository = { _, _, _ -> Result.failure(IOException("unused")) },
             agent = { agentOn(ViewerFixtures.AGENT) },
+            cursorServer = server,
+            mintToken = { "minted" },
         )
         return MediaLoader(context, OkHttpClient(), ArtifactRepository(api = { FakeCursorApi() }), files = { files })
     }
@@ -142,7 +154,7 @@ class TmpImageOpenScreenshotTest {
     /** The machine answered `not_found` on HTTP 404: the missing file it is, with the request and Retry. */
     @Test
     fun tmpPictureNotOnTheMachine() {
-        open(loader(Machine({ ConnectRpcException(404, "not_found", "File not found", path = readPath) })), readOf("/tmp/reel_frames_s.jpg"), until = "viewer-error")
+        open(loader(Machine({ ConnectRpcException(400, "invalid_argument", "File path must stay within the workspace.", path = readPath) }), server = MissingServer()), readOf("/tmp/reel_frames_s.jpg"), until = "viewer-error")
         capture("192_tmp_image_missing_file")
     }
 }
