@@ -31,6 +31,9 @@ class MainActivity : ComponentActivity() {
     /** Set by an [ACTION_NEW_CHAT] launch (the widget's "+"); the nav host pops to the New Chat pane and clears it. */
     private var pendingNewChat by mutableStateOf(false)
 
+    /** Set by an [ACTION_SEARCH] launch (the widget's corner button); the nav host opens the sidebar's search and clears it. */
+    private var pendingSearch by mutableStateOf(false)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         val splash = installSplashScreen()
         super.onCreate(savedInstanceState)
@@ -59,6 +62,11 @@ class MainActivity : ComponentActivity() {
                         pendingNewChat = false
                         DeepLinks.clearAction(intent, ACTION_NEW_CHAT)
                     },
+                    searchRequested = pendingSearch,
+                    onSearchConsumed = {
+                        pendingSearch = false
+                        DeepLinks.clearAction(intent, ACTION_SEARCH)
+                    },
                 )
             }
         }
@@ -81,12 +89,13 @@ class MainActivity : ComponentActivity() {
     }
 
     /**
-     * Takes what the intent asks for: a chat to open, the New Chat pane, a share to draft, or an update to finish
+     * Takes what the intent asks for: a chat to open, the New Chat pane, the sidebar's search, a share to draft, or an update to finish
      * installing.
      */
     private fun readRequests(intent: Intent?) {
         DeepLinks.agentId(intent)?.let { pendingAgentId = it }
         if (intent?.action == ACTION_NEW_CHAT) pendingNewChat = true
+        if (intent?.action == ACTION_SEARCH) pendingSearch = true
         appGraph.share.receive(intent) { ShareIntent.clear(intent) }
         resumeUpdateIfAsked(intent)
     }
@@ -135,5 +144,6 @@ class MainActivity : ComponentActivity() {
     companion object {
         /** Opens the app on the New Chat pane, whatever it was showing: the home-screen widget's "+". */
         const val ACTION_NEW_CHAT = "com.cursorforandroid.action.NEW_CHAT"
+        const val ACTION_SEARCH = "com.cursorforandroid.action.SEARCH"
     }
 }

@@ -50,15 +50,34 @@
     <string name="widget_open_app">Open Cursor to load your chats</string>
     <string name="widget_new_chat">New chat</string>
     <string name="widget_refresh">Refresh</string>
+    <string name="widget_pick_project">Tap to choose a Project</string>
+    <string name="widget_configure_done">Done</string>
+    <string name="widget_configure_preview">Preview</string>
+    <string name="widget_configure_layout">Layout</string>
+    <string name="widget_configure_list">Chats</string>
+    <string name="widget_configure_project">Project</string>
+    <string name="widget_configure_project_none">Choose a Project</string>
+    <string name="widget_configure_appearance">Appearance</string>
+    <string name="widget_configure_theme">Theme</string>
+    <string name="widget_configure_opacity">Background</string>
+    <string name="widget_configure_rows">Rows</string>
+    <string name="widget_configure_density">Density</string>
+    <string name="widget_configure_corner">Corner button</string>
+    <string name="widget_configure_corner_action">Action</string>
+    <string name="widget_configure_corner_style">Style</string>
     <string name="widget_choose_list">Choose what the widget lists</string>
     <string name="widget_configure_title">Widget</string>
-    <string name="widget_configure_subtitle">Choose what it shows</string>
+    <string name="widget_configure_subtitle">What it shows and how it looks</string>
     <string name="widget_configure_group">Show</string>
-    <string name="widget_configure_note">Tap a chat to open it, or the + to start one. The lists follow the Chats filters in the sidebar; tap the widget\'s title to switch lists later.</string>
+    <string name="widget_configure_note">Tap a chat to open it. The lists follow the Chats filters in the sidebar; tap the widget\'s title to come back here.</string>
     <!-- Sample rows of the widget preview in the launcher's widget picker. -->
     <string name="widget_preview_title">Recent</string>
     <string name="widget_preview_row_1">Cli exploration</string>
     <string name="widget_preview_row_2">House environment overhaul</string>
     <string name="widget_preview_row_3">Codex-Poly-Bot Scaling</string>
     <string name="widget_preview_row_4">Market replay engine</string>
+    <string name="widget_preview_meta_1">cursor-for-android · 19m</string>
+    <string name="widget_preview_meta_2">visual-engine · 30m</string>
+    <string name="widget_preview_meta_3">codex-poly-bot · 34m</string>
+    <string name="widget_preview_meta_4">market-replay · 52m</string>
 </resources>

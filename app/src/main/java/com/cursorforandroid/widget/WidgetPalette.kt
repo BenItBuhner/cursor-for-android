@@ -4,7 +4,10 @@ import androidx.compose.ui.graphics.Color
 import androidx.glance.color.ColorProvider
 import androidx.glance.unit.ColorProvider
 import com.cursorforandroid.R
+import com.cursorforandroid.domain.CornerStyle
 import com.cursorforandroid.domain.PullRequestState
+import com.cursorforandroid.domain.WidgetAppearance
+import com.cursorforandroid.domain.WidgetTheme
 import com.cursorforandroid.ui.theme.CursorColors
 import com.cursorforandroid.ui.theme.CursorDarkColors
 import com.cursorforandroid.ui.theme.CursorLightColors
@@ -12,12 +15,12 @@ import com.cursorforandroid.ui.theme.CursorOledColors
 import com.cursorforandroid.ui.theme.ThemeMode
 
 /**
- * [CursorColors] as Glance colour providers, following the app's theme setting: Cursor Dark and Cursor Light are
+ * [CursorColors] as Glance colour providers for one widget's [WidgetAppearance]: Cursor Dark and Cursor Light are
  * fixed colours; "Match system" is a day / night pair the launcher resolves itself, so the widget flips with the
  * system theme even while the app is not running. OLED black replaces the dark side of either pair. Only the tokens
  * the widget draws are exposed — the sidebar surface and the text / icon / state colours of its rows.
  */
-class WidgetPalette private constructor(private val mode: ThemeMode, private val oledBlack: Boolean) {
+class WidgetPalette private constructor(private val mode: ThemeMode, private val oledBlack: Boolean, private val opacity: Float) {
 
     private val darkColors: CursorColors = if (oledBlack) CursorOledColors else CursorDarkColors
 
@@ -27,8 +30,8 @@ class WidgetPalette private constructor(private val mode: ThemeMode, private val
         ThemeMode.System -> ColorProvider(day = pick(CursorLightColors), night = pick(darkColors))
     }
 
-    /** `--cursor-sidebar`. */
-    val surface: ColorProvider = token { it.sidebar }
+    /** `--cursor-sidebar`, at the widget's opacity: the wallpaper shows through what is left. */
+    val surface: ColorProvider = token { it.sidebar.copy(alpha = opacity) }
     val textPrimary: ColorProvider = token { it.textPrimary }
     val textTertiary: ColorProvider = token { it.textTertiary }
     val textQuaternary: ColorProvider = token { it.textQuaternary }
@@ -53,6 +56,20 @@ class WidgetPalette private constructor(private val mode: ThemeMode, private val
         ThemeMode.System -> R.layout.widget_working_indicator
     }
 
+    /** The corner button's disc for [style]. */
+    fun cornerFill(style: CornerStyle): ColorProvider = when (style) {
+        CornerStyle.White -> ColorProvider(Color.White)
+        CornerStyle.Tinted -> token { it.accent }
+        CornerStyle.Glass -> token { it.fillMedium }
+    }
+
+    /** The corner button's glyph on [cornerFill]. */
+    fun cornerGlyph(style: CornerStyle): ColorProvider = when (style) {
+        CornerStyle.White -> ColorProvider(CursorLightColors.iconPrimary)
+        CornerStyle.Tinted -> token { it.onAccent }
+        CornerStyle.Glass -> iconSecondary
+    }
+
     /** The colour a pull request is shown in — the sidebar's `pullRequestTint` (Primitives.kt), token for token. */
     fun pullRequestTint(state: PullRequestState?): ColorProvider = when (state) {
         PullRequestState.Open -> gitAdded
@@ -63,6 +80,19 @@ class WidgetPalette private constructor(private val mode: ThemeMode, private val
     }
 
     companion object {
-        fun forMode(mode: ThemeMode, oledBlack: Boolean = false): WidgetPalette = WidgetPalette(mode, oledBlack)
+        /** The app's own theme, as every widget followed before the choice existed. */
+        fun forMode(mode: ThemeMode, oledBlack: Boolean = false, opacity: Float = 1f): WidgetPalette = WidgetPalette(mode, oledBlack, opacity)
+
+        /**
+         * The palette for one widget's [appearance]: its own theme when it has one, else the app's ([appMode] and
+         * [appOledBlack], the settings every widget followed before this was a choice).
+         */
+        fun forAppearance(appearance: WidgetAppearance, appMode: ThemeMode, appOledBlack: Boolean): WidgetPalette = when (appearance.theme) {
+            WidgetTheme.App -> WidgetPalette(appMode, appOledBlack, appearance.opacityFraction)
+            WidgetTheme.System -> WidgetPalette(ThemeMode.System, oledBlack = false, appearance.opacityFraction)
+            WidgetTheme.Light -> WidgetPalette(ThemeMode.Light, oledBlack = false, appearance.opacityFraction)
+            WidgetTheme.Dark -> WidgetPalette(ThemeMode.Dark, oledBlack = false, appearance.opacityFraction)
+            WidgetTheme.Oled -> WidgetPalette(ThemeMode.Dark, oledBlack = true, appearance.opacityFraction)
+        }
     }
 }
