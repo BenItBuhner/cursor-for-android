@@ -234,6 +234,8 @@ fun HomeScreen(
             repo = state.selectedRepo,
             branches = state.branches,
             selected = state.ref,
+            fromCheckout = state.startsFromCheckout,
+            listedByAccount = state.branchesListedByAccount,
             onSelect = viewModel::setRef,
             onDismiss = { branchSheet = false },
         )

@@ -127,4 +127,22 @@ class KnownBranchesTest {
             assertWithMessage(it).that(KnownBranches.isPlausibleRef(it)).isFalse()
         }
     }
+
+    @Test
+    fun `the account's branches follow the agents' own, its default branch first, each named once`() {
+        val known = KnownBranches.forRepository(
+            listOf(agent("a", ref = "feature/accuracy", pushed = arrayOf(pushed("cursor/fix-1a2b")))),
+            "https://github.com/acme/app",
+        )
+        val listed = listOf("fix/slippage" to false, "feature/accuracy" to false, "main" to true)
+
+        val merged = BranchOption.merged(known, listed)
+
+        assertThat(merged.map { it.name }).containsExactly(*known.map { it.name }.toTypedArray(), "main", "fix/slippage").inOrder()
+        assertThat(known.map { it.name }).containsExactly("feature/accuracy", "cursor/fix-1a2b")
+        assertThat(merged.single { it.name == "main" }.description).isEqualTo("The repository's default branch")
+        assertThat(merged.single { it.name == "fix/slippage" }.description).isEqualTo("On the repository")
+        assertThat(merged.single { it.name == "feature/accuracy" }.description).isEqualTo("Starting point of 1 agent")
+        assertThat(BranchOption.merged(known, emptyList())).isEqualTo(known)
+    }
 }
