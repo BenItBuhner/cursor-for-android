@@ -44,6 +44,8 @@ class MediaViewerState internal constructor(restored: Session?) {
         internal val seenSize: IntSize,
         /** A video opened by a tap on it starts playing; one reached by a swipe waits for the play button. */
         val autoplay: Boolean,
+        /** Drafts a follow-up asking the agent to copy a file into its workspace; null where no composer stands behind the opener. */
+        val onAskToCopy: ((path: String) -> Unit)? = null,
     )
 
     enum class Phase { Closed, Opening, Open, Closing }
@@ -122,6 +124,7 @@ class MediaViewerState internal constructor(restored: Session?) {
         seen: ImageBitmap? = null,
         fallback: MediaEntry? = null,
         autoplay: Boolean = false,
+        onAskToCopy: ((path: String) -> Unit)? = null,
     ) {
         if (session != null) return
         val index = entries.indexOfFirst { it.src == src }
@@ -135,7 +138,7 @@ class MediaViewerState internal constructor(restored: Session?) {
         controlsVisible = true
         // The count is the session's: a close asked of the last session must not close this one as it opens.
         closeRequests = 0
-        session = Session(nextSessionId++, agentId, list, at, slot, seen, seenSize, autoplay)
+        session = Session(nextSessionId++, agentId, list, at, slot, seen, seenSize, autoplay, onAskToCopy)
         phase = Phase.Opening
     }
 

@@ -71,7 +71,6 @@ import com.cursorforandroid.data.media.MediaLoader
 import com.cursorforandroid.domain.MediaRef
 import com.cursorforandroid.ui.components.PredictiveBackEasing
 import com.cursorforandroid.ui.components.hitTestBoundary
-import com.cursorforandroid.ui.conversation.LocalTranscriptControls
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -274,9 +273,7 @@ private fun MediaViewerOverlay(state: MediaViewerState, session: MediaViewerStat
     val minFlingPx = with(LocalDensity.current) { PageFlingVelocity.toPx() }
     val handover = remember(pagerState, rtl, minFlingPx) { PagerHandover(pagerState, reverse = !rtl, minFlingVelocityPx = minFlingPx) }
     val uriHandler = LocalUriHandler.current
-    // The composer's draft, for a picture outside the workspace whose only way in is the agent copying it there.
-    val onAskToCopy = LocalTranscriptControls.current.onAskToCopyFile
-    val environment = remember(loader, dismiss, scope, pagerState, handover, actions, uriHandler, onAskToCopy) {
+    val environment = remember(loader, dismiss, scope, pagerState, handover, actions, uriHandler) {
         PageEnvironment(
             loader = loader,
             dismiss = dismiss,
@@ -290,7 +287,6 @@ private fun MediaViewerOverlay(state: MediaViewerState, session: MediaViewerStat
             onDismiss = { state.close() },
             onOpenInBrowser = { url -> if (runCatching { uriHandler.openUri(url) }.isFailure) notice = "Nothing on this device opens links." },
             onOpenElsewhere = { ref, entry -> scope.launch { actions.openWith(ref, entry).onFailure { notice = MediaLoader.problemOf(it).title } } },
-            onCopyIntoWorkspace = onAskToCopy?.let { ask -> { path -> state.close(); ask(path) } },
         )
     }
     val current = state.current
