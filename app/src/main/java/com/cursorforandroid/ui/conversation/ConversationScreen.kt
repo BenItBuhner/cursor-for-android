@@ -840,9 +840,12 @@ internal fun TraceStatusRow(status: TraceStatus, onRetry: () -> Unit, modifier: 
 internal fun OlderTurnsRow(isLoading: Boolean, onLoad: () -> Unit, modifier: Modifier = Modifier) {
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
+    // Both lines are the same height: scrolled to the top, the row is the one the list holds still, and a load
+    // starting under the reader would otherwise move every row below it by the difference (22 px at 420 dpi).
+    val inset = 4.dp
     Box(modifier.padding(vertical = 6.dp).testTag(if (isLoading) "loading-older" else "load-older"), contentAlignment = Alignment.Center) {
         if (isLoading) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
+            Row(Modifier.padding(vertical = inset), verticalAlignment = Alignment.CenterVertically) {
                 SpinnerRing(size = 12.dp)
                 Spacer(Modifier.width(8.dp))
                 Text("Loading older…", style = type.small, color = colors.textQuaternary)
@@ -852,7 +855,7 @@ internal fun OlderTurnsRow(isLoading: Boolean, onLoad: () -> Unit, modifier: Mod
                 "Older messages",
                 style = type.small,
                 color = colors.textTertiary,
-                modifier = Modifier.pressable(onLoad, CursorTheme.shapes.base).padding(horizontal = 12.dp, vertical = 4.dp),
+                modifier = Modifier.pressable(onLoad, CursorTheme.shapes.base).padding(horizontal = 12.dp, vertical = inset),
             )
         }
     }
