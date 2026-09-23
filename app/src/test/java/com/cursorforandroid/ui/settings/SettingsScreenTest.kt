@@ -90,11 +90,12 @@ class SettingsScreenTest {
     fun `the list is the essentials in order, and none of what was cut`() {
         composeSettings(isDemo = false)
 
-        // Account, with the way out of it, first; then appearance, the chats (whether stopping asks first, which chats
-        // may show as unread), notifications, Extended mode and beside it the transcript engine, the version with its
-        // updater and the crash report consent; the one-line disclaimer last.
+        // Account, with the way out of it, first; then appearance (ending on how long the sidebar's Projects list
+        // runs), the chats (whether stopping asks first, which chats may show as unread), notifications, Extended mode
+        // and beside it the transcript engine, the version with its updater and the crash report consent; the one-line
+        // disclaimer last.
         val order = listOf(
-            SettingsCopy.GROUP_ACCOUNT, SettingsCopy.SIGN_OUT, SettingsCopy.GROUP_APPEARANCE, SettingsCopy.GROUP_CHATS, RunStopCopy.SETTING_TITLE,
+            SettingsCopy.GROUP_ACCOUNT, SettingsCopy.SIGN_OUT, SettingsCopy.GROUP_APPEARANCE, SettingsCopy.SHORTEN_PROJECTS, SettingsCopy.GROUP_CHATS, RunStopCopy.SETTING_TITLE,
             SettingsCopy.UNREAD_THIS_PHONE, SettingsCopy.GROUP_NOTIFICATIONS,
             SettingsCopy.GROUP_ADVANCED, ExtendedModeCopy.SETTING_TITLE, ExtendedModeCopy.ENGINE_TITLE,
             SettingsCopy.GROUP_UPDATES, "Version ${BuildConfig.VERSION_NAME}", CrashReportCopy.TITLE, SettingsCopy.DISCLAIMER,
@@ -191,6 +192,29 @@ class SettingsScreenTest {
 
         compose.onNodeWithText(SettingsCopy.UNREAD_THIS_PHONE).performClick()
         compose.waitUntil(10_000) { runBlocking { graph.prefs.unreadOnlyTouchedHere.first() } }
+        compose.waitForIdle()
+        compose.onNode(toggle).assertIsOn()
+    }
+
+    /** On by default, in the demo too; a device setting the sidebar reads, which a sign-out leaves as the user set it. */
+    @Test
+    fun `the shorten Projects switch is on by default and the row turns it off and on`() {
+        composeSettings(isDemo = true)
+        val toggle = isToggleable() and hasAnyAncestor(hasTestTag(SettingsTags.SHORTEN_PROJECTS))
+        compose.onNodeWithText(SettingsCopy.SHORTEN_PROJECTS_DETAIL).assertExists()
+        compose.onNode(toggle).assertIsOn()
+        assertThat(top(SettingsCopy.GROUP_APPEARANCE)).isLessThan(top(SettingsCopy.SHORTEN_PROJECTS))
+        assertThat(top(SettingsCopy.SHORTEN_PROJECTS)).isLessThan(top(SettingsCopy.GROUP_CHATS))
+
+        compose.onNodeWithTag(SettingsTags.SHORTEN_PROJECTS).performScrollTo().performClick()
+        compose.waitUntil(10_000) { runBlocking { !graph.prefs.shortenSidebarLists.first() } }
+        compose.waitForIdle()
+        compose.onNode(toggle).assertIsOff()
+        runBlocking { graph.prefs.clearSession() }
+        assertThat(runBlocking { graph.prefs.shortenSidebarLists.first() }).isFalse()
+
+        compose.onNodeWithTag(SettingsTags.SHORTEN_PROJECTS).performScrollTo().performClick()
+        compose.waitUntil(10_000) { runBlocking { graph.prefs.shortenSidebarLists.first() } }
         compose.waitForIdle()
         compose.onNode(toggle).assertIsOn()
     }
