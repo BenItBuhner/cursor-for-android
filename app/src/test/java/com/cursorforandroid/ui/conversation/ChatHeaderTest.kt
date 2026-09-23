@@ -181,7 +181,7 @@ class ChatHeaderTest {
         compose.waitForIdle()
         val items = compose.onAllNodes(hasAnyAncestor(isPopup()) and hasClickAction()).fetchSemanticsNodes()
             .map { node -> node.config.getOrNull(SemanticsProperties.Text).orEmpty().joinToString("") { it.text } }
-        assertThat(items).containsExactly("Pin", "Rename", "Reload transcript", "Open on cursor.com", "Copy link", "Share…", "Share diagnostics", "Snooze", "Archive").inOrder()
+        assertThat(items).containsExactly("Unpin", "Rename", "Reload transcript", "Open on cursor.com", "Copy link", "Share…", "Share diagnostics", "Snooze", "Archive").inOrder()
     }
 
     @Test
