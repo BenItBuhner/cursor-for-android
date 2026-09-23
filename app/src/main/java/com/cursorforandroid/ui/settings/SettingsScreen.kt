@@ -76,6 +76,8 @@ object SettingsCopy {
     const val GROUP_ADVANCED = "Advanced"
     const val UNREAD_THIS_PHONE = "Unread only for chats from this phone"
     const val UNREAD_THIS_PHONE_DETAIL = "Chats from elsewhere show as read until opened here."
+    const val SHORTEN_PROJECTS = "Shorten long Projects list"
+    const val SHORTEN_PROJECTS_DETAIL = "Shows 5 Projects until you tap Show more."
     const val GROUP_UPDATES = "Version and updates"
     const val SIGN_OUT = "Sign out"
     const val LEAVE_DEMO = "Leave demo"
@@ -100,6 +102,7 @@ object SettingsTags {
     const val ACCOUNT_SHEET = "settings_account_sheet"
     const val SIGN_OUT = "settings_sign_out"
     const val UNREAD_THIS_PHONE = "settings_unread_this_phone"
+    const val SHORTEN_PROJECTS = "settings_shorten_projects"
     const val VERSION_ROW = "settings_version"
     const val WHATS_NEW_ROW = "settings_whats_new"
     const val DEBUG_SHEET = "settings_debug_sheet"
@@ -186,6 +189,8 @@ fun SettingsScreen(
                     HairlineDivider()
                     SettingsToggleRow(title = "OLED black", checked = oledBlack, onCheckedChange = { scope.launch { graph.prefs.setOledBlack(it) } })
                 }
+                HairlineDivider()
+                ShortenProjectsRow(graph)
             }
 
             Group(SettingsCopy.GROUP_CHATS)
@@ -317,6 +322,21 @@ private fun UnreadThisPhoneRow(graph: AppGraph) {
         checked = enabled,
         onCheckedChange = { scope.launch { graph.prefs.setUnreadOnlyTouchedHere(it) } },
         modifier = Modifier.testTag(SettingsTags.UNREAD_THIS_PHONE),
+    )
+}
+
+/** Whether the sidebar's long Projects (and Pinned) group lists its first five rows until "Show N more" is tapped. */
+@Composable
+private fun ShortenProjectsRow(graph: AppGraph) {
+    val scope = rememberCoroutineScope()
+    // On the main dispatcher for the reason the Extended mode switch is (see SettingsScreen).
+    val enabled by graph.prefs.shortenSidebarLists.collectAsStateWithLifecycle(initialValue = true, context = Dispatchers.Main.immediate)
+    SettingsToggleRow(
+        title = SettingsCopy.SHORTEN_PROJECTS,
+        description = SettingsCopy.SHORTEN_PROJECTS_DETAIL,
+        checked = enabled,
+        onCheckedChange = { scope.launch { graph.prefs.setShortenSidebarLists(it) } },
+        modifier = Modifier.testTag(SettingsTags.SHORTEN_PROJECTS),
     )
 }
 

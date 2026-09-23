@@ -22,6 +22,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -42,6 +43,7 @@ import com.cursorforandroid.ui.agents.DraftRow
 import com.cursorforandroid.ui.agents.Sidebar
 import com.cursorforandroid.ui.agents.SidebarCallbacks
 import com.cursorforandroid.ui.agents.SidebarDestination
+import com.cursorforandroid.ui.agents.SidebarShortLists
 import com.cursorforandroid.ui.components.CursorDrawer
 import com.cursorforandroid.ui.components.rememberCursorDrawerState
 import com.cursorforandroid.ui.conversation.ConversationScreen
@@ -127,11 +129,26 @@ internal fun AppShell(
     var projectEditor by rememberSaveable { mutableStateOf<ProjectEditorTarget?>(null) }
     // Wide layout: the sidebar collapses like on the web, and the toggle moves into the detail pane header.
     var sidebarCollapsed by rememberSaveable { mutableStateOf(false) }
+    // The long groups the reader listed in full, for this visit to the sidebar: not saved, cut back on leaving.
+    val shortLists = remember { SidebarShortLists() }
     val colors = CursorTheme.colors
 
     fun closeDrawer() {
         if (drawerState.isOpen) scope.launch { drawerState.close() }
     }
+
+    /**
+     * The reader left the sidebar — a chat or a Project opened, another destination: its long groups go back to five
+     * rows. A drawer still on screen is cut back once it is off it (below), so its rows do not jump while it slides.
+     */
+    fun leaveSidebar() {
+        if (wide || (!drawerState.isOpen && drawerState.fraction == 0f)) shortLists.reset()
+    }
+    LaunchedEffect(drawerState) {
+        snapshotFlow { !drawerState.isOpen && drawerState.fraction == 0f }.collect { shut -> if (shut) shortLists.reset() }
+    }
+    // Back, a launch that failed, anything else that changes what is on top is leaving too.
+    LaunchedEffect(stack.top) { leaveSidebar() }
 
     // The activity handles size and orientation changes itself, so unfolding a Fold, or turning a phone on its side,
     // swaps the drawer for the rail in place, and the two must agree: a drawer the user had open (or was opening)
@@ -142,6 +159,8 @@ internal fun AppShell(
             sidebarCollapsed = false
             drawerState.snapTo(DrawerValue.Closed)
         }
+        // Folding back puts the rail away behind a shut drawer.
+        if (!wide) shortLists.reset()
     }
 
     // The navigation callbacks below read the stack when they run, never `topScreen` / `selectedAgentId` as they were
@@ -157,6 +176,8 @@ internal fun AppShell(
     fun openAgent(id: String) {
         closeDrawer()
         stack.openAgent(id)
+        // Also when the chat was already on top, which changes nothing on the stack.
+        leaveSidebar()
     }
 
     fun openRow(row: AgentRow) = openAgent(row.agent.id)
@@ -164,6 +185,7 @@ internal fun AppShell(
     fun navigateTop(screen: Screen) {
         closeDrawer()
         stack.resetTo(screen)
+        leaveSidebar()
     }
 
     /** "New chat": a fresh composer; what the composer held stays in the sidebar as a draft. */
@@ -182,6 +204,7 @@ internal fun AppShell(
     fun openWhatsNew() {
         closeDrawer()
         if (stack.top.screen != Screen.WhatsNew) stack.push(Screen.WhatsNew)
+        leaveSidebar()
     }
 
     /** A chat opened on its launch that did not go through: back to the composer, if the user is still looking at it. */
@@ -292,12 +315,13 @@ internal fun AppShell(
             extendedMode = extendedMode && !isDemo,
             onQueryChange = agentsViewModel::setQuery,
             drafts = draftRows,
+            shortLists = shortLists,
             callbacks = SidebarCallbacks(
                 onNewChat = ::startNewChat,
                 onSettings = { navigateTop(Screen.Settings) },
                 onWhatsNew = ::openWhatsNew,
                 onCustomize = { customizeOpen = true },
-                onToggleSidebar = if (inDrawer) ({ closeDrawer() }) else ({ sidebarCollapsed = true }),
+                onToggleSidebar = if (inDrawer) ({ closeDrawer() }) else ({ sidebarCollapsed = true; shortLists.reset() }),
                 onRefresh = agentsViewModel::refresh,
                 rowActions = rowActions,
                 onLoadMore = { agentsViewModel.loadMore() },

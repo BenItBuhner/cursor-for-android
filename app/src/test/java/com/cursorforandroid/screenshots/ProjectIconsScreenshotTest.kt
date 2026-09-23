@@ -138,6 +138,8 @@ class ProjectIconsScreenshotTest {
         hasLoaded = true,
         prefs = ListPreferences(),
         nowMillis = NOW,
+        // Every mark on show, the tenth Project's too.
+        shortenLongGroups = false,
     )
 
     @Test

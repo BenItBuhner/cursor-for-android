@@ -110,6 +110,11 @@ data class AgentListUiState(
      */
     val collapsedSections: Set<String> = emptySet(),
     /**
+     * Settings › Appearance › "Shorten long Projects list": a long Projects or Pinned group lists its first five rows
+     * until "Show N more" is tapped (see [SidebarShortList]). On unless turned off.
+     */
+    val shortenLongGroups: Boolean = true,
+    /**
      * The clock the state was computed against, refreshed every minute while the list is on screen. Rows format their
      * relative ages ("now", "4m") and the date groups ("Today", "Yesterday") against this, so a row does not go on
      * saying "now" for as long as nothing else about it happens to change.
@@ -133,6 +138,8 @@ private class DeviceState(
     val memberCounts: Map<String, Int> = emptyMap(),
     /** The sidebar groups the reader folded closed (see [AgentListUiState.collapsedSections]). */
     val collapsedSections: Set<String> = emptySet(),
+    /** Whether long Projects and Pinned groups are cut to five rows (see [AgentListUiState.shortenLongGroups]). */
+    val shortenLongGroups: Boolean = true,
 )
 
 @OptIn(ExperimentalCoroutinesApi::class, kotlinx.coroutines.FlowPreview::class)
@@ -154,12 +161,12 @@ class AgentsViewModel(
         local.copy(pullRequests = states)
     }
 
-    /** The two smallest device facts, paired so the device combine stays within its arity. */
-    private val countsAndFolds: Flow<Pair<Map<String, Int>, Set<String>>> =
-        combine(graph.projects.memberCounts, graph.prefs.collapsedSidebarSections) { counts, folds -> counts to folds }
+    /** The three smallest device facts, bundled so the device combine stays within its arity. */
+    private val countsAndFolds: Flow<Triple<Map<String, Int>, Set<String>, Boolean>> =
+        combine(graph.projects.memberCounts, graph.prefs.collapsedSidebarSections, graph.prefs.shortenSidebarLists) { counts, folds, shorten -> Triple(counts, folds, shorten) }
 
-    private val device: Flow<DeviceState> = combine(localState, actionError, graph.projects.unavailableParents, graph.agents.knownRoots, countsAndFolds) { local, failed, unavailable, roots, (counts, folds) ->
-        DeviceState(local = local, actionError = failed, unavailableProjects = unavailable.keys, knownRoots = roots, memberCounts = counts, collapsedSections = folds)
+    private val device: Flow<DeviceState> = combine(localState, actionError, graph.projects.unavailableParents, graph.agents.knownRoots, countsAndFolds) { local, failed, unavailable, roots, (counts, folds, shorten) ->
+        DeviceState(local = local, actionError = failed, unavailableProjects = unavailable.keys, knownRoots = roots, memberCounts = counts, collapsedSections = folds, shortenLongGroups = shorten)
     }
 
     /**
@@ -231,6 +238,7 @@ class AgentsViewModel(
             unreadCount = rows.count { it.isUnread },
             runningCount = rows.count { it.indicator == AgentIndicator.Running },
             collapsedSections = device.collapsedSections,
+            shortenLongGroups = device.shortenLongGroups,
             nowMillis = now,
         )
     }
