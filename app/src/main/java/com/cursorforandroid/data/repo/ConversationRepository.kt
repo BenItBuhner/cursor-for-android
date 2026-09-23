@@ -62,6 +62,7 @@ import com.cursorforandroid.domain.TranscriptLoadDiagnostics
 import com.cursorforandroid.domain.TranscriptPerf
 import com.cursorforandroid.domain.UserMessage
 import com.cursorforandroid.domain.RunStatus
+import com.cursorforandroid.domain.ShownMessages
 import com.cursorforandroid.domain.SystemNotification
 import com.cursorforandroid.domain.SystemNotifications
 import com.cursorforandroid.domain.TimelineItem
@@ -530,6 +531,8 @@ class ConversationRepository(
          * prompt's words: what names the turn's run once its echo is gone (see [recordPairing], [pruneLocal]).
          */
         var recordEchoes: Map<Int, RecordEcho> = emptyMap()
+        /** The coordinator's messages this chat has shown, kept on the list published whatever a later read lacks (see [ShownMessages]). */
+        val shownMessages = ShownMessages(standsIn = { it.startsWith(LOCAL_RUN_PREFIX) })
         /** The account's rewind count at its last read of the chat's state; null before one. */
         var rewindEpochSeen: Long? = null
         /** The record answered with nothing for this chat (not served for it, or nothing yet): the documented path stands. */
@@ -1215,13 +1218,16 @@ class ConversationRepository(
                 items += SystemNotifications.parse(promptId, text, startedAt)?.items
                     ?: listOf(UserMessage(promptId, text, startedAt, attachments = inputs.attachments ?: emptyList()))
             }
+            // Whatever stands in for the turn's body keeps the messages the record gives the turn: a log or a story
+            // that lacks one — carried in no shape this app reads, or not told yet — never takes it off the turn.
+            fun standIn(items: List<TimelineItem>) = CoordinatorTranscript.keepMessages(turn.items, CoordinatorTranscript.withoutRepeats(items, inputs.repeats))
             when {
                 // The trace the stream gave, whole: its own footer included — less an earlier turn's message it
                 // carries again (see [recordItems]).
-                inputs.complete != null -> { items += CoordinatorTranscript.withoutRepeats(inputs.complete, inputs.repeats); return items }
+                inputs.complete != null -> { items += standIn(inputs.complete); return items }
                 // The story the stream tells so far — unless it has told nothing yet (a stream that will not
                 // open, a machine agent's): then the record's copy of the turn, as far as it has been read.
-                inputs.liveItems != null -> { items += CoordinatorTranscript.withoutRepeats(inputs.liveItems, inputs.repeats); return items }
+                inputs.liveItems != null -> { items += standIn(inputs.liveItems); return items }
                 // The story the stream told before the follow ended, until the whole trace lands (see [Entry.partial]):
                 // with its footer when the stream's end gave one, else the run's below.
                 inputs.partial != null -> {
@@ -1229,7 +1235,7 @@ class ConversationRepository(
                     // behind, the reply the run's record ended on.
                     val ended = inputs.partial.any { it is RunFooter }
                     val words = turn.items.filterIsInstance<AssistantMessage>().ifEmpty { if (!ended && run != null) TimelineBuilder.recordReply(run) else emptyList() }
-                    items += TimelineBuilder.withReplies(CoordinatorTranscript.withoutRepeats(inputs.partial, inputs.repeats), words)
+                    items += TimelineBuilder.withReplies(standIn(inputs.partial), words)
                     if (ended) return items
                 }
                 // The record's own body — with the reply the transcript gave when the record lacked it and the log
@@ -2241,7 +2247,8 @@ class ConversationRepository(
             }
             lastPublishAtMs = monotonicMillis()
             val buildStartedAt = System.nanoTime()
-            val items = items()
+            // Whichever source answered last, a coordinator's message once shown stays on the list (see [ShownMessages]).
+            val items = shownMessages.keep(items(), source = if (recordWindow != null) "record" else "runs")
             val window = recordWindow
             val (older, status) = if (window != null) {
                 (window.hasOlder) to recordTraceStatus(window)
@@ -2831,7 +2838,7 @@ class ConversationRepository(
             val rewound = known != null && built.turnCount < known.turnCount
             e.publish(
                 mutate = {
-                    if (rewound) recordEchoes = emptyMap()
+                    if (rewound) { shownMessages.clear(); recordEchoes = emptyMap() }
                     recordWindow = built
                     recordEmpty = false
                     recordError = null
@@ -2911,7 +2918,7 @@ class ConversationRepository(
             e.publish(
                 mutate = {
                     // The account counts the chat's rewinds: one since the last read took the turns past it away.
-                    if (rewindEpochSeen.let { it != null && it != state.rewindEpoch }) recordEchoes = emptyMap()
+                    if (rewindEpochSeen.let { it != null && it != state.rewindEpoch }) { shownMessages.clear(); recordEchoes = emptyMap() }
                     rewindEpochSeen = state.rewindEpoch
                     // A blob-backed window carries the state it was read with from its first frame.
                     recordWindow = recordWindow?.let { w -> if (w.turnIndexed && w.state != null) w else w.withState(state) }

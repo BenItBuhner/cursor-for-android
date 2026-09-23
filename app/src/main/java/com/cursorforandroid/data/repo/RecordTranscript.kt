@@ -589,7 +589,11 @@ object RecordTranscript {
             val turn = cut[read.index] ?: return@mapIndexedNotNull null
             val count = turn.steps.size + (if (turn.prompt != null) 1 else 0)
             val same = held != null && held.blobId == read.blobId && held.complete == read.complete && held.stepCount == count && held.prompt == turn.prompt
-            val items = if (same) held!!.items else build(turn, RecordTurn.traceKey(read.index, true))
+            val built = if (same) held!!.items else build(turn, RecordTurn.traceKey(read.index, true))
+            // A read short of the turn — a piece the server failed to give this time, or fewer messages than the
+            // structure counts — keeps the messages the turn was read with before: a turn read again only adds.
+            val short = read.unavailable > 0 || (read.messageSteps?.let { CoordinatorTranscript.sent(built).size < it } ?: false)
+            val items = if (!same && short && held != null && held.prompt == turn.prompt) CoordinatorTranscript.keepMessages(held.items, built) else built
             val shape = if (i >= shapesFrom) HeadlessTranscript.shape(turn, read.index) else held?.shape
             RecordTurn(read.index, count, turn.prompt, turn.projectMode, items, shape, errorMessage = HeadlessTranscript.errorMessage(turn), turnIndexed = true, blobId = read.blobId, complete = read.complete, stepTotal = read.stepTotal, messageSteps = read.messageSteps, unavailable = read.unavailable)
         }
