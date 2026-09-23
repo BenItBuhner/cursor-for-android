@@ -125,18 +125,18 @@ class WidgetScreenshotTest {
     fun projectsWidgets() {
         val dark = ProjectsWidgetFixture.snapshot(ThemeMode.Dark, FIXED_NOW)
         val projects = ChatsWidgetSettings(mode = WidgetMode.Projects)
-        capture("274_widget_projects", dark, projects, DpSize(320.dp, 158.dp))
-        capture("275_widget_projects_light", ProjectsWidgetFixture.snapshot(ThemeMode.Light, FIXED_NOW), projects, DpSize(320.dp, 158.dp))
-        capture("276_widget_projects_large", dark, projects, WidgetSizes.sizeFor(WidgetLayout.Large))
+        capture("314_widget_projects", dark, projects, DpSize(320.dp, 158.dp))
+        capture("315_widget_projects_light", ProjectsWidgetFixture.snapshot(ThemeMode.Light, FIXED_NOW), projects, DpSize(320.dp, 158.dp))
+        capture("316_widget_projects_large", dark, projects, WidgetSizes.sizeFor(WidgetLayout.Large))
         // One row high: a strip of Project icons as wide as the cell allows, "+N" for the rest; a 2x1 says it in words.
-        capture("277_widget_projects_small", dark, projects, WidgetSizes.sizeFor(WidgetLayout.Small))
-        capture("278_widget_projects_small_narrow", dark, projects, DpSize(250.dp, 60.dp))
-        capture("279_widget_projects_small_2x1", dark, projects, DpSize(110.dp, 60.dp))
+        capture("317_widget_projects_small", dark, projects, WidgetSizes.sizeFor(WidgetLayout.Small))
+        capture("318_widget_projects_small_narrow", dark, projects, DpSize(250.dp, 60.dp))
+        capture("319_widget_projects_small_2x1", dark, projects, DpSize(110.dp, 60.dp))
         // A 3x2 cell, where the long name gives way to the metadata and the count.
-        capture("280_widget_projects_narrow", dark, projects, DpSize(250.dp, 158.dp))
-        capture("281_widget_projects_extended_off", ProjectsWidgetFixture.withoutProjects(ThemeMode.Dark, FIXED_NOW, extendedMode = false), projects, DpSize(320.dp, 158.dp))
-        capture("282_widget_projects_empty", ProjectsWidgetFixture.withoutProjects(ThemeMode.Dark, FIXED_NOW, extendedMode = true), projects, DpSize(320.dp, 158.dp))
-        capture("283_widget_projects_small_extended_off", ProjectsWidgetFixture.withoutProjects(ThemeMode.Dark, FIXED_NOW, extendedMode = false), projects, WidgetSizes.sizeFor(WidgetLayout.Small))
+        capture("320_widget_projects_narrow", dark, projects, DpSize(250.dp, 158.dp))
+        capture("321_widget_projects_extended_off", ProjectsWidgetFixture.withoutProjects(ThemeMode.Dark, FIXED_NOW, extendedMode = false), projects, DpSize(320.dp, 158.dp))
+        capture("322_widget_projects_empty", ProjectsWidgetFixture.withoutProjects(ThemeMode.Dark, FIXED_NOW, extendedMode = true), projects, DpSize(320.dp, 158.dp))
+        capture("323_widget_projects_small_extended_off", ProjectsWidgetFixture.withoutProjects(ThemeMode.Dark, FIXED_NOW, extendedMode = false), projects, WidgetSizes.sizeFor(WidgetLayout.Small))
     }
 
     /** The settings screen set to the Projects list, then its sheet of choices: every Project, or one Project's chats. */
@@ -144,12 +144,12 @@ class WidgetScreenshotTest {
     @Test
     fun configureProjects() {
         showOptions(ProjectsWidgetFixture.snapshot(ThemeMode.Dark, FIXED_NOW), ChatsWidgetSettings(mode = WidgetMode.Projects))
-        captureScreenRoboImage(File(outDir, "284_widget_configure_projects.png").path, RoborazziOptions())
+        captureScreenRoboImage(File(outDir, "324_widget_configure_projects.png").path, RoborazziOptions())
         compose.onNodeWithTag("option-project").performClick()
         compose.waitForIdle()
         compose.mainClock.advanceTimeBy(500)
         compose.waitForIdle()
-        captureScreenRoboImage(File(outDir, "285_widget_configure_projects_sheet.png").path, RoborazziOptions())
+        captureScreenRoboImage(File(outDir, "325_widget_configure_projects_sheet.png").path, RoborazziOptions())
     }
 
     /** Without Extended mode, the Projects choice says where the Projects come from. */
@@ -157,7 +157,7 @@ class WidgetScreenshotTest {
     @Test
     fun configureProjectsExtendedOff() {
         showOptions(ProjectsWidgetFixture.withoutProjects(ThemeMode.Dark, FIXED_NOW, extendedMode = false), ChatsWidgetSettings(mode = WidgetMode.Projects))
-        captureScreenRoboImage(File(outDir, "286_widget_configure_projects_extended_off.png").path, RoborazziOptions())
+        captureScreenRoboImage(File(outDir, "326_widget_configure_projects_extended_off.png").path, RoborazziOptions())
     }
 
     private fun showOptions(snapshot: WidgetSnapshot, settings: ChatsWidgetSettings) {
