@@ -168,6 +168,8 @@ class PreferencesStore(
         val dismissedNotices = stringPreferencesKey("dismissed_notices")
         /** Settings › Confirm before stopping; absent reads as on (see [confirmStop]). */
         val confirmStop = booleanPreferencesKey("confirm_stop")
+        /** The widget kinds whose picker previews the system holds, each with the build and boot it was published on (see `WidgetPreviews`). */
+        val widgetPreviewsPublished = stringSetPreferencesKey("widget_previews_published")
     }
 
     /** What [clearSession] removes: everything here belongs to the account rather than to the device. */
@@ -218,6 +220,17 @@ class PreferencesStore(
     suspend fun setAutoUpdate(enabled: Boolean) = edit { it[Keys.autoUpdate] = enabled }
 
     suspend fun setIncludePreReleases(include: Boolean) = edit { it[Keys.includePreReleases] = include }
+
+    // ---- home-screen widgets (device-level: the launcher's, not the account's) ------------------------------------
+
+    /**
+     * The widgets' Android 15 picker previews the system holds: one entry per widget kind, stamped with the installed
+     * build and the boot it was published on, as `WidgetPreviews` writes them. The system keeps two publishes an hour
+     * per widget and forgets every preview on a reboot, so this is what says which are due.
+     */
+    val widgetPreviewsPublished: Flow<Set<String>> = data.map { it[Keys.widgetPreviewsPublished] ?: emptySet() }
+
+    suspend fun setWidgetPreviewsPublished(entries: Set<String>) = edit { it[Keys.widgetPreviewsPublished] = entries }
 
     // ---- crash reports (device-level; a consent, so it outlives the account and is never assumed) ----------------
 
