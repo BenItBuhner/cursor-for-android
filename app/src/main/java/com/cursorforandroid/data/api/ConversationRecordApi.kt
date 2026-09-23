@@ -100,6 +100,8 @@ data class RecordState(
     val prefetchedCount: Int = 0,
     /** What the answer carried, keys only — where the state came from, how many turns, the stream's message kinds — for a notice that names a shape the build did not expect. */
     val shape: String = "",
+    /** Where the account's live stream of the chat stood when this was read (see [LivePoint]): what an open chat's watch resumes from. */
+    val live: LivePoint? = null,
 )
 
 /**
@@ -173,6 +175,13 @@ interface ConversationRecordApi {
 
     /** What [agentId]'s blob reads have come to this process (see [BlobCache.Counts]) and the memory tier's size, for the diagnostics; null for a record without blobs. */
     fun blobCounts(agentId: String): Pair<BlobCache.Snapshot, Long>? = null
+
+    /**
+     * Holds the account's live stream of [agentId]'s conversation open until it says the chat moved on from [since]
+     * (see [ConversationStateReader.watch]), resuming from [since]'s offset when [resume]. Null where there is no
+     * live stream to hold.
+     */
+    suspend fun watch(agentId: String, since: LivePoint?, resume: Boolean): LiveWatch? = null
 }
 
 /**
@@ -255,8 +264,11 @@ class HeadlessConversationApi(
             turnBlobIds = conversation?.turns?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull?.takeIf { id -> id.isNotBlank() } } ?: emptyList(),
             prefetchedCount = initial.prefetchedCount,
             shape = "conversationState=$source turns=${conversation?.turns?.size ?: 0} messages=${initial.kinds.joinToString(",")} cloudAgentState=${cloud?.keys?.sorted()?.joinToString(",", "[", "]") ?: "absent"}",
+            live = LivePoint(ConversationStateReader.offsetKeyOf(cloud), LivePoint.status(initial.workflowStatus), conversation?.turns?.size),
         )
     }
+
+    override suspend fun watch(agentId: String, since: LivePoint?, resume: Boolean): LiveWatch = states.watch(agentId, since, resume)
 
     /**
      * The turns [from] until [from] + [limit], each from its blobs: the turn's structure, the user's message and

@@ -358,13 +358,21 @@ class BackgroundComposerApi(
      * did not reach: its Project flag and appearance, its manager, its side-chat or subagent parent. Null when the
      * service knows no such chat, or answered with another.
      */
-    override suspend fun record(id: String): ComposerSnapshot? {
+    override suspend fun record(id: String): ComposerSnapshot? = one(id, includeStatus = false)
+
+    /**
+     * One chat's record by id with its status and last activity, as the list's own pages carry them: what an open,
+     * idle chat is told a turn started elsewhere by under the Stable transcript engine, which reads no private record.
+     */
+    suspend fun status(id: String): ComposerSnapshot? = one(id, includeStatus = true)
+
+    private suspend fun one(id: String, includeStatus: Boolean): ComposerSnapshot? {
         val response = call(
             "ListBackgroundComposers",
             ListBackgroundComposersRequestDto(
                 n = 1,
                 includeArchived = true,
-                includeStatus = false,
+                includeStatus = includeStatus,
                 includePinnedState = false,
                 includeHiddenSources = HIDDEN_SOURCES.map { it.wireName },
                 includeWorkers = true,

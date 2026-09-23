@@ -301,6 +301,65 @@ class ConversationStateReader(
         return state ?: throw ConnectRpcException(200, ConnectRpcException.UNREADABLE_ANSWER, "The conversation stream ended without an initial state (${kinds.ifEmpty { listOf("no messages") }.joinToString(",")}).", path = ConnectRpc.path(SERVICE, METHOD))
     }
 
+    /**
+     * Holds `StreamConversation` open with `purpose = LIVE`, as Cursor's desktop does for every chat it has open
+     * (3.21.18 `cloudAgentStream.js`, `CloudAgentStream._runStreamAttempt`): heartbeats asked for, the blobs this
+     * device holds named so the server does not send them again, resumed from [since]'s offset when [resume]. Returns
+     * once the stream says the chat moved on from [since] — its workflow status or its turn count changed, a turn's
+     * interaction arrived — or once it ends; a terminal status (see [LivePoint.TERMINAL]) ends it too, as the
+     * desktop parks its stream there. Throws what a failed stream throws. What the stream prefetches is kept as the
+     * prewarm's is, and no blob is read: the watch is a signal, and the chat's own read follows it.
+     */
+    suspend fun watch(agentId: String, since: LivePoint?, resume: Boolean): LiveWatch {
+        TranscriptPerf.session(agentId).network("live")
+        val request = StreamConversationRequestDto(
+            bcId = agentId,
+            purpose = PURPOSE_LIVE,
+            offsetKey = since?.offsetKey?.takeIf { resume },
+            includeStreamHeartbeats = true,
+            preFetchedBlobIds = blobs.heldIds(agentId),
+        )
+        var point = since ?: LivePoint(null, null, null)
+        var moved = false
+        var messages = 0
+        var heartbeats = 0
+        val prefetchedIds = ArrayList<String>()
+        rpc.serverStreamWithSession(SERVICE, METHOD, tokens, request, StreamConversationRequestDto.serializer(), lane = ApiThrottle.Lane.WATCH, silenceMs = WATCH_SILENCE_MS) { message ->
+            messages++
+            val case = message.keys.firstOrNull { it != "@type" } ?: "empty"
+            val value = message[case] as? JsonObject
+            val said: LivePoint? = when (case) {
+                "streamHeartbeat" -> { heartbeats++; null }
+                "prefetchedBlobs" -> { store(agentId, value?.get("preFetchedBlobs"), prefetchedIds); null }
+                "initialState" -> {
+                    store(agentId, value?.get("preFetchedBlobs"), prefetchedIds)
+                    val cloud = value?.get("cloudAgentState") as? JsonObject
+                    LivePoint(offsetKeyOf(cloud), LivePoint.status((value?.get("workflowStatus") as? JsonPrimitive)?.contentOrNull), turnsOf(cloud))
+                }
+                "workflowStatusWithOffset" -> LivePoint(value.offsetKey(), LivePoint.status((value?.get("workflowStatus") as? JsonPrimitive)?.contentOrNull), null)
+                "cloudAgentStateWithIdAndOffset" -> {
+                    store(agentId, value?.get("preFetchedBlobs"), prefetchedIds)
+                    LivePoint(value.offsetKey(), null, turnsOf(value?.get("cloudAgentState") as? JsonObject))
+                }
+                // A turn's own traffic, or a question it asks: something is happening in the chat.
+                "interactionUpdateWithOffset", "interactionQueryWithOffset" -> { moved = true; LivePoint(value.offsetKey(), null, null) }
+                else -> LivePoint(value.offsetKey(), null, null)
+            }
+            if (said != null) {
+                if (point.movedTo(said)) moved = true
+                point = point.then(said)
+            }
+            !moved && point.status !in LivePoint.TERMINAL
+        }
+        blobs.counts(agentId).prefetched.addAndGet(prefetchedIds.size)
+        blobs.notePrefetched(agentId, prefetchedIds)
+        return LiveWatch(point, moved, messages, heartbeats)
+    }
+
+    private fun JsonObject?.offsetKey(): String? = (this?.get("offsetKey") as? JsonPrimitive)?.contentOrNull?.takeIf { it.isNotBlank() }
+
+    private fun turnsOf(cloud: JsonObject?): Int? = ((cloud?.get("conversationState") as? JsonObject)?.get("turns") as? JsonArray)?.size
+
     /** The `PreFetchedBlob[]` of [element] into the cache, as partial copies, their ids onto [prefetchedIds]; how many landed and their bytes. */
     private fun store(agentId: String, element: kotlinx.serialization.json.JsonElement?, prefetchedIds: MutableList<String>): Pair<Int, Long> {
         val items = element as? JsonArray ?: return 0 to 0L
@@ -322,7 +381,8 @@ class ConversationStateReader(
      * `aiserver.v1.StreamConversationRequest` as the desktop's prewarm sends it (`cloudAgentStreamPrefetch.js`, 3.21.16):
      * `{bcId, purpose: PREWARM, filterHeavyStepData: true, shouldSendPrefetchedBlobsFirst: true,
      * prefetchOnlyLastStepPerTurn: true, maxBlobsAfterPrefetch: 30, preFetchedBlobIds: [the blobs in hand]}`.
-     * The Bloom-filter alternative (`preFetchedBlobFilter`) is behind a feature gate there and not sent here.
+     * The Bloom-filter alternative (`preFetchedBlobFilter`) is behind a feature gate there and not sent here. Its
+     * live stream (see [watch]) adds `purpose: LIVE`, `includeStreamHeartbeats: true` and the `offsetKey` it resumes from.
      */
     @Serializable
     data class StreamConversationRequestDto(
@@ -334,6 +394,8 @@ class ConversationStateReader(
         @EncodeDefault val prefetchOnlyLastStepPerTurn: Boolean = true,
         @EncodeDefault val maxBlobsAfterPrefetch: Int = 30,
         @EncodeDefault val preFetchedBlobIds: List<String> = emptyList(),
+        val offsetKey: String? = null,
+        val includeStreamHeartbeats: Boolean? = null,
     )
 
     companion object {
@@ -341,5 +403,47 @@ class ConversationStateReader(
         const val METHOD = "StreamConversation"
         /** `aiserver.v1.StreamConversationPurpose.STREAM_CONVERSATION_PURPOSE_PREWARM` (2), by name as proto3 JSON writes enums. */
         const val PURPOSE_PREWARM = "STREAM_CONVERSATION_PURPOSE_PREWARM"
+        /** `STREAM_CONVERSATION_PURPOSE_LIVE` (1): the stream an open chat holds (see [watch]). */
+        const val PURPOSE_LIVE = "STREAM_CONVERSATION_PURPOSE_LIVE"
+        /** How long the live stream may say nothing — not even a heartbeat — before it is taken for dead: the desktop's 60 s. */
+        const val WATCH_SILENCE_MS = 60_000L
+
+        /** `cloud_agent_state.last_interaction_update_offset_key`: where a live stream of the chat picks up from. */
+        fun offsetKeyOf(cloud: JsonObject?): String? = (cloud?.get("lastInteractionUpdateOffsetKey") as? JsonPrimitive)?.contentOrNull?.takeIf { it.isNotBlank() }
     }
 }
+
+/**
+ * Where the account's live stream of a chat stood (see [ConversationStateReader.watch]): the last offset it named
+ * (`offset_key`, what a stream resumes from), the chat's workflow status (`aiserver.v1.CloudAgentWorkflowStatus` by
+ * its short name — `RUNNING`, `IDLE`, `ERROR`, `ARCHIVED`, `EXPIRED`, `NOT_YET_STARTED`,
+ * `WAITING_FOR_BACKGROUND_WORK`) and how many turns its conversation had; each null while nothing has said.
+ */
+data class LivePoint(val offsetKey: String?, val status: String?, val turnCount: Int?) {
+    /** [other] says the chat is not where this left it: another status, or another turn count, where both are known. */
+    fun movedTo(other: LivePoint): Boolean =
+        (status != null && other.status != null && status != other.status) || (turnCount != null && other.turnCount != null && turnCount != other.turnCount)
+
+    /** This, with what [other] says in place of what it said before. */
+    fun then(other: LivePoint): LivePoint = LivePoint(other.offsetKey ?: offsetKey, other.status ?: status, other.turnCount ?: turnCount)
+
+    companion object {
+        const val IDLE = "IDLE"
+        /** The statuses the desktop's stream parks on (`M9f`): nothing more comes until the chat is asked again. */
+        val TERMINAL = setOf("ERROR", "ARCHIVED", "EXPIRED")
+        private val BY_NUMBER = listOf(null, "RUNNING", IDLE, "ERROR", "ARCHIVED", "EXPIRED", "NOT_YET_STARTED", "WAITING_FOR_BACKGROUND_WORK")
+
+        /** A `CloudAgentWorkflowStatus` as proto3 JSON writes it — its name, or its number — by its short name; null for none or `UNSPECIFIED`. */
+        fun status(raw: String?): String? {
+            val value = raw?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+            value.toIntOrNull()?.let { return BY_NUMBER.getOrNull(it) }
+            return value.removePrefix("CLOUD_AGENT_WORKFLOW_STATUS_").takeUnless { it == "UNSPECIFIED" }
+        }
+    }
+}
+
+/**
+ * What one hold of a chat's live stream came to (see [ConversationStateReader.watch]): where it left off, whether the
+ * chat moved on, how many messages it carried and how many of them were heartbeats — the server holding it open.
+ */
+class LiveWatch(val point: LivePoint, val moved: Boolean, val messages: Int, val heartbeats: Int = 0)

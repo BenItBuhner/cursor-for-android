@@ -1,7 +1,9 @@
 package com.cursorforandroid.data.repo
 
 import com.cursorforandroid.data.api.BlobCache
+import com.cursorforandroid.data.api.ComposerSnapshot
 import com.cursorforandroid.data.api.ConnectRpc
+import com.cursorforandroid.data.api.LivePoint
 import com.cursorforandroid.data.api.ConversationStateReader
 import com.cursorforandroid.data.api.HeadlessConversationApi
 import com.cursorforandroid.data.api.ConversationRecordApi
@@ -76,7 +78,9 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.SharingStarted
@@ -271,6 +275,14 @@ class ConversationRepository(
     private val machineBusy: suspend (Agent) -> Boolean? = { null },
     /** The pauses before the blob-backed record's pieces the server keeps failing are asked again (see [runBlobWork]). */
     private val retryPassDelaysMs: List<Long> = ServerRetry.Waits().passes,
+    /**
+     * The chat's own entry in the account's list, with its status and last activity (`ListBackgroundComposers
+     * {bc_id}`, Extended mode): what an open chat at rest is told a turn started elsewhere by when the record's live
+     * stream is not to be used (see [watchWhileOpen]). Null leaves such a chat to its next load.
+     */
+    private val composerStatus: (suspend (String) -> ComposerSnapshot?)? = null,
+    /** How often [composerStatus] is asked while the chat is at rest (see [WATCH_POLL_MS]). */
+    private val watchPollMs: Long = WATCH_POLL_MS,
 ) {
     /**
      * A prompt sent from this device — the one that launched the chat, or a follow-up: its message and its run, a
@@ -543,6 +555,8 @@ class ConversationRepository(
         var blobWorking = false
         /** Re-reads made by themselves after a fallback on the server's failure, since the record last answered (see [recordFallBack]). */
         var serverErrorRereads = 0
+        /** The account's word on the open chat while it is at rest: a turn started elsewhere is read in (see [watchWhileOpen]). */
+        var watchJob: Job? = null
         /**
          * The story so far of the run [streamJob] is following, shown in place of the transcript it does not have
          * yet. The job owns it: it goes when following stops, and a snapshot from a job that is no longer the
@@ -1780,6 +1794,7 @@ class ConversationRepository(
             e.attached == 1
         }
         if (firstScreen) onOpened(agentId)
+        watchWhileOpen(e)
     }
 
     /**
@@ -1823,6 +1838,8 @@ class ConversationRepository(
                 e.runPagingJob = null
                 e.keepFollowingJob?.cancel()
                 e.keepFollowingJob = null
+                e.watchJob?.cancel()
+                e.watchJob = null
                 e.prefetchJob?.cancel()
                 e.prefetchJob = null
                 e.prefetchedOlder = null
@@ -1964,6 +1981,8 @@ class ConversationRepository(
             e.traceJob = null
             e.keepFollowingJob?.cancel()
             e.keepFollowingJob = null
+            e.watchJob?.cancel()
+            e.watchJob = null
             // The replays under way wait, with the ones not started yet, for the screen to come back.
             e.requeueInFlight()
             e.stopFollowing()
@@ -1991,6 +2010,7 @@ class ConversationRepository(
         // The replays the pause turned away, and the ones it cut short, pick up where they were.
         loadTraces(e, e.agentId, emptyList())
         revalidateNow(e)
+        watchWhileOpen(e)
     }
 
     /**
@@ -3030,6 +3050,144 @@ class ConversationRepository(
         // A new run is where a message the account queued from here lands (see [expectDelivery]).
         requestAdoption(e)
         return true
+    }
+
+    /** The chat as the reader has it is at rest: read, no turn under way, nothing followed. */
+    private fun ConversationState.atRest(): Boolean =
+        !isLoading && !isStreaming && !isReconnecting && runStatus?.isActive != true && items.isNotEmpty()
+
+    /**
+     * Keeps an open chat current while it is at rest (Extended mode, either transcript engine): a turn started
+     * elsewhere — the web, the desktop, a coordinator messaging this worker — is read in within a few seconds, the
+     * way a return to the foreground reads it ([revalidateNow], each engine by its own path), and followed from there
+     * as any turn is. Cursor's desktop keeps every open chat's `StreamConversation` open with `purpose = LIVE` for
+     * this (`CloudAgentStream`, 3.21.18); so does the Beta engine here (see [ConversationStateReader.watch]), which
+     * costs heartbeats while nothing happens. The Stable engine reads no private record, so it asks the chat's own
+     * entry in the account's list — the list it reads anyway — for its status and last activity every
+     * [watchPollMs]; so does Beta when the record's live stream will not hold (see [WATCH_LIVE_FAILURES]) or the
+     * record refused the chat. Neither reads a blob. While a turn is under way nothing is watched: the run's own
+     * stream carries it. One job per chat, ended by the screen leaving or pausing.
+     */
+    private fun watchWhileOpen(e: Entry) {
+        if (record == null && composerStatus == null) return
+        synchronized(e) {
+            if (e.attached == 0 || e.paused || e.watchJob?.isActive == true) return
+            e.watchJob = e.scope.launch { watch(e) }
+        }
+    }
+
+    private suspend fun watch(e: Entry) {
+        val agentId = e.agentId
+        // Where the live stream left off; null starts from what the reader has (see [restingPoint]).
+        var since: LivePoint? = null
+        var heardAt = 0L
+        var failures = 0
+        var silentLive = 0
+        // The list entry's last word: running, and when it was last active; null until its first answer since the chat came to rest.
+        var listed: Pair<Boolean, Long?>? = null
+        var movedAt = 0L
+        while (true) {
+            synchronized(e) { e.loadJob }?.join()
+            // A turn followed since the last look — started here, or found by the watch — leaves the reader's copy
+            // current: the next look starts from it, not from what was said before the turn.
+            if (!e.state.value.atRest()) {
+                e.state.first { it.atRest() }
+                since = null
+                listed = null
+            }
+            if (session.isDemo) return
+            val caps = capabilities()
+            if (!caps.accountSession) return
+            val live = record?.takeIf { caps.accountTranscript && silentLive < WATCH_LIVE_FAILURES && e.state.value.recordFallback.let { it == null || it.serverError } }
+            if (live != null) {
+                val start = since ?: restingPoint(e)
+                val resume = start.offsetKey != null && (since == null || System.nanoTime() - heardAt < WATCH_REHYDRATE_MS * 1_000_000)
+                val startedAt = System.nanoTime()
+                val outcome = try {
+                    e.whileAtRest { live.watch(agentId, start, resume) }
+                } catch (c: CancellationException) {
+                    throw c
+                } catch (_: Throwable) {
+                    null
+                }
+                // The chat left rest under the stream: the run's own stream has it, and the watch waits for the end.
+                if (outcome == null && !e.state.value.atRest()) continue
+                // Held open, as the server holds the desktop's: a heartbeat, a change, or a while of quiet. A stream
+                // that ends on its first word is not being held, and a few of those in a row hand over to the list.
+                val held = outcome != null && (outcome.moved || outcome.heartbeats > 0 || System.nanoTime() - startedAt >= WATCH_HELD_MS * 1_000_000)
+                if (held) {
+                    failures = 0
+                    silentLive = 0
+                    heardAt = System.nanoTime()
+                } else {
+                    silentLive++
+                }
+                since = outcome?.point ?: since
+                if (outcome?.moved != true) {
+                    // Parked, as the desktop's stream parks on these: nothing comes until the chat is asked again.
+                    if (outcome != null && outcome.point.status in LivePoint.TERMINAL) return
+                    delay(watchRetryDelay(++failures))
+                    continue
+                }
+            } else {
+                val poll = composerStatus ?: return
+                val word = try {
+                    poll(agentId)?.let { it.isRunning to it.activityAtMillis }
+                } catch (c: CancellationException) {
+                    throw c
+                } catch (_: Throwable) {
+                    null
+                }
+                val before = listed
+                if (word != null) listed = word
+                if (word == null || before == null || before == word) {
+                    delay(watchPollMs)
+                    continue
+                }
+            }
+            val gap = WATCH_MIN_GAP_MS - (System.nanoTime() - movedAt) / 1_000_000
+            if (gap > 0) delay(gap)
+            movedAt = System.nanoTime()
+            revalidateNow(e, force = true)
+        }
+    }
+
+    /**
+     * Where the reader's copy of the chat stands, as the live stream would put it: the turn count of the record's last
+     * state read, when the Beta engine has one, and — when that read found the chat at rest — its offset and that
+     * status, which a resumed stream then reports a change from. Otherwise no status: the stream is asked afresh and
+     * its first word is taken as it is, so an account that calls the chat running while its runs say otherwise does
+     * not set off read after read.
+     */
+    private fun restingPoint(e: Entry): LivePoint {
+        val state = synchronized(e) { e.recordWindow?.takeIf { it.turnIndexed }?.state }
+        val live = state?.live?.takeIf { it.status == LivePoint.IDLE && it.offsetKey != null }
+        return LivePoint(live?.offsetKey, live?.status, state?.turnCount)
+    }
+
+    /**
+     * [block], given up the moment the chat leaves rest (a turn this device started, a load): the run's own stream
+     * takes over, and a live stream held across it would only repeat what that stream says. Null when given up.
+     */
+    private suspend fun <T> Entry.whileAtRest(block: suspend () -> T): T? = coroutineScope {
+        val work = async { block() }
+        val leaving = launch { state.first { !it.atRest() }; work.cancel() }
+        try {
+            work.await()
+        } catch (c: CancellationException) {
+            currentCoroutineContext().ensureActive()
+            null
+        } finally {
+            leaving.cancel()
+        }
+    }
+
+    /** The desktop's reconnect wait (`CloudAgentStream._getRetryDelayMs`): 1 s doubling to 30 s, a fifth either way, 60 s past ten tries. */
+    private fun watchRetryDelay(failures: Int): Long {
+        if (failures > 10) return 60_000L
+        val base = minOf(1_000L shl (failures - 1).coerceIn(0, 5), 30_000L)
+        val spread = (base * 0.2 * (Math.random() * 2 - 1)).toLong()
+        return (base + spread).coerceAtLeast(0L)
     }
 
     /** Extended mode: what the account's record has added since it was last read, shown as the turn's steps so far. */
@@ -4979,6 +5137,16 @@ class ConversationRepository(
         const val RECORD_DRIFT_RETRY_MS = 10 * 60_000L
         /** Re-reads of the record made by themselves after it fell back on the server's failure (see [recordFallBack]). */
         const val MAX_SERVER_ERROR_REREADS = 2
+        /** How often the account's list entry of an open chat at rest is asked for its status (see [watchWhileOpen]): "within a few seconds". */
+        const val WATCH_POLL_MS = 4_000L
+        /** The least time between two reads a watch sets off: a burst of the stream's updates is one change. */
+        const val WATCH_MIN_GAP_MS = 2_000L
+        /** A live stream quiet this long is asked for the chat afresh rather than resumed from its offset (the desktop's `rehydrateAfterMs`). */
+        const val WATCH_REHYDRATE_MS = 120_000L
+        /** Live streams in a row the server did not hold open (see [WATCH_HELD_MS]), after which the chat's list entry stands in (see [watchWhileOpen]). */
+        const val WATCH_LIVE_FAILURES = 3
+        /** A live stream open this long, with nothing to say, was being held: quiet, not refused. */
+        const val WATCH_HELD_MS = 10_000L
         /** The code of a record answer whose shape this build did not expect (see [loadFromRecord]): the answer came, the turns did not. */
         const val SHAPE_MISMATCH = "shape_mismatch"
         /**
