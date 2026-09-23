@@ -442,7 +442,9 @@ class TranscriptScrollPinningTest {
         compose.onNode(transcript).performScrollToNode(hasTestTag("load-older") or hasTestTag("loading-older"))
         compose.waitForIdle()
         graph.conversations.loadOlder(agentId)
-        compose.waitUntil(10_000) { graph.conversations.state(agentId).value.isLoadingOlder }
+        // The screen's line rather than the repository's flag: the screen draws a state once it has been presented off
+        // the main thread, which on a slow runner is well after the repository has it.
+        compose.waitUntil(10_000) { compose.onAllNodes(hasTestTag("loading-older")).fetchSemanticsNodes().isNotEmpty() }
         compose.waitForIdle()
         assertThat(following()).isFalse()
         val before = visibleTexts().filterNot { it.text.startsWith("Loading") || it.text == "Older messages" }
