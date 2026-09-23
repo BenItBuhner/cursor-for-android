@@ -59,6 +59,8 @@ data class CursorColors(
     val strokeSubtle: Color,
     /** `--cursor-stroke-quaternary` 4 %. */
     val strokeFaint: Color,
+    /** The soft shadow under a floating surface (popup menus): strong enough to read on a dark canvas, faint on light. */
+    val shadow: Color,
     val focus: Color,
     val accent: Color,
     val onAccent: Color,
@@ -126,6 +128,7 @@ val CursorDarkColors = CursorColors(
     stroke = DarkBase.copy(alpha = 0.12f),
     strokeSubtle = DarkBase.copy(alpha = 0.08f),
     strokeFaint = DarkBase.copy(alpha = 0.04f),
+    shadow = Color.Black.copy(alpha = 0.40f),
     focus = DarkBase.copy(alpha = 0.15f),
     accent = Color(0xFF81A1C1),
     onAccent = Color(0xFF191C22),
@@ -185,6 +188,7 @@ val CursorLightColors = CursorColors(
     stroke = LightBase.copy(alpha = 0.12f),
     strokeSubtle = LightBase.copy(alpha = 0.08f),
     strokeFaint = LightBase.copy(alpha = 0.04f),
+    shadow = Color.Black.copy(alpha = 0.10f),
     focus = LightBase.copy(alpha = 0.20f),
     accent = Color(0xFF2778C1),
     onAccent = Color(0xFFFCFCFC),
