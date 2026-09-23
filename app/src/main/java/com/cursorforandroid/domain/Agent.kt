@@ -420,9 +420,6 @@ data class ModelOption(
     /** `aliases` from `GET /v1/models`: "Alternate IDs that resolve to the same model" (`composer-latest`, `composer`, …). */
     val aliases: List<String> = emptyList(),
 ) {
-    /** True when [modelId] is this model's id or one of its aliases. */
-    fun answersTo(modelId: String): Boolean = id == modelId || modelId in aliases
-
     /** The catalog's Auto row: the one Cursor's router picks the model for, named "Auto" (the desktop's `default`). */
     val isAuto: Boolean get() = displayName.equals(AccountModel.AUTO_LABEL, ignoreCase = true) || id == AccountModel.AUTO_ID || AccountModel.AUTO_ID in aliases
     /** A parameter's name in words — "Effort", "Fast" — from the API's definition when it has one. */
