@@ -2090,6 +2090,7 @@ class ConversationRepository(
                 projectMode = false
                 recordWindow = null
                 recordEchoes = emptyMap()
+                shownMessages.clear()
                 recordEmpty = false
                 recordError = null
                 recordRefusedUntil = 0L
