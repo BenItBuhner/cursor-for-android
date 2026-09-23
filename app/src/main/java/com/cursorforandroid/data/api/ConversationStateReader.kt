@@ -111,10 +111,17 @@ class BlobCache(
      */
     suspend fun read(agentId: String, blobId: String): Held? {
         held(agentId, blobId)?.let { counts(agentId).memory.incrementAndGet(); return it }
-        val fromDisk = disk?.read(agentId, blobId) ?: return null
+        val store = disk ?: return null
+        store.read(agentId, blobId)?.let { fromDisk ->
+            counts(agentId).disk.incrementAndGet()
+            put(agentId, blobId, fromDisk, partial = false)
+            return Held(fromDisk, partial = false)
+        }
+        // A prefetched copy kept from an earlier process (see [notePrefetched]): partial still.
+        val partial = store.readPartial(agentId, blobId) ?: return null
         counts(agentId).disk.incrementAndGet()
-        put(agentId, blobId, fromDisk, partial = false)
-        return Held(fromDisk, partial = false)
+        put(agentId, blobId, partial, partial = true)
+        return Held(partial, partial = true)
     }
 
     /** A partial copy read as data no filter touches (a turn's structure, its prompt): whole after all, and kept on disk. */
@@ -140,7 +147,7 @@ class BlobCache(
     suspend fun heldIds(agentId: String, max: Int = MAX_HELD_IDS): List<String> {
         // What the server prefetched last time, where it is still held: the blobs it will want to send again.
         val noted = prefetched[agentId] ?: disk?.readIndex(agentId).orEmpty()
-        val held = noted.filter { id -> held(agentId, id) != null || disk?.has(agentId, id) == true }
+        val held = noted.filter { id -> held(agentId, id) != null || disk?.has(agentId, id) == true || disk?.hasPartial(agentId, id) == true }
         val memory = synchronized(this) {
             val prefix = "$agentId/"
             blobs.keys.filter { it.startsWith(prefix) }.map { it.removePrefix(prefix) }.asReversed()
@@ -161,7 +168,11 @@ class BlobCache(
         if (ids.isEmpty()) return
         val merged = (ids + (prefetched[agentId] ?: disk?.readIndex(agentId).orEmpty())).distinct().take(MAX_HELD_IDS)
         prefetched[agentId] = merged
-        disk?.writeIndex(agentId, merged)
+        val store = disk ?: return
+        store.writeIndex(agentId, merged)
+        // The prefetched copies onto the disk too, marked as such (see [BlobDiskStore.readPartial]): a turn built from
+        // one is rebuilt from it after a restart, and the next state read names it as held.
+        for (id in ids) held(agentId, id)?.takeIf { it.partial }?.let { store.writePartial(agentId, id, it.bytes) }
     }
 
     companion object {
