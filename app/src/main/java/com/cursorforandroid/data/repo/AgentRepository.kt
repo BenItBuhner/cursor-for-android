@@ -46,6 +46,7 @@ import com.cursorforandroid.domain.PromptFile
 import com.cursorforandroid.domain.PromptImage
 import com.cursorforandroid.domain.PendingWork
 import com.cursorforandroid.domain.RefreshStats
+import com.cursorforandroid.domain.RepoRemote
 import com.cursorforandroid.domain.RunStatus
 import com.cursorforandroid.domain.RunningScan
 import com.cursorforandroid.domain.SendDiagnostics
@@ -186,12 +187,17 @@ fun DeviceTarget.toEnvDto(): AgentEnvDto? = when (type) {
  *    default repository" as the alternative to `repos[0].url`), and this app has no such default to fall back on;
  *  - a named cloud environment sends `env` alone: the environment carries its repositories, and `repos` beside it
  *    is refused;
- *  - a pool or a machine sends `env` alone: the worker runs in its own checkout. The reference allows this for a
- *    pool; for a machine the server has been seen to answer `400 repository_required`, which is then shown as it is.
- * `autoCreatePR` stays out of every repository-less request (see [LaunchRequest.opensPullRequest]).
+ *  - a pool or a machine without a repository sends `env` alone. The reference allows this for a pool; for a machine
+ *    the server answers `400 repository_required`, which is then shown as it is.
+ * A machine or pool with a repository names it by URL, as `https://host/owner/name` ([RepoRemote]): Cursor matches it
+ * against the worker's `repo=owner/name` label and checks it through its GitHub app before routing, so a checkout that
+ * app cannot reach is refused, in the server's words. A blank branch sends no `startingRef`, as the desktop sends none
+ * for a machine unless one is picked. `autoCreatePR` stays out of every repository-less request (see
+ * [LaunchRequest.opensPullRequest]).
  */
 fun LaunchRequest.toCreateAgentDto(): CreateAgentRequestDto {
     val envDto = env.toEnvDto()
+    val onWorker = env.type == EnvType.MACHINE || env.type == EnvType.POOL
     return CreateAgentRequestDto(
         prompt = PromptEncoding.toPromptDto(prompt, images),
         agentId = agentId,
@@ -199,7 +205,12 @@ fun LaunchRequest.toCreateAgentDto(): CreateAgentRequestDto {
         name = name,
         env = envDto,
         repos = when {
-            repoUrl != null -> listOf(RepoConfigDto(url = repoUrl, startingRef = ref?.ifBlank { null }))
+            repoUrl != null -> listOf(
+                RepoConfigDto(
+                    url = if (onWorker) RepoRemote.canonical(repoUrl) ?: repoUrl else repoUrl,
+                    startingRef = ref?.ifBlank { null },
+                ),
+            )
             envDto == null -> emptyList()
             else -> null
         },
