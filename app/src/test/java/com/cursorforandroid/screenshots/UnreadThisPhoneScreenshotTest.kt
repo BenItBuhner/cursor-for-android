@@ -33,6 +33,7 @@ import com.cursorforandroid.ui.agents.AgentListUiState
 import com.cursorforandroid.ui.agents.AgentRowActions
 import com.cursorforandroid.ui.agents.Sidebar
 import com.cursorforandroid.ui.agents.SidebarCallbacks
+import com.cursorforandroid.ui.settings.SettingsCopy
 import com.cursorforandroid.ui.settings.SettingsScreen
 import com.cursorforandroid.ui.settings.SettingsTags
 import com.cursorforandroid.ui.theme.CursorTheme
@@ -194,6 +195,8 @@ class UnreadThisPhoneScreenshotTest {
             Scene { SettingsScreen(graph = graph, user = USER, isDemo = false, onOpenSidebar = null, onBack = {}) }
         }
         compose.waitUntil(30_000) { compose.onAllNodes(hasTestTag(SettingsTags.UNREAD_THIS_PHONE)).fetchSemanticsNodes().isNotEmpty() }
+        // Below the New chat page picker: the Chats group is brought up to the top.
+        compose.scrollSettingsGroupToTop(SettingsCopy.GROUP_CHATS)
         capture("149_settings_unread_this_phone")
     }
 

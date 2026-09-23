@@ -30,6 +30,7 @@ import com.cursorforandroid.ui.components.RunInterruption
 import com.cursorforandroid.ui.components.RunStopCopy
 import com.cursorforandroid.ui.components.RunStopTags
 import com.cursorforandroid.ui.conversation.ConversationScreen
+import com.cursorforandroid.ui.settings.SettingsCopy
 import com.cursorforandroid.ui.settings.SettingsScreen
 import com.cursorforandroid.ui.settings.SettingsTags
 import com.cursorforandroid.ui.theme.CursorTheme
@@ -149,6 +150,8 @@ class StopConfirmScreenshotTest {
             }
         }
         compose.waitUntil(30_000) { compose.onAllNodes(hasTestTag(SettingsTags.CONFIRM_STOP)).fetchSemanticsNodes().isNotEmpty() }
+        // Below the New chat page picker: the Chats group is brought up to the top.
+        compose.scrollSettingsGroupToTop(SettingsCopy.GROUP_CHATS)
         compose.onNodeWithTag(SettingsTags.CONFIRM_STOP).assertIsDisplayed()
         compose.onNodeWithText(RunStopCopy.SETTING_DETAIL).assertIsDisplayed()
         capture(name)
