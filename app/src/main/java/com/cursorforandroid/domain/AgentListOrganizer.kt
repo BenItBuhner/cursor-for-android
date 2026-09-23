@@ -48,6 +48,9 @@ data class AgentRow(
 
     /** A turn is going somewhere in the subtree: the working glyph on the collapsed parent's count. */
     val hasRunningDescendant: Boolean get() = children.any { it.indicator == AgentIndicator.Running || it.hasRunningDescendant }
+
+    /** The chats in this subtree with a turn going, this one included: what a Project's shortcut says is working. */
+    val workingCount: Int get() = (if (indicator == AgentIndicator.Running) 1 else 0) + children.sumOf { it.workingCount }
 }
 
 data class AgentSection(
@@ -328,6 +331,14 @@ object AgentListOrganizer {
      */
     fun recentRows(sections: List<AgentSection>): List<AgentRow> =
         sections.flatMap { it.rows }.filterNot { it.isPlaceholder || it.agent.isProjectScopedByEvidence }.distinctBy { it.agent.id }.sortedByDescending { recencyMillis(it) }
+
+    /**
+     * The New Chat pane's Project shortcuts, from sections organized without a search query: the Projects group in its
+     * own order, less the "Project (loading)" stand-ins — a registry root named and drawn from its last record stays,
+     * since it opens by its id like any Project.
+     */
+    fun projectRows(sections: List<AgentSection>): List<AgentRow> =
+        sections.firstOrNull { it.key == PROJECTS_KEY }?.rows.orEmpty().filterNot { it.isPlaceholder }
 
     /**
      * The desktop's tree: each of the [primary] (top-level) rows with the rows of [nested] that hang off it beneath
