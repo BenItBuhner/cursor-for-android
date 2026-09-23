@@ -7,7 +7,6 @@ import androidx.compose.animation.core.tween
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -25,7 +24,6 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
@@ -38,13 +36,9 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.SolidColor
-import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import com.cursorforandroid.domain.McpServer
@@ -99,7 +93,6 @@ fun ComposerPlusMenu(
     /** What the Skills page lists: the composer's `/` catalog, the same one its popover completes from. */
     commands: SlashCatalog = SlashCatalog.BUILT_IN,
 ) {
-    val colors = CursorTheme.colors
     var page by remember(expanded) { mutableStateOf(MenuPage.Root) }
     // The editor is a form the user fills in by pasting from another app, which is exactly when the process is most
     // likely to be killed. Only the edited server's id is saved, not the server: it is re-read from the store below
@@ -112,14 +105,9 @@ fun ComposerPlusMenu(
         onDismiss()
     }
 
-    DropdownMenu(
-        expanded = expanded,
-        onDismissRequest = onDismiss,
-        offset = DpOffset(0.dp, 4.dp),
-        shape = CursorTheme.shapes.lg,
-        containerColor = colors.elevated,
-        border = BorderStroke(CursorDimens.hairline, colors.stroke),
-    ) {
+    // Anchored to the "+" disc, [CursorDimens.composerPadding] in from the composer's side: the menu's start edge
+    // drops from the disc's, so its corners are concentric with the composer's (see [CursorDimens.menuRadius]).
+    CursorMenu(expanded = expanded, onDismissRequest = onDismiss) {
         AnimatedContent(
             targetState = page,
             transitionSpec = {
@@ -190,24 +178,24 @@ const val FILES_LABEL = "Files"
 @Composable
 private fun RootPage(multitaskOn: Boolean, onMultitask: () -> Unit, onMedia: () -> Unit, onFiles: (() -> Unit)?, onSkills: () -> Unit, onMcpServers: () -> Unit) {
     val colors = CursorTheme.colors
-    MenuRow(
-        icon = CursorIcons.Multitask,
-        label = "Multitask",
+    CursorMenuItem(
+        "Multitask",
+        CursorIcons.Multitask,
         subtitle = "Orchestrate multiple subagents in parallel",
+        trailing = { if (multitaskOn) Icon(CursorIcons.Check, "On", tint = colors.accent, modifier = Modifier.size(CursorDimens.menuIcon)) },
         onClick = onMultitask,
-        trailing = { if (multitaskOn) Icon(CursorIcons.Check, "On", tint = colors.accent, modifier = Modifier.size(16.dp)) },
     )
-    HairlineDivider(Modifier.padding(vertical = 4.dp))
+    CursorMenuSeparator()
     // Two pickers, each named for what it opens on: the gallery (images alone in the default mode, where the
     // documented request takes nothing else) and the document picker for every other kind of file (Extended mode).
     if (onFiles == null) {
-        MenuRow(CursorIcons.Image, MEDIA_LABEL_IMAGES, onClick = onMedia)
+        CursorMenuItem(MEDIA_LABEL_IMAGES, CursorIcons.Image, onClick = onMedia)
     } else {
-        MenuRow(CursorIcons.Image, MEDIA_LABEL_IMAGES_AND_VIDEOS, onClick = onMedia)
-        MenuRow(CursorIcons.Paperclip, FILES_LABEL, subtitle = "Any type, up to ${PromptFile.MAX_BYTES / (1024 * 1024)} MB each", onClick = onFiles)
+        CursorMenuItem(MEDIA_LABEL_IMAGES_AND_VIDEOS, CursorIcons.Image, onClick = onMedia)
+        CursorMenuItem(FILES_LABEL, CursorIcons.Paperclip, subtitle = "Any type, up to ${PromptFile.MAX_BYTES / (1024 * 1024)} MB each", onClick = onFiles)
     }
-    MenuRow(CursorIcons.Book, "Skills", onClick = onSkills, trailing = { Chevron() })
-    MenuRow(CursorIcons.Plug, "MCP Servers", onClick = onMcpServers, trailing = { Chevron() })
+    CursorMenuItem("Skills", CursorIcons.Book, trailing = { Chevron() }, onClick = onSkills)
+    CursorMenuItem("MCP Servers", CursorIcons.Plug, trailing = { Chevron() }, onClick = onMcpServers)
 }
 
 @Composable
@@ -220,20 +208,19 @@ private fun SkillsPage(prompt: String, catalog: SlashCatalog, recent: List<Strin
 
     PageHeader("Skills", onBack)
     MenuSearchField(query, onValueChange = { query = it }, placeholder = "Search or type a skill name")
-    HairlineDivider(Modifier.padding(top = 6.dp, bottom = 2.dp))
+    CursorMenuSeparator(Modifier.padding(top = 2.dp))
     Column(Modifier.heightIn(max = PageListMaxHeight).verticalScroll(rememberScrollState())) {
         if (results.isEmpty()) {
-            Text("Skill names use lowercase letters, digits and hyphens.", style = type.small, color = colors.textQuaternary, modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp))
+            Text("Skill names use lowercase letters, digits and hyphens.", style = type.small, color = colors.textQuaternary, modifier = Modifier.padding(horizontal = CursorDimens.menuTextInset, vertical = 10.dp))
         }
         results.forEach { skill ->
             val on = SlashCommands.has(prompt, skill.name)
-            MenuRow(
+            CursorMenuItem(
+                skill.command,
                 icon = null,
-                label = skill.command,
                 subtitle = skill.summary,
-                onClick = { onSelect(skill) },
-                trailing = { if (on) Icon(CursorIcons.Check, "On", tint = colors.accent, modifier = Modifier.size(16.dp)) },
-            )
+                trailing = { if (on) Icon(CursorIcons.Check, "On", tint = colors.accent, modifier = Modifier.size(CursorDimens.menuIcon)) },
+            ) { onSelect(skill) }
         }
     }
 }
@@ -249,38 +236,34 @@ private fun McpServersPage(
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
     PageHeader("MCP Servers", onBack)
-    HairlineDivider(Modifier.padding(bottom = 2.dp))
+    CursorMenuSeparator()
     if (servers.isEmpty()) {
         Text(
             "No MCP servers yet. Add an HTTP or stdio server here and every prompt from this app carries it inline.",
             style = type.small,
             color = colors.textQuaternary,
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+            modifier = Modifier.padding(horizontal = CursorDimens.menuTextInset, vertical = 8.dp),
         )
     } else {
         Column(Modifier.heightIn(max = PageListMaxHeight).verticalScroll(rememberScrollState())) {
             servers.forEach { server ->
-                MenuRow(
-                    icon = CursorIcons.Plug,
-                    label = server.name,
+                CursorMenuItem(
+                    server.name,
+                    CursorIcons.Plug,
                     subtitle = server.summary.ifBlank { server.transport.label },
-                    onClick = { onEdit(server) },
-                    trailing = {
-                        Spacer(Modifier.width(8.dp))
-                        CursorToggle(server.enabled, onCheckedChange = { onToggle(server, it) })
-                    },
-                )
+                    trailing = { CursorToggle(server.enabled, onCheckedChange = { onToggle(server, it) }) },
+                ) { onEdit(server) }
             }
         }
         Text(
             "Enabled servers are sent inline with each prompt. Tap a server to edit it.",
             style = type.small,
             color = colors.textQuaternary,
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+            modifier = Modifier.padding(horizontal = CursorDimens.menuTextInset, vertical = 6.dp),
         )
     }
-    HairlineDivider(Modifier.padding(vertical = 2.dp))
-    MenuRow(CursorIcons.Plus, "Add MCP server", onClick = onAdd)
+    CursorMenuSeparator()
+    CursorMenuItem("Add MCP server", CursorIcons.Plus, onClick = onAdd)
 }
 
 @Composable
@@ -294,38 +277,7 @@ private fun PageHeader(title: String, onBack: () -> Unit) {
 
 @Composable
 private fun Chevron() {
-    Icon(CursorIcons.ChevronRight, null, tint = CursorTheme.colors.iconQuaternary, modifier = Modifier.size(16.dp))
-}
-
-/** A menu row: optional 18dp glyph, label with optional second line, optional trailing control. */
-@Composable
-private fun MenuRow(
-    icon: ImageVector?,
-    label: String,
-    onClick: () -> Unit,
-    subtitle: String? = null,
-    trailing: (@Composable () -> Unit)? = null,
-) {
-    val colors = CursorTheme.colors
-    val type = CursorTheme.typography
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .pressable(onClick, RectangleShape)
-            .heightIn(min = 34.dp)
-            .padding(horizontal = 12.dp, vertical = if (subtitle != null) 7.dp else 0.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        if (icon != null) {
-            Icon(icon, null, tint = colors.iconSecondary, modifier = Modifier.size(18.dp))
-            Spacer(Modifier.width(10.dp))
-        }
-        Column(Modifier.weight(1f)) {
-            Text(label, style = type.base, color = colors.textPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            if (subtitle != null) Text(subtitle, style = type.small, color = colors.textTertiary, maxLines = 2, overflow = TextOverflow.Ellipsis)
-        }
-        trailing?.invoke()
-    }
+    Icon(CursorIcons.ChevronRight, null, tint = CursorTheme.colors.iconQuaternary, modifier = Modifier.size(CursorDimens.menuIcon))
 }
 
 @Composable
@@ -335,9 +287,9 @@ private fun MenuSearchField(value: String, onValueChange: (String) -> Unit, plac
     Row(
         Modifier
             .fillMaxWidth()
-            .padding(horizontal = 8.dp)
+            .padding(horizontal = CursorDimens.menuInset)
             .stylusWriting()
-            .background(colors.fillFaint, CursorTheme.shapes.base)
+            .background(colors.fillFaint, CursorTheme.shapes.menuItem)
             .heightIn(min = 30.dp)
             .padding(horizontal = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
