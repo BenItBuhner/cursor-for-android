@@ -13,9 +13,11 @@ import androidx.compose.ui.semantics.getOrNull
 import androidx.compose.ui.test.click
 import androidx.compose.ui.test.getUnclippedBoundsInRoot
 import androidx.compose.ui.test.hasAnyAncestor
+import androidx.compose.ui.test.hasClickAction
 import androidx.compose.ui.test.hasContentDescription
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.isPopup
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
@@ -52,7 +54,8 @@ import org.robolectric.annotation.GraphicsMode
  * A chat's header in the real screen, over the demo's chats, under a 24dp status bar: the controls alone in a row
  * 40dp tall whatever the font, every control's 48dp target starting at the status bar's edge and reaching 8dp over
  * the transcript, where a tap still lands on the control; the chat's name the row's accessibility label and the
- * panel's header, and Rename still in the menu. The same for an ordinary chat and a Project's.
+ * panel's header, and Rename still in the menu, whose items keep their order with Reload transcript the one way to
+ * read the chat again. The same for an ordinary chat and a Project's.
  */
 @RunWith(AndroidJUnit4::class)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
@@ -169,6 +172,16 @@ class ChatHeaderTest {
         open(agentName = CHAT)
         compose.onNodeWithContentDescription("More").performClick()
         compose.onNodeWithText("Rename").assertExists()
+    }
+
+    @Test
+    fun `the menu reloads the transcript and has no Refresh, every other item in its order`() {
+        open(agentName = CHAT)
+        compose.onNodeWithContentDescription("More").performClick()
+        compose.waitForIdle()
+        val items = compose.onAllNodes(hasAnyAncestor(isPopup()) and hasClickAction()).fetchSemanticsNodes()
+            .map { node -> node.config.getOrNull(SemanticsProperties.Text).orEmpty().joinToString("") { it.text } }
+        assertThat(items).containsExactly("Pin", "Rename", "Reload transcript", "Open on cursor.com", "Copy link", "Share…", "Share diagnostics", "Snooze", "Archive").inOrder()
     }
 
     @Test
