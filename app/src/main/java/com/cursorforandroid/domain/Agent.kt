@@ -595,8 +595,11 @@ data class AccountModel(
     /** The desktop's `default`: Cursor's router picks the model. */
     val isAuto: Boolean get() = modelId == AUTO_ID
 
-    /** What to call the model when the catalog cannot place [modelId]: "Auto" for `default`, else the id as it is. */
-    val fallbackLabel: String get() = if (isAuto) AUTO_LABEL else modelId
+    /**
+     * What to call the model before any catalog has answered: "Auto" for `default`, else the name [modelId] spells
+     * (`claude-opus-5-5-max-fast` → "Claude Opus 5.5"; see [ModelSlugs.readableName]). The id itself is what requests carry.
+     */
+    val fallbackLabel: String get() = ModelSlugs.readableName(emptyList(), modelId)
 
     companion object {
         const val AUTO_ID = "default"
@@ -610,25 +613,19 @@ data class AccountModel(
 
 /**
  * The picker entry a request with `model.id` [id] and `model.params` [params] was built from, or null when this
- * catalog no longer lists the model. The id decides: it names the model whatever has happened to its parameters
- * since, so the variant is the nearest one to [params] (see [ModelOption.variantNearest]) rather than an exact
- * match or nothing.
+ * catalog cannot place it. An id or alias the catalog lists decides: it names the model whatever has happened to its
+ * parameters since, so the variant is the nearest one to [params] (see [ModelOption.variantNearest]). Any other
+ * spelling — a legacy slug, a variant string — is read by [ModelSlugs.resolve].
  */
-fun List<ModelOption>.choiceFor(id: String, params: List<ModelParam>): ModelChoice? {
-    val model = firstOrNull { it.id == id } ?: return null
-    return ModelChoice(model, model.variantNearest(params))
-}
+fun List<ModelOption>.choiceFor(id: String, params: List<ModelParam>): ModelChoice? = ModelSlugs.resolve(this, id, params)
 
 /**
- * The picker entry the account's record names (see [AccountModel]): the catalog row whose id — or one of whose
- * aliases — is the record's `model_id`, and for `default` the Auto row; the variant is the nearest one to the
- * record's parameters. Null when the catalog has no such row (a model it no longer lists, or a catalog without an
- * Auto row): the record's own name then stands in for the label (see [AccountModel.fallbackLabel]).
+ * The picker entry the account's record names (see [AccountModel]): its `model_id` read by [ModelSlugs.resolve] —
+ * the catalog row with that id or alias, the Auto row for `default`, or the model and variant a slug such as
+ * `claude-opus-5-5-max-fast` spells — the record's own parameters over the ones the id spells. Null when the catalog
+ * cannot place it: [ModelSlugs.readableName] then names it.
  */
-fun List<ModelOption>.choiceFor(model: AccountModel): ModelChoice? {
-    val option = firstOrNull { it.answersTo(model.modelId) } ?: (if (model.isAuto) autoOption() else null) ?: return null
-    return ModelChoice(option, option.variantNearest(model.params))
-}
+fun List<ModelOption>.choiceFor(model: AccountModel): ModelChoice? = ModelSlugs.resolve(this, model.modelId, model.params)
 
 /** The catalog's Auto row (see [ModelOption.isAuto]), or null when this catalog offers none. */
 fun List<ModelOption>.autoOption(): ModelOption? = firstOrNull { it.isAuto }

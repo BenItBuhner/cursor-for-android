@@ -28,6 +28,7 @@ import com.cursorforandroid.domain.GoalTranscript
 import com.cursorforandroid.domain.ModelChoice
 import com.cursorforandroid.domain.ModelOption
 import com.cursorforandroid.domain.ModelResolution
+import com.cursorforandroid.domain.ModelSlugs
 import com.cursorforandroid.domain.ModelVariant
 import com.cursorforandroid.domain.PromptFile
 import com.cursorforandroid.domain.PromptImage
@@ -100,6 +101,8 @@ data class FollowUpModelState(
     val current: ModelChoice? = null,
     /** Nothing reports the chat's model: [currentLabel] is Auto by assumption, and the picker says so. */
     val currentAssumed: Boolean = false,
+    /** For a model the catalog cannot place: the parameters its id spells and the id the chat keeps running on. */
+    val currentDetail: String? = null,
     val override: ModelChoice? = null,
     /**
      * The mode the next follow-up asks for; null keeps the conversation's mode. Agent and plan travel on the documented
@@ -396,7 +399,14 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
         // A pick restored before the catalogue answered is a stand-in named from the draft: the catalogue's entry takes
         // its place by id, its variant the one nearest the saved parameters.
         val override = local.override?.let { o -> models.choiceFor(o.model.id, o.params) ?: o }
-        return local.copy(models = models, currentLabel = resolved.label, current = resolved.choice, currentAssumed = resolved.isAssumed, override = override)
+        return local.copy(
+            models = models,
+            currentLabel = resolved.label,
+            current = resolved.choice,
+            currentAssumed = resolved.isAssumed,
+            currentDetail = resolved.detail,
+            override = override,
+        )
     }
 
     /** The picker with [saved]'s mode pill and model, as the draft left them. */
@@ -404,12 +414,13 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
         copy(mode = saved.mode, override = saved.model?.let(::choiceOf))
 
     /**
-     * The picker entry a saved model names: the catalogue's own when it lists the model, else a stand-in carrying the
-     * id, the parameters and the name, which is all a request needs and all the chip shows.
+     * The picker entry a saved model names: the catalogue's own when it places the model, else a stand-in carrying the
+     * id as it was saved, the parameters and the name, which is all a request needs and all the chip shows.
      */
     private fun choiceOf(model: DraftModel): ModelChoice {
-        graph.catalog.models.value.choiceFor(model.id, model.params)?.let { return it }
-        val name = model.label ?: model.id
+        val models = graph.catalog.models.value
+        models.choiceFor(model.id, model.params)?.let { return it }
+        val name = model.label?.takeIf { it.isNotBlank() && it != model.id } ?: ModelSlugs.readableName(models, model.id)
         val variant = model.params.takeIf { it.isNotEmpty() }?.let { ModelVariant(name, it, isDefault = true) }
         return ModelChoice(ModelOption(model.id, name, variants = listOfNotNull(variant)), variant)
     }

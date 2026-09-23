@@ -708,7 +708,10 @@ fun ConversationScreen(
             noModelRow = when {
                 picker.current != null -> null
                 picker.currentAssumed -> NoModelRow("Current model", "Auto, assumed: Cursor doesn't report this chat's model to the app. Follow-ups keep the model it has been using.")
-                else -> NoModelRow("Current model", picker.currentLabel ?: "Keep the model this chat has been using")
+                else -> NoModelRow(
+                    "Current model",
+                    picker.currentLabel?.let { label -> listOfNotNull(label, picker.currentDetail).joinToString(" · ") } ?: "Keep the model this chat has been using",
+                )
             },
         )
     }
