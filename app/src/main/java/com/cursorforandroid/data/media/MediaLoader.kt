@@ -131,20 +131,35 @@ class MediaLoader(
         is MediaRef.Remote -> RemoteUrls.fetchable(ref.url)
         is MediaRef.Artifact -> artifacts.downloadUrl(ref.agentId, ref.path)
         is MediaRef.Store -> storeUrl(ref)
-        is MediaRef.Local -> "file://${ref.path}"
+        is MediaRef.Local -> localPlaybackUrl(ref)
         // The workspace hands out bytes, not a URL: they are kept as a file of the cache and played from there.
         is MediaRef.Workspace -> "file://${materialize(ref, ref.label, wake).absolutePath}"
         is MediaRef.Inline -> throw MediaProblemException(MediaProblem.NotReadable("Embedded recordings aren't supported", null))
         is MediaRef.Unavailable -> throw MediaProblemException(MediaProblem.NotReadable("This file isn't available", unavailableDetail(ref)))
     }
 
-    /** A poster frame and duration for the video at [ref]; null (and remembered as such) when unavailable. */
+    /**
+     * A poster frame and duration for the video at [ref], fitting [maxPx] square; null when unavailable, and
+     * remembered as such once the file was there to probe. Kept per size: a tile's small poster is not the viewer's.
+     */
     suspend fun videoPoster(ref: MediaRef, maxPx: Int): VideoPoster? = onMain {
-        posters.get(ref.cacheKey)?.let { return@onMain it }
+        val key = "${ref.cacheKey}@$maxPx"
+        posters.get(key)?.let { return@onMain it }
         val url = runCatching { resolvePlaybackUrl(ref) }.getOrElse { return@onMain null }
         val poster = probe(url, maxPx) ?: VideoPoster(frame = null, durationMs = null)
-        posters.put(ref.cacheKey, poster)
+        posters.put(key, poster)
         poster
+    }
+
+    /**
+     * A file of this device, for the player: named as gone when it is not there rather than handed on for the player
+     * to fail on. An APK asset is the player's own to open.
+     */
+    private suspend fun localPlaybackUrl(ref: MediaRef.Local): String {
+        val url = "file://${ref.path}"
+        if (url.startsWith(ASSET_PREFIX)) return url
+        if (!withContext(Dispatchers.IO) { File(ref.path).isFile }) throw MediaProblemException(MediaProblem.NotReadable(NOT_ON_DEVICE, null))
+        return url
     }
 
     /**
@@ -200,7 +215,7 @@ class MediaLoader(
         val partial = File(dir, "${target.name}.part")
         try {
             when (ref) {
-                is MediaRef.Local -> File(ref.path).takeIf { it.isFile }?.copyTo(partial, overwrite = true) ?: throw MediaProblemException(MediaProblem.NotReadable("This file is no longer on this device", null))
+                is MediaRef.Local -> File(ref.path).takeIf { it.isFile }?.copyTo(partial, overwrite = true) ?: throw MediaProblemException(MediaProblem.NotReadable(NOT_ON_DEVICE, null))
                 is MediaRef.Inline -> partial.writeBytes(ref.bytes)
                 is MediaRef.Store -> partial.writeBytes(storeReads().readBytes(ref))
                 is MediaRef.Workspace -> partial.writeBytes(unwrappedFile(workspaceBytes(ref, wake), ref.label))
@@ -302,7 +317,7 @@ class MediaLoader(
         // Read here rather than handed to Coil as a file: for a file Coil decodes through ImageDecoder, which the
         // JVM test renderer lacks, while bytes go through BitmapFactory like an inline image. The files are small.
         is MediaRef.Local -> withContext(Dispatchers.IO) {
-            File(ref.path).takeIf { it.isFile }?.readBytes() ?: throw MediaProblemException(MediaProblem.NotReadable("This file is no longer on this device", null))
+            File(ref.path).takeIf { it.isFile }?.readBytes() ?: throw MediaProblemException(MediaProblem.NotReadable(NOT_ON_DEVICE, null))
         }
         is MediaRef.Inline -> ref.bytes
         is MediaRef.Workspace -> workspaceBytes(ref, wake)
@@ -393,7 +408,10 @@ class MediaLoader(
         const val MEDIA_DIR = "media"
         /** Under [MEDIA_DIR]: the files the panel and the file viewer hand to the media viewer ([keep]). */
         private const val OPENED_DIR = "opened"
-        private const val POSTER_AT_MS = 1_500L
+        /** Where into a recording its poster is read: a third of the way in, at most this far. A tile's poster is read at the same frame. */
+        internal const val POSTER_AT_MS = 1_500L
+        /** A file of this device that is not there (any more): the one thing [MediaRef.Local] can go wrong with. */
+        const val NOT_ON_DEVICE = "This file is no longer on this device"
         /** A header and one frame's worth of range requests; anything slower than this is a network that has gone. */
         private const val PROBE_TIMEOUT_MS = 15_000L
         /** What is read again of a response no decoder took, to say what it was: more than any page or wrapper needs. */
