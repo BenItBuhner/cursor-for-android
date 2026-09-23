@@ -23,7 +23,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.testTag
@@ -31,6 +33,7 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.onLongClick
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import androidx.core.net.toUri
 import androidx.lifecycle.compose.LifecycleResumeEffect
@@ -49,6 +52,7 @@ import com.cursorforandroid.domain.SignInMethod
 import com.cursorforandroid.domain.UpdatePhase
 import com.cursorforandroid.domain.UpdateState
 import com.cursorforandroid.notifications.LiveNotifications
+import com.cursorforandroid.ui.agents.AgentListUiState
 import com.cursorforandroid.ui.agents.Avatar
 import com.cursorforandroid.ui.components.CursorButton
 import com.cursorforandroid.ui.components.CursorHeader
@@ -126,10 +130,15 @@ fun SettingsScreen(
     modifier: Modifier = Modifier,
     /** Opens the What's new page, from the row beneath the version while the installed version's notes are unread. */
     onOpenWhatsNew: () -> Unit = {},
+    /** The chats list the New Chat pane draws from, for the New chat page picker's miniatures of it. */
+    newChatList: AgentListUiState = AgentListUiState(),
 ) {
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
     val scope = rememberCoroutineScope()
+    val density = LocalDensity.current
+    // This screen fills the pane the New Chat page does, so its size is the page's for the picker's miniatures.
+    var pane by remember { mutableStateOf(DpSize(411.dp, 914.dp)) }
     val uriHandler = LocalUriHandler.current
     val themeMode by graph.prefs.themeMode.collectAsStateWithLifecycle(initialValue = ThemeMode.System)
     val oledBlack by graph.prefs.oledBlack.collectAsStateWithLifecycle(initialValue = false)
@@ -147,7 +156,12 @@ fun SettingsScreen(
     var accountOpen by rememberSaveable { mutableStateOf(false) }
     var debugOpen by rememberSaveable { mutableStateOf(false) }
 
-    Column(modifier.fillMaxSize().background(colors.canvas)) {
+    Column(
+        modifier
+            .fillMaxSize()
+            .onSizeChanged { size -> with(density) { pane = DpSize(size.width.toDp(), size.height.toDp()) } }
+            .background(colors.canvas),
+    ) {
         CursorHeader(
             title = "Settings",
             leading = {
@@ -191,6 +205,15 @@ fun SettingsScreen(
                 HairlineDivider()
                 ShortenProjectsRow(graph)
             }
+
+            Group(NewChatHomePickerCopy.GROUP)
+            NewChatHomeCard(
+                graph,
+                list = newChatList,
+                projectsAvailable = isDemo || extendedMode,
+                withHeader = onOpenSidebar != null,
+                pageSize = miniaturePage(pane),
+            )
 
             Group(SettingsCopy.GROUP_CHATS)
             SettingsCard {

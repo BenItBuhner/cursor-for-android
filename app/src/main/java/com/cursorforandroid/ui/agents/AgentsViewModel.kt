@@ -89,6 +89,11 @@ data class AgentListUiState(
      * newest first — so both surfaces always agree on which chats the filters let through.
      */
     val recentRows: List<AgentRow> = emptyList(),
+    /**
+     * The New Chat pane's Project shortcuts: the sidebar's Projects group, never narrowed by the sidebar search, without
+     * the "Project (loading)" stand-ins, which have nothing to open yet.
+     */
+    val projectRows: List<AgentRow> = emptyList(),
     val allAgents: List<Agent> = emptyList(),
     val repoSlugs: List<String> = emptyList(),
     val prefs: ListPreferences = ListPreferences(),
@@ -219,10 +224,13 @@ class AgentsViewModel(
         val sections = AgentListOrganizer.organize(list.agents, prefs, local, q, nowMillis = now, unavailableProjects = device.unavailableProjects, knownRoots = device.knownRoots, memberCounts = device.memberCounts)
         // The sidebar search narrows the sidebar only; while it is in use the recents are organized without it.
         val recentRows = if (q.isBlank()) AgentListOrganizer.recentRows(sections) else AgentListOrganizer.recentRows(list.agents, prefs, local, nowMillis = now)
+        val unsearched = if (q.isBlank()) sections else AgentListOrganizer.organize(list.agents, prefs, local, nowMillis = now, unavailableProjects = device.unavailableProjects, knownRoots = device.knownRoots, memberCounts = device.memberCounts)
+        val projectRows = AgentListOrganizer.projectRows(unsearched)
         val rows = list.agents.map { AgentListOrganizer.toRow(it, local, now) }
         AgentListUiState(
             sections = sections,
             recentRows = recentRows,
+            projectRows = projectRows,
             allAgents = list.agents,
             repoSlugs = list.agents.mapNotNull { it.repoSlug }.distinct().sortedBy { it.lowercase() },
             prefs = prefs,
