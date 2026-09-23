@@ -101,10 +101,9 @@ data class TranscriptLoadDiagnostics(
     }
 
     /**
-     * One message the account took behind a turn: where it is shown ([place]: `transcript`, a Project's; `card`, a
-     * chat's), the run the account named for it when it answered ([runTail], null when it named none), the run it waits
-     * behind ([behindTail]), and whether the account's last list still named it ([listed], null when not known here).
->>>>>>> 12442d75 (Beta engine: big Projects paint from the prewarm, reach back to the last prompt and messages, and reopen from disk)
+     * One message the account took behind a turn, on the card until its run starts: the run the account named for it
+     * when it answered ([runTail], null when it named none), the run it waits behind ([behindTail]), and whether the
+     * account's last list still named it ([listed]).
      */
     data class QueuedLine(val runTail: String?, val behindTail: String?, val listed: Boolean) {
         val text: String get() = "[run=${runTail ?: "none"} behind=${behindTail ?: "-"} listed=$listed]"

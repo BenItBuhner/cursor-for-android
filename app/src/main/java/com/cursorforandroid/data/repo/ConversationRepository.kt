@@ -1702,7 +1702,6 @@ class ConversationRepository(
                         fallback = load.fallback,
                     )
                 },
->>>>>>> 12442d75 (Beta engine: big Projects paint from the prewarm, reach back to the last prompt and messages, and reopen from disk)
                 status = run {
                     val latest = e.latestRun()
                     val row = agents.agent(agentId)
