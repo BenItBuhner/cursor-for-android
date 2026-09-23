@@ -111,6 +111,21 @@ class ShownMessagesTest {
     }
 
     @Test
+    fun `the same call read in other words in its turn is the newer reading, and only that one is kept`() {
+        val shown = ShownMessages()
+        shown.keep(both, "record")
+        val corrected = "Reloaded: the scanner is on day three."
+        val reread = listOf(asked, work("w0"), message("m0", "c0", corrected), footer("f0"), nextAsked, message("m1", "c1", nextAnswer), footer("f1"))
+        assertThat(shown.keep(reread, "record")).isEqualTo(reread)
+        // Read back in without it: the newer words come back, not both.
+        val short = listOf(asked, work("w0"), footer("f0"), nextAsked, message("m1", "c1", nextAnswer), footer("f1"))
+        assertThat(replies(shown.keep(short, "record"))).containsExactly(asked.text to listOf(corrected), nextAsked.text to listOf(nextAnswer)).inOrder()
+        // Another call of the turn is another message, whatever it says.
+        val another = listOf(asked, work("w0"), message("m2", "c2", "And one more thing."), footer("f0"), nextAsked, message("m1", "c1", nextAnswer), footer("f1"))
+        assertThat(replies(shown.keep(another, "record")).first().second).containsExactly(corrected, "And one more thing.")
+    }
+
+    @Test
     fun `a turn read again without its message keeps it, after its group or ahead of the footer`() {
         val before = listOf(asked, work("w0"), message("m0", "c0", answer), footer("f0"))
         val short = listOf(asked, work("w0"), footer("f0"))

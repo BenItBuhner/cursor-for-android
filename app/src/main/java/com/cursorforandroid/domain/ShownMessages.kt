@@ -2,8 +2,8 @@ package com.cursorforandroid.domain
 
 /**
  * The published transcript's one hard rule for a Project coordinator's word to the user: a message shown with its
- * body stays shown. A newer read may move it to its own turn, grow it, or give it in another copy; none may take it
- * off the screen.
+ * body stays shown. A newer read may move it to its own turn, grow it, give it in another copy, or read the same call
+ * of the same turn in other words (a record corrected, a chat reloaded); none may take it off the screen.
  *
  * Every source a chat is drawn from knows the coordinator's messages in its own shape, or not at all — the account's
  * record by the `SendMessage` calls of a turn, a run's log and its stream by their events, the saved copy by what
@@ -33,9 +33,15 @@ class ShownMessages(
     /** By text, the latest shown last. */
     private val shown = LinkedHashMap<String, Shown>()
 
+    /** The text a call last showed in its turn, by the turn's words and the call's id: its newer reading replaces it. */
+    private val byCall = HashMap<String, String>()
+
     val size: Int get() = shown.size
 
-    fun clear() = shown.clear()
+    fun clear() {
+        shown.clear()
+        byCall.clear()
+    }
 
     /**
      * [items] — built from [source] — with every message shown before and missing from them put back (see
@@ -53,6 +59,7 @@ class ShownMessages(
                     val sent = CoordinatorTranscript.sentBy(item, step) ?: continue
                     (present ?: ArrayList<CoordinatorTranscript.Sent>().also { present = it }) += sent
                     shown.remove(sent.text)
+                    reworded(sent, head)?.let { shown.remove(it) }
                     shown[sent.text] = Shown(sent, headId, head, previous, source)
                 }
                 else -> Unit
@@ -60,6 +67,7 @@ class ShownMessages(
             previous = item.id
         }
         while (shown.size > capacity) shown.remove(shown.keys.first())
+        if (byCall.size > 2 * capacity) byCall.values.retainAll(shown.keys)
         if (shown.isEmpty()) return items
         val have = present.orEmpty()
         val missing = shown.values.filter { s -> have.none { it.sameAs(s.sent) } }
@@ -99,6 +107,13 @@ class ShownMessages(
             if (i < items.size) out += items[i]
         }
         return out
+    }
+
+    /** The text [sent]'s call showed before in the turn under [head], where it read otherwise then. */
+    private fun reworded(sent: CoordinatorTranscript.Sent, head: String?): String? {
+        val call = sent.call.callId.takeIf { it.isNotBlank() } ?: return null
+        val before = byCall.put("$head\n$call", sent.text)?.takeIf { it != sent.text } ?: return null
+        return before.takeIf { shown[it]?.let { s -> s.sent.call.callId == call && s.head == head } == true }
     }
 
     private fun headKey(item: TimelineItem): String? = when (item) {
