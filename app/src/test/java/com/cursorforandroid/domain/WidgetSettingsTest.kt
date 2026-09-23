@@ -19,6 +19,8 @@ class WidgetSettingsTest {
             cornerStyle = CornerStyle.Glass,
         )
         assertThat(ChatsWidgetSettings.decode(settings.encode())).isEqualTo(settings)
+        val projects = ChatsWidgetSettings(mode = WidgetMode.Projects, layout = WidgetLayout.Small, cornerAction = CornerAction.OpenApp)
+        assertThat(ChatsWidgetSettings.decode(projects.encode())).isEqualTo(projects)
     }
 
     @Test

@@ -17,11 +17,19 @@ enum class WidgetMode(
     Recent("Recent", "Recent chats", "Every chat, newest first", "No chats yet"),
     Running("Running", "Running agents", "Only the agents working right now", "No agents running"),
     Pinned("Pinned", "Pinned chats", "The chats you pinned in the sidebar", "No pinned chats"),
+    /** Every Project as a shortcut: one row each, in its icon and colour, that opens the Project's coordinator. */
+    Projects("Projects", "All Projects", "Every Project, one tap from its coordinator", "No Projects yet"),
     /** One Project's chats: its coordinator first, then the workers and side chats nested under it. */
     Project("Project", "One Project", "A Project's coordinator and its chats", "No chats in this Project yet");
 
+    /** The choice this mode is made under: one "Projects" choice holds both the Projects list and one Project's. */
+    val choice: WidgetMode get() = if (this == Project) Projects else this
+
     companion object {
         val Default = Recent
+
+        /** What the configuration screen offers, one segment each; see [choice]. */
+        val choices: List<WidgetMode> = listOf(Recent, Running, Pinned, Projects)
 
         /** The stored name, tolerating anything a previous build may have written. */
         fun parse(raw: String?): WidgetMode = entries.firstOrNull { it.name == raw } ?: Default
@@ -46,6 +54,10 @@ object WidgetList {
         zone: ZoneId = ZoneId.systemDefault(),
         /** The Project a [WidgetMode.Project] widget lists; ignored by the other modes. */
         projectId: String? = null,
+        /** The registry's Project roots (see [KnownRoot]), which [WidgetMode.Projects] lists as the sidebar does. */
+        knownRoots: Collection<KnownRoot> = emptyList(),
+        /** The account's member count per Project, which [WidgetMode.Projects] counts by as the sidebar does. */
+        memberCounts: Map<String, Int> = emptyMap(),
     ): List<AgentRow> = when (mode) {
         // The New Chat pane's recent list: every row the Chats filters let through, newest first. Sidebar search
         // is a find-in-rail, not a second filter on this list.
@@ -67,7 +79,30 @@ object WidgetList {
         // the Status filter does not apply inside it (a Project's chats are shown under it whatever their state,
         // as in the sidebar), only the archive rule does.
         WidgetMode.Project -> projectRows(projectId, agents, prefs, local, nowMillis, zone)
+        WidgetMode.Projects -> projectShortcuts(agents, prefs, local, nowMillis, zone, knownRoots, memberCounts)
     }.take(MAX_ROWS)
+
+    /**
+     * The sidebar's Projects group, a shortcut each: every live Project — the registry's stand-ins for the ones the
+     * list holds no row for among them — in the group's order, each row carrying its subtree so it can count its chats
+     * and say whether any of them is working. The group answers to the archive rule alone (see
+     * [AgentListOrganizer.isListed]), and so does this list, whatever the Archived filter says: an archived Project, or
+     * a Project still loading under no name, is no shortcut, and an archived chat is not counted under its Project.
+     */
+    private fun projectShortcuts(
+        agents: List<Agent>,
+        prefs: ListPreferences,
+        local: LocalAgentState,
+        nowMillis: Long,
+        zone: ZoneId,
+        knownRoots: Collection<KnownRoot>,
+        memberCounts: Map<String, Int>,
+    ): List<AgentRow> {
+        val live = prefs.copy(statuses = StatusFilter.entries.toSet() - StatusFilter.Archived)
+        return AgentListOrganizer.organize(agents, live, local, nowMillis = nowMillis, zone = zone, knownRoots = knownRoots, memberCounts = memberCounts)
+            .firstOrNull { it.key == AgentListOrganizer.PROJECTS_KEY }?.rows.orEmpty()
+            .filterNot { it.isPlaceholder || it.agent.isArchived }
+    }
 
     private fun projectRows(projectId: String?, agents: List<Agent>, prefs: ListPreferences, local: LocalAgentState, nowMillis: Long, zone: ZoneId): List<AgentRow> {
         if (projectId == null) return emptyList()

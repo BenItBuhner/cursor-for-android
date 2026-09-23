@@ -108,9 +108,26 @@ fun ChatsWidgetOptions(settings: ChatsWidgetSettings, snapshot: WidgetSnapshot, 
         }
 
         OptionGroup(stringResource(R.string.widget_configure_list)) {
-            SegmentedControl(WidgetMode.entries.map { it.title }, settings.mode.ordinal, onSelect = { onChange(settings.copy(mode = WidgetMode.entries[it])) }, modifier = Modifier.testTag("option-list"))
-            if (settings.mode == WidgetMode.Project) {
-                ProjectRow(snapshot.projects, settings.projectId, onPick = { onChange(settings.copy(projectId = it)) })
+            SegmentedControl(
+                WidgetMode.choices.map { it.title },
+                WidgetMode.choices.indexOf(settings.mode.choice),
+                onSelect = { index -> WidgetMode.choices[index].takeIf { it != settings.mode.choice }?.let { onChange(settings.copy(mode = it)) } },
+                modifier = Modifier.testTag("option-list"),
+            )
+            if (settings.mode.choice == WidgetMode.Projects) {
+                ProjectRow(
+                    snapshot.projects,
+                    projectId = settings.projectId.takeIf { settings.mode == WidgetMode.Project },
+                    onPick = { id -> onChange(if (id == null) settings.copy(mode = WidgetMode.Projects) else settings.copy(mode = WidgetMode.Project, projectId = id)) },
+                )
+                if (!snapshot.projectsAvailable) {
+                    Text(
+                        stringResource(R.string.widget_configure_projects_extended_mode),
+                        style = type.small,
+                        color = colors.textQuaternary,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp).testTag("option-projects-extended-mode"),
+                    )
+                }
             }
         }
 
@@ -146,7 +163,12 @@ fun ChatsWidgetOptions(settings: ChatsWidgetSettings, snapshot: WidgetSnapshot, 
             }
         }
 
-        Text(stringResource(R.string.widget_configure_note), style = type.small, color = colors.textQuaternary, modifier = Modifier.padding(top = 12.dp, start = 2.dp))
+        Text(
+            stringResource(if (settings.mode == WidgetMode.Projects) R.string.widget_configure_note_projects else R.string.widget_configure_note),
+            style = type.small,
+            color = colors.textQuaternary,
+            modifier = Modifier.padding(top = 12.dp, start = 2.dp),
+        )
     }
 }
 
@@ -162,10 +184,13 @@ fun WidgetAppearanceOptions(appearance: WidgetAppearance, onChange: (WidgetAppea
     OptionSlider(appearance.opacity, WidgetAppearance.MIN_OPACITY..100, step = 5, onChange = { onChange(appearance.copy(opacity = it)) }, modifier = Modifier.testTag("option-opacity")) { "$it%" }
 }
 
-/** The Project a [WidgetMode.Project] widget lists: its icon and name, and a sheet of the account's Projects to pick from. */
+/**
+ * Which Projects the widget lists: all of them ([WidgetMode.Projects], a null [projectId]) or one Project's chats
+ * ([WidgetMode.Project]), and a sheet to pick between them.
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun ProjectRow(projects: List<Agent>, projectId: String?, onPick: (String) -> Unit) {
+private fun ProjectRow(projects: List<Agent>, projectId: String?, onPick: (String?) -> Unit) {
     val colors = CursorTheme.colors
     var open by remember { mutableStateOf(false) }
     val chosen = projects.firstOrNull { it.id == projectId }
@@ -178,12 +203,20 @@ private fun ProjectRow(projects: List<Agent>, projectId: String?, onPick: (Strin
             .testTag("option-project"),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Icon(CursorIcons.project(chosen?.projectAppearance?.icon), null, tint = colors.projectTone(chosen?.projectAppearance?.colorId), modifier = Modifier.size(17.dp))
+        if (projectId == null) {
+            Icon(CursorIcons.Layers, null, tint = colors.iconSecondary, modifier = Modifier.size(17.dp))
+        } else {
+            Icon(CursorIcons.project(chosen?.projectAppearance?.icon), null, tint = colors.projectTone(chosen?.projectAppearance?.colorId), modifier = Modifier.size(17.dp))
+        }
         Spacer(Modifier.width(12.dp))
         Text(
-            chosen?.name ?: stringResource(R.string.widget_configure_project_none),
+            when {
+                projectId == null -> stringResource(R.string.widget_configure_projects_all)
+                chosen != null -> chosen.name
+                else -> stringResource(R.string.widget_configure_project_none)
+            },
             style = CursorTheme.typography.base,
-            color = if (chosen != null) colors.textPrimary else colors.textTertiary,
+            color = if (projectId == null || chosen != null) colors.textPrimary else colors.textTertiary,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier.weight(1f),
@@ -193,26 +226,37 @@ private fun ProjectRow(projects: List<Agent>, projectId: String?, onPick: (Strin
     if (open) {
         CursorSheet(onDismiss = { open = false }) { dismiss ->
             SheetHeader(stringResource(R.string.widget_configure_project))
+            ProjectChoice(stringResource(R.string.widget_configure_projects_all), picked = projectId == null, onClick = { onPick(null); dismiss() }) {
+                Icon(CursorIcons.Layers, null, tint = colors.iconSecondary, modifier = Modifier.size(17.dp))
+            }
             if (projects.isEmpty()) {
                 Text("No Projects in the list yet", style = CursorTheme.typography.small, color = colors.textQuaternary, modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp))
             }
             projects.forEach { project ->
-                Row(
-                    Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 8.dp)
-                        .pressable({ onPick(project.id); dismiss() }, CursorTheme.shapes.base)
-                        .heightIn(min = CursorDimens.listRow)
-                        .padding(horizontal = 12.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
+                ProjectChoice(project.name, picked = project.id == projectId, onClick = { onPick(project.id); dismiss() }) {
                     Icon(CursorIcons.project(project.projectAppearance?.icon), null, tint = colors.projectTone(project.projectAppearance?.colorId), modifier = Modifier.size(17.dp))
-                    Spacer(Modifier.width(12.dp))
-                    Text(project.name, style = CursorTheme.typography.base, color = colors.textPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
-                    if (project.id == projectId) Icon(CursorIcons.Check, null, tint = colors.accent, modifier = Modifier.size(16.dp))
                 }
             }
             Spacer(Modifier.size(12.dp))
         }
+    }
+}
+
+@Composable
+private fun ProjectChoice(label: String, picked: Boolean, onClick: () -> Unit, icon: @Composable () -> Unit) {
+    val colors = CursorTheme.colors
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 8.dp)
+            .pressable(onClick, CursorTheme.shapes.base)
+            .heightIn(min = CursorDimens.listRow)
+            .padding(horizontal = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        icon()
+        Spacer(Modifier.width(12.dp))
+        Text(label, style = CursorTheme.typography.base, color = colors.textPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+        if (picked) Icon(CursorIcons.Check, null, tint = colors.accent, modifier = Modifier.size(16.dp))
     }
 }

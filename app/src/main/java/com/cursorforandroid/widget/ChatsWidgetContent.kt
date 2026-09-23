@@ -2,10 +2,13 @@ package com.cursorforandroid.widget
 
 import android.appwidget.AppWidgetManager
 import android.content.Context
+import android.content.res.ColorStateList
 import android.os.Build
 import android.widget.RemoteViews
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
@@ -63,12 +66,18 @@ import com.cursorforandroid.util.TimeFormat
 object WidgetSizes {
     /** A 2x1 cell: one line. */
     val SMALL = DpSize(110.dp, 40.dp)
+    /**
+     * Wider one-line cells, 3x1 to 5x1 on a typical grid. A list of chats reads the same on one line at any width, but
+     * a Projects widget fits as many Projects as the line has room for, and a Glance render knows its width only as
+     * the size it is drawn for — so the line is drawn once more for each of these.
+     */
+    val SMALL_WIDE: List<DpSize> = listOf(170, 250, 330).map { DpSize(it.dp, 40.dp) }
     /** The 4x2 default: header and rows. */
     val MEDIUM = DpSize(180.dp, 110.dp)
     /** 4x4 and up: header and two-line rows. */
     val LARGE = DpSize(250.dp, 230.dp)
 
-    val all: Set<DpSize> = setOf(SMALL, MEDIUM, LARGE)
+    val all: Set<DpSize> = setOf(SMALL) + SMALL_WIDE + setOf(MEDIUM, LARGE)
 
     /** The arrangement for [size] under [WidgetLayout.Auto]. */
     fun layoutFor(size: DpSize): WidgetLayout = when {
@@ -112,9 +121,16 @@ fun ChatsWidgetContent(
     val title = remember(settings.mode, settings.projectId, snapshot) { snapshot.title(settings) }
     val corner = CornerButtonSpec.of(context, settings, layout)
 
+    // The Projects list on one line is a strip of Project icons, when the line has room for more than one.
+    val stripSlots = if (layout == WidgetLayout.Small && settings.mode == WidgetMode.Projects && !snapshot.isSignedOut && rows.isNotEmpty()) projectSlots(size.width, corner) else 0
+
     Box(GlanceModifier.fillMaxSize().appWidgetBackground().surface(palette)) {
         when (layout) {
-            WidgetLayout.Small -> SmallLine(title, smallDetail(context, snapshot, rows, settings, refreshing), palette, corner, appWidgetId, refreshing)
+            WidgetLayout.Small -> if (stripSlots >= MIN_STRIP_SLOTS) {
+                ProjectStrip(rows, settings, palette, corner, appWidgetId, refreshing, stripSlots)
+            } else {
+                SmallLine(title, smallDetail(context, snapshot, rows, settings, refreshing), palette, corner, appWidgetId, refreshing)
+            }
             else -> Column(GlanceModifier.fillMaxSize()) {
                 Header(title, palette, appWidgetId, refreshing, settings)
                 // Whatever follows the header takes the rest of the widget.
@@ -126,10 +142,10 @@ fun ChatsWidgetContent(
                     // it asks for the app, whose start is what fills the cache.
                     rows.isEmpty() && !snapshot.hasLoaded && refreshing -> Notice(context.getString(R.string.widget_loading), palette, body)
                     rows.isEmpty() && !snapshot.hasLoaded -> Notice(context.getString(R.string.widget_open_app), palette, body)
-                    rows.isEmpty() -> Notice(settings.mode.emptyText, palette, body)
+                    rows.isEmpty() -> Notice(emptyText(context, snapshot, settings.mode), palette, body)
                     else -> LazyColumn(body.padding(horizontal = 8.dp)) {
                         itemsIndexed(rows, itemId = { index, row -> (index.toLong() shl 32) or (row.agent.id.hashCode().toLong() and 0xFFFFFFFFL) }) { _, row ->
-                            AgentRowItem(row, settings, layout, palette, nowMillis)
+                            if (settings.mode == WidgetMode.Projects) ProjectRowItem(row, settings, layout, palette, nowMillis) else AgentRowItem(row, settings, layout, palette, nowMillis)
                         }
                         // Room for the last row to scroll clear of the corner button.
                         if (corner != null) item { Spacer(GlanceModifier.height(corner.size + corner.inset)) }
@@ -238,7 +254,9 @@ private fun RefreshButton(palette: WidgetPalette, appWidgetId: Int, refreshing: 
 
 /**
  * The one-line arrangement of a 2x1 cell: the cube, the list's name with what it holds ("3 running", "2 unread"),
- * and the corner action at the end. The line itself opens the app.
+ * and the corner action at the end. The line itself opens the app. The words take what the cube and the corner
+ * button leave — a LinearLayout measures its weighted child last — so in the narrowest cell they give way to the
+ * button rather than push it off the end.
  */
 @Composable
 private fun SmallLine(title: String, detail: String, palette: WidgetPalette, corner: CornerButtonSpec?, appWidgetId: Int, refreshing: Boolean) {
@@ -254,9 +272,11 @@ private fun SmallLine(title: String, detail: String, palette: WidgetPalette, cor
             colorFilter = ColorFilter.tint(palette.iconPrimary),
         )
         Spacer(GlanceModifier.width(10.dp))
-        Text(title, style = TextStyle(color = palette.textTertiary, fontSize = 12.sp), maxLines = 1)
-        Spacer(GlanceModifier.width(8.dp))
-        Text(detail, style = TextStyle(color = palette.textPrimary, fontSize = 13.sp), maxLines = 1, modifier = GlanceModifier.defaultWeight())
+        Row(GlanceModifier.defaultWeight(), verticalAlignment = Alignment.Vertical.CenterVertically) {
+            Text(title, style = TextStyle(color = palette.textTertiary, fontSize = 12.sp), maxLines = 1)
+            Spacer(GlanceModifier.width(8.dp))
+            Text(detail, style = TextStyle(color = palette.textPrimary, fontSize = 13.sp), maxLines = 1, modifier = GlanceModifier.defaultWeight())
+        }
         if (corner != null) CornerButton(corner, palette, appWidgetId, refreshing)
     }
 }
@@ -267,16 +287,34 @@ private fun smallDetail(context: Context, snapshot: WidgetSnapshot, rows: List<A
     settings.mode == WidgetMode.Project && settings.projectId == null -> context.getString(R.string.widget_pick_project)
     rows.isEmpty() && !snapshot.hasLoaded && refreshing -> context.getString(R.string.widget_loading)
     rows.isEmpty() && !snapshot.hasLoaded -> context.getString(R.string.widget_open_app)
-    rows.isEmpty() -> settings.mode.emptyText
+    rows.isEmpty() -> emptyText(context, snapshot, settings.mode, oneLine = true)
     else -> smallDetail(rows, settings.mode)
 }
 
 /**
+ * What an empty list says. A Projects list without Extended mode is empty because nothing documented says which
+ * chats are Projects, so it says how to get them rather than that there are none — in fewer words on [oneLine].
+ */
+private fun emptyText(context: Context, snapshot: WidgetSnapshot, mode: WidgetMode, oneLine: Boolean = false): String = when {
+    mode != WidgetMode.Projects || snapshot.projectsAvailable -> mode.emptyText
+    oneLine -> context.getString(R.string.widget_projects_extended_mode_short)
+    else -> context.getString(R.string.widget_projects_extended_mode)
+}
+
+/**
  * What the one-line arrangement says beside the list's name: for the Running list the count of agents (the name
- * already says they run); for the rest what stands out — "1 running · 3 unread" — else the count of chats.
+ * already says they run); for the Projects list how many are at work and how many there are; for the rest what
+ * stands out — "1 running · 3 unread" — else the count of chats.
  */
 internal fun smallDetail(rows: List<AgentRow>, mode: WidgetMode): String {
     if (mode == WidgetMode.Running) return if (rows.size == 1) "1 agent" else "${rows.size} agents"
+    if (mode == WidgetMode.Projects) {
+        val working = rows.count { it.indicator == AgentIndicator.Running || it.hasRunningDescendant }
+        return buildList {
+            if (working > 0) add("$working running")
+            add(if (rows.size == 1) "1 Project" else "${rows.size} Projects")
+        }.joinToString(" · ")
+    }
     val running = rows.count { it.indicator == AgentIndicator.Running }
     val unread = rows.count { it.indicator == AgentIndicator.Unread }
     return buildList {
@@ -311,7 +349,7 @@ internal class CornerButtonSpec(val action: CornerAction, val style: CornerStyle
  * the action's; while a refresh this button asked for runs, the refresh glyph is a spinner.
  */
 @Composable
-private fun CornerButton(spec: CornerButtonSpec, palette: WidgetPalette, appWidgetId: Int, refreshing: Boolean) {
+internal fun CornerButton(spec: CornerButtonSpec, palette: WidgetPalette, appWidgetId: Int, refreshing: Boolean) {
     val context = LocalContext.current
     val glyphSize = spec.size * 0.5f
     val disc = GlanceModifier.size(spec.size).background(palette.cornerFill(spec.style)).cornerRadius(spec.size / 2)
@@ -431,17 +469,22 @@ private fun StateGlyph(row: AgentRow, settings: ChatsWidgetSettings, palette: Wi
  * RemoteViews can hand a view a drawable but can never call `start()` on it, so an `Image` of the frame animation
  * would sit on its first frame for good; a `ProgressBar` starts whatever `Animatable` it holds as its indeterminate
  * drawable the first time it draws, and keeps it running for as long as the row is on screen. The layout carries the
- * palette's tint (see [WidgetPalette.workingIndicatorLayout]).
+ * palette's tint (see [WidgetPalette.workingIndicatorLayout]); from Android 12 a [tint] — a day and a night colour,
+ * as a Project's own colour is — replaces it, the one way RemoteViews can reach a ProgressBar's tint.
  */
 @Composable
-private fun WorkingGlyph(palette: WidgetPalette, modifier: GlanceModifier) {
+internal fun WorkingGlyph(palette: WidgetPalette, modifier: GlanceModifier, tint: Pair<Color, Color>? = null) {
     val context = LocalContext.current
-    AndroidRemoteViews(RemoteViews(context.packageName, palette.workingIndicatorLayout), modifier)
+    val views = RemoteViews(context.packageName, palette.workingIndicatorLayout)
+    if (tint != null && Build.VERSION.SDK_INT >= 31) {
+        views.setColorStateList(R.id.widget_working_glyph, "setIndeterminateTintList", ColorStateList.valueOf(tint.first.toArgb()), ColorStateList.valueOf(tint.second.toArgb()))
+    }
+    AndroidRemoteViews(views, modifier)
 }
 
 /** The sidebar's empty-list line — 12sp at 36 % — centred in the space the rows would take. Tapping opens the app, or [intent]. */
 @Composable
-private fun Notice(text: String, palette: WidgetPalette, modifier: GlanceModifier, intent: android.content.Intent? = null) {
+internal fun Notice(text: String, palette: WidgetPalette, modifier: GlanceModifier, intent: android.content.Intent? = null) {
     val context = LocalContext.current
     Box(
         modifier.padding(horizontal = 16.dp, vertical = 12.dp).clickable(actionStartActivity(intent ?: WidgetIntents.openApp(context))),
