@@ -68,6 +68,8 @@ class DraftStore(context: Context) {
         val noRepo: Boolean = false,
         val ref: String = "",
         val device: DeviceTarget? = null,
+        /** [repoUrl] was picked over [device]'s own checkout; otherwise a machine or pool's draft opens on its checkout as it is now. */
+        val repoPicked: Boolean = false,
         val modelId: String? = null,
         val modelParams: List<ModelParam> = emptyList(),
         /** The model's name as the chip showed it, for a draft listed before the catalogue has loaded. */

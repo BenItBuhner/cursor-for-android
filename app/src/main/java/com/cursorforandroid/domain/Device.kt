@@ -75,11 +75,14 @@ data class DeviceOption(
         fun keyOf(target: DeviceTarget): String = "${target.type.name}:${target.apiName.orEmpty()}"
 
         /**
-         * A GitHub URL from the fleet endpoints' repository fields: `repoUrl` when the worker or pool sent one, else
-         * `https://github.com/{repoOwner}/{repoName}`; null when both are absent or blank (an any-repo worker).
+         * The repository `repos[0].url` names for a worker or pool, from the fleet endpoints' fields: `repoUrl` when
+         * one was sent, as a canonical `https://host/owner/name` ([RepoRemote]); else
+         * `https://github.com/{repoOwner}/{repoName}`, since a worker registers its checkout only as a `repo=owner/name`
+         * label (the CLI's `worker-mode:repo-label`, host dropped) and a GitHub URL is what Create An Agent takes
+         * (`RepoConfig.url`). Null when neither names a repository (an any-repo worker).
          */
         fun repositoryUrl(repoUrl: String?, repoOwner: String?, repoName: String?): String? {
-            repoUrl?.trim()?.takeIf { it.isNotEmpty() }?.let { return it }
+            RepoRemote.canonical(repoUrl)?.let { return it }
             val owner = repoOwner?.trim()?.takeIf { it.isNotEmpty() } ?: return null
             val name = repoName?.trim()?.takeIf { it.isNotEmpty() } ?: return null
             return "https://github.com/$owner/$name"

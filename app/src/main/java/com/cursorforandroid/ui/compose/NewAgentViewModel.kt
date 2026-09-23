@@ -354,8 +354,13 @@ class NewAgentViewModel(
                 planMode = record.planMode,
                 // A draft 0.3.61 kept never said where it would run: it opens on the last launch's device, as it did.
                 selectedDevice = record.device ?: s.selectedDevice,
-                // The draft's repository and device were chosen together: the repository is the draft's, whatever the device pins.
-                repoFollowsDevice = if (record.device != null) false else s.repoFollowsDevice,
+                // A machine's repository is the checkout it reports now, not the one saved with the draft; a pick made
+                // over it stays the draft's.
+                repoFollowsDevice = when {
+                    record.device == null -> s.repoFollowsDevice
+                    record.device.isCloud -> false
+                    else -> !record.repoPicked
+                },
                 error = record.error,
             ).withDraftModel(record).withExclusiveModes().withPickerLists().withModelSelection(settleOnAuto = false)
         }
@@ -415,6 +420,7 @@ class NewAgentViewModel(
             noRepo = s.noRepo,
             ref = s.ref,
             device = s.selectedDevice,
+            repoPicked = !s.repoFollowsDevice && !s.selectedDevice.isCloud,
             modelId = s.selectedModel?.id,
             modelParams = s.selectedVariant?.params.orEmpty(),
             modelLabel = s.selectedModel?.displayName,
@@ -505,6 +511,7 @@ class NewAgentViewModel(
         noRepo,
         ref,
         selectedDevice,
+        repoFollowsDevice,
         selectedModel?.id,
         selectedVariant?.params?.map { it.id to it.value },
         autoCreatePr,
@@ -561,16 +568,24 @@ class NewAgentViewModel(
     private fun NewAgentUiState.following(url: String): NewAgentUiState {
         val repo = repositories.firstOrNull { it.isAt(url) } ?: Repository(url)
         val already = !noRepo && selectedRepo?.isAt(url) == true
-        return (if (already) this else withRepo(repo)).copy(repoFollowsDevice = true, deviceRepoUrl = url)
+        // A branch chosen for the repository this replaces says nothing about the machine's checkout.
+        val replaced = noRepo || (selectedRepo != null && !already)
+        val next = when {
+            already -> this
+            replaced -> withRepo(repo).copy(ref = "")
+            else -> withRepo(repo)
+        }
+        return next.copy(repoFollowsDevice = true, deviceRepoUrl = url)
     }
 
     /**
      * Where the next chat runs. A machine or pool brings its repository with it: the repository the worker is
      * checked out at (see [DeviceOption.repoUrl]) becomes the selection and the branch list refreshes for it, since
      * Cursor runs a machine only in a checkout of the requested repository (a request for another is refused, never
-     * run on the wrong checkout). Coming back to Cloud restores what was chosen there. A device that pins no
-     * repository — an any-repo pool, a machine nothing has described — keeps a pick made here, while a repository
-     * that was the previous device's goes back to the Cloud one.
+     * run on the wrong checkout). The branch goes blank with it, as the desktop's pick of a worker leaves it: no
+     * `startingRef` goes out until one is picked on the machine. Coming back to Cloud restores what was chosen there. A
+     * device that pins no repository — an any-repo pool, a machine nothing has described — keeps a pick made here,
+     * while a repository that was the previous device's goes back to the Cloud one.
      */
     fun selectDevice(device: DeviceTarget) {
         val before = _state.value
@@ -584,7 +599,7 @@ class NewAgentViewModel(
             when {
                 device.isCloud -> cloudChoice?.let { next.withRepoChoice(it) } ?: next
                 // The device pins a repository: [withDevices] has already moved the selection onto it.
-                next.deviceRepoUrl != null -> next
+                next.deviceRepoUrl != null -> next.copy(ref = "")
                 // The repository was the previous device's; it does not come along to one that pins none.
                 s.repoFollowsDevice -> cloudRepo?.let { next.withRepoChoice(it) } ?: next
                 else -> next
