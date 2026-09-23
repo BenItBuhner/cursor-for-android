@@ -8,7 +8,9 @@ import com.cursorforandroid.domain.SubagentRows
 import com.cursorforandroid.domain.TimelineItem
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.channelFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
@@ -17,6 +19,7 @@ import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onStart
+import kotlinx.coroutines.flow.shareIn
 
 /**
  * Where a cloud subagent stands, for the row its parent's transcript draws for it: a Project's worker, or a task
@@ -46,14 +49,15 @@ class SubagentActivity(
 
     /** The child [agentId] as its row and its live run say it, as it moves; null until anything is known of it. */
     @OptIn(ExperimentalCoroutinesApi::class)
-    fun of(agentId: String): Flow<SubagentChild?> {
+    fun of(agentId: String): Flow<SubagentChild?> = channelFlow {
         val listed = row(agentId).distinctUntilChanged()
         // A child the list does not hold is read once; the list's row, when it arrives, outranks the read.
         val read = flow<Agent?> {
             emit(null)
             if (row(agentId).first() == null) emit(load(agentId))
         }
-        val agent = combine(listed, read) { l, r -> l ?: r }.distinctUntilChanged()
+        // Shared within this collection: both the row and the stream below follow it, and the read is one request.
+        val agent = combine(listed, read) { l, r -> l ?: r }.distinctUntilChanged().shareIn(this, SharingStarted.Eagerly, replay = 1)
         val live: Flow<SubagentChild?> = agent
             .map { a -> a?.takeIf { it.isRunning }?.latestRunId }
             .distinctUntilChanged()
@@ -67,7 +71,7 @@ class SubagentActivity(
                 }
             }
             .distinctUntilChanged()
-        return combine(agent, live, models) { a, l, m -> merge(a?.let { SubagentRows.childOf(it, m) }, l) }.distinctUntilChanged()
+        combine(agent, live, models) { a, l, m -> merge(a?.let { SubagentRows.childOf(it, m) }, l) }.distinctUntilChanged().collect { send(it) }
     }
 
     /** The list's word on the child, with its live run's over it: the run's status, step and action, and a question it waits on. */
