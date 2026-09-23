@@ -215,8 +215,12 @@ class RecordWindow(
     /** How many turns the chat has, counting the ones before the window: the state's count when known, else at least the loaded ones. */
     val turnCount: Int get() = maxOf(state?.turnCount ?: 0, turns.size)
 
-    /** The whole-chat index of the [i]th loaded turn (0 is the chat's first turn), counted back from the newest. */
-    fun turnIndex(i: Int): Int = turnCount - turns.size + i
+    /**
+     * The whole-chat index of the [i]th loaded turn (0 is the chat's first turn): the turn's own on the blob-backed
+     * record, else counted back from the newest — which a state read ahead of the window's turns moves by the turns
+     * it has and the window has not.
+     */
+    fun turnIndex(i: Int): Int = if (turnIndexed) turns[i].stepIndex else turnCount - turns.size + i
 
     /** The timing of the [i]th loaded turn, when the state has one for it. */
     fun timing(i: Int): TurnTiming? = state?.timings?.getOrNull(turnIndex(i))

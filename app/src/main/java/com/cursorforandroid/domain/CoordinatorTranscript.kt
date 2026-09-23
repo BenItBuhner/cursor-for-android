@@ -279,8 +279,11 @@ object CoordinatorTranscript {
     }
 
     /** The message calls of [items] whose text, normalised, is among [texts]: the copies of messages already shown. */
-    fun messageCallsReading(items: List<TimelineItem>, texts: Set<String>): Set<String> {
-        if (texts.isEmpty()) return emptySet()
+    fun messageCallsReading(items: List<TimelineItem>, texts: Set<String>): Set<String> =
+        if (texts.isEmpty()) emptySet() else messageCallsReading(items) { it in texts }
+
+    /** The message calls of [items] whose text, normalised, [reads] says is another's, by [messageKey]. */
+    fun messageCallsReading(items: List<TimelineItem>, reads: (String) -> Boolean): Set<String> {
         var out: MutableSet<String>? = null
         for (item in items) {
             if (item !is ActivityGroup) continue
@@ -288,7 +291,7 @@ object CoordinatorTranscript {
                 if (step !is ToolCall) continue
                 val payload = (reinterpret(step).payload as? ToolPayload.CoordinatorMessage) ?: continue
                 if (payload.missing && payload.message.isBlank()) continue
-                if (normalize(payload.message) in texts) (out ?: HashSet<String>().also { out = it }) += messageKey(item, step)
+                if (reads(normalize(payload.message))) (out ?: HashSet<String>().also { out = it }) += messageKey(item, step)
             }
         }
         return out ?: emptySet()

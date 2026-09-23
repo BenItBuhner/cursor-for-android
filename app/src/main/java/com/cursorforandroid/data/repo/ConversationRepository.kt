@@ -443,6 +443,9 @@ class ConversationRepository(
     /** A record turn's items as last rendered, with the inputs they were rendered from. */
     private class RenderedTurn(val inputs: TurnInputs, val items: List<TimelineItem>)
 
+    /** The run a prompt sent from here started, and the prompt's words as compared, for the record's turn that caught it up (see `Entry.recordEchoes`). */
+    private class RecordEcho(val runId: String, val text: String)
+
     /**
      * The turns shown on the documented path: the newest [ConversationRepository.Entry.window] of the chat's turns
      * as [TurnPairing] settles them — every prompt of `/v0/agents/{id}/conversation` in the transcript's own order,
@@ -522,6 +525,13 @@ class ConversationRepository(
          * list still gives each turn its run (status, footer) and names the live one.
          */
         var recordWindow: RecordWindow? = null
+        /**
+         * The runs of prompts sent from here, by the step index of the record's turn that caught each up, with the
+         * prompt's words: what names the turn's run once its echo is gone (see [recordPairing], [pruneLocal]).
+         */
+        var recordEchoes: Map<Int, RecordEcho> = emptyMap()
+        /** The account's rewind count at its last read of the chat's state; null before one. */
+        var rewindEpochSeen: Long? = null
         /** The record answered with nothing for this chat (not served for it, or nothing yet): the documented path stands. */
         var recordEmpty = false
         /** The last read of the record failed (the network); what stands is the copy last read, or the documented path. */
@@ -1011,14 +1021,16 @@ class ConversationRepository(
 
         /**
          * The transcript from the account's record (Extended mode): each loaded turn's prompt — an injected turn as
-         * its row — and its trace, paired with its run from the newest turn back (the record's last turn is the
-         * chat's last run) for the footer and the live state. A turn whose run the list has not fetched gets its
-         * footer from the turn's timing instead. The run being followed shows its story so far in place of the
-         * record's copy of the turn, and a run followed to its end shows the complete trace the stream gave; prompts
-         * sent from here that the record has not caught up with trail the record's turns, as pending.
+         * its row — and its trace, with the run the evidence says the turn is (see [recordPairing]) for the footer
+         * and the live state. A turn whose run the list has not fetched gets its footer from the turn's timing
+         * instead. The run being followed shows its story so far in place of the record's copy of the turn, and a
+         * run followed to its end shows the complete trace the stream gave; prompts sent from here that the record
+         * has not caught up with trail the record's turns, as pending, and so do the runs the list has and the
+         * record has not caught up with yet — a worker's report the coordinator is spending a moment on — each on
+         * its own until the record has its turn.
          */
         private fun recordItems(window: RecordWindow): List<TimelineItem> {
-            val ordered = allRuns()
+            val pairing = recordPairing(window)
             // The prompts sent from here the record has not caught up with. Each stands where its run's creation puts
             // it among the record's turns — before the first turn that started after it, when the account's timings
             // say so, else after them all: a reply is never shown above the prompt it answers, whichever source each
@@ -1027,9 +1039,9 @@ class ConversationRepository(
             // into keeps its place among the record's turns — it is drawn among that run's rows (see [steers] below).
             val trailing = local.filter { it.steeredAfter == null && window.turnOf(it) == null }
             val steers = local.filter { it.steeredAfter != null && window.turnOf(it) == null }.groupBy { it.run.id }
-            val trailingIds = trailing.mapTo(HashSet()) { it.run.id }
-            val paired = ordered.filter { it.id !in trailingIds }
-            val offset = paired.size - window.turns.size
+            // The runs newer than every turn's (see RecordPairing.Pairing.loose) — never one the account named for a
+            // message waiting behind the turn under way: the queue's card shows that one until it starts.
+            val loose = pairing.loose
             val current = live
             // Running by the freshest word there is (see [chatStatus]): the newest turn is under way, whatever a
             // stale run record says of it.
@@ -1042,7 +1054,7 @@ class ConversationRepository(
             fun echo(prompt: LocalPrompt): List<TimelineItem> =
                 TimelineBuilder.fromHistory(listOfNotNull(prompt.message, prompt.reply), listOf(prompt.run), shownTraces(), promptImages, pending, partial = keptStories().keys)
             fun startOf(i: Int): Long? {
-                val run = paired.getOrNull(offset + i)
+                val run = pairing.runAt(i)
                 return run?.let { parseIsoMillis(it.createdAt).takeIf { ms -> ms > 0 } } ?: window.turnStartedAt(i)
             }
             // Where each trailing prompt goes: the index of the first turn that started after its run was created, or null for the end.
@@ -1054,25 +1066,34 @@ class ConversationRepository(
             // The coordinator's messages drawn so far in this pass, as their text reads: what a later turn's stand-in
             // is compared with (see [repeats] below). Only the turns' own rendering adds to it, in window order.
             var messagesShown: MutableSet<String>? = null
+            // What each turn of the record says to the user, and in how many turns each message is.
+            val said = recordMessages(window)
             for ((i, turn) in window.turns.withIndex()) {
                 trailing.forEach { prompt -> if (insertBefore[prompt] == i) items += echo(prompt) }
-                val run = paired.getOrNull(offset + i)
-                // The newest turn of the record is the live one while the chat runs and nothing sent from here trails it.
-                val newest = i == window.turns.lastIndex && appended.isEmpty()
+                val run = pairing.runAt(i)
+                // The newest turn of the record is the live one while the chat runs and nothing trails it: no prompt
+                // sent from here, and no run the record has not caught up with.
+                val newest = i == window.turns.lastIndex && appended.isEmpty() && loose.isEmpty()
                 val complete = run?.let { traces[it.id] }
                 val liveItems = if (complete == null && run != null && current?.runId == run.id && current.items.isNotEmpty()) current.items else null
                 val kept = if (complete == null && liveItems == null && run != null) partial[run.id]?.takeIf { it.isNotEmpty() } else null
                 val liveNewest = newest && chatRunning
-                // A run's log (or its stream) standing in for a turn the record shows without any call of the
-                // coordinator's message tool: the turn sent nothing, so a message the log carries that reads as one
-                // drawn earlier is that earlier turn's message said again — a coordinator's log can carry the last
-                // message ahead of the run's own events (Bennett's 2026-09-19 frame: one reply per silent run, the
-                // same words each time). Left out here, where the sources are known; a message the log carries that
-                // no earlier turn showed is drawn, the record having kept the call in no shape this app reads (#202).
+                // A run's log (or its stream) standing in for a turn: a message it carries that the record gives
+                // another turn is that turn's, never this one's. A coordinator's log can carry the last message ahead
+                // of the run's own events (Bennett's 2026-09-19 frame: one reply per silent run, the same words each
+                // time), and a turn given another's run drew that turn's words under its own prompt. And when the
+                // record shows the turn without any call of the coordinator's message tool, the turn sent nothing: a
+                // message the log carries that reads as one drawn earlier is that earlier turn's said again. Left out
+                // here, where the sources are known; a message the log carries that no turn of the record has and no
+                // earlier turn showed is drawn, the record having kept the call in no shape this app reads (#202).
                 // Never for the turn being streamed: the record's copy of it lags the stream, so its own message
                 // would read as one it has not sent yet — and its own words are never a copy of anything.
                 val standIn = complete ?: liveItems ?: kept
-                val repeats = if (standIn != null && !turn.hasMessageCall && !(liveItems != null && liveNewest)) CoordinatorTranscript.messageCallsReading(standIn, messagesShown ?: emptySet()) else emptySet()
+                val repeats = if (standIn == null || (liveItems != null && liveNewest)) emptySet() else {
+                    val own = said.byTurn[i]
+                    val earlier = if (turn.hasMessageCall) null else messagesShown
+                    CoordinatorTranscript.messageCallsReading(standIn) { text -> earlier?.contains(text) == true || (text !in own && text in said.turnsOf) }
+                }
                 val inputs = TurnInputs(
                     turn = turn,
                     run = run,
@@ -1100,11 +1121,48 @@ class ConversationRepository(
             }
             // The cache holds the window's turns and nothing else: a turn paged out (see [trimWindow]) leaves it.
             if (renderedTurns.size > shown.size) renderedTurns.keys.retainAll(shown)
-            appended.forEach { prompt -> items += echo(prompt) }
+            // After the record's turns, in the order they began: the prompts sent from here it has not caught up with,
+            // and the runs it has not.
+            if (loose.isEmpty()) appended.forEach { prompt -> items += echo(prompt) } else {
+                val traces = shownTraces()
+                val stories = keptStories().keys
+                val tail = appended.map { (parseIsoMillis(it.run.createdAt).takeIf { ms -> ms > 0 } ?: Long.MAX_VALUE) to it } +
+                    loose.map { (parseIsoMillis(it.createdAt).takeIf { ms -> ms > 0 } ?: Long.MAX_VALUE) to it }
+                for ((_, next) in tail.sortedBy { it.first }) {
+                    if (next is LocalPrompt) { items += echo(next); continue }
+                    val run = next as RunDto
+                    val built = TimelineBuilder.fromTurns(listOf(TurnPairing.Turn(null, -1, known(run), emptyList(), TurnPairing.Evidence.NONE)), traces, promptImages, pending, partial = stories)
+                    // A coordinator's run carries the last message sent ahead of its own events (#228): one a turn shows is that turn's.
+                    val copies = CoordinatorTranscript.messageCallsReading(built) { text -> messagesShown?.contains(text) == true || text in said.turnsOf }
+                    val runItems = CoordinatorTranscript.withoutRepeats(built, copies)
+                    val start = items.size
+                    items.addAll(runItems)
+                    steers[run.id]?.let { spliceSteersInTurn(items, start, run, it) }
+                    val texts = CoordinatorTranscript.messageTexts(runItems)
+                    if (texts.isNotEmpty()) (messagesShown ?: HashSet<String>().also { messagesShown = it }).addAll(texts)
+                }
+            }
             // A steer into a run the window does not show still stands, after everything.
-            val placed = window.turns.indices.mapNotNullTo(HashSet()) { paired.getOrNull(offset + it)?.id }
+            val placed = if (loose.isEmpty()) pairing.placed else pairing.placed + loose.map { it.id }
             steers.filterKeys { it !in placed }.values.flatten().forEach { items += steerBubble(it) }
             return items.withUniqueIds()
+        }
+
+        /** What the turns of a record window say to the user (see [recordMessages]): each turn's messages, by text, and every text any turn has. */
+        private inner class RecordMessages(val byTurn: List<Set<String>>) {
+            val turnsOf: Set<String> = byTurn.flatMapTo(HashSet()) { it }
+        }
+
+        private var recordMessagesFor: RecordWindow? = null
+        private var recordMessagesCache: RecordMessages? = null
+
+        /** The messages of [window]'s turns as the record gives them, read once per window. */
+        private fun recordMessages(window: RecordWindow): RecordMessages {
+            if (recordMessagesFor === window) return recordMessagesCache!!
+            return RecordMessages(window.turns.map { CoordinatorTranscript.messageTexts(it.items) }).also {
+                recordMessagesFor = window
+                recordMessagesCache = it
+            }
         }
 
         /**
@@ -1230,12 +1288,9 @@ class ConversationRepository(
          */
         fun recordTurnsNeedingReplay(): List<RunDto> {
             val window = recordWindow ?: return emptyList()
-            val ordered = allRuns()
-            val trailing = window.trailingRunIds()
-            val paired = ordered.filter { it.id !in trailing }
-            val offset = paired.size - window.turns.size
+            val pairing = recordPairing(window)
             return window.turns.withIndex().mapNotNull { (i, turn) ->
-                val run = paired.getOrNull(offset + i) ?: return@mapNotNull null
+                val run = pairing.runAt(i) ?: return@mapNotNull null
                 // Without a body; with a body and no reply in an ordinary chat — the record gave the calls and not the
                 // agent's words, which the log has (and the transcript after it, see [fillTextFromTranscript]); or,
                 // in a coordinator's chat, with a body the log may complete with the coordinator's word (see
@@ -1248,20 +1303,17 @@ class ConversationRepository(
         }
 
         /**
-         * The record's window holds more turns than the run list reaches, with older pages of the list still to
-         * read. Turns pair with runs by position from the newest, so a turn behind more runs than the list has in
-         * hand pairs with none: no footer, and — the coordinator's word to the user being in the run's log alone
-         * when the record has it in no shape this app reads — no reply, however many times the record is read
-         * (Bennett's v0.3.35 chat: a Project injecting dozens of turns between two of his, and the first page of the
-         * list reaching twenty runs). The list is paged until it covers the window (see `loadFromRecord`,
-         * `loadOlderFromRecord`), as the documented path pages it before widening.
+         * The record's window reaches back past the runs in hand, with older pages of the list still to read: its
+         * oldest turn pairs with no run (see [recordPairing]), so it has no footer, and — the coordinator's word to
+         * the user being in the run's log alone when the record has it in no shape this app reads — no reply,
+         * however many times the record is read (Bennett's v0.3.35 chat: a Project injecting dozens of turns between
+         * two of his, and the first page of the list reaching twenty runs). The list is paged until it covers the
+         * window (see `loadFromRecord`, `loadOlderFromRecord`), as the documented path pages it before widening.
          */
         fun recordNeedsRuns(): Boolean {
             val window = recordWindow ?: return false
-            if (runsComplete || olderRunsCursor == null) return false
-            // The runs of prompts sent from here that the record has not caught up with pair with no turn of the window.
-            val trailing = window.trailingRunIds().size
-            return allRuns().size - trailing < window.turns.size
+            if (runsComplete || olderRunsCursor == null || window.turns.isEmpty()) return false
+            return recordPairing(window).runAt(0) == null
         }
 
         /**
@@ -1283,6 +1335,44 @@ class ConversationRepository(
          * window. Never a steer's: it went into a run under way, which keeps its turn (see [recordItems]).
          */
         fun RecordWindow.trailingRunIds(): Set<String> = local.filter { it.steeredAfter == null && turnOf(it) == null }.mapTo(HashSet()) { it.run.id }
+
+        private var recordPairingFrom: Triple<RecordWindow, List<RunDto>, List<LocalPrompt>>? = null
+        private var recordPairingEchoes: Map<Int, RecordEcho>? = null
+        private var recordPairingWaiting: Set<String>? = null
+        private var recordPairingCache: RecordPairing.Pairing? = null
+
+        /**
+         * Which run each of [window]'s turns is (see [RecordPairing]): the prompts sent from here that the record
+         * caught up with name theirs, the account's timings the rest where they tell, position only in between —
+         * among every run known but those of the prompts the record has not caught up with ([trailingRunIds]).
+         * Every reader of a turn's run on the record path asks here, so a turn draws, replays and counts its own run.
+         * A run the account named for a message waiting behind the turn under way is no turn's yet (see [waitingRuns]).
+         */
+        fun recordPairing(window: RecordWindow): RecordPairing.Pairing {
+            val ordered = allRuns()
+            val waiting = waitingRuns()
+            recordPairingFrom?.let {
+                if (it.first === window && it.second === ordered && it.third === local && recordPairingEchoes === recordEchoes && recordPairingWaiting == waiting) return recordPairingCache!!
+            }
+            val trailing = window.trailingRunIds()
+            val candidates = if (trailing.isEmpty() && waiting.isEmpty()) ordered else ordered.filter { it.id !in trailing && it.id !in waiting }
+            val echoes = java.util.IdentityHashMap<RecordTurn, String>()
+            if (recordEchoes.isNotEmpty()) window.turns.forEach { turn ->
+                val echo = recordEchoes[turn.stepIndex] ?: return@forEach
+                if (turn.prompt?.let(::normalizePrompt) == echo.text) echoes[turn] = echo.runId
+            }
+            local.forEach { prompt -> if (prompt.steeredAfter == null) window.turnOf(prompt)?.let { echoes[it] = prompt.run.id } }
+            val turns = window.turns.mapIndexed { i, turn ->
+                val timing = window.timing(i)
+                RecordPairing.Turn(timing?.timestampMs?.takeIf { it > 0 }, timing?.durationMs, echoes[turn])
+            }
+            val result = RecordPairing.pair(turns, candidates)
+            recordPairingFrom = Triple(window, ordered, local)
+            recordPairingEchoes = recordEchoes
+            recordPairingWaiting = waiting
+            recordPairingCache = result
+            return result
+        }
 
         fun RecordWindow.turnOf(prompt: LocalPrompt): RecordTurn? {
             val text = normalizePrompt(prompt.message.text)
@@ -1648,11 +1738,9 @@ class ConversationRepository(
                 // (paired as [recordItems] pairs them), and in a coordinator's chat the message's stages: what the
                 // record has of the coordinator's word, what reached the screen from which source, and which message
                 // call a stand-in carried that was an earlier turn's message again.
-                val trailing = with(e) { window.trailingRunIds() }
-                val paired = e.allRuns().filter { it.id !in trailing }
-                val offset = paired.size - window.turns.size
+                val pairing = e.recordPairing(window)
                 window.turns.mapIndexed { i, turn ->
-                    val run = paired.getOrNull(offset + i)
+                    val run = pairing.runAt(i)
                     val complete = run?.let { e.traces[it.id] }
                     val liveItems = e.live?.takeIf { run != null && it.runId == run.id && complete == null }?.items
                     val kept = if (complete == null && liveItems == null && run != null) e.partial[run.id] else null
@@ -1709,7 +1797,16 @@ class ConversationRepository(
                 chatTurns = window?.turnCount ?: layout.total,
                 runs = runLines,
                 source = if (window != null) "record" else "runs",
-                pairing = if (window != null) null else e.pairing().let { p ->
+                // On the record: turns for prompts, the account's timings for the transcript's, and the runs the
+                // record has not caught up with for the runs no prompt started.
+                pairing = if (window != null) e.recordPairing(window).let { p ->
+                    TranscriptLoadDiagnostics.PairingLine(
+                        prompts = window.turns.size, runs = p.candidates,
+                        timestamp = p.count(RecordPairing.Evidence.TIME), echo = p.count(RecordPairing.Evidence.ECHO), live = 0,
+                        result = 0, position = p.count(RecordPairing.Evidence.POSITION),
+                        promptless = p.loose.size, runless = p.runless,
+                    )
+                } else e.pairing().let { p ->
                     TranscriptLoadDiagnostics.PairingLine(
                         prompts = p.promptCount, runs = e.allRuns().size,
                         timestamp = p.count(TurnPairing.Evidence.TIMESTAMP), echo = p.count(TurnPairing.Evidence.ECHO), live = p.count(TurnPairing.Evidence.LIVE),
@@ -1986,6 +2083,7 @@ class ConversationRepository(
                 transcriptError = null
                 projectMode = false
                 recordWindow = null
+                recordEchoes = emptyMap()
                 recordEmpty = false
                 recordError = null
                 recordRefusedUntil = 0L
@@ -2231,16 +2329,15 @@ class ConversationRepository(
      * pending; one whose log is gone is expired; one whose replay failed is failed. The live turn counts as shown.
      */
     private fun Entry.recordTraceStatus(window: RecordWindow): TraceStatus {
-        val ordered = allRuns()
-        val trailing = window.trailingRunIds()
-        val paired = ordered.filter { it.id !in trailing }
-        val offset = paired.size - window.turns.size
+        val pairing = recordPairing(window)
+        // The turns after the newest one with a run: the run list has not caught up with them yet.
+        val lastPaired = window.turns.indices.lastOrNull { pairing.runAt(it) != null } ?: -1
         var shown = 0
         var pending = 0
         var expired = 0
         var failed = 0
         window.turns.forEachIndexed { i, turn ->
-            val run = paired.getOrNull(offset + i)
+            val run = pairing.runAt(i)
             when {
                 // Pieces the server failed to give, and the reads behind the screen have given up for now: whatever
                 // else of the turn is on screen, it is short, with the Retry that asks again.
@@ -2252,6 +2349,7 @@ class ConversationRepository(
                 turn.structureKnown && turn.stepTotal == 0 -> shown++
                 // Its steps are still being read (see [startBlobWork]).
                 !turn.complete -> pending++
+                run == null && lastPaired >= 0 && i > lastPaired -> if (i == window.turns.lastIndex && isChatRunning()) shown++ else pending++
                 // Read from the record with nothing readable, and no run to replay its log: not on its way, missing.
                 run == null && turn.structureKnown -> if (i == window.turns.lastIndex && isChatRunning()) shown++ else failed++
                 run == null -> if (i == window.turns.lastIndex && isChatRunning()) shown++ else pending++
@@ -2729,8 +2827,11 @@ class ConversationRepository(
                 if (load.firstPaintMs == null) load.firstPaintMs = (System.nanoTime() - load.startedAtNanos) / 1_000_000
             }
             var project = false
+            // Rewound: the turns past the point it went back to are gone, and a prompt sent again in one's place is another turn.
+            val rewound = known != null && built.turnCount < known.turnCount
             e.publish(
                 mutate = {
+                    if (rewound) recordEchoes = emptyMap()
                     recordWindow = built
                     recordEmpty = false
                     recordError = null
@@ -2809,6 +2910,9 @@ class ConversationRepository(
             var project = false
             e.publish(
                 mutate = {
+                    // The account counts the chat's rewinds: one since the last read took the turns past it away.
+                    if (rewindEpochSeen.let { it != null && it != state.rewindEpoch }) recordEchoes = emptyMap()
+                    rewindEpochSeen = state.rewindEpoch
                     // A blob-backed window carries the state it was read with from its first frame.
                     recordWindow = recordWindow?.let { w -> if (w.turnIndexed && w.state != null) w else w.withState(state) }
                     if (state.isRootProject) projectMode = true
@@ -3710,6 +3814,11 @@ class ConversationRepository(
             if (held.isEmpty()) return
             val missing = held.map { it.run }.filter { it.id !in listed }
             if (missing.isNotEmpty()) runs = runs + missing
+            // The run each of them started stays the turn's evidence once the echo is gone (see [Entry.recordPairing]).
+            val first = window.turns.firstOrNull()?.stepIndex ?: 0
+            recordEchoes = recordEchoes.filterKeys { it >= first - RECORD_ECHOES_BEHIND } + held.mapNotNull { prompt ->
+                window.turnOf(prompt)?.let { turn -> turn.stepIndex to RecordEcho(prompt.run.id, normalizePrompt(prompt.message.text)) }
+            }
             local = local - held
             return
         }
@@ -4129,10 +4238,8 @@ class ConversationRepository(
         if (session.isDemo) return
         val (window, wanting) = synchronized(e) {
             val window = e.recordWindow ?: return
-            val ordered = e.allRuns()
-            val trailing = with(e) { window.trailingRunIds() }
-            val paired = ordered.filter { it.id !in trailing }
-            val offset = paired.size - window.turns.size
+            val pairing = e.recordPairing(window)
+            val lastPaired = window.turns.indices.lastOrNull { pairing.runAt(it) != null } ?: -1
             val chatRunning = e.isChatRunning()
             window to window.turns.withIndex().filter { (i, turn) ->
                 if (turn.prompt == null || turn.hasText || turn.textFromTranscript) return@filter false
@@ -4141,8 +4248,10 @@ class ConversationRepository(
                 if (turn.bodyIsTheRecords || (turn.structureKnown && (e.projectMode || turn.projectMode))) return@filter false
                 // The newest turn while the chat runs is being written: its words are on their way.
                 if (i == window.turns.lastIndex && chatRunning) return@filter false
-                val run = paired.getOrNull(offset + i)
+                val run = pairing.runAt(i)
                 when {
+                    // Newer than every turn with a run: the run list has not caught up with it, and its log is on its way.
+                    run == null && lastPaired >= 0 && i > lastPaired -> false
                     run == null -> e.runsComplete || e.olderRunsCursor == null
                     run.id in e.traces -> false
                     run.statusEnum().isActive -> false
@@ -5224,6 +5333,8 @@ class ConversationRepository(
 
     private companion object {
         const val MAX_ENTRIES = 24
+        /** How far behind the window's first turn an echo's run is remembered (see `Entry.recordEchoes`): a page of older turns brought back keeps its evidence. */
+        const val RECORD_ECHOES_BEHIND = 400
         const val PREFETCH_LIMIT = 6
         const val PREFETCH_SPACING_MS = 400L
         const val ABSENT = -1L
