@@ -219,7 +219,7 @@ private fun SkillsPage(prompt: String, catalog: SlashCatalog, recent: List<Strin
     PageHeader("Skills", onBack)
     MenuSearchField(query, onValueChange = { query = it }, placeholder = "Search or type a skill name")
     HairlineDivider(Modifier.padding(top = 6.dp, bottom = 2.dp))
-    Column(Modifier.heightIn(max = PageListMaxHeight).fadingVerticalScroll()) {
+    Column(Modifier.heightIn(max = PageListMaxHeight).fadingVerticalScroll(surface = colors.elevated)) {
         if (results.isEmpty()) {
             Text("Skill names use lowercase letters, digits and hyphens.", style = type.small, color = colors.textQuaternary, modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp))
         }
@@ -256,7 +256,7 @@ private fun McpServersPage(
             modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
         )
     } else {
-        Column(Modifier.heightIn(max = PageListMaxHeight).fadingVerticalScroll()) {
+        Column(Modifier.heightIn(max = PageListMaxHeight).fadingVerticalScroll(surface = colors.elevated)) {
             servers.forEach { server ->
                 MenuRow(
                     icon = CursorIcons.Plug,

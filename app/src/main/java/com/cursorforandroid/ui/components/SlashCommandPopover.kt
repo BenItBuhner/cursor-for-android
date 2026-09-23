@@ -126,7 +126,7 @@ fun SlashCommandPopover(
         properties = PopupProperties(focusable = false),
         modifier = Modifier.semantics { contentDescription = "Slash commands" },
     ) {
-        Column(Modifier.width(PopoverWidth).heightIn(max = PopoverMaxHeight).fadingVerticalScroll()) {
+        Column(Modifier.width(PopoverWidth).heightIn(max = PopoverMaxHeight).fadingVerticalScroll(surface = colors.elevated)) {
             results.forEach { entry ->
                 SlashCommandRow(entry, onClick = { onPick(entry) })
             }
