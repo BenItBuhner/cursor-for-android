@@ -4,6 +4,7 @@ import com.cursorforandroid.data.api.proto.AgentSchemas
 import com.cursorforandroid.data.api.proto.ProtoWire
 import com.cursorforandroid.data.auth.SessionTokenProvider
 import com.cursorforandroid.domain.StepShape
+import com.cursorforandroid.domain.SubagentChild
 import com.cursorforandroid.domain.TranscriptPerf
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -102,6 +103,8 @@ data class RecordState(
     val shape: String = "",
     /** Where the account's live stream of the chat stood when this was read (see [LivePoint]): what an open chat's watch resumes from. */
     val live: LivePoint? = null,
+    /** The in-VM subagents the state tracks, by the id of the task call that started each (see [RecordSubagents]). */
+    val subagents: Map<String, SubagentChild> = emptyMap(),
 )
 
 /**
@@ -265,6 +268,7 @@ class HeadlessConversationApi(
             prefetchedCount = initial.prefetchedCount,
             shape = "conversationState=$source turns=${conversation?.turns?.size ?: 0} messages=${initial.kinds.joinToString(",")} cloudAgentState=${cloud?.keys?.sorted()?.joinToString(",", "[", "]") ?: "absent"}",
             live = LivePoint(ConversationStateReader.offsetKeyOf(cloud), LivePoint.status(initial.workflowStatus), conversation?.turns?.size),
+            subagents = conversation?.let { RecordSubagents.of(it.subagentRunsByParentToolCallId, it.communicateUpdateStatesByParentToolCallId) } ?: emptyMap(),
         )
     }
 
@@ -396,6 +400,9 @@ class HeadlessConversationApi(
         val turnTimings: List<TimingDto> = emptyList(),
         val pendingToolCalls: List<JsonElement> = emptyList(),
         val isRootProjectConversation: Boolean? = null,
+        // Read as they come: a shape this build does not expect costs the subagents' lines, never the turns.
+        val communicateUpdateStatesByParentToolCallId: JsonElement? = null,
+        val subagentRunsByParentToolCallId: JsonElement? = null,
     )
 
     /** `agent.v1.StepTiming`: `uint64`s, which proto3 JSON writes as strings. */

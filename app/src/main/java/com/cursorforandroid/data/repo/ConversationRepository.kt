@@ -60,6 +60,7 @@ import com.cursorforandroid.domain.TranscriptLoadDiagnostics
 import com.cursorforandroid.domain.TranscriptPerf
 import com.cursorforandroid.domain.UserMessage
 import com.cursorforandroid.domain.RunStatus
+import com.cursorforandroid.domain.SubagentChild
 import com.cursorforandroid.domain.SystemNotification
 import com.cursorforandroid.domain.SystemNotifications
 import com.cursorforandroid.domain.TimelineItem
@@ -146,6 +147,11 @@ data class ConversationState(
      * and the ones put back on the card. Carried here so the card and the transcript are read off one frame.
      */
     val queuePlacement: QueuePlacement = QueuePlacement.NONE,
+    /**
+     * The in-VM subagents the account's record of the chat tracks (Extended mode on the Beta engine), by the id of
+     * the task call that started each: how each stands and the step it last announced, which its row reads.
+     */
+    val subagentRuns: Map<String, SubagentChild> = emptyMap(),
 )
 
 /**
@@ -2760,7 +2766,7 @@ class ConversationRepository(
                     if (state.isRootProject) projectMode = true
                     project = projectMode
                 },
-                transform = { copy(isProjectConversation = project) },
+                transform = { copy(isProjectConversation = project, subagentRuns = state.subagents) },
             )
         }
         agents.agent(agentId)?.let { prefs.markRead(agentId, it.listedAtMillis) }
@@ -3209,6 +3215,8 @@ class ConversationRepository(
             // The blob-backed record: the state, and the turns whose blob it names differently — the one under way, the new ones.
             val want = maxOf(wantTurns, known.turns.size)
             val state = runCatching { api.state(e.agentId) }.getOrElse { t -> if (t is CancellationException) throw t; return }
+            // A subagent's status and step move with no turn changing: they go out before the turns are compared.
+            synchronized(e) { if (e.state.value.subagentRuns != state.subagents) e.state.update { it.copy(subagentRuns = state.subagents) } }
             val raw = runCatching { RecordPager.tailTurns(api, e.agentId, want, state, TurnPlan.FULL, held = known.held) }.getOrElse { t -> if (t is CancellationException) throw t; return } ?: return
             if (raw.drift != null) return
             if (raw.turns.all { it.reused } && state.turnCount == known.turnCount) return
