@@ -46,8 +46,8 @@ import java.util.TimeZone
 
 /**
  * Bennett's frame (v0.3.78): a Project worker whose coordinator started it on `claude-opus-5-5-max-fast`. The chip
- * read the slug; it reads the catalogue's name now (`196`), and the picker opens on Claude Opus 5.5 with Effort on Max
- * and Fast on (`197`), as a hand pick leaves it. Driven through the real screen over a catalogue shaped like the live
+ * read the slug; it reads the catalogue's name now (`197`), and the picker opens on Claude Opus 5.5 with Effort on Max
+ * and Fast on (`198`), as a hand pick leaves it. Driven through the real screen over a catalogue shaped like the live
  * one ([LiveModelCatalog]). Written to `screenshots/`; CI compares them pixel for pixel.
  */
 @RunWith(AndroidJUnit4::class)
@@ -135,11 +135,11 @@ class ModelSlugScreenshotTest {
     fun aProjectWorkersInheritedSlugReadsAsTheModel() {
         show(process())
         waitForText("Claude Opus 5.5")
-        capture("196_model_slug_worker_chip")
+        capture("197_model_slug_worker_chip")
 
         compose.onNodeWithText("Claude Opus 5.5").performClick()
         waitForText("Effort")
-        capture("197_model_slug_worker_picker")
+        capture("198_model_slug_worker_picker")
     }
 
     private companion object {
