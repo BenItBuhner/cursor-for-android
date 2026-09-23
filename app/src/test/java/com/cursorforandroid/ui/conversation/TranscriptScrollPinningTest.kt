@@ -6,6 +6,7 @@ import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Paint
 import androidx.activity.ComponentActivity
+import androidx.compose.foundation.layout.Column
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.LocalRippleConfiguration
 import androidx.compose.runtime.CompositionLocalProvider
@@ -452,6 +453,25 @@ class TranscriptScrollPinningTest {
         compose.waitUntil(10_000) { compose.onAllNodes(hasTestTag("load-older") or hasTestTag("loading-older") or hasTestTag("trace-status")).fetchSemanticsNodes().isEmpty() }
         compose.waitForIdle()
         assertUnmoved(before, 1, "older page landed")
+    }
+
+    /**
+     * Scrolled to the top, "Older messages" is the row the list holds still, and it turns into "Loading older…" as the
+     * load it sets off starts: were the two lines not one height, every row under it would move by the difference.
+     */
+    @Test
+    fun `"Older messages" and "Loading older…" are one height, so a load starting at the top moves nothing under them`() {
+        compose.setContent {
+            CursorTheme(mode = ThemeMode.Dark) {
+                Column {
+                    OlderTurnsRow(isLoading = false, onLoad = {})
+                    OlderTurnsRow(isLoading = true, onLoad = {})
+                }
+            }
+        }
+        val idle = compose.onNode(hasTestTag("load-older")).fetchSemanticsNode().size.height
+        val loading = compose.onNode(hasTestTag("loading-older")).fetchSemanticsNode().size.height
+        assertThat(loading).isEqualTo(idle)
     }
 
     // --- frames -----------------------------------------------------------------------------------------------------
