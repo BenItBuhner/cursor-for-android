@@ -1374,8 +1374,11 @@ class ConversationRepository(
                 if (turn.prompt?.let(::normalizePrompt) == echo.text) echoes[turn] = echo.runId
             }
             local.forEach { prompt -> if (prompt.steeredAfter == null) window.turnOf(prompt)?.let { echoes[it] = prompt.run.id } }
+            // Only a blob-backed turn carries its own index into the state's timings. The step-indexed record's are
+            // counted back from the state's newest turn, and name another turn's whenever the state and the pages were
+            // read at different moments: evidence there would pair a turn with the run of the turn whose timing it got.
             val turns = window.turns.mapIndexed { i, turn ->
-                val timing = window.timing(i)
+                val timing = if (window.turnIndexed) window.timing(i) else null
                 RecordPairing.Turn(timing?.timestampMs?.takeIf { it > 0 }, timing?.durationMs, echoes[turn])
             }
             val result = RecordPairing.pair(turns, candidates)
