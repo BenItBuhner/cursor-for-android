@@ -32,6 +32,7 @@ import com.cursorforandroid.data.api.GitHubSlashCommandApi
 import com.cursorforandroid.data.api.GoalStateApi
 import com.cursorforandroid.data.api.HeadlessConversationApi
 import com.cursorforandroid.data.api.HeadlessPage
+import com.cursorforandroid.data.api.HeadlessTurn
 import com.cursorforandroid.data.api.HeadlessTurnPage
 import com.cursorforandroid.data.api.LivePoint
 import com.cursorforandroid.data.api.LiveWatch
@@ -649,6 +650,7 @@ class AppGraph(
         override suspend fun readTurns(agentId: String, from: Int, limit: Int, state: RecordState?, plan: TurnPlan, held: Map<Int, String>, patient: Boolean): HeadlessTurnPage? = lazyHeadlessTranscript.value.readTurns(agentId, from, limit, state, plan, held, patient)
         override fun blobCounts(agentId: String) = if (lazyHeadlessTranscript.isInitialized()) lazyHeadlessTranscript.value.blobCounts(agentId) else null
         override suspend fun watch(agentId: String, since: LivePoint?, resume: Boolean): LiveWatch = lazyHeadlessTranscript.value.watch(agentId, since, resume)
+        override suspend fun heldTurns(agentId: String, turns: Map<Int, String>): List<HeadlessTurn> = lazyHeadlessTranscript.value.heldTurns(agentId, turns)
         override val readsTurns: Boolean get() = true
     }
     val conversations: ConversationRepository get() = lazyConversations.value

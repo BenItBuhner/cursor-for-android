@@ -242,6 +242,16 @@ data class CachedRecordWindow(
     val timings: List<CachedTurnTiming> = emptyList(),
     /** The window is of the blob-backed record, indexed by turn (see `RecordWindow.turnIndexed`); false for the step-indexed record's. */
     val turnIndexed: Boolean = false,
+    /**
+     * Where the account's live stream of the chat stood when the window was read (`LivePoint`): its offset and the
+     * workflow status, so a watch after a restart resumes from there rather than asking for the whole state again.
+     */
+    val liveOffsetKey: String? = null,
+    val liveStatus: String? = null,
+    /** The chat is a Project's root by the state it was read with. */
+    val rootProject: Boolean = false,
+    /** When the account's word last confirmed the window current (see `ConversationRepository.Entry.currentAt`); zero: never. */
+    val currentAtMillis: Long = 0L,
 )
 
 /**
@@ -266,6 +276,9 @@ data class CachedRecordTurn(
 data class CachedTurnTiming(val durationMs: Long? = null, val timestampMs: Long? = null)
 
 class ConversationCache(private val cache: JsonDiskCache, private val maxEntries: Int = MAX_ENTRIES) {
+    /** The Beta engine's windows (see [readRecord]), in a directory of their own: pruned apart, cleared with the rest. */
+    private val records = cache.child(RECORDS)
+
     suspend fun read(agentId: String): JsonDiskCache.Entry<CachedConversation>? =
         cache.read(agentId, CachedConversation.serializer(), VERSION)
 
@@ -273,16 +286,32 @@ class ConversationCache(private val cache: JsonDiskCache, private val maxEntries
         if (cache.write(conversation.agentId, CachedConversation.serializer(), VERSION, conversation, token)) cache.prune(maxEntries)
     }
 
+    /**
+     * The Beta engine's window of the chat's record, kept apart from [read]'s file. That file is written by every
+     * load — the documented path's too: a Stable-engine open, a fallback, the list's warm-up — and a copy written
+     * without the record's window cost the next Beta open its whole window, read again from the start. Written by
+     * the Beta engine's reads alone.
+     */
+    suspend fun readRecord(agentId: String): CachedRecordWindow? = records.read(agentId, CachedRecordWindow.serializer(), VERSION)?.value
+
+    suspend fun writeRecord(agentId: String, window: CachedRecordWindow, token: Int = cache.token()) {
+        if (records.write(agentId, CachedRecordWindow.serializer(), VERSION, window, token)) records.prune(maxEntries)
+    }
+
     /** Taken when the work that will write starts; see [JsonDiskCache.token]. */
     fun token(): Int = cache.token()
 
-    suspend fun remove(agentId: String) = cache.remove(agentId)
+    suspend fun remove(agentId: String) {
+        cache.remove(agentId)
+        records.remove(agentId)
+    }
 
     suspend fun clear() = cache.clear()
 
     private companion object {
         const val VERSION = 1
         const val MAX_ENTRIES = 200
+        const val RECORDS = "record-windows"
     }
 }
 
