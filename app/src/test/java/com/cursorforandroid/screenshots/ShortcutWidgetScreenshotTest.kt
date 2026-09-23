@@ -96,20 +96,20 @@ class ShortcutWidgetScreenshotTest {
     /** The button in its four looks, each on a 1x1 cell over a wallpaper-like ground. */
     @Test
     fun buttons() {
-        captureWidget("131_shortcut_widget_white", ShortcutWidgetSettings(ShortcutStyle.White), ShortcutVariant.Button, CELL)
-        captureWidget("132_shortcut_widget_tinted", ShortcutWidgetSettings(ShortcutStyle.Tinted), ShortcutVariant.Button, CELL)
-        captureWidget("133_shortcut_widget_glass", ShortcutWidgetSettings(ShortcutStyle.Glass), ShortcutVariant.Button, CELL)
-        captureWidget("134_shortcut_widget_icon_only", ShortcutWidgetSettings(ShortcutStyle.IconOnly), ShortcutVariant.Button, CELL)
+        captureWidget("327_shortcut_widget_white", ShortcutWidgetSettings(ShortcutStyle.White), ShortcutVariant.Button, CELL)
+        captureWidget("328_shortcut_widget_tinted", ShortcutWidgetSettings(ShortcutStyle.Tinted), ShortcutVariant.Button, CELL)
+        captureWidget("329_shortcut_widget_glass", ShortcutWidgetSettings(ShortcutStyle.Glass), ShortcutVariant.Button, CELL)
+        captureWidget("330_shortcut_widget_icon_only", ShortcutWidgetSettings(ShortcutStyle.IconOnly), ShortcutVariant.Button, CELL)
         // Pointed at a Project, the button wears the cube.
-        captureWidget("135_shortcut_widget_project", ShortcutWidgetSettings(ShortcutStyle.White).withTarget(ShortcutTarget.Project("bc-1", "Cursor for Android")), ShortcutVariant.Button, CELL)
+        captureWidget("331_shortcut_widget_project", ShortcutWidgetSettings(ShortcutStyle.White).withTarget(ShortcutTarget.Project("bc-1", "Cursor for Android")), ShortcutVariant.Button, CELL)
     }
 
     /** The compose bar across four cells, and the composer box it becomes two rows tall. */
     @Test
     fun bars() {
-        captureWidget("136_compose_bar_widget", ShortcutWidgetSettings(ShortcutStyle.White), ShortcutVariant.Bar, DpSize(320.dp, 72.dp))
-        captureWidget("137_compose_bar_widget_tinted", ShortcutWidgetSettings(ShortcutStyle.Tinted), ShortcutVariant.Bar, DpSize(320.dp, 72.dp))
-        captureWidget("138_compose_bar_widget_tall", ShortcutWidgetSettings(ShortcutStyle.Tinted), ShortcutVariant.TallBar, DpSize(320.dp, 140.dp))
+        captureWidget("332_compose_bar_widget", ShortcutWidgetSettings(ShortcutStyle.White), ShortcutVariant.Bar, DpSize(320.dp, 72.dp))
+        captureWidget("333_compose_bar_widget_tinted", ShortcutWidgetSettings(ShortcutStyle.Tinted), ShortcutVariant.Bar, DpSize(320.dp, 72.dp))
+        captureWidget("334_compose_bar_widget_tall", ShortcutWidgetSettings(ShortcutStyle.Tinted), ShortcutVariant.TallBar, DpSize(320.dp, 140.dp))
     }
 
     /** The quick composer over the launcher: as it opens, with a draft and an image, and with a refusal under it. */
@@ -129,11 +129,11 @@ class ShortcutWidgetScreenshotTest {
         // One composition, moved between scenes: the rule allows a single setContent per test.
         val scene = mutableStateOf(base to false)
         showSheet(scene)
-        capture("139_quick_composer")
+        capture("335_quick_composer")
         scene.value = drafted to true
-        capture("140_quick_composer_drafted")
+        capture("336_quick_composer_drafted")
         scene.value = drafted.copy(error = "Cannot start Cloud Agent: the repository is not connected to Cursor's GitHub app.") to true
-        capture("141_quick_composer_refused")
+        capture("337_quick_composer_refused")
     }
 
     /**
@@ -159,7 +159,7 @@ class ShortcutWidgetScreenshotTest {
         compose.waitForIdle()
         // The stage composes the widget to RemoteViews a moment after the first frame.
         compose.mainClock.advanceTimeBy(500)
-        capture("142_shortcut_widget_configure")
+        capture("338_shortcut_widget_configure")
     }
 
     @OptIn(ExperimentalMaterial3Api::class)
