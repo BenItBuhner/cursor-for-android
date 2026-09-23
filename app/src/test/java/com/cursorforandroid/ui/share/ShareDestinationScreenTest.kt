@@ -39,6 +39,7 @@ import com.cursorforandroid.ui.agents.AgentsViewModel
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.ui.theme.ThemeMode
 import com.google.common.truth.Truth.assertThat
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
 import org.junit.Rule
 import org.junit.Test
@@ -46,6 +47,14 @@ import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 
+/**
+ * The picker over the demo's list, as the sidebar's view model publishes it. That list is shared on the Default
+ * dispatcher (`AgentsViewModel.uiState`), so each new value is set from a worker; the screen's collection is confined to
+ * the main thread, as the app's composition is. Under the Compose test harness the composition's effects run
+ * unconfined, and a collection left there resumed on the worker and wrote the screen's state off the main thread — a
+ * wake-up `waitUntil` never saw, the picker on "Loading chats…" for its ten seconds (main's CI, twice; see
+ * `MainConfinedTest`).
+ */
 @RunWith(AndroidJUnit4::class)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 @Config(sdk = [35], qualifiers = "w411dp-h914dp-night-420dpi")
@@ -62,7 +71,7 @@ class ShareDestinationScreenTest {
         var picked: String? = null
         compose.setContent {
             val vm: AgentsViewModel = viewModel(factory = AgentsViewModel.Factory(graph))
-            val listState by vm.uiState.collectAsStateWithLifecycle()
+            val listState by vm.uiState.collectAsStateWithLifecycle(context = Dispatchers.Main.immediate)
             CursorTheme(mode = ThemeMode.Dark) {
                 ShareDestinationScreen(
                     listState = listState,
@@ -93,7 +102,7 @@ class ShareDestinationScreenTest {
         var dismissed = false
         compose.setContent {
             val vm: AgentsViewModel = viewModel(factory = AgentsViewModel.Factory(graph))
-            val listState by vm.uiState.collectAsStateWithLifecycle()
+            val listState by vm.uiState.collectAsStateWithLifecycle(context = Dispatchers.Main.immediate)
             CursorTheme(mode = ThemeMode.Dark) {
                 ShareDestinationScreen(
                     listState = listState,
@@ -122,7 +131,7 @@ class ShareDestinationScreenTest {
         runBlocking { graph.session.enterDemo(); graph.agents.refresh() }
         compose.setContent {
             val vm: AgentsViewModel = viewModel(factory = AgentsViewModel.Factory(graph))
-            val listState by vm.uiState.collectAsStateWithLifecycle()
+            val listState by vm.uiState.collectAsStateWithLifecycle(context = Dispatchers.Main.immediate)
             CursorTheme(mode = ThemeMode.Dark) {
                 // Short, so the demo's rows run past the bottom and there is something to scroll to.
                 Box(Modifier.height(420.dp)) {
@@ -165,7 +174,7 @@ class ShareDestinationScreenTest {
         var dragged = 0f
         compose.setContent {
             val vm: AgentsViewModel = viewModel(factory = AgentsViewModel.Factory(graph))
-            val listState by vm.uiState.collectAsStateWithLifecycle()
+            val listState by vm.uiState.collectAsStateWithLifecycle(context = Dispatchers.Main.immediate)
             CursorTheme(mode = ThemeMode.Dark) {
                 Box(Modifier.fillMaxSize()) {
                     // The shell's own gestures: the drawer's horizontal drag over everything, and a control below.
