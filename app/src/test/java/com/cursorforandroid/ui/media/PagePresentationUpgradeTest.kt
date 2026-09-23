@@ -1,12 +1,15 @@
 package com.cursorforandroid.ui.media
 
+import android.os.Looper
 import androidx.compose.runtime.MonotonicFrameClock
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.runBlocking
+import org.junit.After
 import org.junit.Test
 import org.junit.runner.RunWith
+import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 
@@ -18,6 +21,15 @@ import org.robolectric.annotation.GraphicsMode
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 @Config(sdk = [35])
 class PagePresentationUpgradeTest {
+
+    /**
+     * State written outside a composition wakes Compose's snapshot manager, one per JVM, on the main looper; left
+     * queued when the test ends, Robolectric drops it and every later Compose test in the JVM never goes idle.
+     */
+    @After
+    fun drainMainLooper() {
+        shadowOf(Looper.getMainLooper()).idle()
+    }
 
     /** Frames 16 ms apart, as fast as the fade asks for them, counted. */
     private class SteppingClock : MonotonicFrameClock {
