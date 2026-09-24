@@ -64,6 +64,7 @@ import com.cursorforandroid.ui.agents.ChatRowMenu
 import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.launch
 
 /** What the Project shortcuts' reordering says to accessibility services. */
@@ -204,7 +205,7 @@ internal fun ProjectShortcutGrid(
                 key(id) {
                     val lifted = grid.lifted == id
                     val scale by animateFloatAsState(if (lifted) LIFTED_SCALE else 1f, label = "shortcut-lift")
-                    val hasMenu = input.value.hasMenu(row)
+                    val withMenu = hasMenu(row, actions)
                     Box(
                         Modifier
                             .layoutId(id)
@@ -226,7 +227,7 @@ internal fun ProjectShortcutGrid(
                                     if (grid.arranging) grid.stopArranging() else onOpen?.invoke(row)
                                     true
                                 }
-                                if (hasMenu) onLongClick(ProjectShortcutCopy.SHOW_ACTIONS) { grid.openMenu(id); true }
+                                if (withMenu) onLongClick(ProjectShortcutCopy.SHOW_ACTIONS) { grid.openMenu(id); true }
                                 if (canArrange) {
                                     customActions = listOfNotNull(
                                         CustomAccessibilityAction(ProjectShortcutCopy.MOVE_EARLIER) { move(index, index - 1); true }.takeIf { index > 0 },
@@ -329,7 +330,7 @@ internal val ShortcutHaptic.feedback: Int
         }
     }
 
-/** What the grid's gestures read at the moment they act, rather than when the gesture began. */
+/** What the grid's gestures read at the moment they act, rather than when the gesture began; never read while composing. */
 private class GridInput(
     val rows: List<AgentRow>,
     val open: ((AgentRow) -> Unit)?,
@@ -341,9 +342,11 @@ private class GridInput(
 
     fun row(id: String): AgentRow? = rows.firstOrNull { it.agent.id == id }
 
-    /** A stand-in for a Project not loaded yet has nothing to act on, as in the sidebar. */
-    fun hasMenu(row: AgentRow): Boolean = actions != null && !row.isStandIn && !row.isPlaceholder
+    fun hasMenu(row: AgentRow): Boolean = hasMenu(row, actions)
 }
+
+/** A stand-in for a Project not loaded yet has nothing to act on, as in the sidebar. */
+private fun hasMenu(row: AgentRow, actions: AgentRowActions?): Boolean = actions != null && !row.isStandIn && !row.isPlaceholder
 
 /** The grid's cells as last laid out, for the gestures to find a shortcut and a slot under the finger. */
 private class GridGeometry {
@@ -410,7 +413,8 @@ private class SlotMotion {
         val start = from - slot
         track.slot = slot
         track.liftedAt = null
-        scope.launch { glide(track.offset, start) }
+        // Snapped to its start in this very pass, so a second pass before the next frame does not draw it in its slot.
+        scope.launch(start = CoroutineStart.UNDISPATCHED) { glide(track.offset, start) }
         return start
     }
 
