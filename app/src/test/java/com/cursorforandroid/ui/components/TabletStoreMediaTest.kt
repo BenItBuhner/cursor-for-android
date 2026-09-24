@@ -175,4 +175,21 @@ class TabletStoreMediaTest {
         assertThat(compose.onAllNodes(hasContentDescription("Loading image")).fetchSemanticsNodes()).hasSize(1)
         assertThat(loader.loads.lines(store).single().let { it.state to it.attempts }).isEqualTo("loading" to 2)
     }
+
+    @Test
+    fun `a download the store refuses is a card with its words and Retry, and failed in the diagnostics, not loading`() {
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest) = MockResponse().setResponseCode(500)
+        }
+        val loader = coldLoader(StoreOnTheWire())
+        show(loader, figure)
+
+        compose.waitUntil(30_000) { compose.onAllNodes(hasTestTag("store-file-card")).fetchSemanticsNodes().size == 1 }
+        compose.onNodeWithText("The store answered 500 for this file.").assertIsDisplayed()
+        compose.onNodeWithText("Retry").assertIsDisplayed()
+        val line = loader.loads.lines(store).single()
+        assertThat(line.state).isEqualTo("failed")
+        assertThat(line.stage).isEqualTo("download")
+        assertThat(line.error).isEqualTo("The store answered 500 for this file.")
+    }
 }

@@ -178,7 +178,7 @@ fun ImageBlock(src: String, alt: String?, modifier: Modifier = Modifier, heightC
             }
             is ImageLoad.Failed -> if (ref is MediaRef.Store) {
                 // The store answered nothing for it: the card still opens the Project, and a tap on Retry asks again.
-                StoreFileCard(ref, alt, CursorIcons.Image, title = s.problem.title, detail = s.problem.detail, onRetry = if (s.problem.retryable) ({ attempt++ }) else null)
+                StoreFileCard(ref, alt, CursorIcons.Image, title = s.problem.title, detail = s.problem.detail, onRetry = { attempt++ })
             } else {
                 MediaProblemRow(
                     icon = CursorIcons.Image,

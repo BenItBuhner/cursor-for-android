@@ -114,11 +114,11 @@ class MediaLoader(
                 ?: throw MediaProblemException(MediaProblem.TimedOut(stage, deadline / 1_000))
             chat?.let { loads.ready(it, ref, bitmap.width, bitmap.height) }
             bitmap
-        } catch (e: MediaProblemException) {
-            chat?.let { loads.failed(it, ref, e.problem) }
-            throw e
         } catch (e: CancellationException) {
             chat?.let { loads.left(it, ref) }
+            throw e
+        } catch (e: Throwable) {
+            chat?.let { loads.failed(it, ref, problemOf(e)) }
             throw e
         }
     }
