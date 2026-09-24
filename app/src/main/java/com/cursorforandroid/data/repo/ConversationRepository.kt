@@ -3165,9 +3165,9 @@ class ConversationRepository(
 
     /**
      * Keeps the chat followed while the account calls it running and no stream is open on a run of it. Every few
-     * seconds, with the pause growing to [KEEP_FOLLOWING_MAX_MS]: the agent's record is read for its latest run
-     * (`GET /v1/agents/{id}`, then the run by id), and a run other than [endedRunId] that is active is merged into
-     * the list and followed — the steer's next run, the coordinator's next turn. Until there is one, and in Extended
+     * seconds, with the pause growing to [KEEP_FOLLOWING_MAX_MS] while the account says so: the agent's record is read
+     * for its latest run (`GET /v1/agents/{id}`, then the run by id), and a run other than [endedRunId] that is active
+     * is merged into the list and followed — the steer's next run, the coordinator's next turn. Until there is one, and in Extended
      * mode for as long as no stream says anything, the account's record is read for what the turn has added
      * (`FetchBackgroundComposer` at the known end, the tail re-read when it grew), so the steps arrive from the one
      * source there is: a machine agent whose run list and stream never answer still streams from its record. Ends
@@ -3194,7 +3194,8 @@ class ConversationRepository(
                     // A stream open and speaking is the source; this loop stands down for it.
                     val streamSpeaking = synchronized(e) { e.streamJob?.isActive == true && (e.live?.items?.isNotEmpty() == true || (e.state.value.isStreaming && !e.state.value.isReconnecting && e.live == null)) }
                     if (followed || streamSpeaking) return@launch
-                    if (!accountSaysRunning(e)) {
+                    val idle = !accountSaysRunning(e)
+                    if (idle) {
                         // The account agrees the chat is idle — after a few looks, for a run that ended a moment ago:
                         // the next run of a steer, of a coordinator's next turn, takes a beat to be named. Then the
                         // records' word stands (see [Entry.chatStatus]).
@@ -3208,7 +3209,10 @@ class ConversationRepository(
                         e.publish(transform = { if (runStatus?.isActive != true) copy(runStatus = RunStatus.RUNNING) else this })
                     }
                     delay(wait)
-                    wait = (wait * 2).coerceAtMost(KEEP_FOLLOWING_MAX_MS)
+                    // The looks past a run that ended keep an even pace: the open chat's watch waits for them to end,
+                    // so a turn started elsewhere between two of them is a look away, not a doubled pause (a turn four
+                    // seconds after the last one ended was on screen five and a half seconds later).
+                    if (!idle) wait = (wait * 2).coerceAtMost(KEEP_FOLLOWING_MAX_MS)
                 }
             }
         }
@@ -5434,8 +5438,8 @@ class ConversationRepository(
         /** The pauses between looks for the next run and reads of the record's growth while the account runs on (see [keepFollowing]). */
         const val KEEP_FOLLOWING_BASE_MS = 2_000L
         const val KEEP_FOLLOWING_MAX_MS = 15_000L
-        /** How many looks find the account idle after a run ended before the records' word is taken (see [keepFollowing]). */
-        const val KEEP_FOLLOWING_IDLE_LOOKS = 3
+        /** How many looks, [KEEP_FOLLOWING_BASE_MS] apart, find the account idle after a run ended before the records' word is taken (see [keepFollowing]). */
+        const val KEEP_FOLLOWING_IDLE_LOOKS = 4
         /** How many of the newest runs a chat opens on, and by how many the window widens each time the reader scrolls up to its end. */
         const val WINDOW_RUNS = 10
         /** The widest window the disk copy reopens on: the runs whose traces are read before the first frame. */
