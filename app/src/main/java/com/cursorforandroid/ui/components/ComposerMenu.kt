@@ -76,10 +76,10 @@ class ComposerMenuActions(
 private enum class MenuPage { Root, Skills, McpServers }
 
 /**
- * The menu behind the composer's "+" as it appears on cursor.com/agents: Multitask, then the pickers, Skills › and
- * MCP Servers ›. The web's flyout submenus become pages that slide in over the root; Multitask and skills toggle a
- * slash command at the front of the prompt, "Images and videos" opens the photo picker and "Files" the document
- * picker (Extended mode; the default mode has "Images" alone), MCP servers are managed here and sent inline.
+ * The menu behind the composer's "+": the pickers, Skills › and MCP Servers ›. The web's flyout submenus become pages
+ * that slide in over the root; skills toggle a slash command at the front of the prompt, "Images and videos" opens
+ * the photo picker and "Files" the document picker (Extended mode; the default mode has "Images" alone), MCP servers
+ * are managed here and sent inline. Multitask is not a row: it is the `/multitask` command, from the `/` popover.
  */
 @Composable
 fun ComposerPlusMenu(
@@ -120,8 +120,6 @@ fun ComposerPlusMenu(
             Column(Modifier.width(MenuWidth)) {
                 when (current) {
                     MenuPage.Root -> RootPage(
-                        multitaskOn = SlashCommands.has(prompt, SlashCommands.MULTITASK),
-                        onMultitask = { toggleCommand(SlashCommands.MULTITASK) },
                         onMedia = { onDismiss(); actions.onPickMedia() },
                         onFiles = actions.onPickFiles?.let { pick -> { onDismiss(); pick() } },
                         onSkills = { page = MenuPage.Skills },
@@ -174,16 +172,7 @@ const val MEDIA_LABEL_IMAGES = "Images"
 const val FILES_LABEL = "Files"
 
 @Composable
-private fun RootPage(multitaskOn: Boolean, onMultitask: () -> Unit, onMedia: () -> Unit, onFiles: (() -> Unit)?, onSkills: () -> Unit, onMcpServers: () -> Unit) {
-    val colors = CursorTheme.colors
-    CursorMenuItem(
-        "Multitask",
-        CursorIcons.Multitask,
-        subtitle = "Orchestrate multiple subagents in parallel",
-        trailing = { if (multitaskOn) Icon(CursorIcons.Check, "On", tint = colors.accent, modifier = Modifier.size(CursorDimens.menuIcon)) },
-        onClick = onMultitask,
-    )
-    CursorMenuSeparator()
+private fun RootPage(onMedia: () -> Unit, onFiles: (() -> Unit)?, onSkills: () -> Unit, onMcpServers: () -> Unit) {
     // Two pickers, each named for what it opens on: the gallery (images alone in the default mode, where the
     // documented request takes nothing else) and the document picker for every other kind of file (Extended mode).
     if (onFiles == null) {
@@ -201,7 +190,7 @@ private fun SkillsPage(prompt: String, catalog: SlashCatalog, recent: List<Strin
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
     var query by remember { mutableStateOf("") }
-    // The page is about skills; the commands (`/goal`, `/multitask`) have their own rows and the `/` popover.
+    // The page is about skills; the commands (`/goal`, `/multitask`) are the `/` popover's.
     val results = remember(query, recent, catalog) { catalog.search(query, recent).filter { it.kind == SlashCommand.Kind.Skill } }
 
     PageHeader("Skills", onBack)

@@ -82,10 +82,10 @@ import com.cursorforandroid.ui.components.LocalScrollFadeSurface
 import com.cursorforandroid.ui.components.PaneResizeEdge
 import com.cursorforandroid.ui.components.PaneResizeEdgeWidth
 import com.cursorforandroid.ui.components.PaneSide
+import com.cursorforandroid.ui.components.SheetLanding
 import com.cursorforandroid.ui.components.backGestureEdges
 import com.cursorforandroid.ui.components.coveredFocus
 import com.cursorforandroid.ui.components.feltOnCommit
-import com.cursorforandroid.ui.components.halfwayCrossing
 import com.cursorforandroid.ui.components.rememberBackGestureEdges
 import com.cursorforandroid.ui.components.rememberHaptics
 import com.cursorforandroid.ui.components.rememberSheetFocus
@@ -367,10 +367,12 @@ class SidePanelState(initialValue: SidePanelValue) {
     val isPinned: Boolean get() = pin != null
 
     /**
-     * Plays a sheet's drag across half-way (see [halfwayCrossing]) and a pinned panel's slide as it lands; set by the
-     * [SidePanel] showing this state.
+     * Plays a swipe's open or close as the sheet lands ([SheetLanding]), and a pinned panel's slide as it lands; set by
+     * the [SidePanel] showing this state.
      */
     internal var haptics: Haptics? = null
+
+    private val landing = SheetLanding()
 
     private val mutex = MutatorMutex()
 
@@ -451,10 +453,17 @@ class SidePanelState(initialValue: SidePanelValue) {
             else -> SidePanelValue.Closed
         }
         mutex.mutate {
+            landing.released(wasOpen = isOpen, open = value == SidePanelValue.Open)
             targetValue = value
+            landing.at(fraction)?.let { haptics?.perform(it) }
             val jump = jumps
             runAnimation {
-                animate(fraction, value.fraction, initialVelocity = velocity, animationSpec = FlingSpec) { v, _ -> if (jumps == jump) fraction = v.coerceIn(0f, 1f) }
+                animate(fraction, value.fraction, initialVelocity = velocity, animationSpec = FlingSpec) { v, _ ->
+                    if (jumps == jump) {
+                        fraction = v.coerceIn(0f, 1f)
+                        landing.at(fraction)?.let { haptics?.perform(it) }
+                    }
+                }
             }
         }
     }
@@ -472,9 +481,8 @@ class SidePanelState(initialValue: SidePanelValue) {
         private val dragScope = object : DragScope {
             override fun dragBy(pixels: Float) {
                 if (widthPx <= 0f) return
-                val before = fraction
+                landing.dragged(fraction)
                 fraction = (fraction + pixels / widthPx).coerceIn(0f, 1f)
-                halfwayCrossing(before, fraction, restingOpen = isOpen)?.let { haptics?.perform(it) }
             }
         }
 

@@ -85,7 +85,7 @@ import kotlinx.coroutines.launch
 /**
  * Cursor's prompt box as measured on cursor.com/agents: `--cursor-editor` surface, 8 % stroke (20 % focused),
  * 12px padding, 14/22 text, and a footer of round buttons — "+" on the left, opening the
- * Multitask / Files / Skills / MCP Servers menu ([ComposerPlusMenu]), send / stop on the right — with the 13px
+ * Files / Skills / MCP Servers menu ([ComposerPlusMenu]), send / stop on the right — with the 13px
  * model selector hugging send. The field is inset a further [CursorDimens.composerTextInset] on every side so
  * the placeholder and typed text share the edges of the glyphs in those discs, not the discs themselves: the
  * 24dp corners would otherwise leave the first letter sitting in the arc, and the 12dp top pad alone reads
@@ -97,7 +97,7 @@ import kotlinx.coroutines.launch
  * the field editing anything differently. A few commands are not text at all but pills right of "+", as on the web
  * ([ModePills]): `/multitask`, which the owner's [value] still carries in front so the request is unchanged, and
  * the modes — `/plan`, and with [extendedModes] `/ask` and `/debug` — which are [modePill]. Typing one with a space
- * after it, or picking it from the popover or the "+" menu, turns it into its pill and takes the token out of the
+ * after it, or picking it from the popover, turns it into its pill and takes the token out of the
  * text; the pill's cross puts the mode off again. They are one slot — the one turned on last replaces the other, in
  * the owner's state as well — so at most one pill is ever worn.
  * The corners are [CursorDimens.composerRadius] rather than the web's 12px: concentric with the two discs in the
@@ -231,7 +231,7 @@ fun ComposerBox(
     // its caret across a rotation, and adopted keeps a restored draft from outliving the owner that cleared it.
     // A TextFieldState field is also what makes image paste possible at all: a value/onValueChange BasicTextField
     // cannot advertise image MIME types to the IME or receive clipboard images.
-    // What is adopted is the presented text: the "+" menu putting `/multitask` in front of the owner's value changes
+    // What is adopted is the presented text: `/multitask` put in front of the owner's value changes
     // nothing the field shows, so the caret stays where it was and only the pill appears.
     val field = rememberTextFieldState(initialText = presented.text, initialSelection = TextRange(presented.text.length))
     var adopted by rememberSaveable { mutableStateOf(value) }
@@ -436,8 +436,6 @@ fun ComposerBox(
                         prompt = value,
                         onPromptChange = { next ->
                             onValueChange(next)
-                            // Multitask from the menu is the same one slot as the pills: it puts the mode off.
-                            if (modePill != null && SlashCommands.has(next, SlashCommands.MULTITASK)) onModePill?.invoke(null)
                             // The command goes in at the front of the prompt and the caret follows the adopted text
                             // to the end, which is where the reader carries on writing; the field is handed back with it.
                             wantsFocus = true
