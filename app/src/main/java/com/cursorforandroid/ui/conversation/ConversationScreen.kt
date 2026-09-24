@@ -426,8 +426,16 @@ fun ConversationScreen(
                 agent?.prUrl?.let { prUrl ->
                     FlatIconButton(CursorIcons.GitPullRequest, "Open pull request", tint = colors.gitAdded, onClick = { uriHandler.openUri(prUrl) }, touchHeight = touchHeight)
                 }
-                // The panel's button: the sidebar glyph mirrored, for the sheet that comes in from the other side.
-                FlatIconButton(CursorIcons.Sidebar, "Open panel", onClick = { scope.launch { panelState.open() } }, modifier = Modifier.scale(scaleX = -1f, scaleY = 1f), touchHeight = touchHeight)
+                // The panel's button: the sidebar glyph mirrored, for the sheet that comes in from the other side. Beside
+                // a pinned panel it stays in reach, and puts the panel away as the rail's button does the rail.
+                val hidesPanel = panelState.isPinned && panelState.isOpen
+                FlatIconButton(
+                    CursorIcons.Sidebar,
+                    if (hidesPanel) "Hide panel" else "Open panel",
+                    onClick = { scope.launch { if (hidesPanel) panelState.close() else panelState.open() } },
+                    modifier = Modifier.scale(scaleX = -1f, scaleY = 1f),
+                    touchHeight = touchHeight,
+                )
                 Box {
                     FlatIconButton(CursorIcons.More, "More", onClick = { menuOpen = true }, touchHeight = touchHeight)
                     CursorMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {

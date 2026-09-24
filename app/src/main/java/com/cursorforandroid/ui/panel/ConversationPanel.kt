@@ -86,8 +86,9 @@ fun ConversationPanel(
     val colors = CursorTheme.colors
     val strip = state.stripTabs
     val current = state.currentTab
-    // Off its home tab, back is the panel's: to the tab the reader came from. At home it is the host's, and shuts the panel.
-    BackHandler(enabled = current.key != state.homeTab.key, onBack = actions::back)
+    // Off its home tab, back is the panel's: to the tab the reader came from. At home it is the host's, and shuts the
+    // panel. Pinned beside the chat the panel is a pane of the layout, like the rail, and back is the chat's.
+    BackHandler(enabled = !LocalPanelPinned.current && current.key != state.homeTab.key, onBack = actions::back)
     val tabStates = rememberSaveableStateHolder()
     val kept = remember { HashSet<String>() }
     val keys = strip.map { it.key }
