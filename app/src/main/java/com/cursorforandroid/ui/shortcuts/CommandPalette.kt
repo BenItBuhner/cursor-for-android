@@ -31,11 +31,9 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -84,7 +82,9 @@ import com.cursorforandroid.ui.components.FlatIconButton
 import com.cursorforandroid.ui.components.HairlineDivider
 import com.cursorforandroid.ui.components.SpinnerRing
 import com.cursorforandroid.ui.components.cursorSurface
+import com.cursorforandroid.ui.components.fadingVerticalScroll
 import com.cursorforandroid.ui.components.pressable
+import com.cursorforandroid.ui.components.scrollEdgeFade
 import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
 import kotlinx.coroutines.Dispatchers
@@ -327,7 +327,11 @@ private fun ColumnScope.SearchPane(
         else -> null
     }
     label?.let { Text(it, style = type.small, color = colors.textTertiary, modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 10.dp, bottom = 2.dp)) }
-    LazyColumn(Modifier.fillMaxWidth().weight(1f, fill = false), state = listState, contentPadding = PaddingValues(6.dp)) {
+    LazyColumn(
+        Modifier.fillMaxWidth().weight(1f, fill = false).scrollEdgeFade(listState, surface = colors.elevated),
+        state = listState,
+        contentPadding = PaddingValues(6.dp),
+    ) {
         itemsIndexed(results, key = { _, result -> result.entry.agentId }) { index, result ->
             PaletteRow(
                 title = highlighted(result.entry.title, result.titleMatch),
@@ -365,7 +369,11 @@ private fun ColumnScope.SwitcherPane(state: PaletteState, rows: List<PaletteEntr
         color = colors.textTertiary,
         modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 2.dp),
     )
-    LazyColumn(Modifier.fillMaxWidth().weight(1f, fill = false).testTag(PaletteTags.SWITCHER), state = listState, contentPadding = PaddingValues(6.dp)) {
+    LazyColumn(
+        Modifier.fillMaxWidth().weight(1f, fill = false).scrollEdgeFade(listState, surface = colors.elevated).testTag(PaletteTags.SWITCHER),
+        state = listState,
+        contentPadding = PaddingValues(6.dp),
+    ) {
         itemsIndexed(rows, key = { _, entry -> entry.agentId }) { index, entry ->
             PaletteRow(
                 title = AnnotatedString(entry.title),
@@ -398,7 +406,7 @@ private fun ColumnScope.ShortcutsPane(onClose: () -> Unit) {
         FlatIconButton(CursorIcons.Close, "Close", onClick = onClose, size = 32.dp, iconSize = 14.dp)
     }
     HairlineDivider()
-    Column(Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState()).padding(vertical = 6.dp).testTag(PaletteTags.SHORTCUTS)) {
+    Column(Modifier.weight(1f, fill = false).fadingVerticalScroll(surface = colors.elevated).padding(vertical = 6.dp).testTag(PaletteTags.SHORTCUTS)) {
         ShortcutsCopy.groups.forEach { group ->
             Text(group.title, style = type.small, color = colors.textTertiary, modifier = Modifier.padding(start = 18.dp, end = 18.dp, top = 10.dp, bottom = 4.dp))
             group.lines.forEach { line -> ShortcutLineRow(line, Modifier.padding(horizontal = 18.dp, vertical = 5.dp)) }
