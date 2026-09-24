@@ -139,6 +139,8 @@ class ChatHeaderClearanceTest {
         return checkNotNull(find(compose.activity.findViewById(android.R.id.content))) { "No AndroidComposeView in the activity" }
     }
 
+    private fun onScreen(text: String) = compose.onAllNodes(hasText(text, substring = true)).fetchSemanticsNodes().isNotEmpty()
+
     private fun label(): String? =
         compose.onNodeWithTag("chat-header").fetchSemanticsNode().config.getOrNull(SemanticsProperties.ContentDescription)?.singleOrNull()
 
@@ -234,6 +236,12 @@ class ChatHeaderClearanceTest {
     fun `a drag across the column under the header's row moves the transcript beneath it`() {
         pane = DpSize(1001.dp, 420.dp)
         open(DemoData.PROJECT_ID, sidebar = true)
+        // Both turns and their activity drawn, so nothing lands in the transcript while it is being dragged.
+        compose.waitUntil(30_000) {
+            onScreen("PR #215 (usage aggregation) is") &&
+                compose.onAllNodes(hasAnyAncestor(transcript) and hasText("Loading", substring = true), useUnmergedTree = true).fetchSemanticsNodes().isEmpty()
+        }
+        compose.waitForIdle()
         assertBandReleased()
         val texts = hasAnyAncestor(transcript) and SemanticsMatcher.keyIsDefined(SemanticsProperties.Text)
         fun tops(): Map<String, Float> = compose.onAllNodes(texts, useUnmergedTree = true).fetchSemanticsNodes()
