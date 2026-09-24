@@ -19,6 +19,7 @@ import coil3.size.Precision
 import coil3.size.Scale
 import coil3.svg.SvgDecoder
 import coil3.toBitmap
+import com.cursorforandroid.data.api.readCancellably
 import com.cursorforandroid.data.api.userMessage
 import com.cursorforandroid.data.local.DiskSweep
 import com.cursorforandroid.data.repo.AgentFileRepository
@@ -80,19 +81,58 @@ class MediaLoader(
 
     private val posters = LruCache<String, VideoPoster>(12)
 
+    /** Every figure asked for with a chat named, and how its read went: the transcript diagnostics' `media:` section. */
+    val loads = MediaLoads()
+
     /**
      * Decodes [ref] to fit within [maxWidthPx] x [maxHeightPx] (downsampling only, never upscaling). With [wake], a
      * file of the agent's machine found asleep is read again once the machine is woken (see [AgentFileRepository.read]).
+     *
+     * Never waits longer than [IMAGE_DEADLINE_MS] ([WAKE_DEADLINE_MS] with [wake]): a read with no answer by then is
+     * given up — every step of it answers cancellation — and ends as [MediaProblem.TimedOut], naming the step, which
+     * the row offers Retry on. [onStage] hears each step as the read reaches it; [chat] files the read under that chat
+     * in [loads].
      */
-    suspend fun image(ref: MediaRef, maxWidthPx: Int, maxHeightPx: Int, wake: Boolean = false): Bitmap = onMain { named { decodeImage(ref, maxWidthPx, maxHeightPx, wake) } }
-
-    private suspend fun decodeImage(ref: MediaRef, maxWidthPx: Int, maxHeightPx: Int, wake: Boolean): Bitmap = when (ref) {
-        is MediaRef.Remote, is MediaRef.Artifact -> decodeUrl(ref, maxWidthPx, maxHeightPx)
-        else -> decodeBytes(ref, bytesFor(ref, wake), maxWidthPx, maxHeightPx)
+    suspend fun image(
+        ref: MediaRef,
+        maxWidthPx: Int,
+        maxHeightPx: Int,
+        wake: Boolean = false,
+        chat: String? = null,
+        onStage: (MediaStage) -> Unit = {},
+    ): Bitmap = onMain {
+        var stage = MediaStage.STARTING
+        val reached: (MediaStage) -> Unit = { next ->
+            stage = next
+            chat?.let { loads.stage(it, ref, next) }
+            onStage(next)
+        }
+        chat?.let { loads.started(it, ref, maxWidthPx, maxHeightPx) }
+        val deadline = if (wake) WAKE_DEADLINE_MS else IMAGE_DEADLINE_MS
+        try {
+            val bitmap = withTimeoutOrNull(deadline) { named { decodeImage(ref, maxWidthPx, maxHeightPx, wake, reached) } }
+                ?: throw MediaProblemException(MediaProblem.TimedOut(stage, deadline / 1_000))
+            chat?.let { loads.ready(it, ref, bitmap.width, bitmap.height) }
+            bitmap
+        } catch (e: CancellationException) {
+            chat?.let { loads.left(it, ref) }
+            throw e
+        } catch (e: Throwable) {
+            chat?.let { loads.failed(it, ref, problemOf(e)) }
+            throw e
+        }
     }
 
-    private suspend fun decodeUrl(ref: MediaRef, maxWidthPx: Int, maxHeightPx: Int): Bitmap {
-        val first = decode(ref, urlFor(ref), maxWidthPx, maxHeightPx)
+    private suspend fun decodeImage(ref: MediaRef, maxWidthPx: Int, maxHeightPx: Int, wake: Boolean, reached: (MediaStage) -> Unit): Bitmap = when (ref) {
+        is MediaRef.Remote, is MediaRef.Artifact -> decodeUrl(ref, maxWidthPx, maxHeightPx, reached)
+        else -> bytesFor(ref, wake, reached).let { bytes -> reached(MediaStage.DECODE); decodeBytes(ref, bytes, maxWidthPx, maxHeightPx) }
+    }
+
+    private suspend fun decodeUrl(ref: MediaRef, maxWidthPx: Int, maxHeightPx: Int, reached: (MediaStage) -> Unit = {}): Bitmap {
+        if (ref is MediaRef.Artifact) reached(MediaStage.LINK)
+        val url = urlFor(ref)
+        reached(MediaStage.FETCH)
+        val first = decode(ref, url, maxWidthPx, maxHeightPx)
         if (first is SuccessResult) return first.image.toBitmap()
         var error = (first as ErrorResult).throwable
         // A presigned URL that expired between resolution and fetch: ask for a fresh one exactly once.
@@ -243,7 +283,7 @@ class MediaLoader(
     /** A workspace file's bytes as they are meant, a wrapper taken off; a pointer or text stays as it came. */
     private fun unwrappedFile(raw: ByteArray, name: String): ByteArray = (FileBytes.of(raw, name) as? FileBytes.Plain)?.bytes ?: raw
 
-    private fun download(url: String, into: File) {
+    private suspend fun download(url: String, into: File) {
         if (url.startsWith(ASSET_PREFIX)) {
             context.assets.open(url.removePrefix(ASSET_PREFIX)).use { input -> into.outputStream().use { input.copyTo(it) } }
             return
@@ -252,7 +292,7 @@ class MediaLoader(
             File(url.toUri().path ?: throw IOException("Bad file URL")).copyTo(into, overwrite = true)
             return
         }
-        okHttp.newCall(Request.Builder().url(url).build()).execute().use { response ->
+        okHttp.newCall(Request.Builder().url(url).build()).readCancellably { response ->
             if (!response.isSuccessful) throw MediaProblemException(MediaProblem.Failed("The download answered ${response.code}."))
             val body = response.body ?: throw MediaProblemException(MediaProblem.Failed("The download was empty."))
             into.outputStream().use { body.byteStream().copyTo(it) }
@@ -260,9 +300,9 @@ class MediaLoader(
     }
 
     /** Up to [max] bytes behind [url], for looking at what a decoder refused. */
-    private suspend fun download(url: String, max: Int): ByteArray = withContext(Dispatchers.IO) {
-        if (url.startsWith(ASSET_PREFIX)) return@withContext context.assets.open(url.removePrefix(ASSET_PREFIX)).use { it.readAtMost(max) }
-        okHttp.newCall(Request.Builder().url(url).build()).execute().use { response ->
+    private suspend fun download(url: String, max: Int): ByteArray {
+        if (url.startsWith(ASSET_PREFIX)) return withContext(Dispatchers.IO) { context.assets.open(url.removePrefix(ASSET_PREFIX)).use { it.readAtMost(max) } }
+        return okHttp.newCall(Request.Builder().url(url).build()).readCancellably { response ->
             if (!response.isSuccessful) throw MediaProblemException(MediaProblem.Failed("The server answered ${response.code} for this image."))
             response.body?.byteStream()?.use { it.readAtMost(max) } ?: ByteArray(0)
         }
@@ -282,6 +322,7 @@ class MediaLoader(
     /** Forgets everything fetched for the signed-out account; the disk cache is wiped off the main thread. */
     suspend fun clearCaches() {
         posters.evictAll()
+        loads.clear()
         imageLoader.memoryCache?.clear()
         withContext(Dispatchers.IO) {
             imageLoader.diskCache?.clear()
@@ -321,17 +362,28 @@ class MediaLoader(
         else -> error("Not a URL: $ref")
     }
 
-    private suspend fun bytesFor(ref: MediaRef, wake: Boolean = false): ByteArray = when (ref) {
+    private suspend fun bytesFor(ref: MediaRef, wake: Boolean = false, reached: (MediaStage) -> Unit = {}): ByteArray = when (ref) {
         // Bytes, fetched and kept by the repository (its own disk cache, a dead URL asked for again), decoded like
         // an inline image: the same path as a file of this device, and one the JVM test renderer can take.
-        is MediaRef.Store -> storeReads().readBytes(ref)
+        is MediaRef.Store -> storeReads().readBytes(ref) { step ->
+            reached(
+                when (step) {
+                    StoreFileRepository.Step.STORE -> MediaStage.STORE
+                    StoreFileRepository.Step.LINK -> MediaStage.LINK
+                    StoreFileRepository.Step.DOWNLOAD -> MediaStage.DOWNLOAD
+                },
+            )
+        }
         // Read here rather than handed to Coil as a file: for a file Coil decodes through ImageDecoder, which the
         // JVM test renderer lacks, while bytes go through BitmapFactory like an inline image. The files are small.
         is MediaRef.Local -> withContext(Dispatchers.IO) {
             File(ref.path).takeIf { it.isFile }?.readBytes() ?: throw MediaProblemException(MediaProblem.NotReadable(NOT_ON_DEVICE, null))
         }
         is MediaRef.Inline -> ref.bytes
-        is MediaRef.Workspace -> workspaceBytes(ref, wake)
+        is MediaRef.Workspace -> {
+            reached(MediaStage.MACHINE)
+            workspaceBytes(ref, wake)
+        }
         is MediaRef.Unavailable -> throw MediaProblemException(MediaProblem.NotReadable("This image isn't available", unavailableDetail(ref)))
         is MediaRef.Remote, is MediaRef.Artifact -> error("Fetched by URL: $ref")
     }
@@ -473,6 +525,13 @@ class MediaLoader(
         const val NOT_ON_DEVICE = "This file is no longer on this device"
         /** A header and one frame's worth of range requests; anything slower than this is a network that has gone. */
         private const val PROBE_TIMEOUT_MS = 15_000L
+        /**
+         * The longest a figure waits for its pixels: the store, a link and a download of a few megabytes on a slow
+         * connection, with room for the account's pause after a refusal. Past it the row says so and offers Retry.
+         */
+        const val IMAGE_DEADLINE_MS = 60_000L
+        /** With the machine being woken first, which waits up to a minute for it ([AgentFileRepository.WAKE_WAIT_MS]). */
+        const val WAKE_DEADLINE_MS = 120_000L
         /** What is read again of a response no decoder took, to say what it was: more than any page or wrapper needs. */
         private const val MAX_DIAGNOSE_BYTES = 24 * 1024 * 1024
         private val STALE_URL_CODES = setOf(400, 401, 403, 404)
