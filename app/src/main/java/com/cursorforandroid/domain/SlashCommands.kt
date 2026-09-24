@@ -8,7 +8,7 @@ package com.cursorforandroid.domain
  * what leaves the device is the text with the token in it.
  */
 object SlashCommands {
-    /** `/multitask`: run async subagents in parallel instead of queueing (the "Multitask" row of the "+" menu). */
+    /** `/multitask`: run async subagents in parallel instead of queueing (worn as the Multitask pill). */
     const val MULTITASK = "multitask"
     /**
      * `/plan`: the composer's shorthand for plan mode. Never part of the prompt — typing or picking it turns the plan
