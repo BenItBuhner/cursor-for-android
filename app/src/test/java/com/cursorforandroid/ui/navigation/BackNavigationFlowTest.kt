@@ -226,17 +226,13 @@ class BackNavigationFlowTest {
     fun `a side chat opened from the panel goes back to the coordinator with its panel open, which back closes first`() {
         launch()
         openCoordinator()
-        // A coordinator's panel opens on its Project surface; the chat's own sections — the side chats among them —
-        // are the panel's other surface, which the Agents pill above the composer opens.
-        compose.onNodeWithTag("pill-agents").performClick()
+        compose.onNodeWithContentDescription("Open panel").performClick()
         compose.waitUntil(20_000) { shown("section-SideChats") || shown("section-Project") }
         compose.onNodeWithTag("panel-sections").performScrollToNode(hasTestTag("section-SideChats"))
         if (!shown("side-chat")) compose.onNodeWithTag("section-SideChats").performClick()
         compose.waitUntil(20_000) { compose.onAllNodes(hasTestTag("side-chat") and hasText(SIDE_CHAT, substring = true)).fetchSemanticsNodes().isNotEmpty() }
         compose.onNodeWithTag("panel-sections").performScrollToNode(hasTestTag("side-chat"))
-        // The row itself opens the side chat as a tab beside the coordinator; its trailing button opens it as a chat
-        // of its own, over the coordinator — the destination this trail is about.
-        compose.onNodeWithContentDescription("Open $SIDE_CHAT as a chat").performClick()
+        compose.onNode(hasTestTag("side-chat") and hasText(SIDE_CHAT, substring = true)).performClick()
         waitForOnly(SIDE_CHAT, COORDINATOR)
         assertThat(shown("conversation-panel")).isFalse()
 

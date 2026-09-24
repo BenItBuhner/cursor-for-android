@@ -50,25 +50,6 @@ object TimeFormat {
         return if (then.year == now.year) dateFormatter.format(then) else dateYearFormatter.format(then)
     }
 
-    /**
-     * "Today at 2:37 AM", "Yesterday at 5:56 AM", "Friday at 3:19 AM" within the week, "Sep 2 at 11:04 PM" beyond it —
-     * the way cursor.com's file lists write when a file was last written.
-     */
-    fun dayAndTime(epochMillis: Long, nowMillis: Long = AppClock.now(), zone: ZoneId = ZoneId.systemDefault()): String {
-        val then = Instant.ofEpochMilli(epochMillis).atZone(zone)
-        val now = Instant.ofEpochMilli(nowMillis).atZone(zone)
-        val days = java.time.temporal.ChronoUnit.DAYS.between(then.toLocalDate(), now.toLocalDate())
-        val locale = Locale.getDefault()
-        val time = DateTimeFormatter.ofPattern("h:mm a", locale).format(then)
-        val day = when {
-            days <= 0L -> "Today"
-            days == 1L -> "Yesterday"
-            days < 7L -> DateTimeFormatter.ofPattern("EEEE", locale).format(then)
-            else -> date(epochMillis, nowMillis, zone)
-        }
-        return "$day at $time"
-    }
-
     /** "3m 5s", "45s", "1h 12m" — matches the "Worked 3m 5s" row. */
     fun duration(durationMs: Long?): String? {
         if (durationMs == null || durationMs < 0) return null

@@ -18,7 +18,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
@@ -602,7 +601,6 @@ fun MarkdownText(
     color: Color = CursorTheme.colors.textPrimary,
     streaming: Boolean = false,
     commandColor: Color = Color.Unspecified,
-    appearance: MarkdownAppearance = MarkdownAppearance.Default,
 ) {
     // A reply still arriving re-reads only its tail (see [IncrementalMarkdown]); a finished message is parsed once
     // for as long as it stands, wherever it is drawn (see [MarkdownCache]) — the presenter has usually parsed the
@@ -611,56 +609,34 @@ fun MarkdownText(
     val blocks = remember(markdown, streaming) {
         if (streaming) parser.parse(MediaMarkup.trimPartialTail(markdown)) else MarkdownCache.parse(markdown)
     }
-    MarkdownBlocks(blocks, style, color, modifier, spacing = appearance.blockSpacing, commandColor = commandColor, appearance = appearance)
-}
-
-/**
- * How a markdown surface spaces and marks its blocks. [Default] is a reply's: tight lists with square task boxes.
- * [Notes] is the Project's notes as cursor.com renders them: 17px headings, a line of air between list items, a
- * 12px circle for each task with a check inside the done ones — measured off the web's Project tab.
- */
-data class MarkdownAppearance(
-    val blockSpacing: Dp = 10.dp,
-    val itemSpacing: Dp = 4.dp,
-    val headingTop: Dp = 4.dp,
-    val circleTasks: Boolean = false,
-    /** The marker column's width: 22dp for a reply, wider for the notes' circles and their gap. */
-    val markerWidth: Dp = 22.dp,
-    /** Heading sizes as multiples of the body size for levels 1 and 2; level 3 and below stay the body size, semibold. */
-    val h1Scale: Float = 1.25f,
-    val h2Scale: Float = 1.12f,
-) {
-    companion object {
-        val Default = MarkdownAppearance()
-        val Notes = MarkdownAppearance(blockSpacing = 14.dp, itemSpacing = 18.dp, headingTop = 36.dp, circleTasks = true, markerWidth = 22.dp, h1Scale = 1.3f, h2Scale = 17f / 14f)
-    }
+    MarkdownBlocks(blocks, style, color, modifier, spacing = 10.dp, commandColor = commandColor)
 }
 
 @Composable
-private fun MarkdownBlocks(blocks: List<MdBlock>, style: TextStyle, color: Color, modifier: Modifier = Modifier, spacing: Dp, commandColor: Color, appearance: MarkdownAppearance = MarkdownAppearance.Default) {
+private fun MarkdownBlocks(blocks: List<MdBlock>, style: TextStyle, color: Color, modifier: Modifier = Modifier, spacing: Dp, commandColor: Color) {
     Column(modifier, verticalArrangement = Arrangement.spacedBy(spacing)) {
         // Keyed on position rather than content: streaming only appends, so every block but the last keeps its
         // index, and a code block being written keeps the horizontal scroll the reader put it at.
         blocks.forEachIndexed { index, block ->
-            key(index, block::class) { MarkdownBlock(block, style, color, commandColor, appearance) }
+            key(index, block::class) { MarkdownBlock(block, style, color, commandColor) }
         }
     }
 }
 
 @Composable
-private fun MarkdownBlock(block: MdBlock, style: TextStyle, color: Color, commandColor: Color, appearance: MarkdownAppearance) {
+private fun MarkdownBlock(block: MdBlock, style: TextStyle, color: Color, commandColor: Color) {
     val colors = CursorTheme.colors
     when (block) {
         is MdBlock.Paragraph -> InlineText(block.text, style, color, commandColor = commandColor)
         is MdBlock.Heading -> {
             val headingStyle = when (block.level) {
-                1 -> style.copy(fontSize = style.fontSize * appearance.h1Scale, lineHeight = style.lineHeight * appearance.h1Scale, fontWeight = FontWeight.SemiBold)
-                2 -> style.copy(fontSize = style.fontSize * appearance.h2Scale, lineHeight = style.lineHeight * appearance.h2Scale, fontWeight = FontWeight.SemiBold)
+                1 -> style.copy(fontSize = style.fontSize * 1.25f, fontWeight = FontWeight.SemiBold)
+                2 -> style.copy(fontSize = style.fontSize * 1.12f, fontWeight = FontWeight.SemiBold)
                 else -> style.copy(fontWeight = FontWeight.SemiBold)
             }
-            InlineText(block.text, headingStyle, color, modifier = Modifier.padding(top = appearance.headingTop), commandColor = commandColor)
+            InlineText(block.text, headingStyle, color, modifier = Modifier.padding(top = 4.dp), commandColor = commandColor)
         }
-        is MdBlock.Bullets -> ListBlock(block, style, color, commandColor, appearance)
+        is MdBlock.Bullets -> ListBlock(block, style, color, commandColor)
         is MdBlock.Code -> CodeBlock(block.code, block.language)
         is MdBlock.Quote -> {
             // The bar is drawn into the content's start padding, so it spans exactly what is quoted.
@@ -677,7 +653,6 @@ private fun MarkdownBlock(block: MdBlock, style: TextStyle, color: Color, comman
                     .padding(start = 12.dp),
                 spacing = 8.dp,
                 commandColor = commandColor,
-                appearance = appearance,
             )
         }
         MdBlock.Rule -> HairlineDivider(Modifier.padding(vertical = 4.dp))
@@ -692,18 +667,18 @@ private fun MarkdownBlock(block: MdBlock, style: TextStyle, color: Color, comman
  * only when the list counts into two or more digits so "10." is never wrapped onto two lines.
  */
 @Composable
-private fun ListBlock(block: MdBlock.Bullets, style: TextStyle, color: Color, commandColor: Color, appearance: MarkdownAppearance) {
+private fun ListBlock(block: MdBlock.Bullets, style: TextStyle, color: Color, commandColor: Color) {
     val colors = CursorTheme.colors
-    val markerWidth = markerColumnWidth(block, style, appearance.markerWidth)
-    Column(verticalArrangement = Arrangement.spacedBy(appearance.itemSpacing)) {
+    val markerWidth = markerColumnWidth(block, style)
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         block.items.forEachIndexed { index, item ->
             Row {
                 when {
-                    item.checked != null -> TaskCheckbox(item.checked, style, Modifier.width(markerWidth), circle = appearance.circleTasks)
+                    item.checked != null -> TaskCheckbox(item.checked, style, Modifier.width(markerWidth))
                     block.ordered -> Text("${block.start + index}.", style = style, color = colors.textTertiary, modifier = Modifier.width(markerWidth))
                     else -> Text("•", style = style, color = colors.textTertiary, modifier = Modifier.width(markerWidth))
                 }
-                MarkdownBlocks(item.blocks, style, color, Modifier.weight(1f), spacing = 6.dp, commandColor = commandColor, appearance = appearance)
+                MarkdownBlocks(item.blocks, style, color, Modifier.weight(1f), spacing = 6.dp, commandColor = commandColor)
             }
         }
     }
@@ -712,40 +687,36 @@ private fun ListBlock(block: MdBlock.Bullets, style: TextStyle, color: Color, co
 private val MarkerColumnWidth = 22.dp
 
 @Composable
-private fun markerColumnWidth(block: MdBlock.Bullets, style: TextStyle, base: Dp = MarkerColumnWidth): Dp {
+private fun markerColumnWidth(block: MdBlock.Bullets, style: TextStyle): Dp {
     val last = block.start + block.items.size - 1
-    if (!block.ordered || last < 10) return base
+    if (!block.ordered || last < 10) return MarkerColumnWidth
     val measurer = rememberTextMeasurer()
     val density = LocalDensity.current
-    return remember(last, style, density, base) {
-        with(density) { measurer.measure("$last.", style).size.width.toDp() + 6.dp }.coerceAtLeast(base)
+    return remember(last, style, density) {
+        with(density) { measurer.measure("$last.", style).size.width.toDp() + 6.dp }.coerceAtLeast(MarkerColumnWidth)
     }
 }
 
-/**
- * The mark of a `- [ ]` / `- [x]` item, centred on the first line of its text: a 14dp square for a reply, or —
- * [circle], the web's Project notes — a 12px ring with the check drawn inside the done ones.
- */
+/** The box of a `- [ ]` / `- [x]` item, centred on the first line of its text. */
 @Composable
-private fun TaskCheckbox(checked: Boolean, style: TextStyle, modifier: Modifier, circle: Boolean = false) {
+private fun TaskCheckbox(checked: Boolean, style: TextStyle, modifier: Modifier) {
     val colors = CursorTheme.colors
     val lineHeight = with(LocalDensity.current) {
         if (style.lineHeight.isSpecified && style.lineHeight.isSp) style.lineHeight.toDp() else style.fontSize.toDp() * 1.5f
     }
-    val shape = if (circle) CircleShape else RoundedCornerShape(3.dp)
-    val size = if (circle) 13.dp else 14.dp
+    val shape = RoundedCornerShape(3.dp)
     Box(
         modifier.height(lineHeight).semantics { contentDescription = if (checked) "Done" else "To do" },
         contentAlignment = Alignment.CenterStart,
     ) {
         Box(
             Modifier
-                .size(size)
-                .background(if (checked && !circle) colors.fillMedium else Color.Transparent, shape)
-                .border(if (circle) 1.5.dp else 1.dp, if (circle) colors.iconQuaternary else colors.strokeStrong, shape),
+                .size(14.dp)
+                .background(if (checked) colors.fillMedium else Color.Transparent, shape)
+                .border(1.dp, colors.strokeStrong, shape),
             contentAlignment = Alignment.Center,
         ) {
-            if (checked) Icon(CursorIcons.Check, null, tint = if (circle) colors.iconTertiary else colors.iconSecondary, modifier = Modifier.size(if (circle) 8.dp else 10.dp))
+            if (checked) Icon(CursorIcons.Check, null, tint = colors.iconSecondary, modifier = Modifier.size(10.dp))
         }
     }
 }

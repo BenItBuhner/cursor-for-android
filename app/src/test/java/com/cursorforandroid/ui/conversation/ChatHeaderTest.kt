@@ -181,8 +181,7 @@ class ChatHeaderTest {
         compose.waitForIdle()
         val items = compose.onAllNodes(hasAnyAncestor(isPopup()) and hasClickAction()).fetchSemanticsNodes()
             .map { node -> node.config.getOrNull(SemanticsProperties.Text).orEmpty().joinToString("") { it.text } }
-        // "Chat details" is the panel's Chat surface — the chat's own sections — for a chat whose panel opens on its Project.
-        assertThat(items).containsExactly("Unpin", "Rename", "Chat details", "Reload transcript", "Open on cursor.com", "Copy link", "Share…", "Share diagnostics", "Snooze", "Archive").inOrder()
+        assertThat(items).containsExactly("Unpin", "Rename", "Reload transcript", "Open on cursor.com", "Copy link", "Share…", "Share diagnostics", "Snooze", "Archive").inOrder()
     }
 
     @Test

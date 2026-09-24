@@ -159,11 +159,6 @@ class PreferencesStore(
         /** Which engine renders transcripts in Extended mode (`stable` / `beta`, see `domain/TranscriptEngine.kt`); absent is never chosen, and Beta. */
         val transcriptEngine = stringPreferencesKey("transcript_engine")
         val crashReports = booleanPreferencesKey("crash_reports")
-        val railMedium = stringPreferencesKey("layout_rail_medium")
-        val railExpanded = stringPreferencesKey("layout_rail_expanded")
-        val sidebarWidthMedium = intPreferencesKey("layout_sidebar_width_medium")
-        val sidebarWidthExpanded = intPreferencesKey("layout_sidebar_width_expanded")
-        val panelWidthDp = intPreferencesKey("layout_panel_width_dp")
         val modeChoicePending = booleanPreferencesKey("mode_choice_pending")
         /** The sidebar groups the reader has folded closed, by section key ("projects", "pinned", "date:Today", …). */
         val collapsedSidebarSections = stringSetPreferencesKey("sidebar_collapsed_sections")
@@ -208,47 +203,6 @@ class PreferencesStore(
     private val accountData: Flow<Preferences> = data.map { p ->
         if (!sessionClearFailed) p else p.toMutablePreferences().apply { sessionKeys.forEach { this -= it } }
     }
-
-    // ---- layout (device-level; deliberately untouched by clearSession) -------------------------------------------
-
-    /**
-     * The left rail's state as the reader last left it on a window of each width class, by the class's name
-     * (`Medium`, `Expanded`; see `WindowPosture`): a foldable folded and unfolded finds each posture as it was. Null
-     * where nothing was chosen yet, so the class's default stands.
-     */
-    val railStates: Flow<Map<String, String>> = data.map { p ->
-        buildMap {
-            p[Keys.railMedium]?.let { put("Medium", it) }
-            p[Keys.railExpanded]?.let { put("Expanded", it) }
-        }
-    }
-
-    suspend fun setRailState(widthClass: String, state: String) = edit { p ->
-        when (widthClass) {
-            "Medium" -> p[Keys.railMedium] = state
-            "Expanded" -> p[Keys.railExpanded] = state
-        }
-    }
-
-    /** The sidebar's width by width class name ("Medium", "Expanded"), as the reader dragged it; absent until dragged. */
-    val sidebarWidths: Flow<Map<String, Int>> = data.map { p ->
-        buildMap {
-            p[Keys.sidebarWidthMedium]?.let { put("Medium", it) }
-            p[Keys.sidebarWidthExpanded]?.let { put("Expanded", it) }
-        }
-    }
-
-    suspend fun setSidebarWidthDp(widthClass: String, widthDp: Int) = edit { p ->
-        when (widthClass) {
-            "Medium" -> p[Keys.sidebarWidthMedium] = widthDp
-            "Expanded" -> p[Keys.sidebarWidthExpanded] = widthDp
-        }
-    }
-
-    /** How wide the reader dragged the right panel's pane, in dp; null for the default. */
-    val panelWidthDp: Flow<Int?> = data.map { it[Keys.panelWidthDp] }
-
-    suspend fun setPanelWidthDp(widthDp: Int) = edit { it[Keys.panelWidthDp] = widthDp }
 
     // ---- app updates (device-level; deliberately untouched by clearSession) --------------------------------------
 
