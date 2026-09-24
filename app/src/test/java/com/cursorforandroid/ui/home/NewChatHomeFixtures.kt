@@ -84,9 +84,11 @@ internal object NewChatHomeFixtures {
         agent("bc-strategy", "Cesium Revenue Strategy", 26 * 60, running = true),
     )
 
-    fun list(agents: List<Agent> = this.agents): AgentListUiState {
+    /** The account's Projects as the organizer lists them, first to last, before they have been arranged. */
+    val PROJECT_ORDER = listOf("bc-shipyard", BILLING, "bc-design", "bc-android", "bc-pipeline")
+
+    fun list(agents: List<Agent> = this.agents, local: LocalAgentState = LocalAgentState()): AgentListUiState {
         val prefs = ListPreferences()
-        val local = LocalAgentState()
         val sections = AgentListOrganizer.organize(agents, prefs, local, nowMillis = NOW, zone = ZoneOffset.UTC)
         return AgentListUiState(
             sections = sections,
