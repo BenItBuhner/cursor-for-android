@@ -1,7 +1,9 @@
 package com.cursorforandroid.ui.panel
 
 import android.view.inputmethod.InputMethodManager
+import androidx.activity.BackEventCompat
 import androidx.activity.ComponentActivity
+import androidx.activity.OnBackPressedDispatcher
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -48,6 +50,7 @@ import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import androidx.test.platform.app.InstrumentationRegistry
 import com.cursorforandroid.ui.components.BackEdgeMinWidth
 import com.cursorforandroid.ui.components.ComposerBox
 import com.cursorforandroid.ui.components.CursorDrawer
@@ -63,6 +66,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 import org.junit.Rule
 import org.junit.Test
+import org.junit.rules.ExternalResource
 import org.junit.runner.RunWith
 import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
@@ -75,15 +79,34 @@ import org.robolectric.annotation.Config
  * the keyboard where it was without so much as a flicker. The composer's draft stays; a field in the sheet itself that
  * holds focus as it opens keeps it, and the keyboard with it.
  *
+ * Its mirror image: shutting a sheet whose own field holds focus (the sidebar's search) left the field focused and the
+ * keyboard up after the sheet had gone, still typing into it off screen. Closing either side now lets that field go
+ * and puts the keyboard away, once the close is committed — a release that settles shut, the scrim, back carried
+ * through — and not while a finger is still dragging the sheet out, so a close that settles back open, is cancelled,
+ * or is a back gesture called off leaves the field and the keyboard be. What was typed in the field stays.
+ *
  * The scene is the chat's shape, as in [BackEdgeSwipeTest]: the drawer around a panel host around a transcript, with
- * the real composer docked under it and the header's two buttons over it. Every swipe starts from the window's
- * coordinates and moves once a 16 ms frame.
+ * the real composer docked under it and the header's two buttons over it, and a field in each sheet. Every swipe
+ * starts from the window's coordinates and moves once a 16 ms frame.
  */
 @RunWith(AndroidJUnit4::class)
 @Config(sdk = [35], qualifiers = "w411dp-h914dp-night-420dpi")
 class SheetKeyboardTest {
 
-    @get:Rule
+    /**
+     * A phone that has just been touched is in touch mode, where a field letting go of focus leaves nothing focused.
+     * The test's touches go straight to the composition, so Robolectric's window never enters it on its own; out of
+     * touch mode Android hands focus straight back to the window, which gives it to the field nearest its top-left
+     * corner — the open drawer's search, the very field that was let go.
+     */
+    @get:Rule(order = 0)
+    val touchMode = object : ExternalResource() {
+        override fun before() = InstrumentationRegistry.getInstrumentation().setInTouchMode(true)
+
+        override fun after() = InstrumentationRegistry.getInstrumentation().setInTouchMode(false)
+    }
+
+    @get:Rule(order = 1)
     val compose = createAndroidComposeRule<ComponentActivity>()
 
     private var draft by mutableStateOf("")
@@ -92,8 +115,10 @@ class SheetKeyboardTest {
     private lateinit var sceneScope: CoroutineScope
 
     /** Whether the composer holds focus, and how often it has let go of it since [startWriting]. */
-    private var composerFocused = false
-    private var composerReleases = 0
+    private val composerFocus = FocusWatch()
+    /** The same of the drawer's search and the panel's field, since [startSearching]. */
+    private val drawerSearchWatch = FocusWatch()
+    private val panelFieldWatch = FocusWatch()
     private var panelPeak = 0f
     private var drawerPeak = 0f
 
@@ -108,7 +133,7 @@ class SheetKeyboardTest {
                     state = drawer,
                     drawerWidth = DrawerWidth,
                     drawerContent = {
-                        Column(Modifier.fillMaxSize().testTag("drawer-body")) {
+                        Column(Modifier.fillMaxSize().testTag("drawer-body").watching(drawerSearchWatch)) {
                             BasicTextField(rememberTextFieldState(), Modifier.fillMaxWidth().padding(16.dp).focusRequester(drawerSearchFocus).testTag("drawer-search"))
                         }
                     },
@@ -117,7 +142,7 @@ class SheetKeyboardTest {
                         state = panel,
                         panelWidth = PanelWidth,
                         panelContent = {
-                            Column(Modifier.fillMaxSize().testTag("panel-body")) {
+                            Column(Modifier.fillMaxSize().testTag("panel-body").watching(panelFieldWatch)) {
                                 BasicTextField(rememberTextFieldState(), Modifier.fillMaxWidth().padding(16.dp).focusRequester(panelFieldFocus).testTag("panel-field"))
                             }
                         },
@@ -131,12 +156,7 @@ class SheetKeyboardTest {
                             LazyColumn(Modifier.weight(1f).fillMaxWidth()) {
                                 items(20) { Text("Reply $it", Modifier.fillMaxWidth().height(64.dp).padding(16.dp).testTag("reply-$it")) }
                             }
-                            Box(
-                                Modifier.onFocusChanged {
-                                    if (composerFocused && !it.hasFocus) composerReleases++
-                                    composerFocused = it.hasFocus
-                                },
-                            ) {
+                            Box(Modifier.watching(composerFocus)) {
                                 ComposerBox(value = draft, onValueChange = { draft = it }, placeholder = "Follow up", onSend = {}, modifier = Modifier.padding(16.dp))
                             }
                         }
@@ -145,6 +165,7 @@ class SheetKeyboardTest {
             }
         }
         compose.waitForIdle()
+        assertThat(compose.activity.window.decorView.isInTouchMode).isTrue()
     }
 
     private val composer: SemanticsNodeInteraction
@@ -162,7 +183,7 @@ class SheetKeyboardTest {
         if (type) composer.performTextInput(Draft)
         composer.assertIsFocused()
         compose.waitUntil(5_000) { softInputVisible() }
-        composerReleases = 0
+        composerFocus.releases = 0
     }
 
     /** The composer let go, the keyboard with it, and the follow-up still as it was written. */
@@ -178,9 +199,70 @@ class SheetKeyboardTest {
     private fun assertComposerKept() {
         compose.waitForIdle()
         composer.assertIsFocused()
-        assertThat(composerReleases).isEqualTo(0)
+        assertThat(composerFocus.releases).isEqualTo(0)
         assertThat(softInputVisible()).isTrue()
         assertThat(fieldText(composer)).isEqualTo(Draft)
+    }
+
+    /** The field tagged [tag] in an open sheet holding a half-typed [Query], with the keyboard up for it. */
+    private fun startSearching(tag: String, watch: FocusWatch) {
+        val field = compose.onNodeWithTag(tag)
+        field.performClick()
+        field.performTextInput(Query)
+        field.assertIsFocused()
+        compose.waitUntil(5_000) { softInputVisible() }
+        watch.releases = 0
+    }
+
+    /** The sheet's field let go, once, and the keyboard with it. */
+    private fun assertSheetFieldReleased(watch: FocusWatch) {
+        compose.waitForIdle()
+        assertThat(watch.focused).isFalse()
+        assertThat(watch.releases).isEqualTo(1)
+        assertThat(softInputVisible()).isFalse()
+    }
+
+    /** The sheet's field still focused with what was typed in it and the keyboard still up, never having let go. */
+    private fun assertSheetFieldKept(tag: String, watch: FocusWatch) {
+        compose.waitForIdle()
+        compose.onNodeWithTag(tag).assertIsFocused()
+        assertThat(watch.releases).isEqualTo(0)
+        assertThat(softInputVisible()).isTrue()
+        assertThat(fieldText(compose.onNodeWithTag(tag))).isEqualTo(Query)
+    }
+
+    /**
+     * [commit] a close, then two frames of its slide: the sheet, at [fraction], still on its way shut, and its field
+     * tagged [tag] already let go, the keyboard with it. Checked at the end instead, a panel's field would pass without
+     * ever being let go, having left the composition with the panel.
+     */
+    private fun assertLetGoAsTheSheetStartsSliding(tag: String, fraction: () -> Float, commit: () -> Unit) {
+        compose.mainClock.autoAdvance = false
+        try {
+            commit()
+            compose.mainClock.advanceTimeByFrame()
+            compose.mainClock.advanceTimeByFrame()
+            assertThat(fraction()).isGreaterThan(0f)
+            compose.onNodeWithTag(tag).assertIsNotFocused()
+            assertThat(softInputVisible()).isFalse()
+        } finally {
+            compose.mainClock.autoAdvance = true
+        }
+    }
+
+    private val backDispatcher: OnBackPressedDispatcher get() = compose.activity.onBackPressedDispatcher
+
+    /** A predictive back gesture from [edge], reported half-way to its commit and held there. */
+    private fun backHalfWay(edge: Int) {
+        backDispatcher.dispatchOnBackStarted(BackEventCompat(0f, replyY, 0f, edge))
+        compose.waitForIdle()
+        backDispatcher.dispatchOnBackProgressed(BackEventCompat(windowWidth * 0.25f, replyY, 0.5f, edge))
+        compose.waitForIdle()
+    }
+
+    private fun cancelBack() {
+        backDispatcher.dispatchOnBackCancelled()
+        compose.waitForIdle()
     }
 
     private fun px(dp: Dp): Int = with(compose.density) { dp.roundToPx() }
@@ -204,7 +286,6 @@ class SheetKeyboardTest {
 
     private fun release(finish: TouchInjectionScope.() -> Unit = { up() }) {
         compose.onRoot().performTouchInput { finish() }
-        compose.waitForIdle()
     }
 
     /** [drag], then [finish]: a lift, unless told otherwise. */
@@ -308,32 +389,6 @@ class SheetKeyboardTest {
         assertComposerReleased()
     }
 
-    @Test
-    fun `a field in the panel keeps focus and the keyboard when the panel, caught on its way shut, is sent back open`() {
-        val panel = SidePanelState(SidePanelValue.Closed)
-        show(panel)
-        compose.onNodeWithContentDescription("Open panel").performClick()
-        assertRestsAt(panel, SidePanelValue.Open)
-        compose.onNodeWithTag("panel-field").performClick()
-        compose.onNodeWithTag("panel-field").assertIsFocused()
-        compose.waitUntil(5_000) { softInputVisible() }
-
-        compose.mainClock.autoAdvance = false
-        try {
-            compose.runOnIdle { sceneScope.launch { panel.close() } }
-            repeat(6) { compose.mainClock.advanceTimeByFrame() }
-            assertThat(panel.targetValue).isEqualTo(SidePanelValue.Closed)
-            assertThat(panel.fraction).isGreaterThan(0f)
-            compose.runOnIdle { sceneScope.launch { panel.open() } }
-            compose.mainClock.advanceTimeByFrame()
-        } finally {
-            compose.mainClock.autoAdvance = true
-        }
-        assertRestsAt(panel, SidePanelValue.Open)
-        compose.onNodeWithTag("panel-field").assertIsFocused()
-        assertThat(softInputVisible()).isTrue()
-    }
-
     // -- the sidebar drawer -------------------------------------------------------------------------------------------
 
     @Test
@@ -427,9 +482,174 @@ class SheetKeyboardTest {
         assertThat(fieldText(composer)).isEqualTo(Draft)
     }
 
+    // -- closing over a sheet's own field -----------------------------------------------------------------------------
+
+    /** Inside the open panel, clear of its field and of the end edge's back strip. */
+    private val onPanel: Offset get() = Offset(windowWidth - px(PanelWidth) * 0.8f, replyY)
+
+    /** Inside the open drawer, clear of its search. */
+    private val onDrawer: Offset get() = Offset(px(DrawerWidth) * 0.8f, replyY)
+
+    @Test
+    fun `a swipe that shuts the panel keeps its field focused while the finger drags and lets it go, keyboard and all, once the release commits the close`() {
+        val panel = SidePanelState(SidePanelValue.Open)
+        show(panel)
+        startSearching("panel-field", panelFieldWatch)
+
+        // Past half-way and slow, so it is the release that decides: the finger is still down, nothing is committed.
+        dragWithoutLifting(onPanel, dx = px(PanelWidth) * 0.6f, pxPerSecond = SlowPxPerSecond)
+        assertThat(panel.fraction).isLessThan(0.5f)
+        assertThat(panel.targetValue).isEqualTo(SidePanelValue.Open)
+        assertSheetFieldKept("panel-field", panelFieldWatch)
+
+        assertLetGoAsTheSheetStartsSliding("panel-field", { panel.fraction }) { release() }
+        assertRestsAt(panel, SidePanelValue.Closed)
+        assertSheetFieldReleased(panelFieldWatch)
+    }
+
+    @Test
+    fun `a panel close that settles back open, is cancelled or is a back gesture called off leaves its field be, and back carried through takes it`() {
+        val panel = SidePanelState(SidePanelValue.Open)
+        show(panel)
+        startSearching("panel-field", panelFieldWatch)
+
+        swipe(onPanel, dx = px(PanelWidth) * 0.3f, pxPerSecond = SlowPxPerSecond)
+        assertRestsAt(panel, SidePanelValue.Open)
+        assertSheetFieldKept("panel-field", panelFieldWatch)
+
+        swipe(onPanel, dx = px(PanelWidth) * 0.3f, pxPerSecond = FlickPxPerSecond) { cancel() }
+        assertRestsAt(panel, SidePanelValue.Open)
+        assertSheetFieldKept("panel-field", panelFieldWatch)
+
+        // Held half-way, the gesture has committed nothing either way.
+        backHalfWay(BackEventCompat.EDGE_RIGHT)
+        assertThat(panel.fraction).isLessThan(1f)
+        assertThat(panel.targetValue).isEqualTo(SidePanelValue.Open)
+        assertSheetFieldKept("panel-field", panelFieldWatch)
+        cancelBack()
+        assertRestsAt(panel, SidePanelValue.Open)
+        assertSheetFieldKept("panel-field", panelFieldWatch)
+
+        backHalfWay(BackEventCompat.EDGE_RIGHT)
+        assertLetGoAsTheSheetStartsSliding("panel-field", { panel.fraction }) { backDispatcher.onBackPressed() }
+        assertRestsAt(panel, SidePanelValue.Closed)
+        assertSheetFieldReleased(panelFieldWatch)
+    }
+
+    @Test
+    fun `the panel's field lets focus and the keyboard go as a tap on the scrim starts the sheet sliding shut`() {
+        val panel = SidePanelState(SidePanelValue.Open)
+        show(panel)
+        startSearching("panel-field", panelFieldWatch)
+
+        assertLetGoAsTheSheetStartsSliding("panel-field", { panel.fraction }) {
+            compose.onNodeWithContentDescription("Dismiss panel").performSemanticsAction(SemanticsActions.OnClick)
+        }
+        assertRestsAt(panel, SidePanelValue.Closed)
+        assertSheetFieldReleased(panelFieldWatch)
+    }
+
+    @Test
+    fun `a panel close caught on its way shut and sent back open has already let its field go`() {
+        val panel = SidePanelState(SidePanelValue.Open)
+        show(panel)
+        startSearching("panel-field", panelFieldWatch)
+
+        compose.mainClock.autoAdvance = false
+        try {
+            compose.runOnIdle { sceneScope.launch { panel.close() } }
+            repeat(6) { compose.mainClock.advanceTimeByFrame() }
+            assertThat(panel.targetValue).isEqualTo(SidePanelValue.Closed)
+            assertThat(panel.fraction).isGreaterThan(0f)
+            compose.runOnIdle { sceneScope.launch { panel.open() } }
+            compose.mainClock.advanceTimeByFrame()
+        } finally {
+            compose.mainClock.autoAdvance = true
+        }
+        // The close was committed before it was turned back; the field is tapped to take the keyboard again.
+        assertRestsAt(panel, SidePanelValue.Open)
+        compose.onNodeWithTag("panel-field").assertIsNotFocused()
+        assertSheetFieldReleased(panelFieldWatch)
+        compose.onNodeWithTag("panel-field").performClick()
+        compose.waitUntil(5_000) { softInputVisible() }
+        assertThat(fieldText(compose.onNodeWithTag("panel-field"))).isEqualTo(Query)
+    }
+
+    @Test
+    fun `a swipe that shuts the drawer keeps its search focused while the finger drags and lets it go, keyboard and all, once the release commits the close`() {
+        val drawer = CursorDrawerState(DrawerValue.Open)
+        show(drawer = drawer)
+        startSearching("drawer-search", drawerSearchWatch)
+
+        dragWithoutLifting(onDrawer, dx = -px(DrawerWidth) * 0.6f, pxPerSecond = SlowPxPerSecond)
+        assertThat(drawer.fraction).isLessThan(0.5f)
+        assertThat(drawer.targetValue).isEqualTo(DrawerValue.Open)
+        assertSheetFieldKept("drawer-search", drawerSearchWatch)
+
+        assertLetGoAsTheSheetStartsSliding("drawer-search", { drawer.fraction }) { release() }
+        assertRestsAt(drawer, DrawerValue.Closed)
+        assertSheetFieldReleased(drawerSearchWatch)
+        // Still composed off screen, the search keeps what was typed in it for the drawer's next visit.
+        compose.onNodeWithTag("drawer-search").assertIsNotFocused()
+        assertThat(fieldText(compose.onNodeWithTag("drawer-search"))).isEqualTo(Query)
+    }
+
+    @Test
+    fun `a drawer close that settles back open, is cancelled or is a back gesture called off leaves its search be, and back carried through takes it`() {
+        val drawer = CursorDrawerState(DrawerValue.Open)
+        show(drawer = drawer)
+        startSearching("drawer-search", drawerSearchWatch)
+
+        swipe(onDrawer, dx = -px(DrawerWidth) * 0.3f, pxPerSecond = SlowPxPerSecond)
+        assertRestsAt(drawer, DrawerValue.Open)
+        assertSheetFieldKept("drawer-search", drawerSearchWatch)
+
+        swipe(onDrawer, dx = -px(DrawerWidth) * 0.3f, pxPerSecond = FlickPxPerSecond) { cancel() }
+        assertRestsAt(drawer, DrawerValue.Open)
+        assertSheetFieldKept("drawer-search", drawerSearchWatch)
+
+        backHalfWay(BackEventCompat.EDGE_LEFT)
+        assertThat(drawer.fraction).isLessThan(1f)
+        assertThat(drawer.targetValue).isEqualTo(DrawerValue.Open)
+        assertSheetFieldKept("drawer-search", drawerSearchWatch)
+        cancelBack()
+        assertRestsAt(drawer, DrawerValue.Open)
+        assertSheetFieldKept("drawer-search", drawerSearchWatch)
+
+        backHalfWay(BackEventCompat.EDGE_LEFT)
+        assertLetGoAsTheSheetStartsSliding("drawer-search", { drawer.fraction }) { backDispatcher.onBackPressed() }
+        assertRestsAt(drawer, DrawerValue.Closed)
+        assertSheetFieldReleased(drawerSearchWatch)
+    }
+
+    @Test
+    fun `the drawer's search lets focus and the keyboard go as a tap on the scrim starts the drawer sliding shut`() {
+        val drawer = CursorDrawerState(DrawerValue.Open)
+        show(drawer = drawer)
+        startSearching("drawer-search", drawerSearchWatch)
+
+        assertLetGoAsTheSheetStartsSliding("drawer-search", { drawer.fraction }) {
+            compose.onNodeWithContentDescription("Close navigation menu").performSemanticsAction(SemanticsActions.OnClick)
+        }
+        assertRestsAt(drawer, DrawerValue.Closed)
+        assertSheetFieldReleased(drawerSearchWatch)
+    }
+
+    /** Whether a field holds focus, and how often it has let go of it since [releases] was last reset. */
+    private class FocusWatch {
+        var focused = false
+        var releases = 0
+    }
+
+    private fun Modifier.watching(watch: FocusWatch): Modifier = onFocusChanged {
+        if (watch.focused && !it.hasFocus) watch.releases++
+        watch.focused = it.hasFocus
+    }
+
     private companion object {
         const val FrameMillis = 16L
         const val Draft = "Half a thought about the"
+        const val Query = "exploration"
         /** Well under the 400 dp/s fling threshold (1 050 px/s at 420 dpi): the release settles by where the sheet is. */
         const val SlowPxPerSecond = 500f
         /** Well over it. */

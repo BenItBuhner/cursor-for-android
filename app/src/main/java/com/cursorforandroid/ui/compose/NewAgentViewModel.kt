@@ -322,8 +322,15 @@ class NewAgentViewModel(
             // is made, and the fetches only revalidate them.
             graph.catalog.restoreFromCache()
             // Independent endpoints, and /v1/repositories alone can take tens of seconds: never queue one behind the other.
-            launch { loadRepositories(loaded.repoUrl) }
-            launch { loadModels() }
+            // Then whatever list comes next — the background refresh's, another screen's — is followed too.
+            launch {
+                loadRepositories(loaded.repoUrl)
+                followRepositories()
+            }
+            launch {
+                loadModels()
+                followModels()
+            }
             launch { loadDevices() }
             // Only once the draft is back does what is on screen start standing for it.
             launch(Dispatchers.Default) {
@@ -590,6 +597,13 @@ class NewAgentViewModel(
         _state.update { it.copy(isLoadingRepos = false) }
     }
 
+    /** A list the catalog comes by later — its background refresh, the picker of another screen — is the picker's too. */
+    private suspend fun followRepositories() {
+        graph.catalog.repositories.collect { repos ->
+            if (repos.isNotEmpty() && repos != _state.value.repositories) applyRepos(repos, _state.value.selectedRepo?.url)
+        }
+    }
+
     private fun applyRepos(repos: List<Repository>, preferredUrl: String?) {
         _state.update { s ->
             // A selection made before the catalogue arrived — a device's repository, typically — becomes the
@@ -732,7 +746,25 @@ class NewAgentViewModel(
         _state.update { it.copy(isLoadingModels = true) }
         graph.catalog.loadModels(force)
             .onSuccess { models -> _state.update { it.withModels(models, fallbackIfMissing = true) } }
-            .onFailure { _state.update { it.copy(isLoadingModels = false, modelsUnavailable = it.models.isEmpty()) } }
+            .onFailure { t ->
+                _state.update {
+                    val failed = it.copy(isLoadingModels = false, modelsUnavailable = it.models.isEmpty())
+                    // A refresh asked for is answered, as the repository picker's is; the first load's failure is the picker's to show.
+                    if (force) failed.copy(error = t.userMessage(), errorAsked = null) else failed
+                }
+            }
+    }
+
+    /**
+     * Each model list the catalog fetches after the first — the background refresh's, another screen's — replaces
+     * this one, and the selection is settled on it again: a model Cursor has just announced turns up in the picker,
+     * and a slug restored from a draft is placed against it (see [withModelSelection]). The first emission is the list
+     * [loadModels] has just adopted, so it is skipped by value.
+     */
+    private suspend fun followModels() {
+        graph.catalog.models.collect { models ->
+            if (models.isNotEmpty() && models != _state.value.models) _state.update { it.withModels(models, fallbackIfMissing = true) }
+        }
     }
 
     /**

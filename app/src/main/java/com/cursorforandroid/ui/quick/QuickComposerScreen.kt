@@ -213,7 +213,7 @@ private fun QuickComposer(
             unavailable = state.modelsUnavailable,
             onPlanMode = viewModel::setPlanMode,
             onAutoCreatePr = viewModel::setAutoCreatePr,
-            onRetry = viewModel::refreshModels,
+            onRefresh = viewModel::refreshModels,
             onSelect = viewModel::selectModel,
             onDismiss = { modelSheet = false },
             pinnedIds = state.pinnedModelIds,
