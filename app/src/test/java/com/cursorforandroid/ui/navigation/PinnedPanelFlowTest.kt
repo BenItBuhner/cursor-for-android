@@ -37,6 +37,10 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.cursorforandroid.AppGraph
 import com.cursorforandroid.domain.CursorUser
 import com.cursorforandroid.ui.components.BackEdgeMinWidth
+import com.cursorforandroid.ui.components.Haptic
+import com.cursorforandroid.ui.components.HapticLog
+import com.cursorforandroid.ui.components.ShadowHapticLog
+import com.cursorforandroid.ui.components.constant
 import com.cursorforandroid.ui.panel.PaneWidthClass
 import com.cursorforandroid.ui.shortcuts.KeyboardShortcuts
 import com.cursorforandroid.ui.shortcuts.LocalKeyboardShortcuts
@@ -545,6 +549,128 @@ class PinnedPanelFlowTest {
         assertThat(chatBounds().width).isWithin(0.5f).of(400f)
     }
 
+    private val threshold: Int get() = Haptic.ThresholdActivate.constant()
+
+    private val stop: Int get() = Haptic.SlotTick.constant()
+
+    @Test
+    @Config(shadows = [ShadowHapticLog::class])
+    fun `the pinned panel is felt once each way a button slides it, and not as a key puts it in place or the next chat opens on it`() {
+        showShell()
+        openChat(CLI)
+        HapticLog.clear()
+
+        openPanel()
+        assertThat(HapticLog.played).containsExactly(threshold)
+        compose.onNode(hasTestTag(PANEL_CLOSE)).performClick()
+        compose.waitUntil(10_000) { !panelShown() && described(OPEN_PANEL) }
+        compose.waitForIdle()
+        assertThat(HapticLog.played).containsExactly(threshold, threshold)
+        openPanel()
+        compose.onNodeWithContentDescription(HIDE_PANEL).performClick()
+        compose.waitUntil(10_000) { !panelShown() && described(OPEN_PANEL) }
+        compose.waitForIdle()
+        assertThat(HapticLog.played).containsExactly(threshold, threshold, threshold, threshold)
+
+        HapticLog.clear()
+        chord(KeyEvent.KEYCODE_B, shift = true)
+        compose.waitUntil(10_000) { panelShown() && described(HIDE_PANEL) }
+        openChat(HOUSE)
+        assertThat(panelShown()).isTrue()
+        chord(KeyEvent.KEYCODE_B, shift = true)
+        compose.waitUntil(10_000) { !panelShown() && described(OPEN_PANEL) }
+        compose.waitForIdle()
+        assertThat(HapticLog.played).isEmpty()
+    }
+
+    @Test
+    @Config(shadows = [ShadowHapticLog::class])
+    fun `a pinned panel's slide turned back is felt only for each time it passes half-way`() {
+        showShell()
+        openChat(CLI)
+        HapticLog.clear()
+        compose.mainClock.autoAdvance = false
+
+        // Turned back a sixth of the way out, it never passed half-way.
+        compose.onNodeWithContentDescription(OPEN_PANEL).performClick()
+        compose.mainClock.advanceTimeBy(SLIDE_MS / 10)
+        compose.onNodeWithContentDescription(HIDE_PANEL).performClick()
+        compose.mainClock.advanceTimeBy(SLIDE_MS * 2)
+        assertThat(chatBounds().right).isWithin(0.5f).of(1280f)
+        assertThat(HapticLog.played).isEmpty()
+
+        // Turned back most of the way out, it passed half-way going and passes it again coming back.
+        compose.onNodeWithContentDescription(OPEN_PANEL).performClick()
+        compose.mainClock.advanceTimeBy(SLIDE_MS * 2 / 5)
+        assertThat(HapticLog.played).containsExactly(threshold)
+        compose.onNodeWithContentDescription(HIDE_PANEL).performClick()
+        compose.mainClock.advanceTimeBy(SLIDE_MS * 2)
+        assertThat(chatBounds().right).isWithin(0.5f).of(1280f)
+        assertThat(HapticLog.played).containsExactly(threshold, threshold)
+        compose.mainClock.autoAdvance = true
+    }
+
+    @Test
+    @Config(shadows = [ShadowHapticLog::class])
+    fun `each edge is felt once where its pane stops, and not while it follows the finger or narrows the rail on the way`() {
+        showShell()
+        openChat(CLI)
+        openPanel()
+        HapticLog.clear()
+
+        drag(RESIZE_PANEL, -100f)
+        drag(RESIZE_SIDEBAR, 100f)
+        assertThat(edgeSays(RESIZE_SIDEBAR)).isEqualTo("378 dp wide")
+        assertThat(HapticLog.played).isEmpty()
+
+        // Out past its widest, the rail narrowed to make room for it; then in past its narrowest.
+        drag(RESIZE_PANEL, -400f)
+        assertThat(panelBounds().width).isWithin(0.5f).of(640f)
+        assertThat(edgeSays(RESIZE_SIDEBAR)).isEqualTo("320 dp wide")
+        assertThat(HapticLog.played).containsExactly(stop)
+        drag(RESIZE_PANEL, 600f)
+        assertThat(panelBounds().width).isWithin(0.5f).of(280f)
+        // The rail out past its widest, and in past its narrowest.
+        drag(RESIZE_SIDEBAR, 300f)
+        assertThat(edgeSays(RESIZE_SIDEBAR)).isEqualTo("400 dp wide")
+        drag(RESIZE_SIDEBAR, -300f)
+        assertThat(edgeSays(RESIZE_SIDEBAR)).isEqualTo("200 dp wide")
+        assertThat(HapticLog.played).containsExactly(stop, stop, stop, stop)
+    }
+
+    @Test
+    @Config(qualifiers = "w840dp-h700dp-night-mdpi", shadows = [ShadowHapticLog::class])
+    fun `on a foldable the pinned panel is felt once as it slides, whatever the rail does beside it, and the rail making way for its edge is not felt`() {
+        showShell()
+        openChat(CLI)
+        HapticLog.clear()
+
+        // Opened, it sends the rail off with it: the one slide is felt, not the rail's too.
+        openPanel()
+        compose.waitUntil(10_000) { !railShown() && described(OPEN_SIDEBAR) }
+        compose.waitForIdle()
+        assertThat(HapticLog.played).containsExactly(threshold)
+
+        // Narrowed to its least, which brings the rail back, and widened again, which sends it off: only the stop.
+        HapticLog.clear()
+        drag(RESIZE_PANEL, 200f)
+        compose.waitUntil(10_000) { railShown() && !described(OPEN_SIDEBAR) }
+        drag(RESIZE_PANEL, -200f)
+        compose.waitUntil(10_000) { !railShown() && described(OPEN_SIDEBAR) }
+        compose.waitForIdle()
+        assertThat(HapticLog.played).containsExactly(stop)
+
+        // Shut with the rail over the chat, which then settles in beside it: the one slide again.
+        compose.onNodeWithContentDescription(OPEN_SIDEBAR).performClick()
+        compose.waitUntil(10_000) { described(CLOSE_DRAWER) && railShown() }
+        compose.waitForIdle()
+        HapticLog.clear()
+        compose.onNodeWithContentDescription(HIDE_PANEL).performSemanticsAction(SemanticsActions.OnClick)
+        compose.waitUntil(10_000) { !described(CLOSE_DRAWER) && !panelShown() && !described(OPEN_SIDEBAR) }
+        compose.waitForIdle()
+        assertThat(HapticLog.played).containsExactly(threshold)
+    }
+
     private fun fieldText(node: SemanticsNodeInteraction): String =
         node.fetchSemanticsNode().config.getOrNull(SemanticsProperties.EditableText)?.text.orEmpty()
 
@@ -554,6 +680,7 @@ class PinnedPanelFlowTest {
         const val CLI = "Cli exploration"
         const val HOUSE = "House environment overhaul"
         const val PANEL = "conversation-panel"
+        const val PANEL_CLOSE = "panel-close"
         const val OPEN_PANEL = "Open panel"
         const val HIDE_PANEL = "Hide panel"
         const val DISMISS_PANEL = "Dismiss panel"

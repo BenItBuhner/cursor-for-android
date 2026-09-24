@@ -123,7 +123,8 @@ import kotlinx.coroutines.launch
  * it and reflows as the panel slides, there is no scrim, and the panel is a pane of the layout like the wide window's
  * rail, opened and shut by its buttons and the keyboard alone: a swipe across the chat is the chat's, back is the
  * chat's, and a composer holding the keyboard keeps it as the panel opens. Its edge drags to resize it
- * ([PaneResizeEdge]), and the shell keeps it open or shut for every chat ([PinnedPanelSync]).
+ * ([PaneResizeEdge]), and the shell keeps it open or shut for every chat ([PinnedPanelSync]). A button's slide is felt
+ * once, as the panel passes half-way; a key's jump, and every chat's panel put where the shell has it, are not felt.
  */
 @Composable
 fun SidePanelHost(
@@ -364,7 +365,10 @@ class SidePanelState(initialValue: SidePanelValue) {
     /** Whether the panel is a pane beside the chat rather than a sheet over it. */
     val isPinned: Boolean get() = pin != null
 
-    /** Plays the drag's half-way threshold (see [halfwayCrossing]); set by the [SidePanel] showing this state. */
+    /**
+     * Plays the half-way threshold (see [halfwayCrossing]): a sheet's as a drag takes it across, a pinned panel's as its
+     * slide does; set by the [SidePanel] showing this state.
+     */
     internal var haptics: Haptics? = null
 
     private val mutex = MutatorMutex()
@@ -409,7 +413,16 @@ class SidePanelState(initialValue: SidePanelValue) {
             }
             val millis = (SlideMillis * distance).roundToInt().coerceIn(MinSlideMillis, SlideMillis)
             val jump = jumps
-            runAnimation { animate(fraction, target, animationSpec = tween(millis, easing = SlideEasing)) { v, _ -> if (jumps == jump) fraction = v } }
+            runAnimation {
+                animate(fraction, target, animationSpec = tween(millis, easing = SlideEasing)) { v, _ ->
+                    if (jumps != jump) return@animate
+                    val before = fraction
+                    fraction = v
+                    // Pinned, the slide is the one way a hand moves the panel (it has no drag and no back gesture), so it is
+                    // felt as it passes half-way. A sheet's is not: it can end a back gesture already felt on its commit.
+                    if (isPinned) halfwayCrossing(before, v, restingOpen = value == SidePanelValue.Closed)?.let { haptics?.perform(it) }
+                }
+            }
         }
     }
 
