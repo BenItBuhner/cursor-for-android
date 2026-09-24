@@ -23,6 +23,7 @@ import com.cursorforandroid.domain.AgentLifecycle
 import com.cursorforandroid.domain.CoordinatorTranscript
 import com.cursorforandroid.domain.EnvType
 import com.cursorforandroid.domain.RunStatus
+import com.cursorforandroid.domain.SubagentRows
 import com.cursorforandroid.domain.TimelineItem
 import com.cursorforandroid.domain.TranscriptRow
 import com.cursorforandroid.domain.TranscriptRows
@@ -99,7 +100,10 @@ class CoordinatorSingleStretchScreenshotTest {
     private fun show(rows: List<TranscriptRow>) {
         compose.setContent {
             CursorTheme(mode = ThemeMode.Dark) {
-                CompositionLocalProvider(LocalRippleConfiguration provides null, LocalTranscriptControls provides TranscriptControls(onOpenAgent = {}, agentById = { worker.takeIf { a -> a.id == it } }, coordinatorMode = true)) {
+                CompositionLocalProvider(
+                    LocalRippleConfiguration provides null,
+                    LocalTranscriptControls provides TranscriptControls(onOpenAgent = {}, agentById = { worker.takeIf { a -> a.id == it } }, coordinatorMode = true, subagents = SubagentRows.index(rows)),
+                ) {
                     Column(
                         Modifier.fillMaxSize().background(CursorTheme.colors.canvas).padding(horizontal = 16.dp, vertical = 12.dp),
                         verticalArrangement = Arrangement.spacedBy(10.dp),
@@ -124,6 +128,9 @@ class CoordinatorSingleStretchScreenshotTest {
         show(rows)
         compose.waitUntil(10_000) { compose.onAllNodesWithText("Worked 29m 48s").fetchSemanticsNodes().isNotEmpty() }
         compose.onAllNodes(hasTestTag("event-row")).assertCountEquals(0)
+        // The worker the list holds as running was messaged again in the last stretch: that row speaks for it, and
+        // only its stretch still reads as working; the one it was created in has settled.
+        compose.onAllNodesWithText("1 Working").assertCountEquals(1)
         capture("74_coordinator_single_stretch")
     }
 
