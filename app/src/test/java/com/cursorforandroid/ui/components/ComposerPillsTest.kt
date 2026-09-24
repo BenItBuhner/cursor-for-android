@@ -16,6 +16,7 @@ import androidx.compose.ui.semantics.getOrNull
 import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsFocused
 import androidx.compose.ui.test.hasContentDescription
 import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.hasTestTag
@@ -232,6 +233,53 @@ class ComposerPillsTest {
         compose.onAllNodes(hasText("Orchestrate multiple subagents", substring = true)).assertCountEquals(0)
         compose.runOnIdle { assertThat(planMode).isTrue() }
         assertThat(pillCount("Plan")).isEqualTo(1)
+    }
+
+    @Test
+    fun `the plus menu opens on Plan alone, which puts a multitask off, and puts itself off again`() {
+        value = "/multitask fix the flaky test"
+        show(extended = true)
+
+        compose.onNodeWithContentDescription("Add to prompt").performClick()
+        val planRow = hasText(ModePills.Pill.Plan.description)
+        compose.onNode(planRow).assertIsDisplayed()
+        // First, over the pickers, as the desktop's menu opens on its modes; and the only mode, Extended or not.
+        assertThat(bounds(planRow).bottom).isLessThan(bounds(hasText(MEDIA_LABEL_IMAGES)).top)
+        for (other in listOf(ModePills.Pill.Multitask, ModePills.Pill.Ask, ModePills.Pill.Debug)) {
+            compose.onAllNodes(hasText(other.description)).assertCountEquals(0)
+        }
+        compose.onAllNodes(hasContentDescription("On")).assertCountEquals(0)
+
+        compose.onNode(planRow).performClick()
+        compose.runOnIdle {
+            assertThat(planMode).isTrue()
+            assertThat(value).isEqualTo("fix the flaky test")
+            assertThat(modeChanges).containsExactly(ModePills.Pill.Plan)
+        }
+        compose.onAllNodes(hasText("Skills")).assertCountEquals(0)
+        assertThat(pillCount("Plan")).isEqualTo(1)
+        assertThat(pillCount("Multitask")).isEqualTo(0)
+        // The field is handed back, as the desktop refocuses its editor after a pick.
+        field.assertIsFocused()
+
+        compose.onNodeWithContentDescription("Add to prompt").performClick()
+        compose.onNodeWithContentDescription("On").assertIsDisplayed()
+        compose.onNode(planRow).performClick()
+        compose.runOnIdle {
+            assertThat(planMode).isFalse()
+            assertThat(value).isEqualTo("fix the flaky test")
+            assertThat(modeChanges).containsExactly(ModePills.Pill.Plan, null).inOrder()
+        }
+        assertThat(pillCount("Plan")).isEqualTo(0)
+    }
+
+    @Test
+    fun `a composer that sets no mode has no Plan row in its plus menu`() {
+        show(plan = false)
+
+        compose.onNodeWithContentDescription("Add to prompt").performClick()
+        compose.onNodeWithText("Skills").assertIsDisplayed()
+        compose.onAllNodes(hasText(ModePills.Pill.Plan.description)).assertCountEquals(0)
     }
 
     @Test

@@ -99,7 +99,7 @@ import kotlinx.coroutines.launch
 /**
  * Cursor's prompt box as measured on cursor.com/agents: `--cursor-editor` surface, 8 % stroke (20 % focused),
  * 12px padding, 14/22 text, and a footer of round buttons — "+" on the left, opening the
- * Files / Skills / MCP Servers menu ([ComposerPlusMenu]), send / stop on the right — with the 13px
+ * Plan / Files / Skills / MCP Servers menu ([ComposerPlusMenu]), send / stop on the right — with the 13px
  * model selector hugging send. The field is inset a further [CursorDimens.composerTextInset] on every side so
  * the placeholder and typed text share the edges of the glyphs in those discs, not the discs themselves: the
  * 24dp corners would otherwise leave the first letter sitting in the arc, and the 12dp top pad alone reads
@@ -113,7 +113,7 @@ import kotlinx.coroutines.launch
  * ([ModePills]): `/multitask`, which the owner's [value] still carries in front so the request is unchanged, and
  * the modes — `/plan`, and with [extendedModes] `/ask` and `/debug` — which are [modePill]. Typing one with a space
  * after it, or picking it from the popover, turns it into its pill and takes the token out of the
- * text; the pill's cross puts the mode off again. They are one slot — the one turned on last replaces the other, in
+ * text (Plan is also the "+" menu's first row); the pill's cross puts the mode off again. They are one slot — the one turned on last replaces the other, in
  * the owner's state as well — so at most one pill is ever worn.
  * The corners are [CursorDimens.composerRadius] rather than the web's 12px: concentric with the two discs in the
  * bottom corners, so the box wraps them evenly instead of pinching in behind them.
@@ -348,6 +348,13 @@ fun ComposerBox(
         if (currentMode != null) currentOnMode?.invoke(null)
     }
 
+    /** The "+" menu's Plan: on, or off while it is worn, and the field handed back once the menu is gone. */
+    fun togglePlan() {
+        val text = field.text.toString()
+        if (currentWorn == ModePills.Pill.Plan) takeOff(text) else turnOn(ModePills.Pill.Plan, text)
+        wantsFocus = true
+    }
+
     /** The field without the `/` token under the cursor, handed to the owner, for a pick that leaves no text behind. */
     fun consumeToken(): String? {
         val token = currentToken ?: return null
@@ -526,6 +533,8 @@ fun ComposerBox(
                         },
                         actions = plusMenu,
                         commands = commands,
+                        planOn = wornPill == ModePills.Pill.Plan,
+                        onTogglePlan = if (ModePills.Pill.Plan in offeredModes) ({ togglePlan() }) else null,
                     )
                 }
                 Spacer(Modifier.width(10.dp))

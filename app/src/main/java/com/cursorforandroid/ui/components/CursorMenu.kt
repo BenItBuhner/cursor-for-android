@@ -153,8 +153,9 @@ fun CursorMenu(
  * optional dim [hint] after it (a command's argument) and a second line beneath ([subtitle]), and an optional
  * [trailing] control or mark. The press highlight is inset [CursorDimens.menuInset] from the menu's edges with a
  * corner concentric with the menu's. A [tint] other than the primary text colour (a destructive red) colours the
- * glyph as well; not [enabled], the row dims and takes no taps. [highlighted] is the row a physical keyboard would
- * pick ([PopoverSelection]): it wears the hover fill in the press highlight's place and is scrolled into view.
+ * glyph as well; [iconTint] colours the glyph alone (a mode's own colour). Not [enabled], the row dims and takes no
+ * taps. [highlighted] is the row a physical keyboard would pick ([PopoverSelection]): it wears the hover fill in the
+ * press highlight's place and is scrolled into view.
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -165,6 +166,7 @@ fun CursorMenuItem(
     subtitle: String? = null,
     hint: String? = null,
     tint: Color = CursorTheme.colors.textPrimary,
+    iconTint: Color? = null,
     enabled: Boolean = true,
     subtitleMaxLines: Int = 2,
     highlighted: Boolean = false,
@@ -174,8 +176,9 @@ fun CursorMenuItem(
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
     val labelColor = if (enabled) tint else colors.textQuaternary
-    val iconTint = when {
+    val glyphTint = when {
         !enabled -> colors.iconQuaternary
+        iconTint != null -> iconTint
         tint == colors.textPrimary -> colors.iconSecondary
         else -> tint
     }
@@ -201,7 +204,7 @@ fun CursorMenuItem(
         verticalAlignment = Alignment.CenterVertically,
     ) {
         if (icon != null) {
-            Icon(icon, null, tint = iconTint, modifier = Modifier.size(CursorDimens.menuIcon))
+            Icon(icon, null, tint = glyphTint, modifier = Modifier.size(CursorDimens.menuIcon))
             Spacer(Modifier.width(10.dp))
         }
         Column(Modifier.weight(1f)) {
