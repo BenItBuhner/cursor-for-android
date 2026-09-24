@@ -118,7 +118,7 @@ fun ModeChoiceScreen(graph: AppGraph) {
         contentAlignment = Alignment.Center,
     ) {
         Column(
-            Modifier.widthIn(max = 380.dp).fillMaxWidth().fadingVerticalScroll(surface = colors.canvas).padding(horizontal = 24.dp, vertical = 32.dp),
+            Modifier.widthIn(max = CursorDimens.formMaxWidth).fillMaxWidth().fadingVerticalScroll(surface = colors.canvas).padding(horizontal = 24.dp, vertical = 32.dp),
             horizontalAlignment = Alignment.Start,
         ) {
             Icon(CursorIcons.Cube, null, tint = colors.iconPrimary, modifier = Modifier.size(40.dp))
