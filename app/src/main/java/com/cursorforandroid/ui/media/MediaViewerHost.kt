@@ -1,8 +1,13 @@
 package com.cursorforandroid.ui.media
 
+import android.Manifest
 import android.app.Activity
 import android.content.Context
 import android.content.ContextWrapper
+import android.widget.Toast
+import androidx.activity.compose.LocalActivityResultRegistryOwner
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.compose.PredictiveBackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.AnimationSpec
@@ -69,6 +74,7 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import com.cursorforandroid.data.media.MediaLoader
 import com.cursorforandroid.domain.MediaRef
+import com.cursorforandroid.ui.components.Haptic
 import com.cursorforandroid.ui.components.PredictiveBackEasing
 import com.cursorforandroid.ui.components.feltOnCommit
 import com.cursorforandroid.ui.components.hitTestBoundary
@@ -87,6 +93,9 @@ import kotlin.math.roundToInt
  * While the viewer is open the system bars follow the chrome — shown with it, hidden with it (a swipe from the edge
  * brings them back briefly) — and their icons go light over the black. [autoHideControlsMillis] is how long the
  * chrome stays without a touch before it goes on its own; null leaves it until tapped.
+ *
+ * [saves] are the Save button's, the app's own so that a save outlives the viewer; without them the host keeps its
+ * own. Each save's end is felt, and — with the viewer closed by then — told in a toast.
  */
 @Composable
 fun MediaViewerHost(
@@ -94,8 +103,19 @@ fun MediaViewerHost(
     loader: MediaLoader,
     modifier: Modifier = Modifier,
     autoHideControlsMillis: Long? = AutoHideMillis,
+    saves: MediaSaves? = null,
     content: @Composable () -> Unit,
 ) {
+    val mediaSaves = saves ?: rememberMediaSaves(loader)
+    val context = LocalContext.current
+    val haptics = rememberHaptics()
+    LaunchedEffect(mediaSaves) {
+        mediaSaves.outcomes.collect { outcome ->
+            haptics.perform(if (outcome.saved) Haptic.Confirm else Haptic.Reject)
+            if (!state.isOpen) Toast.makeText(context.applicationContext, outcome.message, Toast.LENGTH_SHORT).show()
+        }
+    }
+    val startSave = rememberSaveStarter(mediaSaves)
     val preloadScope = rememberCoroutineScope()
     DisposableEffect(state, loader, preloadScope) {
         state.preloads = ViewerPreloads(loader, preloadScope) { state.hostCoordinates?.takeIf { it.isAttached }?.size ?: IntSize.Zero }
@@ -105,10 +125,40 @@ fun MediaViewerHost(
         CompositionLocalProvider(LocalMediaViewer provides state) { content() }
         val session = state.session
         if (session != null) {
-            key(session.id) { MediaViewerOverlay(state, session, loader, autoHideControlsMillis) }
+            key(session.id) { MediaViewerOverlay(state, session, loader, mediaSaves, startSave, autoHideControlsMillis) }
         }
     }
     ImmersiveSystemBars(state)
+}
+
+/**
+ * Starts a save, asking for the storage permission first where the release needs it (before Android 10) — from the
+ * host, so an answer that arrives after the viewer closed still starts or refuses the save it was asked for.
+ */
+@Composable
+private fun rememberSaveStarter(saves: MediaSaves): (MediaRef, MediaEntry) -> Unit {
+    var asking by remember { mutableStateOf<Pair<MediaRef, MediaEntry>?>(null) }
+    val launcher = if (LocalActivityResultRegistryOwner.current != null) {
+        rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            val (ref, entry) = asking ?: return@rememberLauncherForActivityResult
+            asking = null
+            if (granted) saves.save(ref, entry) else saves.refuse(ref, entry, GallerySaver.PERMISSION_NEEDED)
+        }
+    } else {
+        null
+    }
+    return remember(saves, launcher) {
+        { ref, entry ->
+            if (saves.save(ref, entry) == MediaSaves.Start.NeedsPermission) {
+                if (launcher != null) {
+                    asking = ref to entry
+                    launcher.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE)
+                } else {
+                    saves.refuse(ref, entry, GallerySaver.PERMISSION_NEEDED)
+                }
+            }
+        }
+    }
 }
 
 /** The system bars: light icons and, with the chrome hidden, out of the way, for as long as something is open. */
@@ -162,7 +212,14 @@ private class TransformFrames(
 )
 
 @Composable
-private fun MediaViewerOverlay(state: MediaViewerState, session: MediaViewerState.Session, loader: MediaLoader, autoHideControlsMillis: Long?) {
+private fun MediaViewerOverlay(
+    state: MediaViewerState,
+    session: MediaViewerState.Session,
+    loader: MediaLoader,
+    saves: MediaSaves,
+    startSave: (MediaRef, MediaEntry) -> Unit,
+    autoHideControlsMillis: Long?,
+) {
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
     var viewport by remember { mutableStateOf(IntSize.Zero) }
@@ -182,7 +239,7 @@ private fun MediaViewerOverlay(state: MediaViewerState, session: MediaViewerStat
     // Set as the overlay is first composed, not by an effect a frame later: the frame the viewer appears on already
     // draws the picture over its thumbnail — which the viewer has hidden — rather than a blank where it was.
     var frames by remember { mutableStateOf(if (state.phase == MediaViewerState.Phase.Opening) openingFrames() else null) }
-    var notice by remember { mutableStateOf<String?>(null) }
+    var notice by remember { mutableStateOf<Notice?>(null) }
     var interactions by remember { mutableIntStateOf(0) }
     val actions = remember(loader) { MediaActions(context, loader) }
 
@@ -245,18 +302,25 @@ private fun MediaViewerOverlay(state: MediaViewerState, session: MediaViewerStat
             }
         }
     }
+    // The page's save, if any, as its button shows it: the chrome stays while it runs, the button being where it shows.
+    val currentSave = state.current?.let { entry -> saves.state(MediaRef.parse(entry.src, session.agentId)) } ?: MediaSaves.State.Idle
+    val saving = currentSave is MediaSaves.State.Working
     // The chrome goes on its own after a while without a touch; any touch, page or play brings it back and restarts the wait.
-    LaunchedEffect(state.controlsVisible, interactions, state.phase, autoHideControlsMillis) {
+    LaunchedEffect(state.controlsVisible, interactions, state.phase, autoHideControlsMillis, saving) {
         val wait = autoHideControlsMillis ?: return@LaunchedEffect
-        if (state.controlsVisible && state.phase == MediaViewerState.Phase.Open) {
+        if (state.controlsVisible && state.phase == MediaViewerState.Phase.Open && !saving) {
             delay(wait)
             state.controlsVisible = false
         }
     }
     LaunchedEffect(notice) {
-        if (notice != null) {
-            delay(NoticeMillis)
-            notice = null
+        val shown = notice ?: return@LaunchedEffect
+        delay(if (shown.action != null) ActionNoticeMillis else NoticeMillis)
+        notice = null
+    }
+    LaunchedEffect(saves) {
+        saves.outcomes.collect { outcome ->
+            notice = Notice(outcome.message, if (outcome.retry != null) "Retry" else null, outcome.retry)
         }
     }
 
@@ -293,8 +357,8 @@ private fun MediaViewerOverlay(state: MediaViewerState, session: MediaViewerStat
                 interactions++
             },
             onDismiss = { state.close() },
-            onOpenInBrowser = { url -> if (runCatching { uriHandler.openUri(url) }.isFailure) notice = "Nothing on this device opens links." },
-            onOpenElsewhere = { ref, entry -> scope.launch { actions.openWith(ref, entry).onFailure { notice = MediaLoader.problemOf(it).title } } },
+            onOpenInBrowser = { url -> if (runCatching { uriHandler.openUri(url) }.isFailure) notice = Notice("Nothing on this device opens links.") },
+            onOpenElsewhere = { ref, entry -> scope.launch { actions.openWith(ref, entry).onFailure { notice = Notice(MediaLoader.problemOf(it).title) } } },
         )
     }
     val current = state.current
@@ -360,7 +424,7 @@ private fun MediaViewerOverlay(state: MediaViewerState, session: MediaViewerStat
                     val ref = remember(current.src, session.agentId) { MediaRef.parse(current.src, session.agentId) }
                     fun run(block: suspend () -> Result<String?>) {
                         interactions++
-                        scope.launch { block().fold(onSuccess = { it?.let { message -> notice = message } }, onFailure = { notice = MediaLoader.problemOf(it).title }) }
+                        scope.launch { block().fold(onSuccess = { it?.let { message -> notice = Notice(message) } }, onFailure = { notice = Notice(MediaLoader.problemOf(it).title) }) }
                     }
                     ViewerTopBar(
                         index = state.currentIndex,
@@ -368,7 +432,11 @@ private fun MediaViewerOverlay(state: MediaViewerState, session: MediaViewerStat
                         entry = current,
                         onClose = { state.close() },
                         onShare = { run { actions.share(ref, current).map { null } } },
-                        onSave = if (MediaActions.canSave) ({ run { actions.save(ref, current).map { it } } }) else null,
+                        save = currentSave,
+                        onSave = {
+                            interactions++
+                            startSave(ref, current)
+                        },
                         onOpenWith = if (current.isPlayable) ({ run { actions.openWith(ref, current).map { null } } }) else null,
                         modifier = Modifier.align(Alignment.TopCenter),
                     )
@@ -389,8 +457,16 @@ private fun MediaViewerOverlay(state: MediaViewerState, session: MediaViewerStat
                 TransformLayer(state, active, dismiss, Modifier.fillMaxSize().testTag("viewer-transform"))
             }
         }
-        notice?.let { text ->
-            ViewerNotice(text, Modifier.align(Alignment.BottomCenter).windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Bottom)).padding(bottom = 108.dp))
+        notice?.let { shown ->
+            ViewerNotice(
+                shown.text,
+                Modifier.align(Alignment.BottomCenter).windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Bottom)).padding(horizontal = 24.dp).padding(bottom = 108.dp),
+                action = shown.action,
+                onAction = {
+                    notice = null
+                    shown.onAction?.invoke()
+                },
+            )
         }
     }
 }
@@ -450,6 +526,9 @@ private fun TransformLayer(state: MediaViewerState, frames: TransformFrames, dis
     )
 }
 
+/** What the notice pill says, and the one thing it offers to do about it (Retry), if any. */
+private class Notice(val text: String, val action: String? = null, val onAction: (() -> Unit)? = null)
+
 /** Where a page of a picture of [imageSize] rests in [viewport]: the fitted rect, or the viewport when neither is known yet. */
 private fun restingRect(viewport: IntSize, imageSize: IntSize): Rect {
     val size = viewport.toSize()
@@ -469,6 +548,8 @@ private const val ChromeFadeMillis = 160
 private const val ChromeFadeStart = 0.6f
 private const val AutoHideMillis = 3_500L
 private const val NoticeMillis = 2_500L
+/** A notice with something to do about it stays long enough to be done. */
+private const val ActionNoticeMillis = 5_000L
 /** How far toward the thumbnail a full back gesture takes the page before it is committed. */
 private const val BackScrubShare = 0.45f
 /** How much of the scrim a dismissing drag at its threshold takes away. */

@@ -45,6 +45,9 @@ enum class FileFormat(val label: String, val mimeType: String, val kind: MediaKi
     val isAudio: Boolean get() = kind == MediaKind.Audio
     val isMedia: Boolean get() = kind == MediaKind.Image || kind == MediaKind.Video || kind == MediaKind.Audio
 
+    /** The extension a file of this format is saved under: the first [BY_EXTENSION] names it by (`jpg`, `mp4`, `mov`). */
+    val extension: String get() = BY_EXTENSION.entries.first { it.value == this }.key
+
     companion object {
         /** The format [name]'s extension says, when it says one this app knows. */
         fun ofName(name: String): FileFormat? = BY_EXTENSION[extensionOf(name)]

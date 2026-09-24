@@ -4,6 +4,8 @@
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- Saving to the gallery before Android 10, which writes the shared Pictures and Movies folders as files. -->
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="28" />
 
     <!-- Live notifications for running agents: the Android counterpart of the iOS app's Live Activities. -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />

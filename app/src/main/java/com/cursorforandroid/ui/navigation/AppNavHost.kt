@@ -624,7 +624,7 @@ internal fun AppShell(
         CompositionLocalProvider(LocalChatShortcuts provides shortcuts.chats, LocalTranscriptFocus provides shortcuts.transcriptFocus) {
             // The media viewer is a layer over the whole shell — sidebar, chat and panel alike, in either layout — so
             // a figure opens over all of it, and the open viewer rides out the swap between the layouts like the pane.
-            MediaViewerHost(state = mediaViewer, loader = graph.media) {
+            MediaViewerHost(state = mediaViewer, loader = graph.media, saves = graph.mediaSaves) {
                 if (wide) {
                     Row(Modifier.fillMaxSize().background(colors.canvas)) {
                         SidebarRail(expanded = !sidebarCollapsed, animate = railSlides) {

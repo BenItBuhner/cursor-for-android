@@ -151,11 +151,15 @@ import com.cursorforandroid.share.ShareInbox
 import com.cursorforandroid.ui.components.ComposerMediaPreviews
 import com.cursorforandroid.ui.conversation.AttachmentImages
 import com.cursorforandroid.ui.conversation.OutgoingSends
+import com.cursorforandroid.ui.media.GallerySaver
+import com.cursorforandroid.ui.media.MediaSaves
 import com.cursorforandroid.ui.settings.DIAGNOSTICS_DIR
 import com.cursorforandroid.update.AndroidUpdatePlatform
 import com.cursorforandroid.update.allocatableBytes
 import com.cursorforandroid.util.AppClock
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -840,6 +844,10 @@ class AppGraph(
 
     private val lazyMedia = lazy { MediaLoader(app, lazyMediaClient.value, artifacts, stores = { storeFiles }, files = { agentFileReads }) }
     val media: MediaLoader get() = lazyMedia.value
+
+    /** The media viewer's saves to the gallery: the process's, so a save runs on past the viewer's close and shows when it opens again. */
+    private val lazyMediaSaves = lazy { MediaSaves(CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate), media, GallerySaver(app)) }
+    val mediaSaves: MediaSaves get() = lazyMediaSaves.value
 
     private val lazyRunMonitor = lazy {
         RunMonitor(
