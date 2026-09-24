@@ -6,6 +6,7 @@ import android.content.res.Configuration
 import android.os.Build
 import android.os.Bundle
 import android.util.SizeF
+import androidx.annotation.RequiresApi
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import kotlin.math.ceil
@@ -65,6 +66,7 @@ object WidgetPlacement {
 
     private fun Float.squared(): Float = this * this
 
+    @RequiresApi(31)
     private fun reportedSizes(options: Bundle): List<DpSize> {
         @Suppress("DEPRECATION")
         val sizes: List<SizeF>? = options.getParcelableArrayList(AppWidgetManager.OPTION_APPWIDGET_SIZES)
