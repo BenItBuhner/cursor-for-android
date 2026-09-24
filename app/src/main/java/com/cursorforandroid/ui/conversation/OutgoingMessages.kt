@@ -23,6 +23,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -30,6 +31,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.util.concurrent.ConcurrentHashMap
 
 /**
@@ -260,7 +262,11 @@ class OutgoingMessages(
         }
     }
 
-    /** The files as the request names them, the bubble's status following their bytes meanwhile. */
+    /**
+     * The files as the request names them, the bubble's status following their bytes meanwhile. The watcher runs on
+     * whichever thread last wrote the uploads' states, so a cancel alone can leave one of its writes still under way;
+     * it is joined before this returns or throws, and no progress it read lands over the Sending or Failed after it.
+     */
     private suspend fun awaitUploads(message: Outgoing): List<UploadedFile> {
         val files = message.draft.files
         if (files.isEmpty()) return emptyList()
@@ -269,7 +275,7 @@ class OutgoingMessages(
         try {
             return uploads.awaitAll(files.map { it.id to it.file })
         } finally {
-            watcher.cancel()
+            withContext(NonCancellable) { watcher.cancelAndJoin() }
         }
     }
 
