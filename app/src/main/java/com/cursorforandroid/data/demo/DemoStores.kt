@@ -104,10 +104,10 @@ object DemoStores : AgentStoreApi {
 
         ## Shipping
 
-        - [ ] Usage events aggregation — primary `Usage events aggregation` on `cursor/usage-aggregation-3c7d`; PR #215 open, needs the hourly rollup decision
-        - [x] Stripe webhook handler — primary `Stripe webhook handler` shipped the HTTP action on `cursor/stripe-webhooks-8e1f`; idempotent on the event id
-        - [ ] Proration on mid-cycle upgrades — decision pending (Bennett), see inbox
-        - [x] Pricing page copy — side chat drafted the three tiers in the product's voice
+        - [ ] Stripe webhook handler — [#218](https://github.com/techlitnow/cesium/pull/218) open on `cursor/stripe-webhooks-8e1f`; waits on the proration decision (Bennett), see [inbox](inbox/bennett-2026-09-14.md)
+        - [x] [Release v0.4.0](https://github.com/techlitnow/cesium/releases/tag/v0.4.0) — shipped 2026-09-15 from `69b6e18`: usage events aggregation ([#215](https://github.com/techlitnow/cesium/pull/215)); hourly and daily rollups
+        - [ ] Pricing page copy — side chat drafted the three tiers; the numbers wait on the metering
+        - [x] [Release v0.3.9](https://github.com/techlitnow/cesium/releases/tag/v0.3.9) — shipped 2026-09-12 from `95b105f`: metering scaffold ([#209](https://github.com/techlitnow/cesium/pull/209))
 
         ## Deferred features (Extended mode)
 
@@ -117,10 +117,10 @@ object DemoStores : AgentStoreApi {
 
         ## Direction and reference
 
-        - [x] **Project context** — living: decisions, release state, scope
-        - [x] **Monetization teardown** — final: the cloud, inference and distribution surfaces
-        - [ ] **Readiness triage** — living: what blocks a public launch
-        - [x] **Private edition feasibility** — SDK-only now; full features via Extended mode
+        - [ ] [Project context](docs/project-context.md) — living: decisions, release state, scope
+        - [ ] [Readiness triage](docs/readiness-triage.md) — living: what blocks a public launch
+        - [x] [Private edition feasibility](docs/private-edition-feasibility.md) — SDK-only now; full features via Extended mode
+        - [x] [Release runbook](internal/release-runbook.md) — final
 
         Older items: [archived](archived.md)
     """.trimIndent()
