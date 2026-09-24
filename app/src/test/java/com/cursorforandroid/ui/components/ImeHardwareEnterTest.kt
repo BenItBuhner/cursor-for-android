@@ -369,6 +369,7 @@ class ImeHardwareEnterTest {
         ime { compose("mode") }
         pressEnter()
         assertThat(updated).containsExactly("Then add a test for dark mode")
+        assertThat(FakeIme.heardEnterDowns()).isEqualTo(1)
     }
 
     @Test

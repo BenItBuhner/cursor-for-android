@@ -149,7 +149,8 @@ internal val SemanticsNodeInteraction.windowView: View
 
 /**
  * Presses [keyCode] on [keyboard] the way Android delivers a key: into [view]'s window input queue, down and then up,
- * so it passes the views' pre-IME pass, the IME ([FakeIme]) and then the views and activity, in that order.
+ * so it passes the views' pre-IME pass, the IME ([FakeIme]) and then the views and activity, in that order. The key
+ * lands after the frame that shows what the IME last typed, as a key pressed at typing speed does.
  */
 internal fun ComposeTestRule.pressThroughWindow(
     view: View,
@@ -158,6 +159,7 @@ internal fun ComposeTestRule.pressThroughWindow(
     shift: Boolean = false,
     ctrl: Boolean = false,
 ) {
+    waitForIdle()
     val root = checkNotNull(View::class.java.getMethod("getViewRootImpl").invoke(view)) { "the view is in no window" }
     // A window without focus drops its keys. The system focuses the window it shows on top; Robolectric leaves a
     // dialog's (a sheet's) without.
@@ -178,6 +180,7 @@ internal fun ComposeTestRule.pressThroughWindow(
  * pass, which never sees it. Unless [release], the key is left held down.
  */
 internal fun ComposeTestRule.pressAfterIme(view: View, keyCode: Int, shift: Boolean = false, release: Boolean = true) {
+    waitForIdle()
     val actions = if (release) listOf(NativeKeyEvent.ACTION_DOWN, NativeKeyEvent.ACTION_UP) else listOf(NativeKeyEvent.ACTION_DOWN)
     for (action in actions) {
         val event = keyEvent(keyCode, action, shift = shift).nativeKeyEvent
