@@ -8,9 +8,7 @@ import androidx.activity.BackEventCompat
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.Stable
-import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.hapticfeedback.HapticFeedback
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.ClipEntry
@@ -100,54 +98,43 @@ fun Haptic.constant(sdk: Int = Build.VERSION.SDK_INT): Int = when (this) {
 }
 
 /**
- * Plays [Haptic]s on a view, unless Settings › Haptic feedback is off. The system's own touch feedback switch has the
- * last word either way: the view is never asked to ignore it (`FLAG_IGNORE_GLOBAL_SETTING`, which Android 13 reserves
- * for privileged apps anyway), and a view whose haptics are disabled plays nothing.
+ * Plays [Haptic]s on a view. The system's touch feedback switch is the only one there is: the view is never asked to
+ * ignore it (`FLAG_IGNORE_GLOBAL_SETTING`, which Android 13 reserves for privileged apps anyway), and a view whose
+ * haptics are disabled plays nothing.
  */
 @Stable
-class Haptics internal constructor(private val view: View, private val enabled: () -> Boolean) {
-    /** Plays [haptic] if the app's setting allows it; answers whether the view played it. */
-    fun perform(haptic: Haptic): Boolean = enabled() && play(haptic)
-
-    /** Plays [haptic] whatever the app's setting says: only for that setting's own switch, felt as it turns on. */
-    internal fun preview(haptic: Haptic): Boolean = play(haptic)
+class Haptics internal constructor(private val view: View) {
+    /** Plays [haptic]; answers whether the view played it. */
+    fun perform(haptic: Haptic): Boolean = view.isHapticFeedbackEnabled && view.performHapticFeedback(haptic.constant())
 
     /** A switch just flipped to [on]. */
     fun toggle(on: Boolean): Boolean = perform(if (on) Haptic.ToggleOn else Haptic.ToggleOff)
-
-    private fun play(haptic: Haptic): Boolean = view.isHapticFeedbackEnabled && view.performHapticFeedback(haptic.constant())
 }
 
-/** Settings › Haptic feedback, as the theme at the root of each window provides it (see [ProvideHaptics]). On where nothing provides it. */
-val LocalHapticsEnabled = compositionLocalOf { true }
-
-/** The [Haptics] of the view this is composed in, following Settings › Haptic feedback as it changes. */
+/** The [Haptics] of the view this is composed in. */
 @Composable
 fun rememberHaptics(): Haptics {
     val view = LocalView.current
-    val enabled = rememberUpdatedState(LocalHapticsEnabled.current)
-    return remember(view, enabled) { Haptics(view) { enabled.value } }
+    return remember(view) { Haptics(view) }
 }
 
 /**
- * Provides Settings › Haptic feedback to everything under it, and puts the two platform locals that play haptics of
- * their own behind the same setting: Compose's [LocalHapticFeedback] (text selection handles, and every long press that
- * asks it) and [LocalClipboardManager], whose every copy is felt as a [Haptic.Confirm]. The app has no copy that is not
- * the reader's own tap, so the clipboard is where a copy is felt, rather than at each of the places that copy.
+ * Plays the two platform locals that have haptics of their own through [Haptics]: Compose's [LocalHapticFeedback]
+ * (text selection handles, and every long press that asks it) and [LocalClipboardManager], whose every copy is felt as
+ * a [Haptic.Confirm]. The app has no copy that is not the reader's own tap, so the clipboard is where a copy is felt,
+ * rather than at each of the places that copy.
  */
 @Composable
-fun ProvideHaptics(enabled: Boolean, content: @Composable () -> Unit) {
-    CompositionLocalProvider(LocalHapticsEnabled provides enabled) {
-        val haptics = rememberHaptics()
-        val clipboard = LocalClipboardManager.current
-        val feedback = remember(haptics) { SettingHapticFeedback(haptics) }
-        val felt = remember(clipboard, haptics) { if (clipboard is FeltClipboard) clipboard else FeltClipboard(clipboard, haptics) }
-        CompositionLocalProvider(LocalHapticFeedback provides feedback, LocalClipboardManager provides felt, content = content)
-    }
+fun ProvideHaptics(content: @Composable () -> Unit) {
+    val haptics = rememberHaptics()
+    val clipboard = LocalClipboardManager.current
+    val feedback = remember(haptics) { ViewHapticFeedback(haptics) }
+    val felt = remember(clipboard, haptics) { if (clipboard is FeltClipboard) clipboard else FeltClipboard(clipboard, haptics) }
+    CompositionLocalProvider(LocalHapticFeedback provides feedback, LocalClipboardManager provides felt, content = content)
 }
 
-/** Compose's haptic requests, played through [Haptics] so they follow the app's setting. */
-internal class SettingHapticFeedback(private val haptics: Haptics) : HapticFeedback {
+/** Compose's haptic requests, played through [Haptics] so they take the app's constants. */
+internal class ViewHapticFeedback(private val haptics: Haptics) : HapticFeedback {
     override fun performHapticFeedback(hapticFeedbackType: HapticFeedbackType) {
         when (hapticFeedbackType) {
             HapticFeedbackType.LongPress -> haptics.perform(Haptic.LongPress)

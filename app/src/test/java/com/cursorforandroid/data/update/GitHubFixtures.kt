@@ -40,8 +40,11 @@ object GitHubFixtures {
 
     val releasesJson: String get() = releasesJson()
 
-    /** [downloads] is the base the asset URLs hang off; [apk020Sha256] and [apk020Size] describe the stable APK served there. */
-    fun releasesJson(downloads: String = DOWNLOADS, apk020Sha256: String = APK_020_SHA256, apk020Size: Long = 2_300_000L, rcSize: Long = 2_400_000L): String {
+    /**
+     * [downloads] is the base the asset URLs hang off; [apk020Sha256] and [apk020Size] describe the stable APK served
+     * there, which carries no asset digest when [apk020Sha256] is null (its release's `SHA256SUMS.txt` then vouches for it).
+     */
+    fun releasesJson(downloads: String = DOWNLOADS, apk020Sha256: String? = APK_020_SHA256, apk020Size: Long = 2_300_000L, rcSize: Long = 2_400_000L): String {
         fun asset(tag: String, name: String, size: Long, contentType: String, digest: String? = null) = asset(downloads, tag, name, size, contentType, digest)
         return """
         [

@@ -95,13 +95,12 @@ class SettingsScreenTest {
     fun `the list is the essentials in order, and none of what was cut`() {
         composeSettings(isDemo = false)
 
-        // Account, with the way out of it, first; then appearance (how long the sidebar's Projects list runs, then
-        // whether the app plays its haptics), what the New Chat pane lists, the chats (whether stopping asks first, which chats may show as
-        // unread), notifications, Extended mode and beside it the transcript engine, the version with its updater and
+        // Account, with the way out of it, first; then appearance (ending on how long the sidebar's Projects list
+        // runs), what the New Chat pane lists, the chats (whether stopping asks first, which chats may show as unread), notifications, Extended mode and beside it the transcript engine, the version with its updater and
         // the crash report consent; the one-line disclaimer last.
         val order = listOf(
             SettingsCopy.GROUP_ACCOUNT, SettingsCopy.SIGN_OUT, SettingsCopy.GROUP_APPEARANCE, SettingsCopy.SHORTEN_PROJECTS,
-            SettingsCopy.HAPTIC_FEEDBACK, NewChatHomePickerCopy.GROUP, NewChatHomePickerCopy.NEEDS_MODE, SettingsCopy.GROUP_CHATS, RunStopCopy.SETTING_TITLE,
+            NewChatHomePickerCopy.GROUP, NewChatHomePickerCopy.NEEDS_MODE, SettingsCopy.GROUP_CHATS, RunStopCopy.SETTING_TITLE,
             SettingsCopy.UNREAD_THIS_PHONE, SettingsCopy.GROUP_NOTIFICATIONS,
             SettingsCopy.GROUP_ADVANCED, ExtendedModeCopy.SETTING_TITLE, ExtendedModeCopy.ENGINE_TITLE,
             SettingsCopy.GROUP_UPDATES, "Version ${BuildConfig.VERSION_NAME}", CrashReportCopy.TITLE, SettingsCopy.DISCLAIMER,
@@ -110,7 +109,7 @@ class SettingsScreenTest {
         assertThat(tops).isInOrder()
 
         // The essentials themselves.
-        listOf("Match system", "Cursor Dark", "Cursor Light", "OLED black", "Live notifications", "Check for updates", "Automatic updates", "Include pre-releases")
+        listOf("Match system", "Cursor Dark", "Cursor Light", "OLED black", "Live notifications", "Check for updates", "Automatic updates")
             .forEach { compose.onNodeWithText(it).assertExists() }
         listOf("notif-count-project-agents", "notif-project-coordinators", "notif-project-members", ExtendedModeTags.TOGGLE, ExtendedModeTags.ENGINE_TOGGLE, SettingsTags.VERSION_ROW, SettingsTags.SIGN_OUT)
             .forEach { compose.onNodeWithTag(it).assertExists() }
@@ -118,8 +117,9 @@ class SettingsScreenTest {
         // The key details wait behind the account row; the acknowledgment, the pin sync and its status are gone
         // with the mode following the switch alone; the exports, About and the credits wait behind the version row;
         // the engine's header, its two choices and their footnote are one switch now. No label heads a single row
-        // with that row's own name.
+        // with that row's own name. Updates are stable releases only, and haptics follow the system's switch alone.
         assertAbsent(
+            "Include pre-releases", "Haptic feedback", "Feedback",
             "Signed in with", "Key expires", "Key storage", "Manage this app's key", "Manage API keys", "Open cursor.com/agents",
             "Warning acknowledged", "Sync pinned chats", "Last synced",
             ProjectDiagnosticsCopy.TITLE, TranscriptDiagnosticsCopy.TITLE, SendDiagnosticsCopy.TITLE, SettingsDebugCopy.API_DOCS, SettingsDebugCopy.SOURCE,
@@ -226,25 +226,17 @@ class SettingsScreenTest {
     }
 
     @Test
-    fun `Haptic feedback is on until switched off, stays the phone's through a sign-out, and is felt only turning on`() {
+    fun `a switch is felt each way it flips, with no app setting in front of the system's`() {
         composeSettings(isDemo = false)
-        val on = isOn() and hasAnyAncestor(hasTestTag(SettingsTags.HAPTIC_FEEDBACK))
-        val off = isOff() and hasAnyAncestor(hasTestTag(SettingsTags.HAPTIC_FEEDBACK))
+        val off = isOff() and hasAnyAncestor(hasTestTag(SettingsTags.SHORTEN_PROJECTS))
+        val on = isOn() and hasAnyAncestor(hasTestTag(SettingsTags.SHORTEN_PROJECTS))
 
-        compose.onNodeWithText(SettingsCopy.HAPTIC_FEEDBACK_DETAIL).assertExists()
-        compose.waitUntil(10_000) { compose.onAllNodes(on).fetchSemanticsNodes().isNotEmpty() }
-
-        compose.onNodeWithTag(SettingsTags.HAPTIC_FEEDBACK).performScrollTo().performClick()
+        compose.onNodeWithTag(SettingsTags.SHORTEN_PROJECTS).performScrollTo().performClick()
         compose.waitUntil(10_000) { compose.onAllNodes(off).fetchSemanticsNodes().isNotEmpty() }
-        assertThat(runBlocking { graph.prefs.hapticFeedback.first() }).isFalse()
-        // Switching the haptics off is not itself felt.
-        assertThat(shadowOf(view).lastHapticFeedbackPerformed()).isNotEqualTo(HapticFeedbackConstants.TOGGLE_OFF)
-        runBlocking { graph.prefs.clearSession() }
-        assertThat(runBlocking { graph.prefs.hapticFeedback.first() }).isFalse()
+        assertThat(shadowOf(view).lastHapticFeedbackPerformed()).isEqualTo(HapticFeedbackConstants.TOGGLE_OFF)
 
-        compose.onNodeWithTag(SettingsTags.HAPTIC_FEEDBACK).performClick()
+        compose.onNodeWithTag(SettingsTags.SHORTEN_PROJECTS).performClick()
         compose.waitUntil(10_000) { compose.onAllNodes(on).fetchSemanticsNodes().isNotEmpty() }
-        assertThat(runBlocking { graph.prefs.hapticFeedback.first() }).isTrue()
         assertThat(shadowOf(view).lastHapticFeedbackPerformed()).isEqualTo(HapticFeedbackConstants.TOGGLE_ON)
     }
 
