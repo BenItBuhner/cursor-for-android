@@ -17,6 +17,7 @@ import androidx.compose.ui.test.hasContentDescription
 import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.isFocused
 import androidx.compose.ui.test.isSelected
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onFirst
@@ -53,8 +54,8 @@ import org.robolectric.annotation.GraphicsMode
 import java.time.Duration
 
 /**
- * The hardware keyboard in the running shell, on the demo, each key read first by [KeyboardShortcuts] and handed on
- * to the window when it is not the app's, as `MainActivity.dispatchKeyEvent` does: the search palette finding a chat
+ * The hardware keyboard in the running shell, on the demo, each key handed on as the platform hands it (see [send]) —
+ * with a field focused, a keyboard app that answers Ctrl chords itself among the ways: the search palette finding a chat
  * by its transcript and opening it on the hit, the quick switcher, the rail and the drawer, the chat's panel, the
  * sidebar's numbers, New Chat, Settings' page of shortcuts, and a chat's Ctrl+R and Ctrl+Shift+R.
  */
@@ -114,13 +115,37 @@ class KeyboardShortcutsFlowTest {
 
     private fun chatOpen(name: String) = exists(hasTestTag("chat-header") and hasContentDescription(name))
 
-    /** A key from a hardware keyboard: the app's reader first, then the window, as the activity dispatches it. */
+    /** Whether the keyboard app answers a key itself, while a text field has the focus (see [send]); none, by default. */
+    private var imeAnswers: (KeyEvent) -> Boolean = { false }
+
+    /** The keys the keyboard app was handed. */
+    private val imeHeard = mutableListOf<Int>()
+
+    /** Samsung Keyboard and Gboard as far as Ctrl goes: a chord pressed in a field is theirs, and the window hears nothing of it. */
+    private val answersCtrlChords: (KeyEvent) -> Boolean = { it.isCtrlPressed && !KeyEvent.isModifierKey(it.keyCode) }
+
+    private var eventTime = 0L
+
+    /**
+     * A key from a hardware keyboard, handed on as the platform hands it: the views' pass before the IME (the shell's
+     * reader among them), then — a text field focused — the keyboard app, then the activity, which reads it as
+     * `MainActivity.dispatchKeyEvent` does before the window has it.
+     */
     private fun send(action: Int, code: Int, ctrl: Boolean = false, shift: Boolean = false, repeat: Int = 0) {
         var meta = 0
         if (ctrl) meta = meta or KeyEvent.META_CTRL_ON or KeyEvent.META_CTRL_LEFT_ON
         if (shift) meta = meta or KeyEvent.META_SHIFT_ON or KeyEvent.META_SHIFT_LEFT_ON
-        val event = KeyEvent(0L, 0L, action, code, repeat, meta, 7, 0, 0, InputDevice.SOURCE_KEYBOARD)
-        compose.runOnUiThread { if (!keys.onKeyEvent(event)) compose.activity.dispatchKeyEvent(event) }
+        val at = ++eventTime
+        val event = KeyEvent(at, at, action, code, repeat, meta, 7, 0, 0, InputDevice.SOURCE_KEYBOARD)
+        val fieldFocused = exists(isFocused() and hasSetTextAction())
+        compose.runOnUiThread {
+            if (compose.activity.window.decorView.dispatchKeyEventPreIme(event)) return@runOnUiThread
+            if (fieldFocused) {
+                imeHeard += code
+                if (imeAnswers(event)) return@runOnUiThread
+            }
+            if (!keys.onKeyEvent(event)) compose.activity.dispatchKeyEvent(event)
+        }
         compose.waitForIdle()
     }
 
@@ -317,6 +342,46 @@ class KeyboardShortcutsFlowTest {
         searchAndOpen("House environment", HOUSE)
         assertTrue(showsWhileClockHeld(UP_TO_DATE) { chord(KeyEvent.KEYCODE_R) })
         assertTrue(showsWhileClockHeld(UP_TO_DATE) { chord(KeyEvent.KEYCODE_R, shift = true) })
+    }
+
+    @Test
+    fun `typing in the composer, with a keyboard app that answers Ctrl chords itself, Ctrl+R and Ctrl+Shift+R still reach the chat`() {
+        showShell(wide = true)
+        searchAndOpen("House environment", HOUSE)
+        imeAnswers = answersCtrlChords
+        val composer = compose.onNode(hasSetTextAction() and hasText(CHAT_PLACEHOLDER, substring = true))
+        composer.performClick()
+        composer.assertIsFocused()
+        // The field's own chords are still the keyboard app's.
+        chord(KeyEvent.KEYCODE_A)
+        assertTrue(KeyEvent.KEYCODE_A in imeHeard)
+
+        assertTrue(showsWhileClockHeld(UP_TO_DATE) { chord(KeyEvent.KEYCODE_R) })
+        assertTrue(showsWhileClockHeld(UP_TO_DATE) { chord(KeyEvent.KEYCODE_R, shift = true) })
+        assertFalse(KeyEvent.KEYCODE_R in imeHeard)
+    }
+
+    @Test
+    fun `typing in the composer, with that keyboard app, the shell's other chords are the shell's too, and Esc still reaches it`() {
+        showShell(wide = true)
+        searchAndOpen("House environment", HOUSE)
+        imeAnswers = answersCtrlChords
+        val composer = compose.onNode(hasSetTextAction() and hasText(CHAT_PLACEHOLDER, substring = true))
+        composer.performClick()
+        composer.assertIsFocused()
+
+        chord(KeyEvent.KEYCODE_B, shift = true)
+        compose.waitUntil(10_000) { displayed(hasTestTag("conversation-panel")) }
+        chord(KeyEvent.KEYCODE_B, shift = true)
+        compose.waitUntil(10_000) { !displayed(hasTestTag("conversation-panel")) }
+        chord(KeyEvent.KEYCODE_B)
+        compose.waitUntil(10_000) { !displayed(hasContentDescription("Search chats")) }
+        chord(KeyEvent.KEYCODE_K)
+        compose.waitUntil(10_000) { exists(hasTestTag(PaletteTags.CARD)) }
+        paletteField.assertIsFocused()
+        press(KeyEvent.KEYCODE_ESCAPE)
+        compose.waitUntil(5_000) { !exists(hasTestTag(PaletteTags.CARD)) }
+        assertTrue(listOf(KeyEvent.KEYCODE_B, KeyEvent.KEYCODE_K).none { it in imeHeard })
     }
 
     /**

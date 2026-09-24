@@ -79,6 +79,7 @@ import com.cursorforandroid.ui.shortcuts.LocalTranscriptFocus
 import com.cursorforandroid.ui.shortcuts.PaletteMode
 import com.cursorforandroid.ui.shortcuts.ShortcutAction
 import com.cursorforandroid.ui.shortcuts.ShortcutHandler
+import com.cursorforandroid.ui.shortcuts.shortcutsBeforeIme
 import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
 import kotlinx.coroutines.launch
@@ -155,8 +156,8 @@ internal fun AppShell(
     // The long groups the reader listed in full, for this visit to the sidebar: not saved, cut back on leaving.
     val shortLists = remember { SidebarShortLists() }
     val colors = CursorTheme.colors
-    // The activity's hardware-keyboard reader (see MainActivity.dispatchKeyEvent); null where the shell is composed
-    // without one, which leaves every key to the views.
+    // The activity's hardware-keyboard reader (see MainActivity.dispatchKeyEvent and the shell's pre-IME node below);
+    // null where the shell is composed without one, which leaves every key to the views.
     val keyboard = LocalKeyboardShortcuts.current
     val shortcuts = remember { ShellShortcuts() }
     LaunchedEffect(selectedAgentId) { selectedAgentId?.let(shortcuts::visit) }
@@ -585,65 +586,69 @@ internal fun AppShell(
         onDispose { keyboard?.handler = null }
     }
 
-    CompositionLocalProvider(LocalChatShortcuts provides shortcuts.chats, LocalTranscriptFocus provides shortcuts.transcriptFocus) {
-        // The media viewer is a layer over the whole shell — sidebar, chat and panel alike, in either layout — so a
-        // figure opens over all of it, and the open viewer rides out the swap between the layouts like the pane does.
-        MediaViewerHost(state = mediaViewer, loader = graph.media) {
-            if (wide) {
-                Row(Modifier.fillMaxSize().background(colors.canvas)) {
-                    SidebarRail(expanded = !sidebarCollapsed) {
-                        sidebar(inDrawer = false, modifier = Modifier.fillMaxSize())
-                    }
-                    detailHost(Modifier.weight(1f).fillMaxHeight(), pane)
-                }
-            } else {
-                CursorDrawer(
-                    state = drawerState,
-                    drawerWidth = CursorDimens.sidebarWidth,
-                    containerColor = colors.sidebar,
-                    contentColor = colors.textPrimary,
-                    drawerContent = { sidebar(inDrawer = true, modifier = Modifier.fillMaxSize()) },
-                ) {
-                    detailHost(Modifier.fillMaxSize(), pane)
-                }
-            }
-        }
-    }
-    PaletteHost(shortcuts, listState, graph.transcriptSearch) { entry, hit -> openFromKeyboard(entry.agentId, hit) }
-
-    if (customizeOpen) {
-        CustomizeSheet(viewModel = agentsViewModel, onDismiss = { customizeOpen = false })
-    }
-    projectEditor?.let { target ->
-        // Asked for from the sidebar or the New Chat pane: a Project created here is a new top-level chat.
-        ProjectEditorHost(graph, target, onOpenAgent = ::switchToAgent, onDismiss = { projectEditor = null })
-    }
-
     val shareOffer by graph.share.offer.collectAsStateWithLifecycle()
     val shareLoading by graph.share.loading.collectAsStateWithLifecycle()
     val pendingShare = shareOffer
-    when {
-        shareLoading -> {
-            Box(Modifier.fillMaxSize().background(colors.canvas).hitTestBoundary(), contentAlignment = Alignment.Center) {
-                SpinnerRing(size = 22.dp, strokeWidth = 2.dp)
+    // Every layer of the shell under one node that reads the keys before the IME does: with a field focused anywhere
+    // in it — the composer, the palette's, the sidebar's search — the keyboard app is handed the key after the shell.
+    Box(Modifier.fillMaxSize().shortcutsBeforeIme(keyboard)) {
+        CompositionLocalProvider(LocalChatShortcuts provides shortcuts.chats, LocalTranscriptFocus provides shortcuts.transcriptFocus) {
+            // The media viewer is a layer over the whole shell — sidebar, chat and panel alike, in either layout — so
+            // a figure opens over all of it, and the open viewer rides out the swap between the layouts like the pane.
+            MediaViewerHost(state = mediaViewer, loader = graph.media) {
+                if (wide) {
+                    Row(Modifier.fillMaxSize().background(colors.canvas)) {
+                        SidebarRail(expanded = !sidebarCollapsed) {
+                            sidebar(inDrawer = false, modifier = Modifier.fillMaxSize())
+                        }
+                        detailHost(Modifier.weight(1f).fillMaxHeight(), pane)
+                    }
+                } else {
+                    CursorDrawer(
+                        state = drawerState,
+                        drawerWidth = CursorDimens.sidebarWidth,
+                        containerColor = colors.sidebar,
+                        contentColor = colors.textPrimary,
+                        drawerContent = { sidebar(inDrawer = true, modifier = Modifier.fillMaxSize()) },
+                    ) {
+                        detailHost(Modifier.fillMaxSize(), pane)
+                    }
+                }
             }
         }
-        pendingShare != null && pendingShare.target == null -> {
-            ShareDestinationScreen(
-                listState = listState,
-                draft = pendingShare,
-                onNewChat = {
-                    graph.share.setTarget(ShareTarget.NewChat)
-                    navigateTop(Screen.Home)
-                },
-                onPickChat = { row ->
-                    agentsViewModel.markRead(row.agent)
-                    graph.share.setTarget(ShareTarget.Chat(row.agent.id))
-                    switchToAgent(row.agent.id)
-                },
-                onRefresh = agentsViewModel::refresh,
-                onDismiss = graph.share::clear,
-            )
+        PaletteHost(shortcuts, listState, graph.transcriptSearch) { entry, hit -> openFromKeyboard(entry.agentId, hit) }
+
+        if (customizeOpen) {
+            CustomizeSheet(viewModel = agentsViewModel, onDismiss = { customizeOpen = false })
+        }
+        projectEditor?.let { target ->
+            // Asked for from the sidebar or the New Chat pane: a Project created here is a new top-level chat.
+            ProjectEditorHost(graph, target, onOpenAgent = ::switchToAgent, onDismiss = { projectEditor = null })
+        }
+
+        when {
+            shareLoading -> {
+                Box(Modifier.fillMaxSize().background(colors.canvas).hitTestBoundary(), contentAlignment = Alignment.Center) {
+                    SpinnerRing(size = 22.dp, strokeWidth = 2.dp)
+                }
+            }
+            pendingShare != null && pendingShare.target == null -> {
+                ShareDestinationScreen(
+                    listState = listState,
+                    draft = pendingShare,
+                    onNewChat = {
+                        graph.share.setTarget(ShareTarget.NewChat)
+                        navigateTop(Screen.Home)
+                    },
+                    onPickChat = { row ->
+                        agentsViewModel.markRead(row.agent)
+                        graph.share.setTarget(ShareTarget.Chat(row.agent.id))
+                        switchToAgent(row.agent.id)
+                    },
+                    onRefresh = agentsViewModel::refresh,
+                    onDismiss = graph.share::clear,
+                )
+            }
         }
     }
 }

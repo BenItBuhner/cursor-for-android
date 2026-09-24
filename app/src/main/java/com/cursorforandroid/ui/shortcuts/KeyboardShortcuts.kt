@@ -6,6 +6,9 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.staticCompositionLocalOf
+import androidx.compose.ui.ExperimentalComposeUiApi
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.key.onPreInterceptKeyBeforeSoftKeyboard
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -27,10 +30,14 @@ interface ShortcutHandler {
 }
 
 /**
- * The app's hardware-keyboard shortcuts, read at the activity before any view sees the key (see
- * `MainActivity.dispatchKeyEvent`), so a chord works with the composer focused as well as anywhere else, and only the
- * chords [ShortcutKeymap] lists are taken — a text field's own Ctrl+A, C, V, X and Z never reach here as the app's.
- * The on-screen keyboard's keys are not read at all.
+ * The app's hardware-keyboard shortcuts, read before the IME is handed the key ([onKeyEventPreIme]) and, where nothing
+ * in the shell holds the focus, at the activity ([onKeyEvent], from `MainActivity.dispatchKeyEvent`), so a chord
+ * works with the composer focused as well as anywhere else, and only the chords [ShortcutKeymap] lists are taken — a
+ * text field's own Ctrl+A, C, V, X and Z never reach here as the app's. The on-screen keyboard's keys are not read at all.
+ *
+ * With a text field focused the window gives every hardware key to the IME ahead of the activity, and an IME that
+ * answers a Ctrl chord itself, or sends it back as its own key, leaves the activity nothing of it: Samsung Keyboard and
+ * Gboard both stand in front of the activity there. The views' pass before the IME is the one every key goes through.
  *
  * While a popover in the focused field is open ([popoverOpened]) the keys it answers are left to it: Esc closes it,
  * and Ctrl+N and Ctrl+K move its highlight ([ShortcutKeymap.yieldsToPopover]).
@@ -55,6 +62,9 @@ class KeyboardShortcuts(private val scope: CoroutineScope, private val holdMilli
     private val taken = HashSet<Int>()
     private var popovers = 0
 
+    /** The key [onKeyEventPreIme] read and let go on to the IME, for the activity not to read it a second time. */
+    private var declined: KeyStamp? = null
+
     /**
      * A popover in the focused field opened that answers Esc, Ctrl+N and Ctrl+K itself (the composer's `/` popover,
      * `Modifier.popoverKeys`): they are left to it until the returned release is called, when it shuts.
@@ -70,7 +80,24 @@ class KeyboardShortcuts(private val scope: CoroutineScope, private val holdMilli
         }
     }
 
+    /**
+     * The key on its way to the IME (see `Modifier.shortcutsBeforeIme`). Esc is left to go on: an IME composing a word
+     * cancels it on Esc, and the activity still hears one it lets through. A key read here and not taken is not read
+     * again when the activity is handed it after the IME.
+     */
+    fun onKeyEventPreIme(event: KeyEvent): Boolean {
+        declined = null
+        if (event.keyCode == KeyEvent.KEYCODE_ESCAPE) return false
+        return read(event).also { taken -> if (!taken) declined = KeyStamp.of(event) }
+    }
+
     fun onKeyEvent(event: KeyEvent): Boolean {
+        val seen = declined == KeyStamp.of(event)
+        declined = null
+        return if (seen) false else read(event)
+    }
+
+    private fun read(event: KeyEvent): Boolean {
         if (!event.isFromHardwareKeyboard) return false
         val code = event.keyCode
         return when (event.action) {
@@ -142,6 +169,22 @@ class KeyboardShortcuts(private val scope: CoroutineScope, private val holdMilli
     companion object {
         /** How long Ctrl is held on its own before the sidebar numbers its rows. */
         const val NUMBERS_AFTER_MILLIS = 500L
+    }
+}
+
+/**
+ * Hands [keys] every key while something under this node holds the focus, in the views' pass before the IME is given
+ * it (see [KeyboardShortcuts.onKeyEventPreIme]); a key it takes goes no further. Around the whole shell, so a chord
+ * reaches it from the composer, the palette's field, any field of the window.
+ */
+@OptIn(ExperimentalComposeUiApi::class)
+fun Modifier.shortcutsBeforeIme(keys: KeyboardShortcuts?): Modifier =
+    if (keys == null) this else onPreInterceptKeyBeforeSoftKeyboard { keys.onKeyEventPreIme(it.nativeKeyEvent) }
+
+/** A key event told by its values: the platform recycles key events through a pool, so the object is no witness. */
+private data class KeyStamp(val eventTime: Long, val action: Int, val keyCode: Int, val repeatCount: Int) {
+    companion object {
+        fun of(event: KeyEvent) = KeyStamp(event.eventTime, event.action, event.keyCode, event.repeatCount)
     }
 }
 
