@@ -7,6 +7,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -27,25 +28,40 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
+import com.cursorforandroid.domain.ConnectorStatus
+import com.cursorforandroid.domain.McpConnector
+import com.cursorforandroid.domain.McpConnectors
 import com.cursorforandroid.domain.McpServer
 import com.cursorforandroid.domain.McpServerForm
 import com.cursorforandroid.domain.McpTransport
+import com.cursorforandroid.domain.MediaRef
 import com.cursorforandroid.domain.PromptFile
 import com.cursorforandroid.domain.SlashCatalog
 import com.cursorforandroid.domain.SlashCommand
 import com.cursorforandroid.domain.SlashCommands
+import com.cursorforandroid.ui.agents.LocalMediaLoader
+import com.cursorforandroid.ui.icons.ProjectIcons
 import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
 import java.util.UUID
@@ -71,6 +87,28 @@ class ComposerMenuActions(
     val onToggleMcpServer: (McpServer, Boolean) -> Unit = { _, _ -> },
     val onSaveMcpServer: (McpServer) -> Unit = {},
     val onDeleteMcpServer: (McpServer) -> Unit = {},
+    /** The account's connectors (Extended mode). When set, the MCP page lists them in place of the servers above. */
+    val connectors: ConnectorMenu? = null,
+)
+
+/**
+ * The MCP page's account list, as the MCP dropdown on cursor.com/agents shows it: every server and connector the
+ * account can use, a switch that applies to all of its cloud agents, and a sign-in for the ones that need it.
+ */
+class ConnectorMenu(
+    val connectors: List<McpConnector>,
+    val loading: Boolean = false,
+    /** The list could not be read. */
+    val error: String? = null,
+    /** The last switch did not stick. */
+    val notice: String? = null,
+    /** The page opened: read the list again. */
+    val onOpen: () -> Unit = {},
+    val onToggle: (McpConnector, Boolean) -> Unit = { _, _ -> },
+    /** Sign in to a connector, in the browser. */
+    val onConnect: (McpConnector) -> Unit = {},
+    /** Where servers are added and configured: cursor.com. */
+    val onManage: () -> Unit = {},
 )
 
 private enum class MenuPage { Root, Skills, McpServers }
@@ -79,7 +117,8 @@ private enum class MenuPage { Root, Skills, McpServers }
  * The menu behind the composer's "+" as it appears on cursor.com/agents: Multitask, then the pickers, Skills › and
  * MCP Servers ›. The web's flyout submenus become pages that slide in over the root; Multitask and skills toggle a
  * slash command at the front of the prompt, "Images and videos" opens the photo picker and "Files" the document
- * picker (Extended mode; the default mode has "Images" alone), MCP servers are managed here and sent inline.
+ * picker (Extended mode; the default mode has "Images" alone). The MCP page switches the account's connectors in
+ * Extended mode ([ComposerMenuActions.connectors]); otherwise it manages the app's own servers, sent inline.
  */
 @Composable
 fun ComposerPlusMenu(
@@ -138,13 +177,20 @@ fun ComposerPlusMenu(
                             toggleCommand(skill.name)
                         },
                     )
-                    MenuPage.McpServers -> McpServersPage(
-                        servers = actions.mcpServers,
-                        onBack = { page = MenuPage.Root },
-                        onToggle = actions.onToggleMcpServer,
-                        onAdd = { onDismiss(); editingId = null; editorOpen = true },
-                        onEdit = { onDismiss(); editingId = it.id; editorOpen = true },
-                    )
+                    MenuPage.McpServers -> {
+                        val connectors = actions.connectors
+                        if (connectors != null) {
+                            ConnectorsPage(connectors, onBack = { page = MenuPage.Root }, onManage = { onDismiss(); connectors.onManage() })
+                        } else {
+                            McpServersPage(
+                                servers = actions.mcpServers,
+                                onBack = { page = MenuPage.Root },
+                                onToggle = actions.onToggleMcpServer,
+                                onAdd = { onDismiss(); editingId = null; editorOpen = true },
+                                onEdit = { onDismiss(); editingId = it.id; editorOpen = true },
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -263,6 +309,103 @@ private fun McpServersPage(
     CursorMenuSeparator()
     CursorMenuItem("Add MCP server", CursorIcons.Plus, onClick = onAdd)
 }
+
+/** Where cursor.com adds and configures the account's MCP servers; the page's last row opens it. */
+const val CONNECTORS_MANAGE_URL = "https://cursor.com/agents"
+
+@Composable
+private fun ConnectorsPage(menu: ConnectorMenu, onBack: () -> Unit, onManage: () -> Unit) {
+    val colors = CursorTheme.colors
+    LaunchedEffect(Unit) { menu.onOpen() }
+    PageHeader("MCP Servers", onBack)
+    CursorMenuSeparator()
+    val rows = menu.connectors
+    when {
+        rows.isNotEmpty() -> Column(Modifier.heightIn(max = PageListMaxHeight).fadingVerticalScroll(surface = colors.elevated)) {
+            rows.forEach { connector ->
+                ConnectorRow(connector, onToggle = { menu.onToggle(connector, it) }, onConnect = { menu.onConnect(connector) })
+            }
+        }
+        menu.error != null -> PageNote("Couldn't load your MCP servers. ${menu.error}", colors.red)
+        menu.loading -> PageNote("Loading your MCP servers…")
+        else -> PageNote("No MCP servers on your account yet. Add them on cursor.com/agents, or ask a team admin to share some.")
+    }
+    menu.notice?.let { PageNote(it, colors.red) }
+    if (rows.isNotEmpty()) PageNote("Switches apply to every cloud agent on your account, wherever it starts.")
+    CursorMenuSeparator()
+    CursorMenuItem("Manage on cursor.com", CursorIcons.ExternalLink, onClick = onManage)
+}
+
+@Composable
+private fun PageNote(text: String, color: Color = CursorTheme.colors.textQuaternary) {
+    Text(text, style = CursorTheme.typography.small, color = color, modifier = Modifier.padding(horizontal = CursorDimens.menuTextInset, vertical = 6.dp))
+}
+
+/**
+ * One connector: its logo (the brand's glyph until the account's logo has loaded, or instead of it), its name and
+ * state, "Connect" when it waits for a sign-in, and the account-wide switch. A connector the team requires or has
+ * switched off keeps its switch, dimmed, so the state still reads.
+ */
+@Composable
+private fun ConnectorRow(connector: McpConnector, onToggle: (Boolean) -> Unit, onConnect: () -> Unit) {
+    val colors = CursorTheme.colors
+    val type = CursorTheme.typography
+    val subtitleColor = when {
+        connector.blockedByAdmin || !connector.enabled -> colors.textQuaternary
+        connector.status == ConnectorStatus.Connected -> colors.green
+        connector.status == ConnectorStatus.NeedsAuth -> colors.orange
+        connector.status == ConnectorStatus.Error -> colors.red
+        else -> colors.textTertiary
+    }
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = CursorDimens.menuInset)
+            .heightIn(min = CursorDimens.menuRow)
+            .padding(horizontal = CursorDimens.menuItemPadding, vertical = 7.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        ConnectorLogo(connector)
+        Spacer(Modifier.width(10.dp))
+        Column(Modifier.weight(1f)) {
+            Text(connector.name, style = type.base, color = if (connector.blockedByAdmin) colors.textQuaternary else colors.textPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(connector.statusLabel, style = type.small, color = subtitleColor, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+        if (connector.canConnect) {
+            Spacer(Modifier.width(6.dp))
+            Text(
+                "Connect",
+                style = type.small,
+                color = colors.accent,
+                modifier = Modifier.pressable(onConnect, CursorTheme.shapes.base).padding(horizontal = 6.dp, vertical = 4.dp),
+            )
+        }
+        Spacer(Modifier.width(8.dp))
+        CursorToggle(connector.enabled, onCheckedChange = onToggle, enabled = connector.canToggle)
+    }
+}
+
+@Composable
+private fun ConnectorLogo(connector: McpConnector) {
+    val colors = CursorTheme.colors
+    val loader = LocalMediaLoader.current
+    val url = connector.logoUrl
+    val px = with(LocalDensity.current) { ConnectorLogoSize.roundToPx() }
+    val logo by produceState<ImageBitmap?>(initialValue = null, url, loader, px) {
+        value = if (url == null || loader == null) null else runCatching { loader.image(MediaRef.Remote(url), px, px).asImageBitmap() }.getOrNull()
+    }
+    Box(Modifier.size(ConnectorLogoSize), contentAlignment = Alignment.Center) {
+        val image = logo
+        if (image != null) {
+            Image(image, contentDescription = null, contentScale = ContentScale.Fit, modifier = Modifier.size(ConnectorLogoSize).clip(CursorTheme.shapes.base))
+        } else {
+            val tint = if (connector.blockedByAdmin) colors.iconQuaternary else colors.iconSecondary
+            Icon(ProjectIcons.vector(McpConnectors.glyph(connector)), null, tint = tint, modifier = Modifier.size(CursorDimens.menuIcon))
+        }
+    }
+}
+
+private val ConnectorLogoSize = 18.dp
 
 @Composable
 private fun PageHeader(title: String, onBack: () -> Unit) {

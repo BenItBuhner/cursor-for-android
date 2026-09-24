@@ -27,6 +27,7 @@ import com.cursorforandroid.data.api.ConversationRecordApi
 import com.cursorforandroid.data.api.CreatedPullRequest
 import com.cursorforandroid.data.api.CursorApiFactory
 import com.cursorforandroid.data.api.CursorServerApi
+import com.cursorforandroid.data.api.DashboardMcpConnectorApi
 import com.cursorforandroid.data.api.DashboardSlashCommandApi
 import com.cursorforandroid.data.api.DesktopProbe
 import com.cursorforandroid.data.api.DiffDetailsApi
@@ -68,6 +69,7 @@ import com.cursorforandroid.data.auth.CursorLoginEndpoints
 import com.cursorforandroid.data.auth.SessionTokenProvider
 import com.cursorforandroid.data.demo.DemoBackendFactory
 import com.cursorforandroid.data.demo.DemoData
+import com.cursorforandroid.data.demo.DemoMcpConnectorApi
 import com.cursorforandroid.data.demo.DemoPullRequests
 import com.cursorforandroid.data.demo.DemoReview
 import com.cursorforandroid.data.local.AppCaches
@@ -113,6 +115,7 @@ import com.cursorforandroid.data.repo.ReviewRepository
 import com.cursorforandroid.data.repo.RunMonitor
 import com.cursorforandroid.data.repo.SessionManager
 import com.cursorforandroid.data.repo.SessionState
+import com.cursorforandroid.data.repo.McpConnectorRepository
 import com.cursorforandroid.data.repo.SlashCommandRepository
 import com.cursorforandroid.data.repo.SteeringRepository
 import com.cursorforandroid.data.repo.StoreFileRepository
@@ -129,6 +132,7 @@ import com.cursorforandroid.domain.ContextEntry
 import com.cursorforandroid.domain.DesktopPage
 import com.cursorforandroid.domain.DiagnosticsInbox
 import com.cursorforandroid.domain.InteractionResolution
+import com.cursorforandroid.domain.McpServer
 import com.cursorforandroid.domain.PendingFollowup
 import com.cursorforandroid.domain.PendingWork
 import com.cursorforandroid.domain.ProjectAppearance
@@ -223,8 +227,15 @@ class AppGraph(
      * Eager because every launch offers the activity's intent to it, so deferring it would only defer it by a frame.
      */
     val share = ShareInbox(app)
-    /** MCP servers defined in the app; enabled ones are sent inline with every prompt. */
+    /** MCP servers defined in the app; enabled ones are sent inline with every prompt outside Extended mode. */
     val mcpServers = McpServerStore(keyStore)
+
+    /**
+     * The servers a prompt carries inline: the app's own, while they are what the "+" menu manages. In Extended mode
+     * the menu manages the account's connectors instead, which apply on Cursor's side to every cloud agent, so the
+     * app's hidden list stays on the device and goes out with nothing.
+     */
+    suspend fun inlineMcpServers(): List<McpServer> = if (capabilities().accountConnectors) emptyList() else mcpServers.enabled()
 
     /** Images attached to prompts, kept on-device because the transcript API never returns them. */
     private val lazyAttachments = lazy { AttachmentStore(app) }
@@ -333,6 +344,9 @@ class AppGraph(
     private val lazyAccountAgents = lazy { BackgroundComposerApi(lazyAccountRpc.value, lazySessionTokens.value) }
     private val lazyAccountPullRequests = lazy { CursorPullRequestSource(lazyAccountAgents.value) }
     private val lazyAccountSlashCommands = lazy { DashboardSlashCommandApi(lazyAccountRpc.value, lazySessionTokens.value) }
+    /** The account's MCP servers and connectors: the list the MCP dropdown on cursor.com/agents shows. */
+    private val lazyAccountConnectors = lazy { DashboardMcpConnectorApi(lazyAccountRpc.value, lazySessionTokens.value) }
+    private val lazyDemoConnectors = lazy { DemoMcpConnectorApi() }
     /** The account's Projects: who belongs to whom, and the coordinator's actions. */
     private val lazyProjectApi = lazy { ProjectApi(lazyAccountRpc.value, lazySessionTokens.value) }
     /** The agent's live VM: its workspace files and its branch diff (the panel's Files › Workspace and Changes). */
@@ -649,6 +663,15 @@ class AppGraph(
     }
     val slashCommands: SlashCommandRepository get() = lazySlashCommands.value
 
+    /** The "+" menu's MCP page in Extended mode: the account's connectors, switched for every cloud agent it starts. */
+    private val lazyConnectors = lazy {
+        McpConnectorRepository(
+            api = { if (session.isDemo) lazyDemoConnectors.value else lazyAccountConnectors.value },
+            allowed = { capabilities().accountConnectors },
+        )
+    }
+    val connectors: McpConnectorRepository get() = lazyConnectors.value
+
     /** Images agents generate, kept on-device the moment the stream delivers them: nothing serves them again. */
     private val lazyGeneratedMedia = lazy { GeneratedMediaStore(app) }
     val generatedMedia: GeneratedMediaStore get() = lazyGeneratedMedia.value
@@ -717,7 +740,7 @@ class AppGraph(
             uploads = attachmentUploads,
             steering = steering,
             followUps = followUps,
-            mcpServers = { mcpServers.enabled() },
+            mcpServers = { inlineMcpServers() },
             capabilities = capabilities,
             isDemo = { session.isDemo },
         )
@@ -733,7 +756,7 @@ class AppGraph(
             conversations = conversations,
             agents = agents,
             hub = liveRuns,
-            mcpServers = { mcpServers.enabled() },
+            mcpServers = { inlineMcpServers() },
             // A queued message with files goes out through the account's follow-up: `AddAsyncFollowupBackgroundComposer`
             // with them as `selected_documents[]` — or `selected_images[]` for an image — by the references their
             // uploads settled on when they were attached; a file without one is uploaded here (Extended mode).
@@ -934,6 +957,7 @@ class AppGraph(
             if (lazyAgents.isInitialized()) agents.reset()
             if (lazyCatalog.isInitialized()) catalog.reset()
             if (lazySlashCommands.isInitialized()) slashCommands.reset()
+            if (lazyConnectors.isInitialized()) connectors.reset()
             if (lazyPullRequests.isInitialized()) pullRequests.reset()
             if (lazyReviews.isInitialized()) reviews.reset()
             if (lazyWorkspace.isInitialized()) workspace.reset()
@@ -971,6 +995,7 @@ class AppGraph(
             caches.blobs.clear()
             if (lazySlashCommands.isInitialized()) slashCommands.reset()
             caches.slashCommands.removeAll()
+            if (lazyConnectors.isInitialized()) connectors.reset()
             // The panel's account reads — a pull request the SCM service answered, a workspace listing, a diff — go too.
             if (lazyReviews.isInitialized()) reviews.reset()
             if (lazyWorkspace.isInitialized()) workspace.reset()
@@ -984,6 +1009,7 @@ class AppGraph(
             if (lazyAccountPullRequests.isInitialized()) lazyAccountPullRequests.value.reset()
             if (lazyPullRequests.isInitialized()) pullRequests.reset()
             if (lazySlashCommands.isInitialized()) slashCommands.reset()
+            if (lazyConnectors.isInitialized()) connectors.reset()
             // A pull request the browser stood in for can now be read through the account.
             if (lazyReviews.isInitialized()) reviews.reset()
             session.refreshAccountProfile()
@@ -1011,6 +1037,8 @@ class AppGraph(
             "accountAgents" to lazyAccountAgents,
             "accountPullRequests" to lazyAccountPullRequests,
             "accountSlashCommands" to lazyAccountSlashCommands,
+            "accountConnectors" to lazyAccountConnectors,
+            "demoConnectors" to lazyDemoConnectors,
             "gitHub" to lazyGitHub,
             "gitHubPullRequests" to lazyGitHubPullRequests,
             "gitHubSlashCommands" to lazyGitHubSlashCommands,
@@ -1030,6 +1058,7 @@ class AppGraph(
             "steering" to lazySteering,
             "catalog" to lazyCatalog,
             "slashCommands" to lazySlashCommands,
+            "connectors" to lazyConnectors,
             "generatedMedia" to lazyGeneratedMedia,
             "liveRuns" to lazyLiveRuns,
             "subagentActivity" to lazySubagentActivity,
