@@ -278,6 +278,7 @@ fun ComposerBox(
     val currentOnMode by rememberUpdatedState(onModePill)
     val currentMode by rememberUpdatedState(modePill)
     val currentExtended by rememberUpdatedState(extendedModes)
+    val haptics = rememberHaptics()
 
     /** Hands the owner the field's text in its own shape — `/multitask ` in front while that pill is on. */
     fun publish(text: String, multitask: Boolean = currentPresented.multitask) {
@@ -291,6 +292,7 @@ fun ComposerBox(
      * well; this is so the composer never depends on it.
      */
     fun turnOn(pill: ModePills.Pill, text: String) {
+        haptics.perform(Haptic.ToggleOn)
         when (pill) {
             ModePills.Pill.Multitask -> {
                 publish(text, multitask = true)
@@ -325,6 +327,7 @@ fun ComposerBox(
         }
         // An edit made here does not pass through the input transformation, so the owner is told directly.
         publish(next.text)
+        haptics.perform(Haptic.Select)
     }
 
     Column(
@@ -440,11 +443,11 @@ fun ComposerBox(
             // before a pill would, and send is never pushed out.
             Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
                 if (wornMode != null) {
-                    ModePill(wornMode, onClear = { onModePill?.invoke(null) })
+                    ModePill(wornMode, onClear = { haptics.perform(Haptic.ToggleOff); onModePill?.invoke(null) })
                     Spacer(Modifier.width(6.dp))
                 }
                 if (presented.multitask) {
-                    ModePill(ModePills.Pill.Multitask, onClear = { publish(field.text.toString(), multitask = false) })
+                    ModePill(ModePills.Pill.Multitask, onClear = { haptics.perform(Haptic.ToggleOff); publish(field.text.toString(), multitask = false) })
                     Spacer(Modifier.width(6.dp))
                 }
                 Spacer(Modifier.weight(1f))
@@ -468,7 +471,8 @@ fun ComposerBox(
                 isSending && cancelOffered && onCancelSend != null -> ComposerRoundButton(CursorIcons.Stop, "Cancel sending", onClick = onCancelSend, prominent = true)
                 isSending -> ComposerBusyButton()
                 isRunning && onStop != null && !canSend -> ComposerRoundButton(CursorIcons.Stop, "Stop", onClick = onStop, prominent = true)
-                else -> ComposerRoundButton(CursorIcons.ArrowUp, "Send", onClick = onSend, prominent = canSend, enabled = sendsNow)
+                // The tap is felt, not a hardware Enter: a physical keyboard's keys are their own feedback.
+                else -> ComposerRoundButton(CursorIcons.ArrowUp, "Send", onClick = { haptics.perform(Haptic.Confirm); onSend() }, prominent = canSend, enabled = sendsNow)
             }
         }
     }

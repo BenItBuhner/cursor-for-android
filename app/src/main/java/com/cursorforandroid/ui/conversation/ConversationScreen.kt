@@ -77,12 +77,14 @@ import com.cursorforandroid.ui.components.CursorIcons
 import com.cursorforandroid.ui.components.CursorMenu
 import com.cursorforandroid.ui.components.CursorMenuItem
 import com.cursorforandroid.ui.components.FlatIconButton
+import com.cursorforandroid.ui.components.Haptic
 import com.cursorforandroid.ui.components.HeaderClearance
 import com.cursorforandroid.ui.components.LocalMarkdownMedia
 import com.cursorforandroid.ui.components.LocalRunStopConfirmation
 import com.cursorforandroid.ui.components.MarkdownMediaContext
 import com.cursorforandroid.ui.components.RunInterruption
 import com.cursorforandroid.ui.components.RunStopDialog
+import com.cursorforandroid.ui.components.rememberHaptics
 import com.cursorforandroid.ui.components.rememberRunStopConfirmation
 import com.cursorforandroid.ui.components.ShimmerText
 import com.cursorforandroid.ui.components.SpinnerRing
@@ -262,6 +264,7 @@ fun ConversationScreen(
     // Every tap here that would stop, pause or interrupt the run asks first while the setting is on (see
     // RunStopConfirmation): the composer's Stop, the menu's, the queues' Send now, the panel's controls.
     val stopConfirmation = rememberRunStopConfirmation(graph.prefs)
+    val haptics = rememberHaptics()
     val uriHandler = LocalUriHandler.current
     val clipboard = LocalClipboardManager.current
 
@@ -288,6 +291,7 @@ fun ConversationScreen(
     val items = presentedTranscript.items
     val isActive = conversation.runStatus?.isActive == true || conversation.isStreaming
     LaunchedEffect(isActive) { if (!isActive) stopConfirmation.dismissFor(agentId) }
+    ChatHaptics(agentId, conversation.runStatus, outgoing)
     // The notices among the rows the reader has put away for this chat (see NoticeCard.dismissKey, NoticeDismissals) are left out.
     val rows = remember(presentedTranscript, hiddenNotices) {
         val closed = NoticeDismissals.inlineKeys(hiddenNotices)
@@ -627,7 +631,12 @@ fun ConversationScreen(
                     onEdit = { viewModel.editQueued(it.id) },
                     // Sent now while a turn is under way, a message cancels that turn for it.
                     onSteer = { item ->
-                        if (isActive) stopConfirmation.ask(RunInterruption.SendNow, agentId) { viewModel.steerQueued(item.id) } else viewModel.steerQueued(item.id)
+                        if (isActive) {
+                            stopConfirmation.ask(RunInterruption.SendNow, agentId) { viewModel.steerQueued(item.id) }
+                        } else {
+                            haptics.perform(Haptic.Confirm)
+                            viewModel.steerQueued(item.id)
+                        }
                     },
                     onRemove = { viewModel.removeQueued(it.id) },
                     modifier = Modifier.widthIn(max = CursorDimens.composerMaxWidth).padding(bottom = 4.dp),
@@ -639,13 +648,18 @@ fun ConversationScreen(
                     inFlightIds = controls.inFlightQueueIds,
                     // `SubmitPendingFollowupNow` sends the message in place of the turn under way.
                     onSendNow = { item ->
-                        if (isActive) stopConfirmation.ask(RunInterruption.SendNow, agentId) { viewModel.queueSendNow(item.id) } else viewModel.queueSendNow(item.id)
+                        if (isActive) {
+                            stopConfirmation.ask(RunInterruption.SendNow, agentId) { viewModel.queueSendNow(item.id) }
+                        } else {
+                            haptics.perform(Haptic.Confirm)
+                            viewModel.queueSendNow(item.id)
+                        }
                     },
                     onRemove = { viewModel.queueDelete(it.id) },
                     onUpdate = { item, text -> viewModel.queueUpdate(item.id, text) },
                     onEditing = { item, editing -> viewModel.queueMarkEditing(item.id, editing) },
                     // A queued message can be delivered into the turn under way as a steer while there is one to steer.
-                    onSteerNow = if (capabilities.steering && isActive) ({ viewModel.queueSteerNow(it.id) }) else null,
+                    onSteerNow = if (capabilities.steering && isActive) ({ haptics.perform(Haptic.Confirm); viewModel.queueSteerNow(it.id) }) else null,
                     onMove = { item, up -> viewModel.queueMove(item.id, up) },
                     modifier = Modifier.widthIn(max = CursorDimens.composerMaxWidth).padding(bottom = 4.dp),
                 )

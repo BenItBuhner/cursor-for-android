@@ -170,6 +170,8 @@ class PreferencesStore(
         val dismissedNotices = stringPreferencesKey("dismissed_notices")
         /** Settings › Confirm before stopping; absent reads as on (see [confirmStop]). */
         val confirmStop = booleanPreferencesKey("confirm_stop")
+        /** Settings › Haptic feedback; absent reads as on (see [hapticFeedback]). */
+        val hapticFeedback = booleanPreferencesKey("haptic_feedback")
         /** The widget kinds whose picker previews the system holds, each with the build and boot it was published on (see `WidgetPreviews`). */
         val widgetPreviewsPublished = stringSetPreferencesKey("widget_previews_published")
     }
@@ -270,6 +272,14 @@ class PreferencesStore(
     val confirmStop: Flow<Boolean> = data.map { it[Keys.confirmStop] ?: true }
 
     suspend fun setConfirmStop(enabled: Boolean) = edit { it[Keys.confirmStop] = enabled }
+
+    /**
+     * Whether the app plays its haptics (see `ui/components/Haptics.kt`). On by default; the system's touch feedback
+     * switch still silences them when it is off.
+     */
+    val hapticFeedback: Flow<Boolean> = data.map { it[Keys.hapticFeedback] ?: true }
+
+    suspend fun setHapticFeedback(enabled: Boolean) = edit { it[Keys.hapticFeedback] = enabled }
 
     // ---- Extended mode (device-level; deliberately untouched by clearSession) ------------------------------------
 

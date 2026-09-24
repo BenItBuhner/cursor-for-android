@@ -325,11 +325,13 @@ fun PullRequestPill(state: PullRequestState?, modifier: Modifier = Modifier) {
 
 /**
  * Cursor's flat toggle at a tappable size (36 x 20): green track when on, 14 % fill when off, white knob. Not
- * [enabled], it keeps showing the value at 40 % and takes no taps.
+ * [enabled], it keeps showing the value at 40 % and takes no taps. A tap on it is felt as the toggle haptic unless
+ * not [felt], for a switch whose owner plays its own.
  */
 @Composable
-fun CursorToggle(checked: Boolean, onCheckedChange: (Boolean) -> Unit, modifier: Modifier = Modifier, enabled: Boolean = true) {
+fun CursorToggle(checked: Boolean, onCheckedChange: (Boolean) -> Unit, modifier: Modifier = Modifier, enabled: Boolean = true, felt: Boolean = true) {
     val colors = CursorTheme.colors
+    val haptics = rememberHaptics()
     val track by animateColorAsState(if (checked) colors.green else colors.fillMedium, tween(160), label = "track")
     val knobOffset by animateDpAsState(if (checked) 18.dp else 2.dp, label = "knob")
     Box(
@@ -337,7 +339,7 @@ fun CursorToggle(checked: Boolean, onCheckedChange: (Boolean) -> Unit, modifier:
             .size(width = 36.dp, height = 20.dp)
             .alpha(if (enabled) 1f else 0.4f)
             .background(track, CircleShape)
-            .pressable({ onCheckedChange(!checked) }, CircleShape, enabled = enabled, role = Role.Switch)
+            .pressable({ if (felt) haptics.toggle(!checked); onCheckedChange(!checked) }, CircleShape, enabled = enabled, role = Role.Switch)
             // On / off for TalkBack (and for tests that wait for the switch itself, not the preference behind it).
             .semantics { toggleableState = ToggleableState(checked) },
     ) {

@@ -83,7 +83,10 @@ import com.cursorforandroid.ui.components.rememberFilePicker
 import com.cursorforandroid.ui.components.rememberMediaPicker
 import com.cursorforandroid.ui.components.scrollEdgeFade
 import com.cursorforandroid.ui.components.stylusWriting
+import com.cursorforandroid.ui.components.Haptic
+import com.cursorforandroid.ui.components.rememberHaptics
 import com.cursorforandroid.share.ShareTarget
+import com.cursorforandroid.ui.compose.LaunchRefusedHaptic
 import com.cursorforandroid.ui.compose.NewAgentUiState
 import com.cursorforandroid.ui.compose.NewAgentViewModel
 import com.cursorforandroid.ui.compose.rememberComposerMenuActions
@@ -192,6 +195,7 @@ fun HomeScreen(
                 onComposerFocused()
             }
         }
+        LaunchRefusedHaptic(state)
         LazyColumn(
             Modifier.fillMaxSize().imePadding().scrollEdgeFade(recentState, surface = colors.canvas),
             state = recentState,
@@ -314,6 +318,7 @@ fun RecentChatRow(
     val shape = CursorTheme.shapes.xl
     var menuOpen by remember { mutableStateOf(false) }
     val interaction = remember { MutableInteractionSource() }
+    val haptics = rememberHaptics()
     Box(modifier) {
     Row(
         Modifier
@@ -326,7 +331,7 @@ fun RecentChatRow(
                             interactionSource = interaction,
                             indication = ripple(color = colors.base),
                             onClick = onClick,
-                            onLongClick = { menuOpen = true },
+                            onLongClick = { haptics.perform(Haptic.LongPress); menuOpen = true },
                         )
                 } else {
                     Modifier.pressable(onClick, shape)

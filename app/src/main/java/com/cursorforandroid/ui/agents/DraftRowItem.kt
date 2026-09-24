@@ -38,6 +38,8 @@ import com.cursorforandroid.ui.components.CursorMenu
 import com.cursorforandroid.ui.components.CursorMenuItem
 import com.cursorforandroid.ui.components.Dot
 import com.cursorforandroid.ui.components.ModePills
+import com.cursorforandroid.ui.components.Haptic
+import com.cursorforandroid.ui.components.rememberHaptics
 import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.util.AppClock
@@ -108,6 +110,7 @@ fun DraftRowItem(
     val shape = CursorTheme.shapes.base
     var menuOpen by rememberSaveable { mutableStateOf(false) }
     val interaction = remember { MutableInteractionSource() }
+    val haptics = rememberHaptics()
     Box(modifier.fillMaxWidth().padding(horizontal = CursorDimens.selectionInset).testTag("draft-row")) {
         Row(
             Modifier
@@ -118,7 +121,7 @@ fun DraftRowItem(
                     interactionSource = interaction,
                     indication = ripple(color = colors.base),
                     onClick = { onOpen(row) },
-                    onLongClick = { menuOpen = true },
+                    onLongClick = { haptics.perform(Haptic.LongPress); menuOpen = true },
                 )
                 .height(CursorDimens.sidebarRow)
                 .padding(start = 8.dp, end = 10.dp),

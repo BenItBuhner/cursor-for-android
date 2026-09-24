@@ -73,7 +73,8 @@ class WidgetConfigureActivity : ComponentActivity() {
                     finish()
                 }
             }
-            CursorTheme(mode = themeMode, oledBlack = oledBlack) {
+            val haptics by graph.prefs.hapticFeedback.collectAsStateWithLifecycle(initialValue = true)
+            CursorTheme(mode = themeMode, oledBlack = oledBlack, haptics = haptics) {
                 WidgetConfigureScreen(title = kind.title, subtitle = kind.subtitle, onDone = scope.done, onClose = { finish() }) {
                     kind.Configure(scope)
                 }
