@@ -4,6 +4,7 @@ import com.cursorforandroid.data.api.AgentStoreApi
 import com.cursorforandroid.data.api.StoreReadTarget
 import com.cursorforandroid.data.api.await
 import com.cursorforandroid.data.api.readCancellably
+import com.cursorforandroid.data.local.DiskSweep
 import com.cursorforandroid.data.local.JsonDiskCache
 import com.cursorforandroid.domain.Capabilities
 import com.cursorforandroid.domain.MediaRef
@@ -250,7 +251,7 @@ class StoreFileRepository(
 
     /** Drops the least recently used files until the directory is within [maxBlobBytes]. */
     private fun trim(dir: File) {
-        val files = dir.listFiles { f -> f.isFile && !f.name.endsWith(".tmp") }?.sortedBy { it.lastModified() } ?: return
+        val files = dir.listFiles { f -> f.isFile && !f.name.endsWith(".tmp") }?.let { DiskSweep.byModified(it) } ?: return
         var total = files.sumOf { it.length() }
         for (f in files) {
             if (total <= maxBlobBytes) break

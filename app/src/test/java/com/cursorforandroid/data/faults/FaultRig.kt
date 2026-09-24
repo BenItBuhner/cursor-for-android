@@ -99,6 +99,8 @@ class FaultRig(
     prefetchLimit: Int = 0,
     /** HTTP/2 to a [FaultServer] made with `http2`, as the phone speaks to both of Cursor's hosts: one connection per client, multiplexed. */
     http2: Boolean = false,
+    /** The blob store's budget on disk, all chats together (production: `BlobDiskStore.MAX_BYTES`). */
+    blobDiskBytes: Long = BlobDiskStore.MAX_BYTES,
 ) : AutoCloseable {
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     var now: Long = 1_800_000_000_000L
@@ -194,7 +196,7 @@ class FaultRig(
      * The record's blobs as the app keeps them: a small memory tier in front of a disk store under [root], so a rig
      * made again on the same [root] is a new process on the same phone (see `AppGraph`).
      */
-    val blobs = BlobCache(BlobCache.MEMORY_BLOBS_WITH_DISK, BlobCache.MEMORY_BYTES_WITH_DISK, disk = BlobDiskStore(JsonDiskCache(File(root, "blobs"), dispatcher = Dispatchers.IO)))
+    val blobs = BlobCache(BlobCache.MEMORY_BLOBS_WITH_DISK, BlobCache.MEMORY_BYTES_WITH_DISK, disk = BlobDiskStore(JsonDiskCache(File(root, "blobs"), dispatcher = Dispatchers.IO), maxBytes = blobDiskBytes))
     /** The account service's record of a chat, over [accountClient] on the same host (Extended mode); null with the mode off. */
     val record: ConversationRecordApi? = if (extended) HeadlessConversationApi(accountRpc, sessionTokens, blobs = blobs, waits = recordWaits) else null
     /** What the private surfaces may do; a test that switches the engine mid-run sets this, and the next load reads it (as the app's `ExtendedMode` would). */
