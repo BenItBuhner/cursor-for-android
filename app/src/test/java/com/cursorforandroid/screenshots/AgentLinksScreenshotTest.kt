@@ -100,6 +100,6 @@ class AgentLinksScreenshotTest {
         }
         compose.waitForIdle()
         compose.onAllNodes(hasTestTag("coordinator-message")).assertCountEquals(1)
-        captureScreenRoboImage(File(outDir, "339_coordinator_agent_links.png").path, RoborazziOptions())
+        captureScreenRoboImage(File(outDir, "430_coordinator_agent_links.png").path, RoborazziOptions())
     }
 }
