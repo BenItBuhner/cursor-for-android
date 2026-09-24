@@ -254,7 +254,7 @@ class PanelTabsScreenshotTest {
     fun projectTab() {
         compose.setContent { Panel(coordinatorState(thumbnail())) }
         compose.waitUntil(10_000) { compose.onAllNodes(hasText("Shipping")).fetchSemanticsNodes().isNotEmpty() }
-        capture("480_panel_tab_project")
+        capture("500_panel_tab_project")
     }
 
     /** All Files: the Project's tree and the user's, each entry with when it was written, then Recents with its thumbnails (reference 03). */
@@ -264,7 +264,7 @@ class PanelTabsScreenshotTest {
         // The pictures decode off the main thread, in no fixed order and slowly on a loaded CI runner; the frame waits
         // for all three to be on screen.
         compose.waitUntil(60_000) { compose.onAllNodes(hasTestTag("recent-thumbnail"), useUnmergedTree = true).fetchSemanticsNodes().size == 3 }
-        capture("481_panel_tab_all_files")
+        capture("501_panel_tab_all_files")
     }
 
     /** A document tab in Preview: the breadcrumb, the toggle, the markdown rendered (reference 04). */
@@ -272,7 +272,7 @@ class PanelTabsScreenshotTest {
     fun documentPreview() {
         compose.setContent { Panel(coordinatorState(thumbnail(), feasibilityTab)) }
         waitForTag("document-preview")
-        capture("482_panel_tab_document_preview")
+        capture("502_panel_tab_document_preview")
     }
 
     /** The same document under Source: the text with its line numbers. */
@@ -281,7 +281,7 @@ class PanelTabsScreenshotTest {
         val state = coordinatorState(thumbnail(), feasibilityTab).let { it.copy(context = it.context.copy(sourceTabs = setOf(feasibilityTab.key))) }
         compose.setContent { Panel(state) }
         waitForTag("document-source")
-        capture("483_panel_tab_document_source")
+        capture("503_panel_tab_document_source")
     }
 
     /**
@@ -302,7 +302,7 @@ class PanelTabsScreenshotTest {
         waitForTag("agent-transcript", timeoutMillis = 60_000)
         compose.waitUntil(60_000) { compose.onAllNodes(hasText("The HTTP action verifies", substring = true)).fetchSemanticsNodes().isNotEmpty() }
         compose.waitUntil(20_000) { compose.onAllNodes(hasText("Handle Stripe", substring = true)).fetchSemanticsNodes().isNotEmpty() }
-        capture("484_panel_tab_agent")
+        capture("504_panel_tab_agent")
     }
 
     private fun agentState(project: Agent, worker: Agent): PanelState {
@@ -326,7 +326,7 @@ class PanelTabsScreenshotTest {
         val state = PanelFixtures.withFile(PanelFixtures.loaded().copy(agent = worker, parentAgent = coordinator), FileView.Repository(file))
         compose.setContent { Panel(state) }
         waitForTag("file-caption")
-        capture("485_panel_tab_file")
+        capture("505_panel_tab_file")
     }
 
     /** A picture from the Project's Recents as its own tab, as large as the tab. */
@@ -335,7 +335,7 @@ class PanelTabsScreenshotTest {
         val tab = PanelTab.Media(thumbnail(), "transcript-rich-content.png")
         compose.setContent { Panel(coordinatorState(tab.src, tab, more = listOf(tab))) }
         compose.waitUntil(60_000) { compose.onAllNodes(hasContentDescription(tab.name)).fetchSemanticsNodes().isNotEmpty() }
-        capture("486_panel_tab_media")
+        capture("506_panel_tab_media")
     }
 
     private companion object {
