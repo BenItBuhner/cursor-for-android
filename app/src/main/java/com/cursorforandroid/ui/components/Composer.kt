@@ -174,7 +174,10 @@ fun ComposerBox(
      * (the quick composer over the launcher). Off, arriving on a screen never throws the keyboard up.
      */
     focusOnOpen: Boolean = false,
-    /** Bumped to put the caret in the field now (Ctrl+N); a composer composed after a bump does not answer it again. */
+    /**
+     * Bumped to put the caret in the field now (Ctrl+N, a chat switched to from the keyboard); a composer composed after
+     * a bump does not answer it again.
+     */
     focusRequests: Int = 0,
 ) {
     val colors = CursorTheme.colors

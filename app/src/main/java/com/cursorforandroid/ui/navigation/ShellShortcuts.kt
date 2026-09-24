@@ -26,7 +26,7 @@ import com.cursorforandroid.ui.shortcuts.TranscriptFocusRequests
 /**
  * What the shell keeps for the hardware keyboard: the palette, what each open chat answers, where a transcript hit is
  * to be scrolled to, the chats visited this session (the quick switcher's order), the sidebar's first ten rows as last
- * drawn (Ctrl+1 … Ctrl+0), and Ctrl+N's ask for the composer.
+ * drawn (Ctrl+1 … Ctrl+0), the composer a key asked for, and whether a key's action is running.
  */
 @Stable
 internal class ShellShortcuts {
@@ -43,8 +43,28 @@ internal class ShellShortcuts {
 
     var railRows by mutableStateOf(emptyList<AgentRow>())
 
-    /** Ctrl+N asked for the New Chat composer; the pane clears it once the caret is in the field. */
-    var focusComposer by mutableStateOf(false)
+    /**
+     * The screen whose composer a key asked for: the New Chat pane's for Ctrl+N, a chat's for a switch to it (Ctrl+Tab,
+     * Ctrl+1 … Ctrl+0). That screen clears it once the caret is in the field; the shell, if something else comes on top.
+     */
+    var composerFocus by mutableStateOf<Screen?>(null)
+
+    /**
+     * True while a key's action runs ([fromKeyboard]): whatever it moves — the rail, the drawer — is put where it goes
+     * in the frame the key lands rather than slid there. The finger's changes, made with this false, still slide.
+     */
+    var keyed = false
+        private set
+
+    fun <T> fromKeyboard(action: () -> T): T {
+        val was = keyed
+        keyed = true
+        try {
+            return action()
+        } finally {
+            keyed = was
+        }
+    }
 
     fun visit(agentId: String) {
         visited.remove(agentId)

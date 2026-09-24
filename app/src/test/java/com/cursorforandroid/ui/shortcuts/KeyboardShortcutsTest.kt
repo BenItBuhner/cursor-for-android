@@ -14,10 +14,10 @@ import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
 
 /**
- * The activity-level reader: which keys it takes (the listed chords from a hardware keyboard, with their key-ups, and
- * Esc), which it leaves to the focused view (the on-screen keyboard's, a text field's own Ctrl chords, a chord the
- * shell declines, and Esc, Ctrl+N and Ctrl+K while an open popover claims them), and the Ctrl hold that numbers the
- * sidebar's rows after 500 ms.
+ * The reader: which keys it takes (the listed chords from a hardware keyboard, with their key-ups, and Esc), which it
+ * leaves to the focused view (the on-screen keyboard's, a text field's own Ctrl chords, a chord the shell declines,
+ * and Esc, Ctrl+N and Ctrl+K while an open popover claims them), and the Ctrl hold that numbers the sidebar's rows
+ * after 500 ms. Read at the activity, and with a field focused before the IME: a key read there is read once.
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 @RunWith(AndroidJUnit4::class)
@@ -49,14 +49,26 @@ class KeyboardShortcutsTest {
         }
     }
 
+    /** Each key its own moment, as the platform stamps them. */
+    private var eventTime = 0L
+
     private fun key(action: Int, code: Int, ctrl: Boolean = false, shift: Boolean = false, repeat: Int = 0, soft: Boolean = false, right: Boolean = false): KeyEvent {
         var meta = 0
         if (ctrl) meta = meta or KeyEvent.META_CTRL_ON or (if (right) KeyEvent.META_CTRL_RIGHT_ON else KeyEvent.META_CTRL_LEFT_ON)
         if (shift) meta = meta or KeyEvent.META_SHIFT_ON or KeyEvent.META_SHIFT_LEFT_ON
         val deviceId = if (soft) KeyCharacterMap.VIRTUAL_KEYBOARD else 7
         val flags = if (soft) KeyEvent.FLAG_SOFT_KEYBOARD or KeyEvent.FLAG_KEEP_TOUCH_MODE else 0
-        return KeyEvent(0L, 0L, action, code, repeat, meta, deviceId, 0, flags, InputDevice.SOURCE_KEYBOARD)
+        val at = ++eventTime
+        return KeyEvent(at, at, action, code, repeat, meta, deviceId, 0, flags, InputDevice.SOURCE_KEYBOARD)
     }
+
+    /**
+     * [event] as the platform hands it on with a field focused: the pass before the IME, then — when that did not take
+     * it and the IME does not answer it itself ([imeAnswers]) — the activity. Whether the app took it, before the IME
+     * or after.
+     */
+    private fun throughIme(event: KeyEvent, imeAnswers: Boolean = false): Boolean =
+        keys.onKeyEventPreIme(event) || (!imeAnswers && keys.onKeyEvent(event))
 
     private fun dispatch(event: KeyEvent): Boolean = keys.onKeyEvent(event)
 
@@ -271,6 +283,77 @@ class KeyboardShortcutsTest {
         assertThat(handler.releases).containsExactly(true)
         elapse(2_000)
         assertThat(keys.showNumbers).isFalse()
+    }
+
+    @Test
+    fun `with a field focused, a listed chord is taken before the IME is given it, down and up`() {
+        assertThat(keys.onKeyEventPreIme(key(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_CTRL_LEFT, ctrl = true))).isFalse()
+        assertThat(keys.onKeyEventPreIme(key(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_R, ctrl = true))).isTrue()
+        assertThat(keys.onKeyEventPreIme(key(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_R, ctrl = true))).isTrue()
+        assertThat(keys.onKeyEventPreIme(key(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_R, ctrl = true, shift = true))).isTrue()
+        assertThat(keys.onKeyEventPreIme(key(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_R, ctrl = true, shift = true))).isTrue()
+        assertThat(handler.actions).containsExactly(ShortcutAction.CatchUp, ShortcutAction.ReloadTranscript).inOrder()
+    }
+
+    @Test
+    fun `a keyboard app that answers every Ctrl chord itself still never hears the app's`() {
+        throughIme(key(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_CTRL_LEFT, ctrl = true), imeAnswers = true)
+        listOf(KeyEvent.KEYCODE_R, KeyEvent.KEYCODE_TAB, KeyEvent.KEYCODE_B, KeyEvent.KEYCODE_1).forEach { code ->
+            assertThat(throughIme(key(KeyEvent.ACTION_DOWN, code, ctrl = true), imeAnswers = true)).isTrue()
+            assertThat(throughIme(key(KeyEvent.ACTION_UP, code, ctrl = true), imeAnswers = true)).isTrue()
+        }
+        assertThat(handler.actions).containsExactly(ShortcutAction.CatchUp, ShortcutAction.SwitchNext, ShortcutAction.ToggleSidebar, ShortcutAction.OpenRailItem(0)).inOrder()
+    }
+
+    @Test
+    fun `a key read before the IME and not taken is not read a second time at the activity`() {
+        handler.takes = false
+        val declined = key(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_R, ctrl = true)
+        assertThat(keys.onKeyEventPreIme(declined)).isFalse()
+        assertThat(keys.onKeyEvent(declined)).isFalse()
+        assertThat(handler.actions).containsExactly(ShortcutAction.CatchUp)
+
+        // A field's own chord goes on to the IME and the field, never the app's before the IME or after.
+        val selectAll = key(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_A, ctrl = true)
+        assertThat(throughIme(selectAll)).isFalse()
+        assertThat(handler.actions).containsExactly(ShortcutAction.CatchUp)
+    }
+
+    @Test
+    fun `after a key the IME answered itself, the next the activity hears is read afresh`() {
+        assertThat(throughIme(key(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_A, ctrl = true), imeAnswers = true)).isFalse()
+        // The focus left the fields: the next chord comes by the activity alone.
+        assertThat(dispatch(key(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_F, ctrl = true))).isTrue()
+        assertThat(handler.actions).containsExactly(ShortcutAction.Search)
+    }
+
+    @Test
+    fun `Esc goes on to the IME, which cancels a composition with it, and is read at the activity`() {
+        val down = key(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_ESCAPE)
+        assertThat(keys.onKeyEventPreIme(down)).isFalse()
+        assertThat(handler.escapes).isEqualTo(0)
+        assertThat(keys.onKeyEvent(down)).isTrue()
+        val up = key(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_ESCAPE)
+        assertThat(keys.onKeyEventPreIme(up)).isFalse()
+        assertThat(keys.onKeyEvent(up)).isTrue()
+        assertThat(handler.escapes).isEqualTo(1)
+    }
+
+    @Test
+    fun `the on-screen keyboard's keys are not read before the IME either`() {
+        assertThat(keys.onKeyEventPreIme(key(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_F, ctrl = true, soft = true))).isFalse()
+        assertThat(keys.onKeyEventPreIme(key(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_R, ctrl = true, soft = true))).isFalse()
+        assertThat(handler.actions).isEmpty()
+    }
+
+    @Test
+    fun `Ctrl held and let go with a field focused numbers the rows and is let go of once`() {
+        throughIme(key(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_CTRL_LEFT, ctrl = true))
+        elapse(KeyboardShortcuts.NUMBERS_AFTER_MILLIS)
+        assertThat(keys.showNumbers).isTrue()
+        throughIme(key(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_CTRL_LEFT))
+        assertThat(keys.showNumbers).isFalse()
+        assertThat(handler.releases).containsExactly(true)
     }
 
     @Test
