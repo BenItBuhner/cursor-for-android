@@ -31,6 +31,7 @@ import com.cursorforandroid.data.local.PreferencesStore
 import com.cursorforandroid.domain.AccountModel
 import com.cursorforandroid.domain.Agent
 import com.cursorforandroid.domain.AgentLifecycle
+import com.cursorforandroid.domain.AgentMode
 import com.cursorforandroid.domain.AgentParent
 import com.cursorforandroid.domain.AgentParentKind
 import com.cursorforandroid.domain.AgentScope
@@ -138,6 +139,11 @@ data class LaunchRequest(
     val modelParams: List<ModelParam>,
     val autoCreatePr: Boolean,
     val planMode: Boolean,
+    /**
+     * Ask or Debug (Extended mode): modes the documented create has no word for, so a launch with one goes through
+     * the account's start, which carries it as the desktop does (see [AgentRepository.launch]). Wins over [planMode].
+     */
+    val accountMode: AgentMode? = null,
     val name: String? = null,
     /** Client-minted id (see [LaunchIdempotency]); null lets the server mint one and disables retry recovery. */
     val agentId: String? = null,
@@ -1726,15 +1732,18 @@ class AgentRepository(
      * its message, a `5xx` — is never waited on or asked about again: it fails the launch at once, as it is. A row
      * [beginLaunch] put in the list is replaced by the server's record, or removed when the request fails.
      * [saveImages] is off for a caller that staged the prompt's images itself and files them under the run.
+     * A prompt with files, a machine's repository in Extended mode, and an Ask or Debug chat
+     * ([LaunchRequest.accountMode]) start on the account instead (see [startOnAccount]).
      */
     suspend fun launch(request: LaunchRequest, modelDisplayName: String?, saveImages: Boolean = true, progress: UploadProgress = UploadProgress.NONE): Result<Launched> {
         val startedIn = token()
         val onMachine = startsOnMachine(request)
-        val trace = LaunchTrace(request, onAccount = request.files.isNotEmpty() || onMachine)
+        val onAccount = request.files.isNotEmpty() || onMachine || request.accountMode?.needsAccountService == true
+        val trace = LaunchTrace(request, onAccount = onAccount)
         request.agentId?.let { id -> synchronized(launchTraces) { launchTraces[id] = trace } }
         val result = runCatching {
             val api = session.current.api
-            val (dto, run) = if (request.files.isNotEmpty() || onMachine) {
+            val (dto, run) = if (onAccount) {
                 startOnAccount(api, request, progress, trace, onMachine)
             } else try {
                 // Off the main thread: base64-encoding the images and serializing the body happen before the call is
@@ -1859,9 +1868,18 @@ class AgentRepository(
      * there — `use_private_worker` with the machine's labels (see `ConnectAgentStartApi`), which Cursor routes to the
      * machine's own checkout without asking its GitHub app about the repository. A refusal comes back as
      * [MachineStartRefusedException]: the account's words and what was asked.
+     *
+     * An Ask or Debug chat ([LaunchRequest.accountMode]) goes out the same way with the mode on
+     * `user_message.mode`, as the desktop starts one; Extended mode's `agentModes` only, and on Cursor's cloud or a
+     * machine's repository, like files.
      */
     private suspend fun startOnAccount(api: CursorApi, request: LaunchRequest, progress: UploadProgress, trace: LaunchTrace, onMachine: Boolean): Pair<AgentDto, RunDto?> {
         val id = requireNotNull(request.agentId) { "A launch on the account needs the client-minted agent id." }
+        val accountMode = request.accountMode?.takeIf { it.needsAccountService }
+        if (accountMode != null) {
+            if (start == null || !capabilities().agentModes) throw IllegalStateException(modeNeedsExtended(accountMode))
+            if (!onMachine && (request.env.type == EnvType.POOL || request.env.type == EnvType.MACHINE)) throw IllegalArgumentException(modeNeedsCloud(accountMode))
+        }
         val startApi = start ?: throw IllegalStateException(FILES_NEED_EXTENDED)
         val uploaded = if (request.files.isEmpty()) emptyList() else {
             val uploader = uploads ?: throw IllegalStateException(FILES_NEED_EXTENDED)
@@ -1881,7 +1899,7 @@ class AgentRepository(
             environmentName = request.env.apiName.takeIf { machine == null },
             modelId = request.modelId,
             modelParams = request.modelParams,
-            planMode = request.planMode,
+            mode = accountMode ?: if (request.planMode) AgentMode.PLAN else AgentMode.AGENT,
             autoCreatePr = request.autoCreatePr,
             name = request.name,
             mcpServers = request.mcpServers,
@@ -2403,6 +2421,12 @@ class AgentRepository(
         private const val AGENT_ID_CONFLICT = "agent_id_conflict"
         const val FILES_NEED_EXTENDED = "Attaching files needs Extended mode; turn it on in Settings, or take the files off."
         const val FILES_NEED_CLOUD = "Files can go on a new chat that runs on Cursor's cloud only. Start it on Cloud, or attach them in a follow-up once it is running."
+
+        /** Why an Ask or Debug chat did not start: the mode is Extended mode's. */
+        fun modeNeedsExtended(mode: AgentMode): String = "${mode.label} mode needs Extended mode; turn it on in Settings, or take ${mode.label} off."
+
+        /** Why an Ask or Debug chat did not start on a pool or a machine without a repository. */
+        fun modeNeedsCloud(mode: AgentMode): String = "A new chat starts in ${mode.label} mode on Cursor's cloud or a machine's repository only. Start it there, or take ${mode.label} off."
         const val MACHINE_NEEDS_EXTENDED = "A machine's repository that isn't on a GitHub owner with Cursor's GitHub app starts only in Extended mode (Settings › Advanced)."
         /** How the documented create refuses a machine's repository its GitHub app cannot vouch for. */
         val MACHINE_REPOSITORY_REFUSALS = setOf("integration_not_connected", "repository_access")

@@ -70,6 +70,8 @@ object LaunchIdempotency {
             map(server.headers)
             map(server.env)
         }
+        // Last, and only when set, so a draft in Agent or Plan mode hashes exactly as it did before Ask and Debug.
+        request.accountMode?.let { field(it.name) }
         return "bc-" + UUID.nameUUIDFromBytes(digest.digest())
     }
 

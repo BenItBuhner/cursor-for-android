@@ -20,6 +20,7 @@ import com.cursorforandroid.data.local.JsonDiskCache
 import com.cursorforandroid.data.local.PreferencesStore
 import com.cursorforandroid.data.local.SecureKeyStore
 import com.cursorforandroid.data.api.dto.AgentEnvDto
+import com.cursorforandroid.domain.AgentMode
 import com.cursorforandroid.domain.Capabilities
 import com.cursorforandroid.domain.DeviceTarget
 import com.cursorforandroid.domain.EnvType
@@ -250,7 +251,7 @@ class AgentRepositoryLaunchTest {
         assertThat(sent.repoUrl).isEqualTo(request.repoUrl)
         assertThat(sent.ref).isEqualTo("main")
         assertThat(sent.modelId).isEqualTo("auto-smart")
-        assertThat(sent.planMode).isTrue()
+        assertThat(sent.mode).isEqualTo(AgentMode.PLAN)
         assertThat(sent.autoCreatePr).isTrue()
         assertThat(sent.environmentName).isNull()
         assertThat(sent.images).hasSize(1)
@@ -309,6 +310,44 @@ class AgentRepositoryLaunchTest {
         assertThat(start.requests).isEmpty()
         assertThat(api.createRequests).isEmpty()
         assertThat(agents.state.value.agents).isEmpty()
+    }
+
+    @Test
+    fun `an Ask or Debug chat starts on the account in its mode, and Plan or Agent still takes the documented create`() = runBlocking<Unit> {
+        val start = FakeStart()
+        val agents = withAccountStart(start, FakeUploads())
+        start.onStart = { api.addRunningAgent(it.agentId, "Explain the cache", "run-server-2") }
+
+        val ask = request.copy(accountMode = AgentMode.ASK, planMode = true)
+        agents.launch(ask.copy(agentId = LaunchIdempotency.agentId(ask, "nonce")), "Auto").getOrThrow()
+        val debug = request.copy(accountMode = AgentMode.DEBUG)
+        agents.launch(debug.copy(agentId = LaunchIdempotency.agentId(debug, "nonce")), "Auto").getOrThrow()
+
+        assertThat(api.createRequests).isEmpty()
+        assertThat(start.requests.map { it.mode }).containsExactly(AgentMode.ASK, AgentMode.DEBUG).inOrder()
+        assertThat(start.requests.map { it.text }).containsExactly(request.prompt, request.prompt)
+
+        // Plan and Agent are the documented create's `mode` still.
+        val plan = request.copy(planMode = true)
+        agents.launch(plan.copy(agentId = LaunchIdempotency.agentId(plan, "nonce")), "Auto").getOrThrow()
+        assertThat(api.createRequests.single().mode).isEqualTo("plan")
+        assertThat(start.requests).hasSize(2)
+    }
+
+    @Test
+    fun `an Ask or Debug chat is refused before anything is sent without the account's modes, or on a pool`() = runBlocking<Unit> {
+        val start = FakeStart()
+        val ask = request.copy(accountMode = AgentMode.ASK)
+        val id = LaunchIdempotency.agentId(ask, "nonce")
+
+        val off = withAccountStart(start, FakeUploads(), capabilities = Capabilities.DOCUMENTED).launch(ask.copy(agentId = id), "Auto")
+        assertThat(off.exceptionOrNull()).hasMessageThat().isEqualTo(AgentRepository.modeNeedsExtended(AgentMode.ASK))
+
+        val pool = withAccountStart(start, FakeUploads()).launch(ask.copy(agentId = id, env = DeviceTarget.pool("team-pool")), "Auto")
+        assertThat(pool.exceptionOrNull()).hasMessageThat().isEqualTo(AgentRepository.modeNeedsCloud(AgentMode.ASK))
+
+        assertThat(start.requests).isEmpty()
+        assertThat(api.createRequests).isEmpty()
     }
 
     @Test

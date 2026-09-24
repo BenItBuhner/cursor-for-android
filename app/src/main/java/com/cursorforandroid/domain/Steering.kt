@@ -2,10 +2,12 @@ package com.cursorforandroid.domain
 
 /**
  * The mode a message goes out under, `agent.v1.AgentMode` as the account service spells it on
- * `ConversationMessage.agent_mode`. The documented API accepts `agent` and `plan` alone (the SDK's `mode` option), so
- * [ASK] and [DEBUG] can only travel on the account's own follow-up (`AddAsyncFollowupBackgroundComposer`), which is
- * why the composer offers them in Extended mode only. [PROJECT], [MULTITASK] and the rest are here for completeness
- * of the wire enum: a Project is started elsewhere, and `/multitask` rides in the prompt's text.
+ * `ConversationMessage.agent_mode` and `UserMessage.mode`. The documented API accepts `agent` and `plan` alone (the
+ * SDK's `mode` option), so [ASK] and [DEBUG] can only travel on the account's own follow-up
+ * (`AddAsyncFollowupBackgroundComposer`) and start (`StartBackgroundComposerFromSnapshot`), which is why the composer
+ * offers them in Extended mode only. [MULTITASK] rides in the prompt's text as `/multitask` on the documented request,
+ * and as this mode as well on the account's (see [onAccount]). [PROJECT] is started elsewhere, and [TRIAGE] and
+ * [CUSTOM] are here for completeness of the wire enum: the desktop's Agents Window offers neither.
  */
 enum class AgentMode(val number: Int) {
     AGENT(1),
@@ -48,6 +50,16 @@ enum class AgentMode(val number: Int) {
 
         /** The mode the composer's plan flag stands for: null keeps the chat's mode, true is [PLAN], false [AGENT]. */
         fun ofPlanMode(planMode: Boolean?): AgentMode? = planMode?.let { if (it) PLAN else AGENT }
+
+        /**
+         * The mode a message of [text] asked for [mode] goes out under on the account's follow-up and start: the
+         * desktop sends Multitask as a mode there (3.21.18 `Fke`: `multitask` → `AGENT_MODE_MULTITASK`, set by `j1n`
+         * on `user_message.mode`), so a message the composer led with `/multitask` is [MULTITASK] unless another mode
+         * was asked for. The token stays in the text: it is how the message reads everywhere else it is shown, and
+         * what its copy in the transcript is matched by.
+         */
+        fun onAccount(text: String, mode: AgentMode?): AgentMode? =
+            if ((mode == null || mode == AGENT) && SlashCommands.has(text, SlashCommands.MULTITASK)) MULTITASK else mode
     }
 }
 

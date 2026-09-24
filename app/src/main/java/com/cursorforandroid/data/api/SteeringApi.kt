@@ -178,11 +178,12 @@ class SteeringApi(
         val images = (inlineImages + followup.files.filter { it.isImage }.map(::selectedImageDto)).takeIf { it.isNotEmpty() }
         val documents = followup.files.filterNot { it.isImage }.takeIf { it.isNotEmpty() }?.map(::selectedDocumentDto)
         val context = if (images == null && documents == null) null else SelectedContextDto(selectedImages = images, selectedDocuments = documents)
+        val mode = AgentMode.onAccount(text, followup.mode)?.wireName
         val request = AddFollowupDto(
             bcId = agentId,
             followup = text,
             synchronous = synchronous,
-            followupMessage = ConversationMessageDto(text = text, agentMode = followup.mode?.wireName),
+            followupMessage = ConversationMessageDto(text = text, agentMode = mode),
             requestedModel = followup.modelId?.takeIf { it.isNotBlank() }?.let { id ->
                 RequestedModelDto(id, followup.modelParams.filter { it.id.isNotBlank() }.map { ModelParameterDto(it.id, it.value) }.takeIf { it.isNotEmpty() })
             },
@@ -193,7 +194,7 @@ class SteeringApi(
                     userMessage = UserMessageDto(
                         text = text,
                         messageId = "msg-${UUID.randomUUID()}",
-                        mode = followup.mode?.wireName,
+                        mode = mode,
                         selectedContext = context,
                     ),
                     sendToInteractionListener = true,

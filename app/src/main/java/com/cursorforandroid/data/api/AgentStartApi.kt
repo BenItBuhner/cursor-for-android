@@ -23,7 +23,8 @@ import java.util.UUID
 
 /**
  * A new chat started on the account service rather than the documented `POST /v1/agents`: what the composer asks for,
- * for the one case the documented request cannot carry — files of any type on the first prompt (Extended mode).
+ * for what the documented request cannot carry — files of any type on the first prompt, a machine's repository, and
+ * the Ask and Debug modes (Extended mode).
  * [agentId] is the client-minted `bc-…` the chat is shown under, as the desktop mints one before it asks.
  */
 data class StartRequest(
@@ -40,7 +41,8 @@ data class StartRequest(
     val environmentName: String? = null,
     val modelId: String? = null,
     val modelParams: List<ModelParam> = emptyList(),
-    val planMode: Boolean = false,
+    /** Agent, Plan, Ask or Debug; a prompt led by `/multitask` goes out as Multitask unless another mode is asked for (see [AgentMode.onAccount]). */
+    val mode: AgentMode = AgentMode.AGENT,
     val autoCreatePr: Boolean = false,
     val name: String? = null,
     val mcpServers: List<McpServer> = emptyList(),
@@ -127,7 +129,7 @@ class ConnectAgentStartApi(
             snapshotName = "${ConnectProjectCreationApi.ENVIRONMENT_SNAPSHOT_PREFIX}$publicId"
         }
         val text = request.text.trim()
-        val mode = (if (request.planMode) AgentMode.PLAN else AgentMode.AGENT).wireName
+        val mode = (AgentMode.onAccount(text, request.mode) ?: AgentMode.AGENT).wireName
         val inlineImages = request.images.map { image ->
             SelectedImageDto(data = image.base64, mimeType = image.mimeType.lowercase(), uuid = UUID.randomUUID().toString())
         }
