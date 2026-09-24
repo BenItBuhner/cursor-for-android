@@ -497,6 +497,8 @@ data class SystemNotification(
      * its coordinator, or a cloud subagent. The row opens that agent's conversation.
      */
     val agentId: String? = null,
+    /** The tool call that started the task the notice reports on (`tool_call_id`), when the report named it. */
+    val callId: String? = null,
     /**
      * What the agent said in reply to the notice when that was brief and it said nothing else to the user — a
      * coordinator's "Noted; the release worker is done." — folded under the row rather than shown as a line of its
