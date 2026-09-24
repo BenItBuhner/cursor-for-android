@@ -321,7 +321,8 @@ class KeyboardShortcutsFlowTest {
 
     /**
      * Whether [text] comes up after [action], looked for frame by frame: left to run on, the test clock would carry a
-     * snackbar through its whole showing inside one wait for idle.
+     * snackbar through its whole showing inside one wait for idle. Ctrl+R's answer is the pull's, put away on the
+     * main looper's clock, which the test clock does not move: it is moved here while the word is waited out.
      */
     private fun showsWhileClockHeld(text: String, action: () -> Unit): Boolean {
         compose.mainClock.autoAdvance = false
@@ -336,7 +337,10 @@ class KeyboardShortcutsFlowTest {
             return false
         } finally {
             compose.mainClock.autoAdvance = true
-            compose.waitUntil(20_000) { !onScreen(text) }
+            compose.waitUntil(20_000) {
+                shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(100))
+                !onScreen(text)
+            }
         }
     }
 

@@ -790,17 +790,20 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
     val catchUpStatus: StateFlow<CatchUpStatus> = catchUpState.asStateFlow()
     private var catchUpJob: Job? = null
 
-    /** Whether a pull would be answered now: not while one is, nor before the chat has anything on screen to catch up from. */
-    fun canCatchUp(): Boolean = catchUpState.value.let { it !is CatchUpStatus.Checking && it !is CatchUpStatus.Waiting } && conversation.value.items.isNotEmpty()
+    private fun catchingUp(): Boolean = catchUpState.value.let { it is CatchUpStatus.Checking || it is CatchUpStatus.Waiting }
+
+    /** Whether a pull would be answered now: not while one is, nor before the chat has anything on screen to pull past. */
+    fun canCatchUp(): Boolean = !catchingUp() && conversation.value.items.isNotEmpty()
 
     /**
-     * The reader pulled up past the newest message: only what is new since the last thing this device has (see
-     * `ConversationRepository.catchUp`), and the account's queue read again beside it. A pause the server asked the
+     * The reader pulled up past the newest message, or pressed Ctrl+R: only what is new since the last thing this
+     * device has (see `ConversationRepository.catchUp`, which waits out a load still under way — a chat just opened —
+     * and counts nothing it brought), and the account's queue read again beside it. A pause the server asked the
      * account's calls to take (a `429`, see `ApiThrottle`) is waited out first, and said so. The answer shows for a
      * moment; a failure, in the server's words, for longer.
      */
     fun catchUp() {
-        if (!canCatchUp()) return
+        if (catchingUp()) return
         catchUpJob?.cancel()
         catchUpJob = viewModelScope.launch {
             val pause = graph.accountPauseMillis()
@@ -847,17 +850,7 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
 
     private var refreshWordJob: Job? = null
 
-    /**
-     * Ctrl+R: the chat brought up to what the server has, then a word on it — "Up to date", "2 new" (see [RefreshWord]).
-     * A press while one is still reading is the same press. This is the chat's refresh until the repository has a
-     * catch-up that reads only what follows the chat's newest event; that call, and its own count, then go here.
-     */
-    fun catchUp() {
-        if (refreshWordJob?.isActive == true) return
-        refreshWithWord { graph.conversations.reload(agentId) }
-    }
-
-    /** Ctrl+Shift+R: [reloadTranscript], with [catchUp]'s word once the chat has been read again. */
+    /** Ctrl+Shift+R: [reloadTranscript], then a word on it once the chat has been read again — "Up to date", "2 new" (see [RefreshWord]). */
     fun reloadTranscriptWithWord() {
         refreshWordJob?.cancel()
         refreshWithWord { reloadTranscript() }
