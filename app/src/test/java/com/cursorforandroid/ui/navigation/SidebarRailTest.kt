@@ -38,6 +38,7 @@ class SidebarRailTest {
     val compose = createComposeRule()
 
     private var expanded by mutableStateOf(true)
+    private var animate by mutableStateOf(true)
 
     private val railWidth: Dp = CursorDimens.sidebarWidth + CursorDimens.hairline
 
@@ -46,7 +47,7 @@ class SidebarRailTest {
         compose.setContent {
             CursorTheme(mode = ThemeMode.Dark) {
                 Row(Modifier.fillMaxSize()) {
-                    SidebarRail(expanded = expanded) { Box(Modifier.fillMaxSize().testTag("rail")) }
+                    SidebarRail(expanded = expanded, animate = animate) { Box(Modifier.fillMaxSize().testTag("rail")) }
                     Box(Modifier.weight(1f).fillMaxHeight().testTag("detail"))
                 }
             }
@@ -59,8 +60,9 @@ class SidebarRailTest {
      * to the composition by hand (`waitForIdle` drains the main looper, which is where snapshot changes are announced
      * from) before a frame is pumped.
      */
-    private fun toggle(to: Boolean) {
+    private fun toggle(to: Boolean, slides: Boolean = true) {
         expanded = to
+        animate = slides
         compose.waitForIdle()
         compose.mainClock.advanceTimeByFrame()
     }
@@ -120,8 +122,33 @@ class SidebarRailTest {
         toggle(true)
         compose.mainClock.advanceTimeBy(SidebarRailMillis / 4L)
         assertThat(detailLeft()).isGreaterThan(partWayOut)
-        // An interrupted slide is finished on a spring rather than the tween's fixed clock, so it is given room to settle.
         compose.mainClock.advanceTimeBy(2_000)
         assertAtRest(railWidth)
+    }
+
+    @Test
+    fun `a change that does not slide is in place in the frame it lands, a slide under way dropped where it was`() {
+        show()
+        // Ctrl+B: gone, and back, each within the one frame the toggle runs.
+        toggle(false, slides = false)
+        assertAtRest(Dp(0f))
+        compose.onNodeWithTag("rail").assertDoesNotExist()
+        toggle(true, slides = false)
+        assertAtRest(railWidth)
+        compose.onNodeWithTag("rail").assertExists()
+
+        // A tap starts the slide out; the key, half-way through, puts the rail back at once.
+        toggle(false)
+        assertMidway()
+        toggle(true, slides = false)
+        assertAtRest(railWidth)
+        compose.mainClock.advanceTimeBy(SidebarRailMillis.toLong())
+        assertAtRest(railWidth)
+
+        // And a tap after the key slides again.
+        toggle(false)
+        assertMidway()
+        finishSlide()
+        assertAtRest(Dp(0f))
     }
 }

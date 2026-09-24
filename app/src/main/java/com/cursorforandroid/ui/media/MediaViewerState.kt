@@ -167,6 +167,12 @@ class MediaViewerState internal constructor(restored: Session?) {
         closeRequests++
     }
 
+    /** Puts the viewer away in this frame, with no close transform: Esc's answer. A no-op when nothing is open. */
+    fun closeNow() {
+        if (session == null) return
+        finishClose()
+    }
+
     /** The host is done with the session: nothing is open, every thumbnail draws itself again. */
     internal fun finishClose() {
         session = null

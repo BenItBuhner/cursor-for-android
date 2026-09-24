@@ -1,9 +1,5 @@
 package com.cursorforandroid.ui.shortcuts
 
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.ExitTransition
-import androidx.compose.animation.core.tween
-import androidx.compose.animation.fadeIn
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -206,34 +202,33 @@ fun CommandPalette(
     onDismiss: () -> Unit,
 ) {
     val colors = CursorTheme.colors
-    AnimatedVisibility(visible = state.mode != null, enter = fadeIn(tween(90)), exit = ExitTransition.None) {
-        val mode = state.mode ?: return@AnimatedVisibility
-        BoxWithConstraints(
+    // Opened from the keyboard, so it is up in the frame the key lands and gone in the frame it is put away: no fade.
+    val mode = state.mode ?: return
+    BoxWithConstraints(
+        Modifier
+            .fillMaxSize()
+            .background(Color.Black.copy(alpha = if (colors.isDark) 0.5f else 0.28f))
+            .pointerInput(onDismiss) { detectTapGestures(onTap = { onDismiss() }) }
+            .windowInsetsPadding(WindowInsets.safeDrawing)
+            .testTag(PaletteTags.SCRIM),
+        contentAlignment = Alignment.TopCenter,
+    ) {
+        val width = if (mode == PaletteMode.Switcher) 460.dp else 640.dp
+        Column(
             Modifier
-                .fillMaxSize()
-                .background(Color.Black.copy(alpha = if (colors.isDark) 0.5f else 0.28f))
-                .pointerInput(onDismiss) { detectTapGestures(onTap = { onDismiss() }) }
-                .windowInsetsPadding(WindowInsets.safeDrawing)
-                .testTag(PaletteTags.SCRIM),
-            contentAlignment = Alignment.TopCenter,
+                .padding(top = maxHeight * 0.1f, start = 20.dp, end = 20.dp)
+                .widthIn(max = width)
+                .fillMaxWidth()
+                .heightIn(max = maxHeight * 0.78f)
+                .cursorSurface(colors.elevated, colors.stroke, CursorTheme.shapes.xl)
+                // Taps on the card are the card's, not the scrim's.
+                .pointerInput(Unit) { detectTapGestures { } }
+                .testTag(PaletteTags.CARD),
         ) {
-            val width = if (mode == PaletteMode.Switcher) 460.dp else 640.dp
-            Column(
-                Modifier
-                    .padding(top = maxHeight * 0.1f, start = 20.dp, end = 20.dp)
-                    .widthIn(max = width)
-                    .fillMaxWidth()
-                    .heightIn(max = maxHeight * 0.78f)
-                    .cursorSurface(colors.elevated, colors.stroke, CursorTheme.shapes.xl)
-                    // Taps on the card are the card's, not the scrim's.
-                    .pointerInput(Unit) { detectTapGestures { } }
-                    .testTag(PaletteTags.CARD),
-            ) {
-                when (mode) {
-                    PaletteMode.Search -> SearchPane(state, entries, switcher, transcripts, readingTranscripts, glyph, onOpen)
-                    PaletteMode.Switcher -> SwitcherPane(state, switcher, glyph, onOpen)
-                    PaletteMode.Shortcuts -> ShortcutsPane(onDismiss)
-                }
+            when (mode) {
+                PaletteMode.Search -> SearchPane(state, entries, switcher, transcripts, readingTranscripts, glyph, onOpen)
+                PaletteMode.Switcher -> SwitcherPane(state, switcher, glyph, onOpen)
+                PaletteMode.Shortcuts -> ShortcutsPane(onDismiss)
             }
         }
     }
