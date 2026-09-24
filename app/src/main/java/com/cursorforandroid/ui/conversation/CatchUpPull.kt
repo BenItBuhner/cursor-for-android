@@ -1,5 +1,8 @@
 package com.cursorforandroid.ui.conversation
 
+import android.annotation.SuppressLint
+import android.os.Build
+import android.view.HapticFeedbackConstants
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.spring
@@ -38,6 +41,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.Role
@@ -58,6 +62,7 @@ import kotlin.math.exp
 import kotlin.math.roundToInt
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.drop
 
 /** Where the reader's pull to catch up stands, from the pull to its answer (see [ConversationViewModel.catchUp]). */
 sealed interface CatchUpStatus {
@@ -186,6 +191,8 @@ internal class CatchUpOverscroll(
  *
  * "Pull to catch up", then "Release to catch up" once armed; let go, "Catching up…", the server's pause being waited
  * out, "Up to date", "N new", or the failure in the server's own words, which a tap puts away, as it does the answer.
+ * The finger feels it too ([haptics]): a tick across the threshold either way, a confirm as an armed pull is let go,
+ * and a light one for the answer.
  */
 @Composable
 internal fun CatchUpIndicator(
@@ -194,7 +201,9 @@ internal fun CatchUpIndicator(
     reveal: State<Float>,
     onDismiss: () -> Unit,
     modifier: Modifier = Modifier,
+    haptics: (CatchUpHaptic) -> Unit = rememberCatchUpHaptics(),
 ) {
+    CatchUpHapticCues(pull, status, haptics)
     val pulling by remember(pull) { derivedStateOf { pull.holding && pull.distance > 0f } }
     val armed by remember(pull) { derivedStateOf { pull.armed } }
     val out by remember(reveal) { derivedStateOf { reveal.value > 0.5f } }
@@ -282,6 +291,67 @@ internal fun CatchUpStatus.Done.label(): String = when {
 }
 
 private fun secondsLeft(untilMillis: Long): Int = ((untilMillis - AppClock.now()) / 1_000.0).roundToInt().coerceAtLeast(0)
+
+/** What the pull says through the finger. */
+internal enum class CatchUpHaptic {
+    /** The pull crossed the threshold under the finger: let go now and it catches up. */
+    Armed,
+    /** Back under it before the release. */
+    Disarmed,
+    /** An armed pull let go: the catch-up is asked for. */
+    Released,
+    /** The answer came: new messages or none. */
+    Answered,
+    /** The answer is a failure. */
+    Failed,
+}
+
+/** The platform's constant for this cue on [sdk]: the gesture-threshold pair from 34 and a clock tick before it, CONFIRM and REJECT from 30. */
+@SuppressLint("InlinedApi")
+internal fun CatchUpHaptic.feedback(sdk: Int = Build.VERSION.SDK_INT): Int = when (this) {
+    CatchUpHaptic.Armed -> if (sdk >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) HapticFeedbackConstants.GESTURE_THRESHOLD_ACTIVATE else HapticFeedbackConstants.CLOCK_TICK
+    CatchUpHaptic.Disarmed -> if (sdk >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) HapticFeedbackConstants.GESTURE_THRESHOLD_DEACTIVATE else HapticFeedbackConstants.CLOCK_TICK
+    CatchUpHaptic.Released -> if (sdk >= Build.VERSION_CODES.R) HapticFeedbackConstants.CONFIRM else HapticFeedbackConstants.VIRTUAL_KEY
+    CatchUpHaptic.Answered -> HapticFeedbackConstants.CLOCK_TICK
+    CatchUpHaptic.Failed -> if (sdk >= Build.VERSION_CODES.R) HapticFeedbackConstants.REJECT else HapticFeedbackConstants.CLOCK_TICK
+}
+
+/**
+ * The cues played through the view, with no flags: whether they are felt is the system's touch-feedback setting's
+ * call (and the view's), never overridden here.
+ */
+@Composable
+internal fun rememberCatchUpHaptics(): (CatchUpHaptic) -> Unit {
+    val view = LocalView.current
+    return remember(view) { { haptic -> view.performHapticFeedback(haptic.feedback()) } }
+}
+
+/**
+ * When [haptics] plays: the threshold crossed while the finger holds (a release is not an un-arming), each armed
+ * release, and each answer arriving — not one already showing when the screen came back.
+ */
+@Composable
+private fun CatchUpHapticCues(pull: CatchUpPull, status: CatchUpStatus, haptics: (CatchUpHaptic) -> Unit) {
+    val play = rememberUpdatedState(haptics)
+    val answer = rememberUpdatedState(status)
+    LaunchedEffect(pull) {
+        snapshotFlow { pull.armed }.drop(1).collect { armed ->
+            if (pull.holding) play.value(if (armed) CatchUpHaptic.Armed else CatchUpHaptic.Disarmed)
+        }
+    }
+    LaunchedEffect(pull) {
+        snapshotFlow { pull.pulls }.drop(1).collect { play.value(CatchUpHaptic.Released) }
+    }
+    LaunchedEffect(Unit) {
+        snapshotFlow { answer.value }.drop(1).collect { shown ->
+            when (shown) {
+                is CatchUpStatus.Done -> play.value(CatchUpHaptic.Answered)
+                is CatchUpStatus.Failed -> play.value(CatchUpHaptic.Failed)
+                else -> Unit
+            }
+        }
+    }
+}
 
 /** How far the finger travels past the newest message before the pull arms. */
 internal val CatchUpPullThreshold = 88.dp
