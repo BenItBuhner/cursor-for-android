@@ -119,6 +119,8 @@ class PreferencesStore(
         val unreadOnlyTouchedHere = booleanPreferencesKey("unread_only_touched_here")
         val snoozedUntil = stringPreferencesKey("snoozed_until")
         val snoozedAt = stringPreferencesKey("snoozed_at")
+        /** The Projects as arranged on the New Chat page, first to last (a JSON list; see [setProjectOrder]). */
+        val projectOrder = stringPreferencesKey("project_order")
         val demoMode = booleanPreferencesKey("demo_mode")
         val cachedUser = stringPreferencesKey("cached_user")
         val signInMethod = stringPreferencesKey("sign_in_method")
@@ -184,6 +186,7 @@ class PreferencesStore(
         Keys.readMarkers,
         Keys.launchedHere,
         Keys.touchedHere,
+        Keys.projectOrder,
         Keys.modeChoicePending,
         Keys.dismissedNotices,
     )
@@ -402,7 +405,8 @@ class PreferencesStore(
     suspend fun setShortenSidebarLists(enabled: Boolean) = edit { it[Keys.shortenSidebarLists] = enabled }
 
     /**
-     * Settings › New chat page: the recent chats under the New Chat composer, or the Projects (see [NewChatHome]).
+     * Settings › New chat page: the recent chats under the New Chat composer, the Projects, or the composer alone (see
+     * [NewChatHome]).
      * Recent until changed; a device preference, kept across sign-outs like the sidebar's folds.
      */
     val newChatHome: Flow<NewChatHome> = data.map { NewChatHome.parse(it[Keys.newChatHome]) }.distinctUntilChanged()
@@ -492,7 +496,21 @@ class PreferencesStore(
             touchedHereIds = p.touchedHere().toSet(),
             // The demo's backend runs on this phone: every chat in it is this phone's own.
             unreadOnlyTouchedHere = (p[Keys.unreadOnlyTouchedHere] ?: true) && p[Keys.demoMode] != true,
+            projectOrder = p[Keys.projectOrder]?.let(::decodeIdList) ?: emptyList(),
         )
+    }
+
+    /**
+     * Arranges the Projects [ids] first to last, as dropped on the New Chat page. Projects the stored order names and
+     * [ids] does not — archived, filtered out, not loaded — follow them as they were; the account's, like the pins, and
+     * bounded at [MAX_PROJECT_ORDER], the ids furthest down going first.
+     */
+    suspend fun setProjectOrder(ids: List<String>) = edit { p ->
+        val arranged = ids.distinct()
+        val shown = arranged.toHashSet()
+        val stored = p[Keys.projectOrder]?.let(::decodeIdList) ?: emptyList()
+        val next = (arranged + stored.filterNot { it in shown }).take(MAX_PROJECT_ORDER)
+        if (next.isEmpty()) p.remove(Keys.projectOrder) else p[Keys.projectOrder] = encodeIdList(next)
     }
 
     /**
@@ -801,6 +819,8 @@ class PreferencesStore(
         const val MAX_DISMISSED_NOTICE_CHATS = 200
         /** Weeks of chats opened on a phone; far fewer than an account starts elsewhere, which are never in it. */
         const val MAX_TOUCHED_HERE = 1_000
+        /** Far more Projects than an account keeps; past it, Projects long deleted are the ones forgotten. */
+        const val MAX_PROJECT_ORDER = 500
         const val TAG = "PreferencesStore"
 
         fun storedDevice(typeName: String?, name: String?): DeviceTarget {
