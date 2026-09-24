@@ -58,9 +58,7 @@ import com.cursorforandroid.domain.NewChatHome
 import com.cursorforandroid.domain.Repository
 import com.cursorforandroid.ui.agents.AgentListUiState
 import com.cursorforandroid.ui.agents.AgentRowActions
-import com.cursorforandroid.ui.agents.ChatOverflowMenu
-import com.cursorforandroid.ui.agents.RenameChatDialog
-import com.cursorforandroid.ui.agents.SnoozeChatDialog
+import com.cursorforandroid.ui.agents.ChatRowMenu
 import com.cursorforandroid.ui.components.ComposerBox
 import com.cursorforandroid.ui.components.CursorCard
 import com.cursorforandroid.ui.components.CursorHeader
@@ -288,8 +286,6 @@ fun RecentChatRow(
     val agent = row.agent
     val shape = CursorTheme.shapes.xl
     var menuOpen by remember { mutableStateOf(false) }
-    var renameOpen by remember { mutableStateOf(false) }
-    var snoozeOpen by remember { mutableStateOf(false) }
     val interaction = remember { MutableInteractionSource() }
     Box(modifier) {
     Row(
@@ -343,29 +339,7 @@ fun RecentChatRow(
             }
         }
     }
-        if (actions != null) {
-            ChatOverflowMenu(
-                row = row,
-                expanded = menuOpen,
-                onDismiss = { menuOpen = false },
-                onRename = { menuOpen = false; renameOpen = true },
-                onSnooze = { menuOpen = false; snoozeOpen = true },
-                actions = actions,
-            )
-            if (renameOpen) {
-                RenameChatDialog(
-                    initialName = agent.name,
-                    onConfirm = { name -> renameOpen = false; actions.onRename?.invoke(row, name) },
-                    onDismiss = { renameOpen = false },
-                )
-            }
-            if (snoozeOpen) {
-                SnoozeChatDialog(
-                    onPick = { until -> snoozeOpen = false; actions.onSnooze(row, until) },
-                    onDismiss = { snoozeOpen = false },
-                )
-            }
-        }
+        if (actions != null) ChatRowMenu(row = row, expanded = menuOpen, onDismiss = { menuOpen = false }, actions = actions)
     }
 }
 
