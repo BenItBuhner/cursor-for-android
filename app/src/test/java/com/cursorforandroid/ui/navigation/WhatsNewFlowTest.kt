@@ -95,7 +95,7 @@ class WhatsNewFlowTest {
     private fun readVersion(): String? = runBlocking { prefs.whatsNewReadVersion.first() }
 
     private fun openSettings() {
-        compose.onNodeWithContentDescription("Account").performClick()
+        compose.onNodeWithTag(SidebarTags.ACCOUNT).performClick()
         compose.waitUntil(10_000) { onScreen(SettingsCopy.GROUP_UPDATES) }
     }
 
