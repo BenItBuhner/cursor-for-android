@@ -1,5 +1,8 @@
 package com.cursorforandroid.ui.conversation
 
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -44,8 +47,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.scale
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.AnnotatedString
@@ -110,6 +116,7 @@ import com.cursorforandroid.ui.panel.rememberPanelActions
 import com.cursorforandroid.ui.panel.rememberSidePanelState
 import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 
 /**
@@ -254,6 +261,18 @@ fun ConversationScreen(
     val listState = rememberLazyListState(prefetchStrategy = remember { TranscriptPrefetchStrategy() })
     val transcriptScroll = rememberTranscriptScroll(listState, agentId)
     val scope = rememberCoroutineScope()
+    // The pull past the newest message that catches the chat up (see CatchUpOverscroll): the list lifted with the
+    // finger over the indicator beneath it, then over the answer while it shows; read where it is drawn, so the pull
+    // recomposes nothing but the indicator.
+    val density = LocalDensity.current
+    val catchUpPull = remember(agentId, density) { with(density) { CatchUpPull(CatchUpPullThreshold.toPx(), CatchUpPullReveal.toPx()) } }
+    val catchUpStatus by viewModel.catchUpStatus.collectAsStateWithLifecycle()
+    val catchUpLift = remember(catchUpPull) { Animatable(0f) }
+    LaunchedEffect(catchUpPull) {
+        snapshotFlow { catchUpPull.holding to catchUpPull.liftPx(catchUpStatus) }.collectLatest { (holding, px) ->
+            if (holding) catchUpLift.snapTo(px) else catchUpLift.animateTo(px, spring(stiffness = Spring.StiffnessMediumLow))
+        }
+    }
     var menuOpen by rememberSaveable { mutableStateOf(false) }
     var modelSheet by rememberSaveable { mutableStateOf(false) }
     var renameOpen by rememberSaveable { mutableStateOf(false) }
@@ -454,7 +473,8 @@ fun ConversationScreen(
             },
         )
 
-        Box(Modifier.weight(1f).fillMaxWidth()) {
+        // Clipped: the list lifted by a pull to catch up goes under the header, not over it.
+        Box(Modifier.weight(1f).fillMaxWidth().clipToBounds()) {
             val paneWidth = Modifier.widthIn(max = CursorDimens.composerMaxWidth).fillMaxWidth()
             // The items above and below the rows, by their keys in [order].
             val edgeItem: @Composable (String) -> Unit = { key ->
@@ -523,8 +543,9 @@ fun ConversationScreen(
                     modifier = Modifier
                         .fillMaxWidth()
                         .align(Alignment.TopCenter)
+                        .graphicsLayer { translationY = -catchUpLift.value }
                         .scrollEdgeFade(listState, reverseLayout = listReversed, surface = colors.canvas)
-                        .readerScrolling(transcriptScroll),
+                        .readerScrolling(transcriptScroll, pull = catchUpPull, canCatchUp = viewModel::canCatchUp, onCatchUp = viewModel::catchUp),
                     contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 6.dp, bottom = 12.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp),
                     horizontalAlignment = Alignment.CenterHorizontally,
@@ -542,6 +563,7 @@ fun ConversationScreen(
                 }
                 SideEffect { transcriptScroll.orient(following, order) }
             }
+            CatchUpIndicator(catchUpPull, catchUpStatus, onDismiss = viewModel::dismissCatchUp, modifier = Modifier.align(Alignment.BottomCenter))
 
             androidx.compose.animation.AnimatedVisibility(
                 visible = !following && items.size > 2,

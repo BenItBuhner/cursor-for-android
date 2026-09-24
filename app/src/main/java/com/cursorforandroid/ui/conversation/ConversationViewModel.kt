@@ -8,6 +8,7 @@ import com.cursorforandroid.AppGraph
 import com.cursorforandroid.data.api.userMessage
 import com.cursorforandroid.data.repo.AgentRepository
 import com.cursorforandroid.data.repo.AttachmentUploads
+import com.cursorforandroid.data.repo.CatchUp
 import com.cursorforandroid.data.repo.ConversationState
 import com.cursorforandroid.data.repo.SlashCommandRepository
 import com.cursorforandroid.data.repo.SlashScope
@@ -54,8 +55,10 @@ import com.cursorforandroid.ui.components.PendingFile
 import com.cursorforandroid.ui.components.thumbnailOf
 import com.cursorforandroid.ui.components.withinSlots
 import com.cursorforandroid.util.AppClock
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -776,6 +779,57 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
 
     fun refreshQueue() = viewModelScope.launch { graph.steering.refreshQueue(agentId) }
 
+    private val catchUpState = MutableStateFlow<CatchUpStatus>(CatchUpStatus.Idle)
+    /** Where the reader's pull to catch up stands (see [catchUp]). */
+    val catchUpStatus: StateFlow<CatchUpStatus> = catchUpState.asStateFlow()
+    private var catchUpJob: Job? = null
+
+    /** Whether a pull would be answered now: not while one is, nor before the chat has anything on screen to catch up from. */
+    fun canCatchUp(): Boolean = catchUpState.value.let { it !is CatchUpStatus.Checking && it !is CatchUpStatus.Waiting } && conversation.value.items.isNotEmpty()
+
+    /**
+     * The reader pulled up past the newest message: only what is new since the last thing this device has (see
+     * `ConversationRepository.catchUp`), and the account's queue read again beside it. A pause the server asked the
+     * account's calls to take (a `429`, see `ApiThrottle`) is waited out first, and said so. The answer shows for a
+     * moment; a failure, in the server's words, for longer.
+     */
+    fun catchUp() {
+        if (!canCatchUp()) return
+        catchUpJob?.cancel()
+        catchUpJob = viewModelScope.launch {
+            val pause = graph.accountPauseMillis()
+            if (pause > 0) {
+                catchUpState.value = CatchUpStatus.Waiting(AppClock.now() + pause)
+                delay(pause)
+            }
+            catchUpState.value = CatchUpStatus.Checking
+            val started = System.nanoTime()
+            val queue = launch { runCatching { graph.steering.refreshQueue(agentId) } }
+            val found = try {
+                graph.conversations.catchUp(agentId)
+            } catch (t: Throwable) {
+                if (t is CancellationException) throw t
+                CatchUp(error = t.userMessage())
+            }
+            queue.join()
+            // Long enough to be read as the answer rather than a flicker.
+            val shownFor = (System.nanoTime() - started) / 1_000_000
+            if (shownFor < CHECKING_MIN_MS) delay(CHECKING_MIN_MS - shownFor)
+            val error = found.error
+            catchUpState.value = if (error != null) CatchUpStatus.Failed(error) else CatchUpStatus.Done(found.newMessages, found.changed)
+            delay(if (error != null) FAILURE_SHOWN_MS else ANSWER_SHOWN_MS)
+            catchUpState.value = CatchUpStatus.Idle
+        }
+    }
+
+    /** The reader tapped the answer away. */
+    fun dismissCatchUp() {
+        val shown = catchUpState.value
+        if (shown !is CatchUpStatus.Done && shown !is CatchUpStatus.Failed) return
+        catchUpJob?.cancel()
+        catchUpState.value = CatchUpStatus.Idle
+    }
+
     fun cancelRun() = viewModelScope.launch {
         graph.conversations.cancelActiveRun(agentId).onFailure { toast.value = it.userMessage() }
     }
@@ -838,6 +892,12 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
         const val PENDING_RETRIES = 8
         /** How many of the newest rows have their markdown parsed with the rows, ahead of the screen: a phone's worth and the next page. */
         const val PRIMED_ROWS = 24
+        /** The least a pull shows "Catching up…" for. */
+        const val CHECKING_MIN_MS = 450L
+        /** How long a pull's answer shows ("Up to date", "N new"). */
+        const val ANSWER_SHOWN_MS = 1_800L
+        /** How long a pull's failure shows, unless tapped away. */
+        const val FAILURE_SHOWN_MS = 6_000L
     }
 
     class Factory(private val graph: AppGraph, private val agentId: String) : ViewModelProvider.Factory {

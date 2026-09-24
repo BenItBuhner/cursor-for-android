@@ -20,12 +20,15 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.CustomAccessibilityAction
 import androidx.compose.ui.semantics.ScrollAxisRange
+import androidx.compose.ui.semantics.customActions
 import androidx.compose.ui.semantics.indexForKey
 import androidx.compose.ui.semantics.scrollToIndex
 import androidx.compose.ui.semantics.semantics
@@ -292,11 +295,22 @@ internal class ScreenScroll(private val list: LazyListState) : ScrollableState {
  * What accessibility services are told is the screen's too: one top-to-bottom axis, its items indexed top-down. The
  * list's own words would flip with its order, and a service scrolling "forward" would turn round at every switch —
  * back to the bottom, which follows again and flips it back.
+ *
+ * With [pull], the reader's drag past the bottom edge is also a pull to catch up (see [CatchUpOverscroll]), let go
+ * armed into [onCatchUp] — which accessibility services are offered as an action of their own.
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-internal fun Modifier.readerScrolling(scroll: TranscriptScroll): Modifier {
-    val overscroll = ScrollableDefaults.overscrollEffect()
+internal fun Modifier.readerScrolling(
+    scroll: TranscriptScroll,
+    pull: CatchUpPull? = null,
+    canCatchUp: () -> Boolean = { false },
+    onCatchUp: () -> Unit = {},
+): Modifier {
+    val platform = ScrollableDefaults.overscrollEffect()
+    val catchUp by rememberUpdatedState(onCatchUp)
+    val allowed by rememberUpdatedState(canCatchUp)
+    val overscroll = remember(platform, pull) { pull?.let { CatchUpOverscroll(platform, it, enabled = { allowed() }, onPulled = { catchUp() }) } ?: platform }
     val scope = rememberCoroutineScope()
     val screen = remember(scroll) { ScreenScroll(scroll.list) }
     val axis = remember(screen) {
@@ -314,6 +328,9 @@ internal fun Modifier.readerScrolling(scroll: TranscriptScroll): Modifier {
                 require(index in 0 until count) { "Can't scroll to index $index, it is out of bounds [0, $count)" }
                 scope.launch { scroll.scrollToTopDown(index) }
                 true
+            }
+            if (pull != null) {
+                customActions = listOf(CustomAccessibilityAction("Catch up") { if (allowed()) catchUp(); true })
             }
         }
         .overscroll(overscroll)
