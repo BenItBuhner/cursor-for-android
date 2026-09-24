@@ -9,7 +9,6 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.widthIn
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -106,10 +105,10 @@ internal fun RowGlyph(icon: ImageVector, tint: Color = CursorTheme.colors.iconQu
     Icon(icon, null, tint = tint, modifier = Modifier.size(16.dp))
 }
 
-/** A card of [SettingsRow]s: the elevated surface, never wider than a reading column. */
+/** A card of [SettingsRow]s: the elevated surface, as wide as the column it sits in (`Modifier.contentColumn` on the list's). */
 @Composable
 internal fun SettingsCard(modifier: Modifier = Modifier, content: @Composable ColumnScope.() -> Unit) {
-    CursorCard(modifier.fillMaxWidth().widthIn(max = 640.dp), content = content)
+    CursorCard(modifier.fillMaxWidth(), content = content)
 }
 
 /** A group label over a card: 12sp at 60 %, sentence case, a category rather than the name of a row beneath it. */

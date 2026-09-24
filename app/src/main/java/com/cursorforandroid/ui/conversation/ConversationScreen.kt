@@ -377,7 +377,11 @@ fun ConversationScreen(
     // has listed after them; the list is read at the tap, off the items as they are then.
     val latestItems = rememberUpdatedState(conversation.items)
     val latestArtifacts = rememberUpdatedState(panel.artifacts.valueOrNull.orEmpty())
-    val markdownMedia = remember(agentId, canReadStores) {
+    // A link to an agent — a coordinator cites its workers by id — opens that agent's chat the way a worker card does,
+    // read by its id first when the list does not hold it (see [AgentLinkOpener]); a store sheet it was tapped in goes
+    // away with the chat it stood over.
+    val agentLinks = rememberAgentLinkOpener(graph, onOpenChat = onOpenAgent?.let { open -> { id: String -> openStorePath = null; open(id) } })
+    val markdownMedia = remember(agentId, canReadStores, agentLinks) {
         MarkdownMediaContext(
             agentId, graph.media,
             canReadStores = canReadStores,
@@ -386,6 +390,7 @@ fun ConversationScreen(
                 if (canReadStores && target != null) openStorePath = path.text else runCatching { uriHandler.openUri(StorePath.webUrl(target?.ownerId ?: agentId)) }
             },
             entries = { ConversationMedia.of(latestItems.value, latestArtifacts.value) },
+            onOpenAgentLink = agentLinks::open,
         )
     }
     // The agent's VM desktop is reached from the header menu (Extended mode, `GetMachine` then noVNC), for the chats
@@ -812,6 +817,7 @@ fun ConversationScreen(
         )
     }
     RunStopDialog(stopConfirmation)
+    AgentLinkDialog(agentLinks)
 }
 
 /**
