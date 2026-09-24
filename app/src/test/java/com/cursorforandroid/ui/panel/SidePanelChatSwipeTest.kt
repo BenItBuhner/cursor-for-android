@@ -474,7 +474,10 @@ class SidePanelChatSwipeTest {
         onNewWorker = {}, onAdopt = {}, onEditAppearance = {}, onLoadContext = {}, onContextUp = {}, onOpenContextFile = {}, onRefresh = {},
     )
 
-    /** The panel itself, as a coordinator's chat has it: the Overview, then the Project with [workers] primaries, then the rest. */
+    /**
+     * The panel itself, as a coordinator's chat has it left on its Details tab (the view model keeps the tab while the
+     * panel is shut): the Overview, then the Project with [workers] primaries, then the rest.
+     */
     @Composable
     private fun CoordinatorPanel(workers: Int, generation: Int) {
         val project = DefaultPanelSections.project
@@ -489,7 +492,7 @@ class SidePanelChatSwipeTest {
                 items = { _, _ -> { projectSection(projectPanel(workers, generation), LocalAgentState(), busy = false, actions = projectActions, nowMillis = Now) } },
             ),
         )
-        ConversationPanel(PanelFixtures.projectRoot(), PanelActions.None, onClose = {}, registry = registry)
+        ConversationPanel(PanelFixtures.projectRoot().copy(tabs = PanelTabsState(selectedKey = PanelTab.Details.key)), PanelActions.None, onClose = {}, registry = registry)
     }
 
     private fun composedPrimaries(): Int = compose.onAllNodesWithTag("project-primary").fetchSemanticsNodes().size

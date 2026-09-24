@@ -283,6 +283,14 @@ object PanelFixtures {
     /** The chat as a Project's coordinator, by the account's record. */
     fun projectRoot(): PanelState = loaded().copy(agent = agent.copy(isProject = true, projectAppearance = ProjectAppearance("rocket", "purple")))
 
+    /** [state] with [view] open in its own tab and showing, as the view model opens a file; null closes every file tab. */
+    fun withFile(state: PanelState, view: FileView?): PanelState {
+        val others = state.tabs.open.filterNot { it is PanelTab.File }
+        if (view == null) return state.copy(tabs = PanelTabsState(others), files = emptyMap())
+        val tab = PanelTab.File(view.path)
+        return state.copy(tabs = PanelTabsState(others + tab, tab.key), files = mapOf(tab.key to view))
+    }
+
     /** The question a run is paused on, as the stream carries it: an `ask_question` call still running. */
     val question = ToolPayload.Question(
         title = "Before I change the schema",
