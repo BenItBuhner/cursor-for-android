@@ -320,6 +320,13 @@ class AppGraph(
      */
     private val lazyAccountClient = lazy { CursorApiFactory.loginClient().also { it.dispatcher.maxRequestsPerHost = ApiThrottle.ON_THE_WIRE + 2 } }
     private val lazyAccountRpc = lazy { ConnectJsonClient(lazyAccountClient.value, CursorLoginEndpoints.API_URL) }
+
+    /** How long the account's calls are still held off by a pause the server asked for (a `429`, see `ApiThrottle`); 0 when none, or before any call. */
+    fun accountPauseMillis(): Long {
+        if (!lazyAccountRpc.isInitialized()) return 0L
+        val until = lazyAccountRpc.value.throttle.pausedUntil() ?: return 0L
+        return (until - System.currentTimeMillis()).coerceAtLeast(0L)
+    }
     /** The account session the account-level RPCs take, derived from the stored key when needed and kept in memory only; none while Extended mode is off. */
     private val lazySessionTokens = lazy { SessionTokenProvider(lazyAccountClient.value, { keyStore.apiKey() }, sessionAllowed = { extendedMode.isEnabled() }) }
     /** The account's agent list, pins, archive, rename, pull request statuses and sources: what the desktop Agents window and the iOS app show. */

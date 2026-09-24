@@ -2,6 +2,7 @@ package com.cursorforandroid.ui.conversation
 
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.MutatePriority
+import androidx.compose.foundation.OverscrollEffect
 import androidx.compose.foundation.gestures.Orientation
 import androidx.compose.foundation.gestures.ScrollScope
 import androidx.compose.foundation.gestures.ScrollableDefaults
@@ -20,12 +21,16 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.CustomAccessibilityAction
 import androidx.compose.ui.semantics.ScrollAxisRange
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.customActions
 import androidx.compose.ui.semantics.indexForKey
 import androidx.compose.ui.semantics.scrollToIndex
 import androidx.compose.ui.semantics.semantics
@@ -286,19 +291,74 @@ internal class ScreenScroll(private val list: LazyListState) : ScrollableState {
 }
 
 /**
+ * [screen] for a transcript with a pull to catch up. The platform's scrollable hands a drag to the overscroll only
+ * while its state can scroll some way, and a transcript short enough to fit the screen scrolls neither: the pull on
+ * a one-turn chat would never arm. Such a list is said to scroll toward its newest row, so the drag it cannot take
+ * is the overscroll's, and the pull's.
+ */
+private class PullableScroll(private val screen: ScreenScroll) : ScrollableState by screen {
+    override val canScrollForward: Boolean get() = screen.canScrollForward || !screen.canScrollBackward
+}
+
+/**
  * The reader's scroll of the transcript's list, which is composed with `userScrollEnabled = false`: drags, flings,
- * wheels, keys and the accessibility actions, with the platform's overscroll, through [ScreenScroll].
+ * wheels, keys and the accessibility actions, with the platform's overscroll, through [ScreenScroll] — given to the
+ * list ([readerScrolling]), and to the space a short list leaves below it ([readerBackdrop]).
  *
- * What accessibility services are told is the screen's too: one top-to-bottom axis, its items indexed top-down. The
- * list's own words would flip with its order, and a service scrolling "forward" would turn round at every switch —
- * back to the bottom, which follows again and flips it back.
+ * With [pull], the reader's drag past the bottom edge is also a pull to catch up (see [CatchUpOverscroll]), let go
+ * armed into [onCatchUp] — which accessibility services are offered as an action of their own.
+ */
+@OptIn(ExperimentalFoundationApi::class)
+@Stable
+internal class ReaderScroll(
+    val scroll: TranscriptScroll,
+    val pull: CatchUpPull?,
+    platform: OverscrollEffect,
+    val canCatchUp: () -> Boolean,
+    val onCatchUp: () -> Unit,
+) {
+    val screen = ScreenScroll(scroll.list)
+    val dragged: ScrollableState = if (pull != null) PullableScroll(screen) else screen
+    val overscroll: OverscrollEffect = pull?.let { CatchUpOverscroll(platform, it, enabled = canCatchUp, onPulled = onCatchUp) } ?: platform
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+internal fun rememberReaderScroll(
+    scroll: TranscriptScroll,
+    pull: CatchUpPull? = null,
+    canCatchUp: () -> Boolean = { false },
+    onCatchUp: () -> Unit = {},
+): ReaderScroll {
+    val platform = ScrollableDefaults.overscrollEffect()
+    val catchUp by rememberUpdatedState(onCatchUp)
+    val allowed by rememberUpdatedState(canCatchUp)
+    return remember(scroll, pull, platform) { ReaderScroll(scroll, pull, platform, canCatchUp = { allowed() }, onCatchUp = { catchUp() }) }
+}
+
+/**
+ * [reader]'s drag for what lies behind the transcript's list and fills the area it sits in. A chat too short to fill
+ * the area is sized to its rows, and is dragged — and pulled to catch up — from the space below its newest message
+ * all the same. The list is over it everywhere else and takes the finger there itself; accessibility services are
+ * told of the list alone.
+ */
+@OptIn(ExperimentalFoundationApi::class)
+internal fun Modifier.readerBackdrop(reader: ReaderScroll): Modifier = this
+    .clearAndSetSemantics {}
+    .scrollable(reader.dragged, Orientation.Vertical, overscrollEffect = reader.overscroll, reverseDirection = true)
+
+/**
+ * [reader] for the list itself, its stretch drawn on the rows. What accessibility services are told is the screen's
+ * too: one top-to-bottom axis, its items indexed top-down. The list's own words would flip with its order, and a
+ * service scrolling "forward" would turn round at every switch — back to the bottom, which follows again and flips
+ * it back.
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-internal fun Modifier.readerScrolling(scroll: TranscriptScroll): Modifier {
-    val overscroll = ScrollableDefaults.overscrollEffect()
+internal fun Modifier.readerScrolling(reader: ReaderScroll): Modifier {
+    val scroll = reader.scroll
+    val screen = reader.screen
     val scope = rememberCoroutineScope()
-    val screen = remember(scroll) { ScreenScroll(scroll.list) }
     val axis = remember(screen) {
         ScrollAxisRange(
             value = { scroll.screenOffset(screen) },
@@ -315,9 +375,12 @@ internal fun Modifier.readerScrolling(scroll: TranscriptScroll): Modifier {
                 scope.launch { scroll.scrollToTopDown(index) }
                 true
             }
+            if (reader.pull != null) {
+                customActions = listOf(CustomAccessibilityAction("Catch up") { if (reader.canCatchUp()) reader.onCatchUp(); true })
+            }
         }
-        .overscroll(overscroll)
-        .scrollable(screen, Orientation.Vertical, overscrollEffect = overscroll, reverseDirection = true)
+        .overscroll(reader.overscroll)
+        .scrollable(reader.dragged, Orientation.Vertical, overscrollEffect = reader.overscroll, reverseDirection = true)
 }
 
 /** The transcript's scroll for [list], remembered per chat ([key]) with whether it was following, so a restored position is read in its own order. */

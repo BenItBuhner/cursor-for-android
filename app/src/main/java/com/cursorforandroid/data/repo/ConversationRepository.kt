@@ -2231,12 +2231,15 @@ class ConversationRepository(
     }
 
     /**
-     * The reader asked for what the server has that this chat does not (Ctrl+R), read as the chat's own load reads it
-     * again — not a reload. Beta: the account's state and the newest turns, a turn held under the same blob not read
-     * again (see [loadFromRecord]); Stable: the run list's first page, and the documented transcript only when that
-     * page names a run this device has not seen or a status that moved (see [runsUnchanged]). The live follow stands,
-     * and a run under way the read finds is followed. A load already under way is waited for — what it brings is not
-     * the catch-up's to count — and a second catch-up asked for while one is being answered shares its answer.
+     * The reader asked for what the server has that this chat does not (a pull up past the newest message, Ctrl+R):
+     * what is new since the last thing this device has, and only that — not a reload. Beta: the account's record from
+     * the turns in hand (its state, and only the turns whose blob is new or moved; see [readRecordGrowth]) with the run
+     * list's first page beside it; then the live stream is asked again from its offset, its backoff forgotten. Stable:
+     * the run list's first page, and the documented transcript only when that page names a run this device has not
+     * seen or a status that moved — the transcript being the one place a turn's prompt is. Either way a run under way
+     * is followed (the tail of its log, see [startStreaming]) and the chat's running state is the account's word again.
+     * A load already under way is waited for, its turns' traces with it, not doubled — what it brings is not the
+     * catch-up's to count — and a second catch-up asked for while one is being answered shares its answer.
      */
     suspend fun catchUp(agentId: String): CatchUp {
         val e = entry(agentId)
@@ -2245,19 +2248,68 @@ class ConversationRepository(
     }
 
     private suspend fun catchUpNow(e: Entry): CatchUp {
+        val agentId = e.agentId
         synchronized(e) { e.loadJob }?.join()
+        // The steps that load asked for are its too: until its turns' traces are in, the chat is still being read.
+        synchronized(e) { e.traceJob }?.join()
         // A chat still being launched has nothing on the server to read; the launch settles it when the server answers.
         if (synchronized(e) { e.launching }) return CatchUp()
         val before = e.state.value
-        // As with [reload]: after the server's own failure the record is asked at once; a refusal keeps its pause.
-        synchronized(e) { if (before.recordFallback?.serverError == true) e.recordRefusedUntil = 0L }
-        loadAsJob(e) { load(e, e.agentId) }
+        // As with [reload]: after the server's own failure the record is asked at once, so the chat is read as a load
+        // reads it; a refusal keeps its pause.
+        val retryRecord = synchronized(e) { (before.recordFallback?.serverError == true).also { if (it) e.recordRefusedUntil = 0L } }
+        val failure = runCatching {
+            val backend = session.current
+            val recordOn = record != null && !backend.isDemo && capabilities().accountTranscript && synchronized(e) { e.recordWindow != null }
+            if (recordOn) {
+                coroutineScope {
+                    val runs = async { net(agentId, "runs"); backend.api.listRuns(agentId, limit = FIRST_RUN_PAGE) }
+                    when (readRecordGrowth(e, strict = true, refreshRuns = false)) {
+                        // No delta to read from what is in hand: the chat is read as a load reads it.
+                        null -> {
+                            runs.cancel()
+                            loadAsJob(e) { load(e, agentId) }
+                        }
+                        else -> {
+                            refreshNewestRuns(e, handed = runs.await())
+                            loadTraces(e, agentId, e.shownRuns())
+                        }
+                    }
+                }
+            } else {
+                net(agentId, "runs")
+                val page = backend.api.listRuns(agentId, limit = FIRST_RUN_PAGE)
+                val held = synchronized(e) { if (!retryRecord && e.fetched && e.messages.isNotEmpty() && e.recordWindow == null) e.runs.associateBy { it.id } to e.local.isEmpty() else null }
+                if (held != null && runsUnchanged(page, held.first, noLocal = held.second)) refreshNewestRuns(e, handed = page)
+                else loadAsJob(e) { load(e, agentId, force = true, handed = page) }
+            }
+            // The run under way, as the account now has it: followed when it is not, and the chat kept running while
+            // the account says so with no run to stream yet (see [keepFollowing]).
+            val active = synchronized(e) { e.latestRun()?.takeIf { e.statusOf(it).isActive } }
+            if (active != null) {
+                if (!e.isFollowing(active.id)) startStreaming(e, agentId, active, unlessMovedOn = true)
+            } else if (accountSaysRunning(e)) {
+                keepFollowing(e, endedRunId = null)
+            }
+        }.exceptionOrNull()
+        if (failure is CancellationException) throw failure
+        // A load swallows its failure onto the screen; the pull says it too, in the same words.
         val after = e.state.value
+        val shown = (after.error ?: after.transcriptError).takeIf { it != (before.error ?: before.transcriptError) }
+        val error = failure?.userMessage() ?: shown
+        // The live stream asked again from where the reader's copy now stands, its backoff forgotten; the list
+        // entry's word taken afresh.
+        synchronized(e) {
+            if (e.attached > 0 && !e.paused) {
+                e.watchJob?.cancel()
+                e.watchJob = null
+            }
+        }
+        watchWhileOpen(e)
         return CatchUp(
             newMessages = newMessageCount(before.items, after.items),
             changed = after.items != before.items || after.runStatus != before.runStatus || after.activeRunId != before.activeRunId,
-            // A load says its failure on the screen and returns; the catch-up says it too, in the same words.
-            error = after.error ?: after.transcriptError,
+            error = error,
         )
     }
 
@@ -2560,8 +2612,9 @@ class ConversationRepository(
     /**
      * Reads the chat: the account's record (Extended mode), else the documented transcript and runs. [force] reads
      * the documented transcript again even when the run list says nothing changed — the reader's own Reload.
+     * [handed]: the run list's first page, read already by the caller (see [catchUp]), for the documented path.
      */
-    private suspend fun load(e: Entry, agentId: String, force: Boolean = false) {
+    private suspend fun load(e: Entry, agentId: String, force: Boolean = false, handed: ListRunsResponseDto? = null) {
         val backend = session.current
         val tokens = cacheTokens()
         val api = backend.api
@@ -2586,7 +2639,7 @@ class ConversationRepository(
         }
         // The run list's first page the record path read beside the record, handed on when the record was not served:
         // the documented path needs the same page, and the fallback should not cost the round trip twice.
-        var handedRuns: Result<ListRunsResponseDto>? = null
+        var handedRuns: Result<ListRunsResponseDto>? = handed?.let { Result.success(it) }
         if (recordApi != null) {
             val served = try {
                 loadFromRecord(e, agentId, recordApi, backend, tokens).also { handedRuns = it.runPage }.served
@@ -3499,53 +3552,61 @@ class ConversationRepository(
         return (base + spread).coerceAtLeast(0L)
     }
 
-    /** Extended mode: what the account's record has added since it was last read, shown as the turn's steps so far. */
-    private suspend fun readRecordGrowth(e: Entry) {
-        val api = record ?: return
-        val known = synchronized(e) { e.recordWindow } ?: return
-        if (session.isDemo || !capabilities().accountTranscript) return
+    /**
+     * Extended mode: what the account's record has added since it was last read, shown as the turn's steps so far.
+     * True when it grew, false when it had nothing new (or could not be read), null when there is no delta to read —
+     * no window in hand, the record off, or the blob-backed record drifted from the window. [strict]: a read that
+     * failed throws, for a caller that says so, rather than leaving the chat as it was. [refreshRuns] off leaves the
+     * run list and the replays to the caller (see [catchUp]).
+     */
+    private suspend fun readRecordGrowth(e: Entry, strict: Boolean = false, refreshRuns: Boolean = true): Boolean? {
+        val api = record ?: return null
+        val known = synchronized(e) { e.recordWindow } ?: return null
+        if (session.isDemo || !capabilities().accountTranscript) return null
         val sink = images?.forAgent(e.agentId)
         val wantTurns = synchronized(e) { e.window }
         val built: RecordWindow
         if (known.turnIndexed) {
             // The blob-backed record: the state, and the turns whose blob it names differently — the one under way, the new ones.
             val want = maxOf(wantTurns, known.turns.size)
-            val state = runCatching { api.state(e.agentId) }.getOrElse { t -> if (t is CancellationException) throw t; return }
+            val state = runCatching { api.state(e.agentId) }.getOrElse { t -> if (t is CancellationException || strict) throw t; return false }
             // A subagent's status and step move with no turn changing: they go out before the turns are compared.
             synchronized(e) { if (e.state.value.subagentRuns != state.subagents) e.state.update { it.copy(subagentRuns = state.subagents) } }
-            val raw = runCatching { RecordPager.tailTurns(api, e.agentId, want, state, TurnPlan.FULL, held = known.held) }.getOrElse { t -> if (t is CancellationException) throw t; return } ?: return
-            if (raw.drift != null) return
-            if (raw.turns.all { it.reused } && state.turnCount == known.turnCount) return
+            val raw = runCatching { RecordPager.tailTurns(api, e.agentId, want, state, TurnPlan.FULL, held = known.held) }.getOrElse { t -> if (t is CancellationException || strict) throw t; return false } ?: return false
+            if (raw.drift != null) return null
+            if (raw.turns.all { it.reused } && state.turnCount == known.turnCount) return false
             built = RecordTranscript.window(raw, known, state, AppClock.now(), wantTurns = want, build = turnBuilder(e.agentId, sink))
         } else if (known.canAppend) {
             // The delta alone: one small read at the known end, the appended steps when there are any (see [RecordTranscript.append]).
-            val delta = runCatching { RecordPager.since(api, e.agentId, known.total) }.getOrElse { t -> if (t is CancellationException) throw t; return }
+            val delta = runCatching { RecordPager.since(api, e.agentId, known.total) }.getOrElse { t -> if (t is CancellationException || strict) throw t; return false }
             if (delta == null) {
                 // Rewound: read from the end again.
-                val raw = runCatching { RecordPager.tail(api, e.agentId, wantTurns, null) }.getOrElse { t -> if (t is CancellationException) throw t; null } ?: return
+                val raw = runCatching { RecordPager.tail(api, e.agentId, wantTurns, null) }.getOrElse { t -> if (t is CancellationException || strict) throw t; null } ?: return false
                 built = RecordTranscript.window(raw, known, state = null, AppClock.now(), wantTurns = wantTurns, build = turnBuilder(e.agentId, sink))
             } else {
-                if (delta.steps.isEmpty()) return
+                if (delta.steps.isEmpty()) return false
                 built = RecordTranscript.append(known, delta, AppClock.now(), wantTurns = wantTurns, build = turnBuilder(e.agentId, sink))
                 // Nothing grew: the newest turn read again as it was.
-                if (built === known) return
+                if (built === known) return false
             }
         } else {
-            val grown = runCatching { RecordPager.grownPast(api, e.agentId, known.total) }.getOrElse { t -> if (t is CancellationException) throw t; false }
-            if (!grown) return
-            val raw = runCatching { RecordPager.tail(api, e.agentId, wantTurns, known.total) }.getOrElse { t -> if (t is CancellationException) throw t; null } ?: return
+            val grown = runCatching { RecordPager.grownPast(api, e.agentId, known.total) }.getOrElse { t -> if (t is CancellationException || strict) throw t; false }
+            if (!grown) return false
+            val raw = runCatching { RecordPager.tail(api, e.agentId, wantTurns, known.total) }.getOrElse { t -> if (t is CancellationException || strict) throw t; null } ?: return false
             built = RecordTranscript.window(raw, known, state = null, AppClock.now(), wantTurns = wantTurns, build = turnBuilder(e.agentId, sink))
         }
         // The record has grown: the prompts sent from here it now holds hand over to it (see [pruneLocal]).
         // A growth read is a fetch: a reader back within [REOPEN_FRESH_MS] of it finds the chat fresh (see [attach]).
         e.publish(mutate = { if (recordWindow === known) recordWindow = built; fetchedAt = AppClock.now(); pruneLocal() })
         persistRecord(e, built, known, session.current, cacheTokens())
+        if (!refreshRuns) return true
         // The turns the record grew by are the chat's newest runs, and the window pairs turns with runs by position
         // from the newest: the list's first page is read again so its newest end is the record's — a Project's
         // injected turns arrive by the dozen between two reads, and a list a dozen runs short paired every turn with
         // the run a dozen before it. The turns the refreshed list pairs and finds finished get their logs replayed.
         refreshNewestRuns(e)
         loadTraces(e, e.agentId, e.shownRuns())
+        return true
     }
 
     /**
@@ -3553,12 +3614,12 @@ class ConversationRepository(
      * run started since) with the order the list came in read as [loadFromRecord] reads it. This serves the pairing
      * of record turns with runs (see [Entry.recordNeedsRuns]); the chat's status and follow are left as they are —
      * except a follow on a run the list now shows over, which ends in the frame that first shows the run's footer
-     * (see [Entry.endFollowIfOver]), never a frame later.
+     * (see [Entry.endFollowIfOver]), never a frame later. [handed]: the first page, read already by the caller.
      */
-    private suspend fun refreshNewestRuns(e: Entry) {
+    private suspend fun refreshNewestRuns(e: Entry, handed: ListRunsResponseDto? = null) {
         val api = session.current.api
         val agentId = e.agentId
-        val first = runCatching { net(agentId, "runs"); api.listRuns(agentId, limit = FIRST_RUN_PAGE) }.getOrElse { t -> if (t is CancellationException) throw t; return }
+        val first = handed ?: runCatching { net(agentId, "runs"); api.listRuns(agentId, limit = FIRST_RUN_PAGE) }.getOrElse { t -> if (t is CancellationException) throw t; return }
         val latestId = agents.agent(agentId)?.latestRunId?.takeUnless { it.startsWith(LOCAL_RUN_PREFIX) }
         val (knownRuns, knownComplete) = synchronized(e) { e.runs to e.runsComplete }
         val newest = newestRuns(api, agentId, first, latestId, knownRuns, knownComplete)
