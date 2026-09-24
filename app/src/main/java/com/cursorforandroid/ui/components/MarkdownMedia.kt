@@ -53,6 +53,7 @@ import androidx.compose.ui.unit.isFinite
 import androidx.compose.ui.unit.sp
 import com.cursorforandroid.data.media.MediaLoader
 import com.cursorforandroid.data.media.MediaProblem
+import com.cursorforandroid.data.media.MediaStage
 import com.cursorforandroid.domain.AgentLink
 import com.cursorforandroid.domain.FileFormat
 import com.cursorforandroid.domain.MediaRef
@@ -66,6 +67,7 @@ import com.cursorforandroid.ui.media.thumbnailSlot
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.util.TimeFormat
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.math.sqrt
 
@@ -100,6 +102,8 @@ val LocalMarkdownMedia = staticCompositionLocalOf<MarkdownMediaContext?> { null 
 /** Figures never grow past this (or 45 % of the screen on short displays); taller media is fitted and opens full size on tap. */
 private val MediaMaxHeightCap = 420.dp
 private val PlaceholderHeight = 140.dp
+/** How long a figure spins before it says what it is waiting on and offers Retry. */
+internal const val STALL_NOTICE_MS = 8_000L
 private val FallbackWidth = 360.dp
 private const val VIDEO_DEFAULT_ASPECT = 16f / 9f
 
@@ -139,6 +143,8 @@ fun ImageBlock(src: String, alt: String?, modifier: Modifier = Modifier, heightC
         var attempt by remember(ref) { mutableIntStateOf(0) }
         var wake by remember(ref) { mutableStateOf(false) }
         var state by remember(ref) { mutableStateOf<ImageLoad>(ImageLoad.Loading) }
+        var stage by remember(ref) { mutableStateOf(MediaStage.STARTING) }
+        var stalled by remember(ref) { mutableStateOf(false) }
 
         // Keyed on the artifact, not on the measured width: the column is re-measured whenever the device is
         // rotated (configChanges absorbs it) or the sidebar appears, and that must not throw the decoded bitmap
@@ -150,21 +156,32 @@ fun ImageBlock(src: String, alt: String?, modifier: Modifier = Modifier, heightC
                 return@LaunchedEffect
             }
             state = ImageLoad.Loading
+            stage = MediaStage.STARTING
+            stalled = false
+            val notice = launch {
+                delay(STALL_NOTICE_MS)
+                stalled = true
+            }
             state = try {
-                ImageLoad.Ready(media.loader.image(ref, request.width, request.height, wake = wake).asImageBitmap())
+                ImageLoad.Ready(media.loader.image(ref, request.width, request.height, wake = wake, chat = media.agentId, onStage = { stage = it }).asImageBitmap())
             } catch (t: Throwable) {
                 if (t is CancellationException) throw t
                 ImageLoad.Failed(MediaLoader.problemOf(t))
             } finally {
+                notice.cancel()
                 wake = false
             }
         }
 
         when (val s = state) {
-            ImageLoad.Loading -> MediaPlaceholder(Modifier.fillMaxWidth().height(PlaceholderHeight), if (wake) "Waking the agent's machine" else "Loading image")
+            ImageLoad.Loading -> if (stalled) {
+                MediaStalledRow(stage, waking = wake, onRetry = { attempt++ }, modifier = Modifier.fillMaxWidth().height(PlaceholderHeight))
+            } else {
+                MediaPlaceholder(Modifier.fillMaxWidth().height(PlaceholderHeight), if (wake) "Waking the agent's machine" else "Loading image")
+            }
             is ImageLoad.Failed -> if (ref is MediaRef.Store) {
                 // The store answered nothing for it: the card still opens the Project, and a tap on Retry asks again.
-                StoreFileCard(ref, alt, CursorIcons.Image, title = s.problem.title, onRetry = { attempt++ })
+                StoreFileCard(ref, alt, CursorIcons.Image, title = s.problem.title, detail = s.problem.detail, onRetry = { attempt++ })
             } else {
                 MediaProblemRow(
                     icon = CursorIcons.Image,
@@ -326,6 +343,29 @@ private fun MediaPlaceholder(modifier: Modifier, description: String) {
 }
 
 /**
+ * A figure still loading past [STALL_NOTICE_MS]: the placeholder, saying which step it waits on and offering to
+ * start over, until the load answers or its deadline turns it into a failure.
+ */
+@Composable
+private fun MediaStalledRow(stage: MediaStage, waking: Boolean, onRetry: () -> Unit, modifier: Modifier = Modifier) {
+    val colors = CursorTheme.colors
+    val words = if (waking) "Waking the agent's machine" else stage.words
+    Box(
+        modifier
+            .cursorSurface(colors.fillFaint, colors.strokeSubtle, CursorTheme.shapes.lg)
+            .semantics { contentDescription = "Still loading image: $words" }
+            .testTag("media-stalled"),
+    ) {
+        SpinnerRing(size = 14.dp, modifier = Modifier.align(Alignment.Center))
+        Row(Modifier.align(Alignment.BottomStart).fillMaxWidth().padding(horizontal = 10.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text("Still loading · $words", style = CursorTheme.typography.small, color = colors.textTertiary, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+            Spacer(Modifier.width(8.dp))
+            Text("Retry", style = CursorTheme.typography.small, color = colors.link, modifier = Modifier.pressable(onRetry, CursorTheme.shapes.base).padding(horizontal = 4.dp, vertical = 2.dp))
+        }
+    }
+}
+
+/**
  * A file of a Project's context that cannot be drawn here — without the account's store reads (default mode), or
  * because the store answered nothing for it — as a card naming the file, saying where it is, and opening the
  * Project on cursor.com, where Cursor's own client shows it. Tapping the card is the way there; [onRetry] asks the
@@ -338,6 +378,7 @@ internal fun StoreFileCard(
     icon: ImageVector,
     modifier: Modifier = Modifier,
     title: String? = null,
+    detail: String? = null,
     onRetry: (() -> Unit)? = null,
 ) {
     val colors = CursorTheme.colors
@@ -362,6 +403,7 @@ internal fun StoreFileCard(
         Spacer(Modifier.width(8.dp))
         Column(Modifier.weight(1f)) {
             Text(title ?: (alt?.takeIf { it.isNotBlank() } ?: ref.label), style = CursorTheme.typography.base, color = colors.textSecondary, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            detail?.let { Text(it, style = CursorTheme.typography.small, color = colors.textTertiary, maxLines = 2, overflow = TextOverflow.Ellipsis) }
             Text(
                 if (title != null && !alt.isNullOrBlank()) "$alt · ${ref.path.text}" else ref.path.text,
                 style = CursorTheme.typography.code,
