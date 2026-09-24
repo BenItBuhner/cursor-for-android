@@ -161,6 +161,8 @@ internal class HomeBlockActions(
 internal fun HomeBlockView(block: HomeBlock, nowMillis: Long, actions: HomeBlockActions) {
     val colors = CursorTheme.colors
     val column = Modifier.widthIn(max = CursorDimens.composerMaxWidth).fillMaxWidth()
+    // The Projects and their notes line up with the recent chats' cards, inside the composer's edges.
+    val inset = column.padding(horizontal = CursorDimens.recentRowInset)
     when (block) {
         is HomeBlock.Chat -> RecentChatRow(
             block.row,
@@ -175,14 +177,14 @@ internal fun HomeBlockView(block: HomeBlock, nowMillis: Long, actions: HomeBlock
             color = if (block.error != null) colors.red else colors.textQuaternary,
             modifier = Modifier.widthIn(max = CursorDimens.composerMaxWidth).padding(top = 24.dp, start = 7.dp, end = 7.dp),
         )
-        is HomeBlock.Projects -> ProjectShortcutGrid(block.rows, onOpen = actions.onOpenAgent, modifier = column)
+        is HomeBlock.Projects -> ProjectShortcutGrid(block.rows, onOpen = actions.onOpenAgent, modifier = inset)
         is HomeBlock.Note -> ProjectsNoteCard(
             block.note,
             onAction = when (block.note) {
                 ProjectsNote.NeedsExtendedMode -> actions.onOpenSettings
                 ProjectsNote.NoProjects -> actions.onNewProject
             },
-            modifier = column.padding(bottom = 12.dp),
+            modifier = inset.padding(bottom = 12.dp),
         )
     }
 }

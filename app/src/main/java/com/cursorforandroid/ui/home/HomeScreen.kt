@@ -305,7 +305,7 @@ fun RecentChatRow(
                     Modifier.pressable(onClick, shape)
                 },
             )
-            .padding(horizontal = 6.dp, vertical = CursorDimens.recentRowGap / 2),
+            .padding(horizontal = CursorDimens.recentRowInset, vertical = CursorDimens.recentRowGap / 2),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         PreviewCard(row)
