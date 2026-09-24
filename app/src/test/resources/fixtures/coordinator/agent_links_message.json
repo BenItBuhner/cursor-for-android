@@ -1,0 +1,9 @@
+{
+ "_source": "the shape Bennett reported (a coordinator citing its workers as [label](bc-<uuid>), the form Cursor's injected turns ask for: 'link it with the [Name](id)'), with the other agent targets a coordinator writes: a #desktop link to a worker's VM desktop and a cursor.com/agents URL; the store path and the relative link beside them must stay as they were",
+ "workers": {
+  "backStack": "bc-0cbcf799-5a79-59fd-b8b3-b855a5bba8bf",
+  "agentLinks": "bc-1708c3c2-1d5c-565b-8e82-aa6e9b671cd1",
+  "release": "bc-5e7d0f3a-0b7e-4c2a-9d0e-2f4a6b8c1d3e"
+ },
+ "markdown": "Two workers are on Bennett's navigation report. [Make back navigation follow history](bc-0cbcf799-5a79-59fd-b8b3-b855a5bba8bf) is building the history-based back stack, and [Make agent links tappable](bc-1708c3c2-1d5c-565b-8e82-aa6e9b671cd1) is teaching the renderer these very links.\n\nThe second one is testing on its [desktop](bc-1708c3c2-1d5c-565b-8e82-aa6e9b671cd1#desktop) if you want to watch; the release worker is idle at https://cursor.com/agents/bc-5e7d0f3a-0b7e-4c2a-9d0e-2f4a6b8c1d3e until both merge.\n\nThe plan is in `/cursor/stores/bc-bae107cb-2562-40b2-b814-4f8eca874668/docs/project-context.md`, and its [spec section](docs/spec.md) is relative to it."
+}
