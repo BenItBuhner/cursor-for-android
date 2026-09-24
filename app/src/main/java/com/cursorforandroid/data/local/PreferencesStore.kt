@@ -144,7 +144,6 @@ class PreferencesStore(
         val notificationPermissionAsked = booleanPreferencesKey("notification_permission_asked")
         val recentSkills = stringPreferencesKey("recent_skills")
         val autoUpdate = booleanPreferencesKey("auto_update")
-        val includePreReleases = booleanPreferencesKey("update_include_pre_releases")
         val updateLastCheckedAt = longPreferencesKey("update_last_checked_at")
         val pendingUpdateVersionCode = intPreferencesKey("update_pending_version_code")
         val notifiedUpdateVersionCode = intPreferencesKey("update_notified_version_code")
@@ -171,8 +170,6 @@ class PreferencesStore(
         val dismissedNotices = stringPreferencesKey("dismissed_notices")
         /** Settings › Confirm before stopping; absent reads as on (see [confirmStop]). */
         val confirmStop = booleanPreferencesKey("confirm_stop")
-        /** Settings › Haptic feedback; absent reads as on (see [hapticFeedback]). */
-        val hapticFeedback = booleanPreferencesKey("haptic_feedback")
         /** The widget kinds whose picker previews the system holds, each with the build and boot it was published on (see `WidgetPreviews`). */
         val widgetPreviewsPublished = stringSetPreferencesKey("widget_previews_published")
         /** The conversation panel's width beside the chat on a wide window, in dp, as last dragged; absent until it has been. */
@@ -181,6 +178,9 @@ class PreferencesStore(
         val railWidthDp = intPreferencesKey("rail_width_dp")
         /** Whether the conversation panel stands open beside the chat on a window of [widthClass]; absent is shut. */
         fun panelOpen(widthClass: PaneWidthClass) = booleanPreferencesKey("panel_open_${widthClass.key}")
+
+        /** Settings that no longer exist; nothing reads them, and [forgetRetiredSettings] deletes them. */
+        val retired: List<Preferences.Key<*>> = listOf(booleanPreferencesKey("update_include_pre_releases"), booleanPreferencesKey("haptic_feedback"))
     }
 
     /** What [clearSession] removes: everything here belongs to the account rather than to the device. */
@@ -218,9 +218,6 @@ class PreferencesStore(
     /** Check GitHub for new releases in the background, download them on Wi-Fi and install when the app is idle. On by default. */
     val autoUpdate: Flow<Boolean> = data.map { it[Keys.autoUpdate] ?: true }
 
-    /** Whether `-rc.N` / `-beta.N` releases are offered; null until the user decides (the installed channel then applies). */
-    val includePreReleases: Flow<Boolean?> = data.map { it[Keys.includePreReleases] }
-
     val updateLastCheckedAt: Flow<Long?> = data.map { it[Keys.updateLastCheckedAt] }
 
     /** versionCode of the update whose install session was committed; equal to the running build once it succeeded. */
@@ -231,7 +228,11 @@ class PreferencesStore(
 
     suspend fun setAutoUpdate(enabled: Boolean) = edit { it[Keys.autoUpdate] = enabled }
 
-    suspend fun setIncludePreReleases(include: Boolean) = edit { it[Keys.includePreReleases] = include }
+    /** Deletes what removed settings left in the file; a no-op, and no write, once they are gone. */
+    suspend fun forgetRetiredSettings(): Boolean {
+        if (data.first().asMap().keys.none { it in Keys.retired }) return true
+        return edit { p -> Keys.retired.forEach { p.remove(it) } }
+    }
 
     // ---- home-screen widgets (device-level: the launcher's, not the account's) ------------------------------------
 
@@ -279,14 +280,6 @@ class PreferencesStore(
     val confirmStop: Flow<Boolean> = data.map { it[Keys.confirmStop] ?: true }
 
     suspend fun setConfirmStop(enabled: Boolean) = edit { it[Keys.confirmStop] = enabled }
-
-    /**
-     * Whether the app plays its haptics (see `ui/components/Haptics.kt`). On by default; the system's touch feedback
-     * switch still silences them when it is off.
-     */
-    val hapticFeedback: Flow<Boolean> = data.map { it[Keys.hapticFeedback] ?: true }
-
-    suspend fun setHapticFeedback(enabled: Boolean) = edit { it[Keys.hapticFeedback] = enabled }
 
     // ---- Extended mode (device-level; deliberately untouched by clearSession) ------------------------------------
 

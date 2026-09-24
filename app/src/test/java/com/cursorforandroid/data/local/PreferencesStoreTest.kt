@@ -255,6 +255,30 @@ class PreferencesStoreTest {
     }
 
     @Test
+    fun `the pre-release and haptic switches an earlier build stored are deleted, and nothing else is`() = runBlocking<Unit> {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val store = PreferenceDataStoreFactory.create(
+            scope = CoroutineScope(Dispatchers.IO + SupervisorJob()),
+            produceFile = { context.preferencesDataStoreFile("retired_settings") },
+        )
+        store.edit { p ->
+            p[booleanPreferencesKey("update_include_pre_releases")] = true
+            p[booleanPreferencesKey("haptic_feedback")] = false
+            p[booleanPreferencesKey("auto_update")] = false
+            p[stringPreferencesKey("theme_mode")] = ThemeMode.Light.name
+        }
+        val prefs = PreferencesStore(context, store)
+
+        assertThat(prefs.forgetRetiredSettings()).isTrue()
+        val left = store.data.first().asMap().keys.map { it.name }
+        assertThat(left).containsExactly("auto_update", "theme_mode")
+        assertThat(prefs.autoUpdate.first()).isFalse()
+        assertThat(prefs.themeMode.first()).isEqualTo(ThemeMode.Light)
+        // Once they are gone there is nothing to write.
+        assertThat(prefs.forgetRetiredSettings()).isTrue()
+    }
+
+    @Test
     fun `crash reports are off until asked for, and the answer belongs to the device, not the account`() = runBlocking<Unit> {
         val prefs = PreferencesStore(ApplicationProvider.getApplicationContext())
         assertThat(prefs.crashReports.first()).isFalse()
