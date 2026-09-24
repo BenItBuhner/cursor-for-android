@@ -86,6 +86,7 @@ import com.cursorforandroid.ui.components.stylusWriting
 import com.cursorforandroid.ui.components.Haptic
 import com.cursorforandroid.ui.components.rememberHaptics
 import com.cursorforandroid.share.ShareTarget
+import com.cursorforandroid.ui.compose.LaunchRefusedHaptic
 import com.cursorforandroid.ui.compose.NewAgentUiState
 import com.cursorforandroid.ui.compose.NewAgentViewModel
 import com.cursorforandroid.ui.compose.rememberComposerMenuActions
@@ -194,6 +195,7 @@ fun HomeScreen(
                 onComposerFocused()
             }
         }
+        LaunchRefusedHaptic(state)
         LazyColumn(
             Modifier.fillMaxSize().imePadding().scrollEdgeFade(recentState, surface = colors.canvas),
             state = recentState,
