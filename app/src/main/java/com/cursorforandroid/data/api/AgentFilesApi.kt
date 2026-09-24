@@ -37,12 +37,12 @@ class AgentFilesApi(
 ) : WorkspaceFilesApi, DiffDetailsApi {
 
     override suspend fun listFiles(agentId: String): WorkspaceTree {
-        val response = call("ListWorkspaceFiles", BcIdDto(agentId), BcIdDto.serializer(), ListWorkspaceFilesResponseDto.serializer())
+        val response = call("ListWorkspaceFiles", BcIdDto(agentId), BcIdDto.serializer(), ListWorkspaceFilesResponseDto.serializer(), ApiThrottle.Lane.MEDIA)
         return WorkspaceTree(response.relativePaths.map { it.trim().trimStart('/') }.filter { it.isNotEmpty() }.distinct())
     }
 
     override suspend fun readFile(agentId: String, path: String): ByteArray {
-        val response = call("ReadBinaryFile", ReadBinaryFileDto(agentId, path), ReadBinaryFileDto.serializer(), ReadBinaryFileResponseDto.serializer())
+        val response = call("ReadBinaryFile", ReadBinaryFileDto(agentId, path), ReadBinaryFileDto.serializer(), ReadBinaryFileResponseDto.serializer(), ApiThrottle.Lane.MEDIA)
         return decodeBytes(response.content)
     }
 
@@ -58,8 +58,13 @@ class AgentFilesApi(
         )
     }
 
-    private suspend fun <I, O> call(method: String, body: I, requestSerializer: KSerializer<I>, responseSerializer: KSerializer<O>): O =
-        rpc.unaryWithSession(BackgroundComposerApi.SERVICE, method, tokens, body, requestSerializer, responseSerializer)
+    private suspend fun <I, O> call(
+        method: String,
+        body: I,
+        requestSerializer: KSerializer<I>,
+        responseSerializer: KSerializer<O>,
+        lane: ApiThrottle.Lane = ApiThrottle.Lane.CONTROL,
+    ): O = rpc.unaryWithSession(BackgroundComposerApi.SERVICE, method, tokens, body, requestSerializer, responseSerializer, lane = lane)
 
     @Serializable
     private data class BcIdDto(val bcId: String)

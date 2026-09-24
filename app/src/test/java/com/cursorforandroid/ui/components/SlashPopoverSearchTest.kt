@@ -57,10 +57,13 @@ class SlashPopoverSearchTest {
             CursorTheme(mode = ThemeMode.Dark) {
                 Column {
                     Text("delta $deltas")
+                    val token = SlashToken(0, 3, "go")
+                    val suggestions = rememberSlashSuggestions(token, catalog, CountingRecent(listOf("land-it"), walks))
                     SlashCommandPopover(
-                        token = SlashToken(0, 3, "go"),
+                        token = token,
+                        suggestions = suggestions,
                         catalog = catalog,
-                        recent = CountingRecent(listOf("land-it"), walks),
+                        showHighlight = false,
                         onPick = {},
                         onDismiss = {},
                     )

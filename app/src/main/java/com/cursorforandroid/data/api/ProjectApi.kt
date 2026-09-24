@@ -287,7 +287,7 @@ class ProjectApi(
     override suspend fun storeFor(sourceId: String): String? {
         var pageToken: String? = null
         repeat(MAX_STORE_PAGES) {
-            val response = call("ListAgentStores", ListStoresDto(STORE_PAGE, pageToken), ListStoresDto.serializer(), ListStoresResponseDto.serializer())
+            val response = call("ListAgentStores", ListStoresDto(STORE_PAGE, pageToken), ListStoresDto.serializer(), ListStoresResponseDto.serializer(), ApiThrottle.Lane.MEDIA)
             response.stores.firstOrNull { it.source?.sourceId == sourceId || it.sourceId == sourceId }?.storeId?.takeIf { it.isNotBlank() }?.let { return it }
             pageToken = response.nextPageToken?.takeIf { it.isNotBlank() && response.hasMore } ?: return null
         }
@@ -335,7 +335,7 @@ class ProjectApi(
             is StoreReadTarget.Store -> PresignReadsDto(relPaths = listOf(relativePath), storeId = target.storeId)
             is StoreReadTarget.Agent -> PresignReadsDto(relPaths = listOf(relativePath), agentId = target.agentId)
         }
-        val response = call("PresignAgentStoreReads", request, PresignReadsDto.serializer(), PresignReadsResponseDto.serializer())
+        val response = call("PresignAgentStoreReads", request, PresignReadsDto.serializer(), PresignReadsResponseDto.serializer(), ApiThrottle.Lane.MEDIA)
         val instruction = response.instructions.firstOrNull { it.relPath == relativePath } ?: response.instructions.firstOrNull() ?: return null
         val url = instruction.url?.takeIf { it.isNotBlank() } ?: return null
         return PresignedStoreRead(instruction.relPath ?: relativePath, url, instruction.expiresAtMs?.longOrNull)
@@ -360,8 +360,13 @@ class ProjectApi(
         return PresignedStoreWrite(instruction.relPath ?: relativePath, url, instruction.headers, instruction.expiresAtMs?.let { it.longOrNull ?: it.contentOrNull?.toLongOrNull() }, instruction.primaryPreconditionFailed == true)
     }
 
-    private suspend fun <I, O> call(method: String, body: I, requestSerializer: KSerializer<I>, responseSerializer: KSerializer<O>): O =
-        rpc.unaryWithSession(BackgroundComposerApi.SERVICE, method, tokens, body, requestSerializer, responseSerializer)
+    private suspend fun <I, O> call(
+        method: String,
+        body: I,
+        requestSerializer: KSerializer<I>,
+        responseSerializer: KSerializer<O>,
+        lane: ApiThrottle.Lane = ApiThrottle.Lane.CONTROL,
+    ): O = rpc.unaryWithSession(BackgroundComposerApi.SERVICE, method, tokens, body, requestSerializer, responseSerializer, lane = lane)
 
     // Request fields carry no defaults on purpose where the wire needs them: CursorJson does not encode defaults.
 

@@ -3,6 +3,7 @@ package com.cursorforandroid.ui.panel
 import android.content.Intent
 import android.os.Build
 import android.widget.Toast
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -55,7 +56,7 @@ import kotlinx.coroutines.launch
  * a document with Preview and Source; a side chat itself ([sideChatContent] is the host's, since only the
  * conversation screen can compose a chat). The Chat surface is the chat's own sections ([PanelRegistry.shown]) as
  * collapsible groups, the panel every chat had before — or, while a file is open from Files or Changes, the file
- * viewer in their place.
+ * viewer in their place, which back closes before it closes the panel.
  */
 @Composable
 fun ConversationPanel(
@@ -135,6 +136,9 @@ internal fun tabIcon(tab: PanelTab): ImageVector = when (tab) {
 private fun ChatSurface(state: PanelState, actions: PanelActions, registry: PanelRegistry, onClose: (() -> Unit)?) {
     val file = state.browser.file
     if (file != null) {
+        // A file opened from Files or Changes is a page within the panel: back returns to the sections it was
+        // opened from before it closes the panel.
+        BackHandler(onBack = actions::closeFile)
         FileViewerScreen(file, onBack = actions::closeFile, onOpenUrl = actions::openUrl, onRetry = actions::retryFile, onAskToCopy = actions::askToCopyFile)
         return
     }

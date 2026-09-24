@@ -56,6 +56,39 @@ class WidgetSettingsTest {
     }
 
     @Test
+    fun `the header shows the list's name, refresh and new chat, hides the logo, and hides itself when short`() {
+        val defaults = ChatsWidgetSettings()
+        assertThat(defaults.header).containsExactly(HeaderElement.Title, HeaderElement.Refresh, HeaderElement.NewChat)
+        assertThat(defaults.shows(HeaderElement.Logo)).isFalse()
+        assertThat(defaults.headerAutoHide).isTrue()
+        // A record from before the header was a choice reads as the defaults too.
+        assertThat(ChatsWidgetSettings.decode("""{"mode":"Recent"}""").header).isEqualTo(ChatsWidgetSettings.DEFAULT_HEADER)
+        assertThat(ChatsWidgetSettings.decode("""{"mode":"Recent"}""").headerAutoHide).isTrue()
+    }
+
+    @Test
+    fun `the header's parts survive the round trip, and a part a later build added is dropped alone`() {
+        val settings = ChatsWidgetSettings(header = setOf(HeaderElement.Logo, HeaderElement.Refresh), headerAutoHide = false)
+        assertThat(ChatsWidgetSettings.decode(settings.encode())).isEqualTo(settings)
+        val bare = ChatsWidgetSettings(header = emptySet())
+        assertThat(ChatsWidgetSettings.decode(bare.encode())).isEqualTo(bare)
+        val later = ChatsWidgetSettings.decode("""{"header":["Title","Clock"],"header_auto_hide":false}""")
+        assertThat(later.header).containsExactly(HeaderElement.Title)
+        assertThat(later.headerAutoHide).isFalse()
+    }
+
+    @Test
+    fun `the header leaves out the button the corner button already is`() {
+        val all = ChatsWidgetSettings(header = HeaderElement.entries.toSet())
+        assertThat(all.headerParts).containsExactly(HeaderElement.Title, HeaderElement.Logo, HeaderElement.Refresh)
+        assertThat(all.copy(cornerAction = CornerAction.Refresh).headerParts).containsExactly(HeaderElement.Title, HeaderElement.Logo, HeaderElement.NewChat)
+        assertThat(all.copy(cornerAction = CornerAction.None).headerParts).containsExactlyElementsIn(HeaderElement.entries)
+        // What is stored stays as it was, so moving the corner button back brings the part back.
+        assertThat(all.copy(cornerAction = CornerAction.Refresh).header).containsExactlyElementsIn(HeaderElement.entries)
+        assertThat(all.toggled(HeaderElement.Logo).shows(HeaderElement.Logo)).isFalse()
+    }
+
+    @Test
     fun `opacity is read within its bounds`() {
         assertThat(WidgetAppearance(opacity = 200).opacityFraction).isEqualTo(1f)
         assertThat(WidgetAppearance(opacity = 0).opacityFraction).isEqualTo(WidgetAppearance.MIN_OPACITY / 100f)

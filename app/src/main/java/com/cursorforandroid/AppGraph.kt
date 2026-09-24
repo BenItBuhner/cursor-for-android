@@ -19,6 +19,7 @@ import com.cursorforandroid.data.api.AgentStartApi
 import com.cursorforandroid.data.api.ConnectRepositoryBranchesApi
 import com.cursorforandroid.data.api.RepositoryBranchesApi
 import com.cursorforandroid.data.api.ConnectAgentStartApi
+import com.cursorforandroid.data.api.ApiThrottle
 import com.cursorforandroid.data.api.ConnectJsonClient
 import com.cursorforandroid.data.api.ConnectProjectCreationApi
 import com.cursorforandroid.data.api.ConnectPromptUploadApi
@@ -313,8 +314,13 @@ class AppGraph(
      */
     val onboarding = Onboarding(prefs, extendedMode)
 
-    /** For api2 (the account's login and its Connect RPCs): no API-key interceptor, so only what each call sets goes out. */
-    private val lazyAccountClient = lazy { CursorApiFactory.loginClient() }
+    /**
+     * For api2 (the account's login and its Connect RPCs): no API-key interceptor, so only what each call sets goes
+     * out. Its dispatcher lets every lane of the shared throttle through at once, and the session exchanges that go
+     * around it: at OkHttp's five per host a figure's presign queued there behind the record's blobs and the open
+     * chats' streams, where no call timeout runs yet.
+     */
+    private val lazyAccountClient = lazy { CursorApiFactory.loginClient().also { it.dispatcher.maxRequestsPerHost = ApiThrottle.ON_THE_WIRE + 2 } }
     private val lazyAccountRpc = lazy { ConnectJsonClient(lazyAccountClient.value, CursorLoginEndpoints.API_URL) }
     /** The account session the account-level RPCs take, derived from the stored key when needed and kept in memory only; none while Extended mode is off. */
     private val lazySessionTokens = lazy { SessionTokenProvider(lazyAccountClient.value, { keyStore.apiKey() }, sessionAllowed = { extendedMode.isEnabled() }) }
@@ -344,10 +350,8 @@ class AppGraph(
      * the pause a refusal asks for holds here too.
      */
     private val lazyHeadlessTranscript = lazy {
+        // Same dispatcher as the account client's, whose per-host limit already lets the blob lane through.
         val client = lazyAccountClient.value.newBuilder().callTimeout(RECORD_CALL_TIMEOUT_MINUTES, java.util.concurrent.TimeUnit.MINUTES).build()
-        // The blob-backed record is read a few blobs at a time (see HeadlessConversationApi.BLOB_PARALLELISM); the
-        // dispatcher's five-per-host would queue them behind each other.
-        client.dispatcher.maxRequestsPerHost = maxOf(client.dispatcher.maxRequestsPerHost, HeadlessConversationApi.BLOB_PARALLELISM + 2)
         HeadlessConversationApi(ConnectJsonClient(client, CursorLoginEndpoints.API_URL, throttle = lazyAccountRpc.value.throttle), lazySessionTokens.value, blobs = lazyBlobCache.value)
     }
 
@@ -1131,6 +1135,8 @@ class AppGraph(
                 placement = agentId?.let { agents.placementOf(it) },
                 load = agentId?.let { conversations.loadDiagnostics(it) },
                 fileReads = agentId?.takeIf { lazyAgentFileReads.isInitialized() }?.let { id -> agentFileReads.attempts(id).map { it.text } }.orEmpty(),
+                media = agentId?.takeIf { lazyMedia.isInitialized() }?.let { id -> lazyMedia.value.loads.lines(id) }.orEmpty(),
+                throttle = lazyAccountRpc.takeIf { it.isInitialized() }?.value?.throttle?.describe(),
                 perf = agentId?.let { com.cursorforandroid.domain.TranscriptPerf.sessionOrNull(it)?.snapshot() },
                 send = agentId?.let { sendDiagnostics(it) },
             ),

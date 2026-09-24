@@ -96,20 +96,35 @@ class ShortcutWidgetScreenshotTest {
     /** The button in its four looks, each on a 1x1 cell over a wallpaper-like ground. */
     @Test
     fun buttons() {
-        captureWidget("327_shortcut_widget_white", ShortcutWidgetSettings(ShortcutStyle.White), ShortcutVariant.Button, CELL)
+        captureWidget("327_shortcut_widget_solid", ShortcutWidgetSettings(ShortcutStyle.Solid), ShortcutVariant.Button, CELL)
         captureWidget("328_shortcut_widget_tinted", ShortcutWidgetSettings(ShortcutStyle.Tinted), ShortcutVariant.Button, CELL)
         captureWidget("329_shortcut_widget_glass", ShortcutWidgetSettings(ShortcutStyle.Glass), ShortcutVariant.Button, CELL)
         captureWidget("330_shortcut_widget_icon_only", ShortcutWidgetSettings(ShortcutStyle.IconOnly), ShortcutVariant.Button, CELL)
         // Pointed at a Project, the button wears the cube.
-        captureWidget("331_shortcut_widget_project", ShortcutWidgetSettings(ShortcutStyle.White).withTarget(ShortcutTarget.Project("bc-1", "Cursor for Android")), ShortcutVariant.Button, CELL)
+        captureWidget("331_shortcut_widget_project", ShortcutWidgetSettings(ShortcutStyle.Solid).withTarget(ShortcutTarget.Project("bc-1", "Cursor for Android")), ShortcutVariant.Button, CELL)
     }
 
     /** The compose bar across four cells, and the composer box it becomes two rows tall. */
     @Test
     fun bars() {
-        captureWidget("332_compose_bar_widget", ShortcutWidgetSettings(ShortcutStyle.White), ShortcutVariant.Bar, DpSize(320.dp, 72.dp))
+        captureWidget("332_compose_bar_widget", ShortcutWidgetSettings(ShortcutStyle.Solid), ShortcutVariant.Bar, DpSize(320.dp, 72.dp))
         captureWidget("333_compose_bar_widget_tinted", ShortcutWidgetSettings(ShortcutStyle.Tinted), ShortcutVariant.Bar, DpSize(320.dp, 72.dp))
         captureWidget("334_compose_bar_widget_tall", ShortcutWidgetSettings(ShortcutStyle.Tinted), ShortcutVariant.TallBar, DpSize(320.dp, 140.dp))
+    }
+
+    /**
+     * The same widgets under the light app theme, on a light wallpaper; black for an OLED-black app; and the widget's own
+     * theme pinned against the app's.
+     */
+    @Test
+    fun themes() {
+        captureWidget("400_shortcut_widget_solid_light", ShortcutWidgetSettings(ShortcutStyle.Solid), ShortcutVariant.Button, CELL, ThemeMode.Light, ground = LightGround)
+        captureWidget("401_shortcut_widget_glass_light", ShortcutWidgetSettings(ShortcutStyle.Glass), ShortcutVariant.Button, CELL, ThemeMode.Light, ground = LightGround)
+        captureWidget("402_shortcut_widget_solid_oled", ShortcutWidgetSettings(ShortcutStyle.Solid), ShortcutVariant.Button, CELL, oledBlack = true, ground = BlackGround)
+        captureWidget("403_compose_bar_widget_light", ShortcutWidgetSettings(ShortcutStyle.Solid), ShortcutVariant.Bar, DpSize(320.dp, 72.dp), ThemeMode.Light, ground = LightGround)
+        captureWidget("404_compose_bar_widget_tall_light", ShortcutWidgetSettings(ShortcutStyle.Solid), ShortcutVariant.TallBar, DpSize(320.dp, 140.dp), ThemeMode.Light, ground = LightGround)
+        val pinnedDark = ShortcutWidgetSettings(ShortcutStyle.Solid, appearance = WidgetAppearance(theme = WidgetTheme.Dark))
+        captureWidget("405_compose_bar_widget_pinned_dark", pinnedDark, ShortcutVariant.Bar, DpSize(320.dp, 72.dp), ThemeMode.Light, ground = LightGround)
     }
 
     /** The quick composer over the launcher: as it opens, with a draft and an image, and with a refusal under it. */
@@ -140,18 +155,39 @@ class ShortcutWidgetScreenshotTest {
      * The shared widget settings screen ([WidgetConfigureScreen], the Chats widget's chrome) with this kind's body:
      * the live preview, what a tap opens, the button's look, and the appearance section every widget carries.
      */
-    @OptIn(ExperimentalMaterial3Api::class)
     @Test
     fun configure() {
-        val sample = WidgetData.sample(ThemeMode.Dark, FIXED_NOW)
+        showConfigure(ShortcutWidgetSettings(ShortcutStyle.Solid, appearance = WidgetAppearance(theme = WidgetTheme.App, opacity = 100)), ThemeMode.Dark)
+        capture("338_shortcut_widget_configure")
+    }
+
+    /** The settings screen under the light app theme: the preview and the swatches are the light widget. */
+    @Test
+    fun configureLight() {
+        showConfigure(ShortcutWidgetSettings(ShortcutStyle.Solid), ThemeMode.Light)
+        capture("406_shortcut_widget_configure_light")
+    }
+
+    /**
+     * The light app with the widget pinned dark: the preview and every swatch are the dark widget, the swatches each on
+     * a disc of the dark home screen so they read against the light page.
+     */
+    @Test
+    fun configurePinnedDark() {
+        showConfigure(ShortcutWidgetSettings(ShortcutStyle.Solid, appearance = WidgetAppearance(theme = WidgetTheme.Dark)), ThemeMode.Light)
+        capture("407_shortcut_widget_configure_pinned_dark")
+    }
+
+    @OptIn(ExperimentalMaterial3Api::class)
+    private fun showConfigure(settings: ShortcutWidgetSettings, appMode: ThemeMode) {
+        val sample = WidgetData.sample(appMode, FIXED_NOW)
         val pinned = sample.copy(local = LocalAgentState(pinnedIds = setOf("bc-preview-1", "bc-preview-3")))
         val targets = ShortcutTargets(pinned = AgentListOrganizer.organize(pinned.agents, pinned.prefs, pinned.local, nowMillis = FIXED_NOW).firstOrNull { it.key == AgentListOrganizer.PINNED_KEY }?.rows.orEmpty())
-        val settings = ShortcutWidgetSettings(ShortcutStyle.White, appearance = WidgetAppearance(theme = WidgetTheme.App, opacity = 100))
         compose.setContent {
-            CursorTheme(mode = ThemeMode.Dark) {
+            CursorTheme(mode = appMode) {
                 CompositionLocalProvider(LocalRippleConfiguration provides null) {
                     WidgetConfigureScreen(title = "New chat button", subtitle = "What it opens and how it looks", onDone = {}, onClose = {}) {
-                        ShortcutWidgetOptions(settings = settings, variant = ShortcutVariant.Button, targets = targets, appMode = ThemeMode.Dark, appOledBlack = false, onChange = {})
+                        ShortcutWidgetOptions(settings = settings, variant = ShortcutVariant.Button, targets = targets, appMode = appMode, appOledBlack = false, onChange = {})
                     }
                 }
             }
@@ -159,7 +195,6 @@ class ShortcutWidgetScreenshotTest {
         compose.waitForIdle()
         // The stage composes the widget to RemoteViews a moment after the first frame.
         compose.mainClock.advanceTimeBy(500)
-        capture("338_shortcut_widget_configure")
     }
 
     @OptIn(ExperimentalMaterial3Api::class)
@@ -192,21 +227,26 @@ class ShortcutWidgetScreenshotTest {
         captureScreenRoboImage(File(outDir, "$name.png").path, RoborazziOptions())
     }
 
+    /** [ground] is the wallpaper under the host, so a translucent look is seen against something. */
     @OptIn(ExperimentalGlanceRemoteViewsApi::class)
-    private fun captureWidget(name: String, settings: ShortcutWidgetSettings, variant: ShortcutVariant, size: DpSize) {
+    private fun captureWidget(
+        name: String,
+        settings: ShortcutWidgetSettings,
+        variant: ShortcutVariant,
+        size: DpSize,
+        appMode: ThemeMode = ThemeMode.Dark,
+        oledBlack: Boolean = false,
+        ground: IntArray = DarkGround,
+    ) {
         val remoteViews = runBlocking {
-            GlanceRemoteViews().compose(context, size) { ShortcutWidgetContent(settings, variant, appMode = ThemeMode.Dark, appOledBlack = false) }.remoteViews
+            GlanceRemoteViews().compose(context, size) { ShortcutWidgetContent(settings, variant, appMode = appMode, appOledBlack = oledBlack) }.remoteViews
         }
         lateinit var host: AppWidgetHostView
         compose.activityRule.scenario.onActivity { activity ->
             val density = activity.resources.displayMetrics.density
             host = AppWidgetHostView(activity)
             host.addView(remoteViews.apply(activity, host))
-            // A wallpaper-like ground under the host, so a translucent look is seen against something.
-            host.background = android.graphics.drawable.GradientDrawable(
-                android.graphics.drawable.GradientDrawable.Orientation.TL_BR,
-                intArrayOf(AndroidColor.rgb(38, 54, 82), AndroidColor.rgb(86, 62, 96)),
-            )
+            host.background = android.graphics.drawable.GradientDrawable(android.graphics.drawable.GradientDrawable.Orientation.TL_BR, ground)
             activity.setContentView(host, ViewGroup.LayoutParams((size.width.value * density).toInt(), (size.height.value * density).toInt()))
         }
         compose.waitForIdle()
@@ -230,5 +270,10 @@ class ShortcutWidgetScreenshotTest {
 
         /** A wallpaper-like ground under the quick composer's scrim. */
         val Wallpaper = Brush.linearGradient(listOf(Color(0xFF263652), Color(0xFF563E60)))
+
+        /** Wallpapers under a widget: the dark one [Wallpaper] is, a light one, and an OLED user's black. */
+        val DarkGround = intArrayOf(AndroidColor.rgb(38, 54, 82), AndroidColor.rgb(86, 62, 96))
+        val LightGround = intArrayOf(AndroidColor.rgb(206, 218, 236), AndroidColor.rgb(232, 214, 226))
+        val BlackGround = intArrayOf(AndroidColor.BLACK, AndroidColor.BLACK)
     }
 }

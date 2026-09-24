@@ -80,30 +80,49 @@ object SlashTokens {
 }
 
 /**
+ * What the `/` popover lists for [token] and which of it a physical keyboard has highlighted ([popoverKeys]). The
+ * highlight starts on the first row as the popover opens on a token, and goes back to it whenever the query starts or
+ * stops being empty, as the desktop's `/` menu has it.
+ */
+@Composable
+fun rememberSlashSuggestions(token: SlashToken?, catalog: SlashCatalog, recent: List<String>): PopoverSelection<SlashCommand> {
+    // Held against the query rather than recomputed: this follows the composer, which follows every caret move and —
+    // while a run streams — every delta, and the search walks the whole catalog.
+    val query = token?.query
+    val results = remember(query, catalog, recent) {
+        if (query == null) emptyList() else catalog.search(query, recent)
+    }
+    return rememberPopoverSelection(results, token?.start, query.isNullOrEmpty())
+}
+
+/**
+ * Whether the `/` popover is up for [token]. A catalog still waiting on the agent's machine has something to say even
+ * with nothing to list, which is the state the popover's notice exists for: the command being typed may be one the
+ * machine has not reported yet.
+ */
+fun slashPopoverOpen(token: SlashToken?, suggestions: PopoverSelection<SlashCommand>, catalog: SlashCatalog): Boolean =
+    token != null && (suggestions.items.isNotEmpty() || catalog.pending)
+
+/**
  * The composer's `/` popover, as on cursor.com/agents: typing `/` under the cursor lists the commands and skills the
- * chat can lead with, narrowed by what follows the slash, and a tap completes the token. It floats over the composer's
- * footer from the text field it is anchored to and, unlike the "+" menu, takes no focus, so the keyboard stays up and
- * typing carries on narrowing the list until it is empty or the token is left.
+ * chat can lead with ([suggestions]), narrowed by what follows the slash, and a tap completes the token. It floats
+ * over the composer's footer from the text field it is anchored to and, unlike the "+" menu, takes no focus, so the
+ * keyboard stays up and typing carries on narrowing the list until it is empty or the token is left. With
+ * [showHighlight], the row a physical keyboard's Enter would pick wears the highlight.
  */
 @Composable
 fun SlashCommandPopover(
     token: SlashToken?,
+    suggestions: PopoverSelection<SlashCommand>,
     catalog: SlashCatalog,
-    recent: List<String>,
+    showHighlight: Boolean,
     onPick: (SlashCommand) -> Unit,
     onDismiss: () -> Unit,
 ) {
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
-    // Held against the query rather than recomputed: this composable follows the composer, which follows every
-    // caret move and — while a run streams — every delta, and the search walks the whole catalog.
-    val query = token?.query
-    val results = remember(query, catalog, recent) {
-        if (query == null) emptyList() else catalog.search(query, recent)
-    }
-    // A catalog still waiting on the agent's machine has something to say even with nothing to list, which is the
-    // state the notice below exists for: the command being typed may be one the machine has not reported yet.
-    val expanded = token != null && (results.isNotEmpty() || catalog.pending)
+    val results = suggestions.items
+    val expanded = slashPopoverOpen(token, suggestions, catalog)
     // The popover has nothing to say once the token matches nothing (a made-up word after a slash, "/2x") and
     // nothing more is coming; it closes itself rather than hanging on to an empty card.
     LaunchedEffect(token, results.isEmpty(), catalog.pending) {
@@ -120,8 +139,8 @@ fun SlashCommandPopover(
         modifier = Modifier.semantics { contentDescription = "Slash commands" },
     ) {
         Column(Modifier.width(PopoverWidth).heightIn(max = PopoverMaxHeight).fadingVerticalScroll(surface = colors.elevated)) {
-            results.forEach { entry ->
-                SlashCommandRow(entry, onClick = { onPick(entry) })
+            results.forEachIndexed { index, entry ->
+                SlashCommandRow(entry, highlighted = showHighlight && index == suggestions.highlighted, onClick = { onPick(entry) })
             }
         }
         if (catalog.pending) {
@@ -136,7 +155,7 @@ fun SlashCommandPopover(
 
 /** One suggestion: `/name` with its argument hint, and the description (or origin) beneath. */
 @Composable
-private fun SlashCommandRow(entry: SlashCommand, onClick: () -> Unit) {
+private fun SlashCommandRow(entry: SlashCommand, highlighted: Boolean, onClick: () -> Unit) {
     val glyph = commandGlyph(entry)
     CursorMenuItem(
         entry.command,
@@ -144,6 +163,7 @@ private fun SlashCommandRow(entry: SlashCommand, onClick: () -> Unit) {
         subtitle = entry.summary,
         hint = entry.argumentHint,
         subtitleMaxLines = 1,
+        highlighted = highlighted,
         trailing = if (glyph != null) ({ Icon(glyph, null, tint = CursorTheme.colors.iconQuaternary, modifier = Modifier.size(CursorDimens.menuIcon)) }) else null,
         onClick = onClick,
     )
