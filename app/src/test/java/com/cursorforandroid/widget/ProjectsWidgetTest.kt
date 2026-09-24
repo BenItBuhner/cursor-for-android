@@ -20,6 +20,7 @@ import androidx.glance.appwidget.GlanceRemoteViews
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.cursorforandroid.domain.ChatsWidgetSettings
+import com.cursorforandroid.domain.HeaderElement
 import com.cursorforandroid.domain.RowElement
 import com.cursorforandroid.domain.WidgetLayout
 import com.cursorforandroid.domain.WidgetMode
@@ -70,6 +71,18 @@ class ProjectsWidgetTest {
         assertThat(rows[4].texts()).containsExactly("Codex Poly Bot", "3h").inOrder()
         assertThat(rows.last().texts()).containsExactly("Home automation")
         assertThat(host.texts()).contains("Projects")
+    }
+
+    /** A Project's row has one design: a tall widget shows more Projects, not taller rows with the counts moved under the name. */
+    @Test
+    fun `a tall widget's Project rows are the one-line rows a 4x2 draws`() {
+        val snapshot = ProjectsWidgetFixture.snapshot(ThemeMode.Dark, now)
+        val short = render(snapshot, projects, medium).rowViews()
+        val tall = render(snapshot, projects, DpSize(320.dp, 330.dp)).rowViews()
+        val forced = render(snapshot, projects.copy(layout = WidgetLayout.Large), medium).rowViews()
+        assertThat(tall.map { it.texts() }).isEqualTo(short.map { it.texts() })
+        assertThat(forced.map { it.texts() }).isEqualTo(short.map { it.texts() })
+        assertThat(tall.first().texts()).containsExactly("Cursor for Android", "2m", "4").inOrder()
     }
 
     @Test
@@ -125,7 +138,7 @@ class ProjectsWidgetTest {
 
         // Too narrow for them all: the first few, the working coordinator's dots among them, then "+N" for the rest.
         val narrowWidth = 250.dp
-        val slots = projectSlots(narrowWidth, CornerButtonSpec.of(app, projects, WidgetLayout.Small))
+        val slots = projectSlots(narrowWidth, CornerButtonSpec.of(app, projects, WidgetLayout.Small), logo = projects.shows(HeaderElement.Logo))
         assertThat(slots).isIn(MIN_STRIP_SLOTS until ProjectsWidgetFixture.listedIds.size)
         val narrow = render(snapshot, projects, DpSize(narrowWidth, 60.dp))
         assertThat(narrow.progressBars()).hasSize(1)

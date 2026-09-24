@@ -187,13 +187,13 @@ class SettingsScreenTest {
 
         compose.onNodeWithText(SettingsCopy.UNREAD_THIS_PHONE).performScrollTo().performClick()
         compose.waitUntil(10_000) { runBlocking { !graph.prefs.unreadOnlyTouchedHere.first() } }
-        compose.waitForIdle()
+        compose.waitUntil(10_000) { compose.onAllNodes(toggle and isOff()).fetchSemanticsNodes().isNotEmpty() }
         compose.onNode(toggle).assertIsOff()
         assertThat(runBlocking { graph.prefs.localAgentState.first() }.let { it.readMarkers.isEmpty() && it.touchedHereIds.isEmpty() }).isTrue()
 
         compose.onNodeWithText(SettingsCopy.UNREAD_THIS_PHONE).performScrollTo().performClick()
         compose.waitUntil(10_000) { runBlocking { graph.prefs.unreadOnlyTouchedHere.first() } }
-        compose.waitForIdle()
+        compose.waitUntil(10_000) { compose.onAllNodes(toggle and isOn()).fetchSemanticsNodes().isNotEmpty() }
         compose.onNode(toggle).assertIsOn()
     }
 
@@ -209,14 +209,14 @@ class SettingsScreenTest {
 
         compose.onNodeWithTag(SettingsTags.SHORTEN_PROJECTS).performScrollTo().performClick()
         compose.waitUntil(10_000) { runBlocking { !graph.prefs.shortenSidebarLists.first() } }
-        compose.waitForIdle()
+        compose.waitUntil(10_000) { compose.onAllNodes(toggle and isOff()).fetchSemanticsNodes().isNotEmpty() }
         compose.onNode(toggle).assertIsOff()
         runBlocking { graph.prefs.clearSession() }
         assertThat(runBlocking { graph.prefs.shortenSidebarLists.first() }).isFalse()
 
         compose.onNodeWithTag(SettingsTags.SHORTEN_PROJECTS).performScrollTo().performClick()
         compose.waitUntil(10_000) { runBlocking { graph.prefs.shortenSidebarLists.first() } }
-        compose.waitForIdle()
+        compose.waitUntil(10_000) { compose.onAllNodes(toggle and isOn()).fetchSemanticsNodes().isNotEmpty() }
         compose.onNode(toggle).assertIsOn()
     }
 

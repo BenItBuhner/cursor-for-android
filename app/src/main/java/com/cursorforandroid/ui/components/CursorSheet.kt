@@ -157,6 +157,24 @@ fun SheetHeader(
     }
 }
 
+/**
+ * A picker's title row with its refresh control at the end: the refresh glyph, swapped for a spinner while the list
+ * is being fetched — the model and repository pickers alike, so a list that can go stale always shows the same
+ * way to fetch it again.
+ */
+@Composable
+fun RefreshableSheetHeader(
+    title: String,
+    loading: Boolean,
+    refreshLabel: String,
+    onRefresh: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    SheetHeader(title, modifier) {
+        if (loading) SpinnerRing(modifier = Modifier.padding(end = 8.dp)) else FlatIconButton(CursorIcons.Refresh, refreshLabel, onClick = onRefresh)
+    }
+}
+
 val SheetHeaderHeight = 52.dp
 
 /** Material's sheet shrink: at full progress the extent loses [maxDistancePx] (or all of it, if smaller). */

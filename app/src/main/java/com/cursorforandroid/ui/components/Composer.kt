@@ -59,6 +59,7 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.drawscope.clipPath
 import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
@@ -111,6 +112,11 @@ import kotlinx.coroutines.launch
  * fading, once it runs past the composer's width; each file goes up the moment it is attached, its chip filling
  * meanwhile, the footer saying so in [sendHint]. The chat's composer sends regardless — the message finishes its
  * uploads on its own bubble — and empties at the tap; the New Chat composer holds its launch until the files are up.
+ *
+ * A physical keyboard's Enter presses send whenever send could be tapped, and does nothing otherwise; Shift+Enter, and
+ * the on-screen keyboard's Enter, put in a newline ([sendOnHardwareEnter]). While the `/` popover is up the keyboard
+ * drives it instead, as on the desktop: the arrows move its highlight, Enter or Tab picks the highlighted row, Esc
+ * closes it ([popoverKeys]).
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -197,6 +203,9 @@ fun ComposerBox(
             cancelOffered = true
         }
     }
+    // Exactly when the send slot below is an enabled Send: a physical Enter presses it then and at no other time, so
+    // it never stops a run, cancels a launch, or sends past files still going up.
+    val sendsNow = canSend && !isSending
     val pad = CursorDimens.composerPadding
     val border by animateColorAsState(if (focused) colors.strokeStrong else colors.strokeSubtle, tween(160), label = "border")
     // The field owns the text and the selection; [value] only says what the owner last made of it. Comparing the two
@@ -232,6 +241,12 @@ fun ComposerBox(
     val slashToken = if (focused) SlashTokens.at(field.text.toString(), field.selection) else null
     var dismissedToken by remember { mutableStateOf<SlashToken?>(null) }
     val recentSkills = plusMenu?.recentSkills.orEmpty()
+    val popoverToken = slashToken?.takeIf { it != dismissedToken }
+    val slash = rememberSlashSuggestions(popoverToken, commands, recentSkills)
+    val slashOpen = slashPopoverOpen(popoverToken, slash, commands)
+    // Whether a physical keyboard has typed here. Until one has, the popover shows no highlight: the rows are for
+    // tapping, and an Enter that picks is only ever a physical keyboard's.
+    var physicalKeys by remember { mutableStateOf(false) }
     // The popover's rows keep the click handler they were composed with, so the handler reads the token and catalog
     // as they are when the row is tapped, not as they were when the row first appeared (typing "/", then "g", then
     // "o" composes the row once, under the "/" token; completing that token would leave the "go" in place).
@@ -347,6 +362,9 @@ fun ComposerBox(
                     .fillMaxWidth()
                     // One line of `input` at the default font scale, so the box does not shrink under a small system font.
                     .heightIn(min = 22.dp)
+                    .onPreviewKeyEvent { if (it.isFromHardwareKeyboard) physicalKeys = true; false }
+                    .popoverKeys(slashOpen, slash, composing = { field.composition != null }, onPick = { complete(it) }, onDismiss = { dismissedToken = slashToken })
+                    .sendOnHardwareEnter(field, onSend = onSend.takeIf { sendsNow }, onEdited = { publish(it) })
                     .then(if (receiveImages != null) Modifier.contentReceiver(receiveImages) else Modifier)
                     .focusRequester(focus)
                     .onFocusChanged { focused = it.isFocused },
@@ -362,9 +380,10 @@ fun ComposerBox(
                 },
             )
             SlashCommandPopover(
-                token = slashToken?.takeIf { it != dismissedToken },
+                token = popoverToken,
+                suggestions = slash,
                 catalog = commands,
-                recent = recentSkills,
+                showHighlight = physicalKeys,
                 onPick = { complete(it) },
                 onDismiss = { dismissedToken = slashToken },
             )
@@ -428,7 +447,7 @@ fun ComposerBox(
                 isSending && cancelOffered && onCancelSend != null -> ComposerRoundButton(CursorIcons.Stop, "Cancel sending", onClick = onCancelSend, prominent = true)
                 isSending -> ComposerBusyButton()
                 isRunning && onStop != null && !canSend -> ComposerRoundButton(CursorIcons.Stop, "Stop", onClick = onStop, prominent = true)
-                else -> ComposerRoundButton(CursorIcons.ArrowUp, "Send", onClick = onSend, prominent = canSend, enabled = canSend)
+                else -> ComposerRoundButton(CursorIcons.ArrowUp, "Send", onClick = onSend, prominent = canSend, enabled = sendsNow)
             }
         }
     }

@@ -64,6 +64,9 @@
     <string name="widget_configure_appearance">Appearance</string>
     <string name="widget_configure_theme">Theme</string>
     <string name="widget_configure_opacity">Background</string>
+    <string name="widget_configure_header">Header</string>
+    <string name="widget_configure_header_auto_hide">Hide on short widgets</string>
+    <string name="widget_configure_header_auto_hide_detail">Under %1$ddp tall, the rows get its room</string>
     <string name="widget_configure_rows">Rows</string>
     <string name="widget_configure_density">Density</string>
     <string name="widget_configure_corner">Corner button</string>
@@ -73,8 +76,10 @@
     <string name="widget_configure_title">Widget</string>
     <string name="widget_configure_subtitle">What it shows and how it looks</string>
     <string name="widget_configure_group">Show</string>
-    <string name="widget_configure_note">Tap a chat to open it. The lists follow the Chats filters in the sidebar; tap the widget\'s title to come back here.</string>
-    <string name="widget_configure_note_projects">Tap a Project to open its coordinator. Every Project is listed whatever the Chats filters say; tap the widget\'s title to come back here.</string>
+    <string name="widget_configure_note">Tap a chat to open it. The lists follow the Chats filters in the sidebar.</string>
+    <string name="widget_configure_note_projects">Tap a Project to open its coordinator. Every Project is listed whatever the Chats filters say.</string>
+    <string name="widget_configure_back_title">Tap the widget\'s title to come back here.</string>
+    <string name="widget_configure_back_long_press">Long-press the widget to come back here.</string>
     <!-- Sample rows of the widget preview in the launcher's widget picker. -->
     <string name="widget_preview_title">Recent</string>
     <string name="widget_preview_row_1">Cli exploration</string>
