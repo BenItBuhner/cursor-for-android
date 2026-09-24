@@ -224,7 +224,19 @@ class HapticsTest {
         // Let go past the threshold: the refresh holds the indicator, then it hides; the next pull starts afresh.
         pull.reset()
         assertThat(pull.armed).isFalse()
+        // Sprung to the threshold, the indicator is read resting there before the refresh holds it, and again once the
+        // refresh is over before it hides: where it stands, not a crossing.
+        assertThat(pull.pulled(1f)).isNull()
+        assertThat(pull.armed).isTrue()
+        pull.reset()
+        assertThat(pull.pulled(1f)).isNull()
+        pull.reset()
+        assertThat(pull.pulled(0f)).isNull()
         assertThat(pull.pulled(0.1f)).isNull()
+        assertThat(pull.pulled(1.05f)).isEqualTo(Haptic.ThresholdActivate)
+        // A finger read past it the moment it takes the pull has still crossed it.
+        pull.reset()
+        assertThat(pull.pulled(1.2f)).isEqualTo(Haptic.ThresholdActivate)
     }
 
     @Test
