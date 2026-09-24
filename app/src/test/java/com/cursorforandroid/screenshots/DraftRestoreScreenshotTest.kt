@@ -5,6 +5,7 @@ import androidx.activity.ComponentActivity
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.LocalRippleConfiguration
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithText
@@ -140,8 +141,14 @@ class DraftRestoreScreenshotTest {
         }
         waitForText("The session cookie is written after the redirect fires")
         waitForText(TYPED)
-        // The turn's activity settled, so no frame catches its loading row.
-        compose.waitUntil(30_000) { graph.conversations.state(AGENT).value.let { !it.isLoading && it.traceStatus.pending == 0 } }
+        // The turn's activity settled in what the screen draws, so no frame catches its loading row: the transcript as
+        // the view model presented it off the main thread, which trails the repository's state by that presentation
+        // and lands on the main looper, which the semantics fetch turns.
+        val screen = ViewModelProvider(compose.activity, ConversationViewModel.Factory(graph, AGENT))["conversation-$AGENT", ConversationViewModel::class.java]
+        compose.waitUntil(30_000) {
+            compose.onAllNodes(hasTestTag("trace-status")).fetchSemanticsNodes().isEmpty() &&
+                screen.presented.value.state.let { !it.isLoading && it.traceStatus.pending == 0 }
+        }
     }
 
     private fun waitForText(text: String) =
