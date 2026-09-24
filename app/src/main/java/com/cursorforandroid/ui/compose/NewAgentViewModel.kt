@@ -18,6 +18,7 @@ import com.cursorforandroid.data.repo.NewChatDrafts
 import com.cursorforandroid.data.repo.SlashScope
 import com.cursorforandroid.domain.AccountModel
 import com.cursorforandroid.domain.Agent
+import com.cursorforandroid.domain.AgentMode
 import com.cursorforandroid.domain.BranchOption
 import com.cursorforandroid.domain.RepoRemote
 import com.cursorforandroid.domain.DeviceOption
@@ -41,6 +42,7 @@ import com.cursorforandroid.domain.SlashCatalog
 import com.cursorforandroid.domain.SlashCommands
 import com.cursorforandroid.share.ShareDraft
 import com.cursorforandroid.ui.components.FileUploadState
+import com.cursorforandroid.ui.components.ModePills
 import com.cursorforandroid.ui.components.PendingAttachment
 import com.cursorforandroid.ui.components.PendingFile
 import com.cursorforandroid.ui.components.withinSlots
@@ -110,6 +112,14 @@ data class NewAgentUiState(
     val selectedVariant: ModelVariant? = null,
     val autoCreatePr: Boolean = false,
     val planMode: Boolean = false,
+    /**
+     * Ask or Debug: the chat starts on the account in that mode (see [LaunchRequest.accountMode]). One slot with
+     * [planMode] and `/multitask`. Held while Extended mode's modes are off, so the draft keeps it, but worn and sent
+     * only while they are on ([extendedModes]).
+     */
+    val accountMode: AgentMode? = null,
+    /** Extended mode's `agentModes`, outside the demo: the composer offers Ask and Debug. */
+    val extendedModes: Boolean = false,
     /** Where the next chat runs; Cloud until the user picks a machine or team pool. */
     val selectedDevice: DeviceTarget = DeviceTarget.Cloud,
     /** Cloud, then live / harvested machines and pools. Always contains Cloud. */
@@ -152,6 +162,10 @@ data class NewAgentUiState(
      * request without a `model` gets — and that is what the chip says.
      */
     val modelLabel: String get() = selectedModel?.displayName ?: AccountModel.AUTO_LABEL
+    /** [accountMode] as it goes out: only while Extended mode's modes are on. */
+    val sentAccountMode: AgentMode? get() = accountMode?.takeIf { extendedModes && it.needsAccountService }
+    /** The mode pill the composer wears for the choices here; Multitask's is the prompt's own `/multitask`. */
+    val modePill: ModePills.Pill? get() = ModePills.Pill.of(sentAccountMode) ?: ModePills.Pill.Plan.takeIf { planMode }
     val deviceLabel: String get() = selectedDevice.label
     /** The machine's own checkout decides where an unpicked branch starts: what the desktop sends for a machine (no ref). */
     val startsFromCheckout: Boolean get() = machineStartEnabled && selectedDevice.type == EnvType.MACHINE && selectedRepo != null && !noRepo
@@ -358,7 +372,11 @@ class NewAgentViewModel(
                 val allowed = caps.promptFiles && !graph.session.isDemo
                 if (!allowed) _state.value.files.forEach { graph.attachmentUploads.cancel(it.id) }
                 val machineStart = caps.machineStart && !graph.session.isDemo
-                _state.update { s -> (if (allowed) s.copy(canAttachFiles = true) else s.copy(canAttachFiles = false, files = emptyList())).copy(machineStartEnabled = machineStart) }
+                val modes = caps.agentModes && !graph.session.isDemo
+                _state.update { s ->
+                    (if (allowed) s.copy(canAttachFiles = true) else s.copy(canAttachFiles = false, files = emptyList()))
+                        .copy(machineStartEnabled = machineStart, extendedModes = modes)
+                }
             }
         }
         viewModelScope.launch {
@@ -408,6 +426,7 @@ class NewAgentViewModel(
                 files = files.map { (_, file) -> file },
                 autoCreatePr = record.autoCreatePr,
                 planMode = record.planMode,
+                accountMode = AgentMode.parse(record.mode)?.takeIf { it.needsAccountService },
                 // A draft 0.3.61 kept never said where it would run: it opens on the last launch's device, as it did.
                 selectedDevice = record.device ?: s.selectedDevice,
                 // A machine's repository is the checkout it reports now, not the one saved with the draft; a pick made
@@ -493,6 +512,7 @@ class NewAgentViewModel(
             modelChosen = modelPicked,
             autoCreatePr = s.autoCreatePr,
             planMode = s.planMode,
+            mode = s.accountMode?.name,
             nonce = launchNonce,
             launchedAs = existing?.launchedAs,
         )
@@ -545,6 +565,7 @@ class NewAgentViewModel(
                     error = null,
                     errorAsked = null,
                     planMode = false,
+                    accountMode = null,
                     autoCreatePr = saved.autoCreatePr,
                     selectedDevice = saved.env,
                     repoFollowsDevice = !saved.env.isCloud,
@@ -584,6 +605,7 @@ class NewAgentViewModel(
         selectedVariant?.params?.map { it.id to it.value },
         autoCreatePr,
         planMode,
+        accountMode,
     )
 
     private suspend fun loadRepositories(preferredUrl: String?) {
@@ -886,17 +908,32 @@ class NewAgentViewModel(
 
     fun setAutoCreatePr(value: Boolean) = _state.update { it.copy(autoCreatePr = value) }
 
-    /** Plan mode and `/multitask` are one slot: asking for a plan takes the command out of the prompt. */
+    /** Plan mode and `/multitask` are one slot: asking for a plan takes the command out of the prompt, and Ask or Debug off. */
     fun setPlanMode(value: Boolean) = _state.update {
-        it.copy(planMode = value, prompt = if (value) SlashCommands.remove(it.prompt, SlashCommands.MULTITASK) else it.prompt)
+        if (value) it.copy(planMode = true, accountMode = null, prompt = SlashCommands.remove(it.prompt, SlashCommands.MULTITASK)) else it.copy(planMode = false)
+    }
+
+    /**
+     * The composer's mode pill, picked (by `/plan`, `/ask`, `/debug` or Shift+Tab) or taken off (null): the one slot
+     * set to it. Ask and Debug only while Extended mode's modes are on; Multitask is the prompt's own token, which the
+     * composer writes itself, so it only takes the others off here.
+     */
+    fun setModePill(pill: ModePills.Pill?) = _state.update { s ->
+        val account = pill?.agentMode?.takeIf { it.needsAccountService && s.extendedModes }
+        val mode = pill == ModePills.Pill.Plan || account != null
+        s.copy(
+            planMode = pill == ModePills.Pill.Plan,
+            accountMode = account,
+            prompt = if (mode) SlashCommands.remove(s.prompt, SlashCommands.MULTITASK) else s.prompt,
+        )
     }
 
     /**
      * The one-slot rule the other way round: a prompt that carries `/multitask` — typed, picked, shared in or restored —
-     * puts plan mode off. A run is planned or fanned out to subagents, never asked for both.
+     * puts plan mode, Ask and Debug off. A run is planned, answers, debugs or fans out to subagents, never two of those.
      */
     private fun NewAgentUiState.withExclusiveModes(): NewAgentUiState =
-        if (planMode && SlashCommands.has(prompt, SlashCommands.MULTITASK)) copy(planMode = false) else this
+        if ((planMode || accountMode != null) && SlashCommands.has(prompt, SlashCommands.MULTITASK)) copy(planMode = false, accountMode = null) else this
 
     fun refreshRepositories() = viewModelScope.launch {
         _state.update { it.copy(isLoadingRepos = true) }
@@ -946,6 +983,12 @@ class NewAgentViewModel(
                 return
             }
         }
+        // Ask and Debug ride the account's start too: Cursor's cloud, or a machine's checkout the desktop's way.
+        val accountMode = s.sentAccountMode
+        if (accountMode != null && (s.selectedDevice.type == EnvType.POOL || (s.selectedDevice.type == EnvType.MACHINE && !s.startsFromCheckout))) {
+            reportError(AgentRepository.modeNeedsCloud(accountMode))
+            return
+        }
         val nonce = launchNonce
         // Held only for as long as the draft takes to pack and put on screen, so a second tap cannot send it twice.
         _state.update { it.copy(isLaunching = true, error = null, errorAsked = null) }
@@ -967,7 +1010,8 @@ class NewAgentViewModel(
                     ?: remembered?.modelParams?.map { (id, value) -> ModelParam(id, value) }
                     ?: emptyList(),
                 autoCreatePr = s.autoCreatePr,
-                planMode = s.planMode,
+                planMode = s.planMode && accountMode == null,
+                accountMode = accountMode,
                 mcpServers = graph.mcpServers.enabled(),
                 env = s.selectedDevice,
                 // A machine that has dropped off the listing is still asked for by the worker it was last listed as.
