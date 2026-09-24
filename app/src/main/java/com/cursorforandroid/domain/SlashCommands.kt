@@ -3,7 +3,7 @@ package com.cursorforandroid.domain
 /**
  * Slash commands the way the web composer attaches them: `/multitask` and `/skill-name` apply to the message they
  * lead. The prompt itself is plain text, so a command is a standalone `/name` token kept at the front of it; the app
- * paints the tokens ([tokenRanges]) in the Plan pill's tint — in the composer and wherever the message is shown
+ * paints the tokens ([tokenRanges]) in their tints, a mode's in its pill's — in the composer and wherever the message is shown
  * after it (see `SlashCommandHighlight.kt`) — and the composer wears `/multitask` as a pill (see `ModePills`), but
  * what leaves the device is the text with the token in it.
  */

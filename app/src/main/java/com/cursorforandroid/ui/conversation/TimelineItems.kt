@@ -91,7 +91,7 @@ import com.cursorforandroid.ui.components.ProgressRing
 import com.cursorforandroid.ui.components.ShimmerText
 import com.cursorforandroid.ui.components.cursorSurface
 import com.cursorforandroid.ui.components.pressable
-import com.cursorforandroid.ui.components.slashCommandTint
+import com.cursorforandroid.ui.components.commandTints
 import com.cursorforandroid.ui.files.fileLink
 import com.cursorforandroid.ui.files.openablePath
 import com.cursorforandroid.ui.files.rememberFileOpener
@@ -115,15 +115,16 @@ fun TimelineItemView(item: TimelineItem, modifier: Modifier = Modifier) {
  * `.composer-human-message` from the desktop build: `align-self: flex-end`, `width: fit-content`,
  * `min-width: 150px`, `background: input.background` (4 %), `border: 1px solid stroke-secondary` (12 %),
  * radius xl, padding 8px 10px, inset 32px from the opposite edge, 14/22 text. Attached images sit above the text,
- * as they do on the web. A `/command` in the text is painted as the composer painted it ([slashCommandTint]), so
- * the message reads in the bubble as it did in the field. Press and hold the bubble for its actions; an image-only
+ * as they do on the web. A `/command` in the text is painted as the composer painted it ([commandTints]): a command
+ * in the desktop's command yellow, a mode's token (`/multitask`) in its pill's tint, so the message reads in the
+ * bubble as it did in the field. Press and hold the bubble for its actions; an image-only
  * prompt has no text to copy.
  */
 @Composable
 private fun HumanMessage(item: UserMessage, modifier: Modifier) {
     val colors = CursorTheme.colors
     val hasText = item.text.isNotBlank()
-    val commandTint = slashCommandTint()
+    val commandTints = commandTints()
     // A prompt the server has not acknowledged yet is drawn faded — through its colours, the way the rest of the app
     // fades things — and comes up to full strength once its run is filed.
     val alpha by animateFloatAsState(if (item.isPending) PendingMessageAlpha else 1f, tween(240), label = "pending")
@@ -138,7 +139,7 @@ private fun HumanMessage(item: UserMessage, modifier: Modifier) {
                     MessageAttachments(item.attachments, Modifier.padding(bottom = if (hasText) 8.dp else 0.dp), alpha = alpha)
                 }
                 if (hasText || item.attachments.isEmpty()) {
-                    MarkdownText(item.text, style = CursorTheme.typography.message, color = colors.textPrimary.faded(alpha), commandColor = commandTint.faded(alpha))
+                    MarkdownText(item.text, style = CursorTheme.typography.message, color = colors.textPrimary.faded(alpha), commandTints = commandTints.faded(alpha))
                 }
                 // Sent from here and not yet filed: where the send stands, on the bubble — never back in the composer.
                 val controls = LocalTranscriptControls.current

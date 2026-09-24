@@ -23,6 +23,7 @@ import com.cursorforandroid.domain.AgentMode
 import com.cursorforandroid.domain.SlashCommands
 import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
+import com.cursorforandroid.ui.theme.ProjectPalette
 
 /**
  * The slash commands the composer wears as pills instead of text, as cursor.com/agents does: `/multitask`, which
@@ -34,15 +35,18 @@ import com.cursorforandroid.ui.theme.CursorTheme
  * Everything here is presentation. The owner of the composer keeps holding the prompt the way it has always been
  * sent — `/multitask fix the flaky test` — and the field shows `fix the flaky test` beside a Multitask pill; every
  * keystroke hands the owner the text with the token back in front ([compose]). Only these become pills: `/goal`, a
- * skill or a machine command stay in the text, painted as commands in the Plan pill's tint ([slashCommandTint]).
+ * skill or a machine command stay in the text, painted as commands ([CommandTints]).
  */
 object ModePills {
-    /** A pill: the slash command it stands for, the word on it, and the line the desktop's mode menu gives it (3.21.18 `modeConfig.js`). */
-    enum class Pill(val command: String, val label: String, val description: String) {
-        Multitask(SlashCommands.MULTITASK, "Multitask", "Orchestrate multiple subagents in parallel"),
-        Plan(SlashCommands.PLAN, "Plan", "Generate an implementation plan"),
-        Ask(SlashCommands.ASK, "Ask", "Answer questions without making edits"),
-        Debug(SlashCommands.DEBUG, "Debug", "Pinpoint the root cause of an issue"),
+    /**
+     * A pill: the slash command it stands for, the word on it, the line the desktop's mode menu gives it, and the
+     * colour it names (3.21.18 `modeConfig.js`, `color`), which [pillTint] resolves.
+     */
+    enum class Pill(val command: String, val label: String, val description: String, val colorId: String) {
+        Multitask(SlashCommands.MULTITASK, "Multitask", "Orchestrate multiple subagents in parallel", "purple"),
+        Plan(SlashCommands.PLAN, "Plan", "Generate an implementation plan", "yellow"),
+        Ask(SlashCommands.ASK, "Ask", "Answer questions without making edits", "green"),
+        Debug(SlashCommands.DEBUG, "Debug", "Pinpoint the root cause of an issue", "red"),
         ;
 
         /** The mode a pill asks the run for; null for Multitask, which rides in the text instead. */
@@ -168,22 +172,6 @@ object ModePills {
     }
 }
 
-/*
- * The desktop's own colour for each mode (3.21.18 `modeConfig.js`: Plan `yellow`, Debug `red`, Ask `green`, Multitask
- * `purple`), as its glass themes define those tokens: `cursor-dark` and `cursor-light` in OKLCH, which come out in sRGB
- * as the Cursor Dark and Cursor Light themes' `charts.yellow`, `terminal.ansiRed`, `terminal.ansiGreen` and
- * `charts.purple`. The `/commands` in the reader's text are painted in Plan's ([slashCommandTint]), so a command and
- * the pill a command can become read as one thing.
- */
-internal val PillPurpleDark = Color(0xFF9386F2)
-internal val PillPurpleLight = Color(0xFF7565CC)
-internal val PillYellowDark = Color(0xFFF1B467)
-internal val PillYellowLight = Color(0xFFA46700)
-internal val PillGreenDark = Color(0xFF3FA266)
-internal val PillGreenLight = Color(0xFF007041)
-internal val PillRedDark = Color(0xFFFC6B83)
-internal val PillRedLight = Color(0xFFBE1744)
-
 /** How much of its tint a pill's wash carries over the surface, dark or light: the desktop's `color-mix(… 12%, transparent)`. */
 private const val PillWashAlpha = 0.12f
 
@@ -191,12 +179,14 @@ private const val PillWashAlpha = 0.12f
 @Composable
 internal fun pillTint(pill: ModePills.Pill): Color = pillTint(pill, CursorTheme.colors.isDark)
 
-internal fun pillTint(pill: ModePills.Pill, dark: Boolean): Color = when (pill) {
-    ModePills.Pill.Multitask -> if (dark) PillPurpleDark else PillPurpleLight
-    ModePills.Pill.Plan -> if (dark) PillYellowDark else PillYellowLight
-    ModePills.Pill.Ask -> if (dark) PillGreenDark else PillGreenLight
-    ModePills.Pill.Debug -> if (dark) PillRedDark else PillRedLight
-}
+/**
+ * The desktop's colour for [pill]'s [ModePills.Pill.colorId]; the default agent mode names none and has no pill. The
+ * mode chip is the `filled` Pill (3.21.18 `Pill.js`): glyph and label in `--cursor-text-<id>-primary`, which is
+ * `--cursor-<id>`, over `--cursor-bg-<id>-secondary`, the same colour mixed 12 % into transparent ([PillWashAlpha]).
+ * In the Agents Window those tokens are Cursor's core themes (`cursor-core-themes.js`, injected for
+ * `body[data-cursor-glass-mode=true]`), not the editor theme's: the palette a Project is painted in, [ProjectPalette].
+ */
+internal fun pillTint(pill: ModePills.Pill, dark: Boolean): Color = checkNotNull(ProjectPalette.color(pill.colorId, dark)) { pill.colorId }
 
 /**
  * A mode the message goes out under, worn in the composer footer the way cursor.com/agents wears Multitask: a

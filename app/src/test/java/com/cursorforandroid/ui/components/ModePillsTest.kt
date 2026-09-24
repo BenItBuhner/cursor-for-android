@@ -1,5 +1,6 @@
 package com.cursorforandroid.ui.components
 
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.TextFieldValue
 import com.cursorforandroid.ui.components.ModePills.Pill
@@ -115,6 +116,22 @@ class ModePillsTest {
         // Without a mode to set (no owner for it): Multitask and back.
         assertThat(ModePills.next(null) { it == Pill.Multitask }).isEqualTo(Pill.Multitask)
         assertThat(ModePills.next(Pill.Multitask) { it == Pill.Multitask }).isNull()
+    }
+
+    @Test
+    fun `each mode wears the desktop glass colour its modeConfig names, in both themes, and Ask is green`() {
+        assertThat(Pill.entries.associate { it to it.colorId })
+            .containsExactly(Pill.Multitask, "purple", Pill.Plan, "yellow", Pill.Ask, "green", Pill.Debug, "red")
+        val dark = Pill.entries.associateWith { pillTint(it, dark = true) }
+        val light = Pill.entries.associateWith { pillTint(it, dark = false) }
+        assertThat(dark).containsExactly(
+            Pill.Multitask, Color(0xFF9386F2), Pill.Plan, Color(0xFFF1B467), Pill.Ask, Color(0xFF3FA266), Pill.Debug, Color(0xFFFC6B83),
+        )
+        assertThat(light).containsExactly(
+            Pill.Multitask, Color(0xFF7565CC), Pill.Plan, Color(0xFFA46701), Pill.Ask, Color(0xFF007041), Pill.Debug, Color(0xFFBE1744),
+        )
+        // The blue Ask once wore (#82AAFF, #2456B8) is nobody's.
+        assertThat(dark.values + light.values).containsNoneOf(Color(0xFF82AAFF), Color(0xFF2456B8))
     }
 
     @Test

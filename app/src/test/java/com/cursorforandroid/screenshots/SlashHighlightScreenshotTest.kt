@@ -42,7 +42,7 @@ import java.io.File
 /**
  * A `/command` wherever the reader's own words are drawn, in one frame: the `/goal` prompt as its bubble in the
  * transcript, a `/review` follow-up on its queued card, and a `/review` still in the composer beside the Plan pill.
- * The command tokens take the pill's tint (`slashCommandTint`) and the rest of each text stays as it is, so the
+ * The command tokens take the Plan pill's yellow (`CommandTints`) and the rest of each text stays as it is, so the
  * three surfaces and the pill read as one thing; once in the dark theme, once in the light. Same device qualifiers
  * as [AppScreenshotTest]; the layout is the chat's own — the transcript's page over the dock, the composer's gutter
  * at each side, the card docked over the box.

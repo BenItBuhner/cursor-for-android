@@ -54,7 +54,6 @@ import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.drawscope.clipPath
 import androidx.compose.ui.graphics.drawscope.translate
@@ -104,8 +103,8 @@ import kotlinx.coroutines.launch
  * Typing `/` opens the [SlashCommandPopover] under the cursor with [commands] — `/goal`, the skills, the machine's
  * commands — then the modes this composer can wear and the [models] it can switch to, narrowed by what follows the
  * slash ("/Opus 4" leaves the matching models); the same catalog backs the "+" menu's Skills page. A `/command`
- * standing in the text is painted in the Plan pill's tint ([slashCommandTint]) over the field's own glyphs, without
- * the field editing anything differently. A few commands are not text at all but pills right of "+", as on the web
+ * standing in the text is painted in its tint ([CommandTints]) over the field's own glyphs, without the field
+ * editing anything differently. A few commands are not text at all but pills right of "+", as on the web
  * ([ModePills]): `/multitask`, which the owner's [value] still carries in front so the request is unchanged, and
  * the modes — `/plan`, and with [extendedModes] `/ask` and `/debug` — which are [modePill]. Typing one with a space
  * after it, or picking it from the popover or the "+" menu, turns it into its pill and takes the token out of the
@@ -248,7 +247,7 @@ fun ComposerBox(
         }
     }
     val textScroll = rememberScrollState()
-    val commandTint = slashCommandTint()
+    val commandTints = commandTints()
     val receiveImages = rememberImagePasteReceiver(
         enabled = onAddAttachments != null,
         currentCount = attachments.size,
@@ -454,7 +453,7 @@ fun ComposerBox(
                         // The field's own text, not the owner's: a placeholder that follows a lagging owner blinks
                         // back over the first character typed.
                         if (field.text.isEmpty()) Text(placeholder, style = type.input, color = colors.textTertiary, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        Box(Modifier.slashCommandHighlight(layout = { textLayout.get?.invoke() }, scroll = textScroll, color = commandTint)) {
+                        Box(Modifier.slashCommandHighlight(layout = { textLayout.get?.invoke() }, scroll = textScroll, tints = commandTints)) {
                             inner()
                         }
                     }
@@ -562,16 +561,17 @@ private class TextLayoutHandle {
 }
 
 /**
- * Paints the `/command` tokens of a text field in [color] — the Plan pill's tint ([slashCommandTint]) — the way
- * cursor.com/agents and the desktop composer set a command apart from the request. Purely a matter of drawing: the
- * field lays its text out once and hands the result over through `onTextLayout` ([layout]); after the field has
- * drawn, the same layout is drawn again in [color], clipped to the box of each token ([SlashCommands.tokenRanges] of
- * the laid-out text), so the tinted glyphs land exactly on the field's own. Nothing about editing, selection or the
- * caret changes; the same rule and tint paint the message once sent (see [highlightSlashCommands]). The
- * field draws its text in the space of its scrolled content (its core node places that content at `-scroll` and
- * draws there), so the repaint follows [scroll] the same way and is clipped to the field's bounds like the field.
+ * Paints the `/command` tokens of a text field in their [tints] — a command in the desktop's command-chip yellow, a
+ * mode's own token in its pill's tint — the way cursor.com/agents and the desktop composer set a command apart from
+ * the request. Purely a matter of drawing: the field lays its text out once and hands the result over through
+ * `onTextLayout` ([layout]); after the field has drawn, the same layout is drawn again in each token's tint, clipped
+ * to the box of that token ([SlashCommands.tokenRanges] of the laid-out text), so the tinted glyphs land exactly on
+ * the field's own. Nothing about editing, selection or the caret changes; the same rule and tints paint the message
+ * once sent (see [highlightSlashCommands]). The field draws its text in the space of its scrolled content (its core
+ * node places that content at `-scroll` and draws there), so the repaint follows [scroll] the same way and is clipped
+ * to the field's bounds like the field.
  */
-private fun Modifier.slashCommandHighlight(layout: () -> TextLayoutResult?, scroll: ScrollState, color: Color): Modifier =
+private fun Modifier.slashCommandHighlight(layout: () -> TextLayoutResult?, scroll: ScrollState, tints: CommandTints): Modifier =
     clipToBounds().drawWithContent {
         drawContent()
         val result = layout() ?: return@drawWithContent
@@ -583,7 +583,7 @@ private fun Modifier.slashCommandHighlight(layout: () -> TextLayoutResult?, scro
             for (token in tokens) {
                 val end = (token.last + 1).coerceAtMost(text.length)
                 if (token.first >= end) continue
-                clipPath(result.getPathForRange(token.first, end)) { drawText(result, color = color) }
+                clipPath(result.getPathForRange(token.first, end)) { drawText(result, color = tints.forToken(text.substring(token.first + 1, end))) }
             }
         }
     }

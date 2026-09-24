@@ -40,7 +40,7 @@ import org.robolectric.annotation.GraphicsMode
 import kotlin.math.abs
 
 /**
- * The composer's Plan and Multitask pills and its `/command` highlight in the Plan pill's tint: what the owner holds
+ * The composer's Plan and Multitask pills and its `/command` highlight in the desktop's tints: what the owner holds
  * and sends stays the prompt it always was (`/multitask …` in front, plan mode as a flag), and only the presentation
  * changes.
  */
@@ -330,29 +330,29 @@ class ComposerPillsTest {
     }
 
     @Test
-    fun `slash commands are painted in the Plan pill's tint and the rest of the text is not`() {
+    fun `slash commands are painted in the desktop's command yellow and the rest of the text is not`() {
         show()
 
         field.performTextInput("ship it")
         compose.waitForIdle()
-        assertThat(pixelsOfTintInField(PillYellowDark)).isEqualTo(0)
+        assertThat(pixelsOfTintInField(YellowDark)).isEqualTo(0)
 
         field.performTextClearance()
         field.performTextInput("/goal ship it")
         compose.waitForIdle()
-        assertThat(pixelsOfTintInField(PillYellowDark)).isGreaterThan(0)
-        // The pill's tint and no other: the brand orange the commands once wore is gone from the field.
+        assertThat(pixelsOfTintInField(YellowDark)).isGreaterThan(0)
+        // The yellow and no other: the brand orange the commands once wore is gone from the field.
         assertThat(pixelsOfTintInField(Color(0xFFF54E00))).isEqualTo(0)
     }
 
     @Test
-    fun `the highlight is drawn in the light theme too, in the light pill's tint`() {
+    fun `the highlight is drawn in the light theme too, in the light yellow`() {
         show(mode = ThemeMode.Light)
 
         field.performTextInput("/review ship it")
         compose.waitForIdle()
-        assertThat(pixelsOfTintInField(PillYellowLight)).isGreaterThan(0)
-        assertThat(pixelsOfTintInField(PillYellowDark)).isEqualTo(0)
+        assertThat(pixelsOfTintInField(YellowLight)).isGreaterThan(0)
+        assertThat(pixelsOfTintInField(YellowDark)).isEqualTo(0)
     }
 
     @Test
@@ -363,8 +363,20 @@ class ComposerPillsTest {
         field.performTextInput("/review ship it")
         compose.waitForIdle()
         // The pill's label is drawn in its tint; the field's command in the same one — the two are one thing.
-        assertThat(pixelsOfTint(compose.onNode(hasText("Plan")).fetchSemanticsNode().boundsInWindow, PillYellowDark)).isGreaterThan(0)
-        assertThat(pixelsOfTintInField(PillYellowDark)).isGreaterThan(0)
+        assertThat(pixelsOfTint(compose.onNode(hasText("Plan")).fetchSemanticsNode().boundsInWindow, YellowDark)).isGreaterThan(0)
+        assertThat(pixelsOfTintInField(YellowDark)).isGreaterThan(0)
+    }
+
+    @Test
+    fun `a mode's token left in the field wears its pill's tint, not the command yellow and never blue`() {
+        // Seeded rather than typed: a closed token becomes its pill, and an open one under the caret opens the popover.
+        value = "ship it /ask then /debug"
+        show(extended = true)
+
+        assertThat(pixelsOfTintInField(Color(0xFF3FA266))).isGreaterThan(0)
+        assertThat(pixelsOfTintInField(Color(0xFFFC6B83))).isGreaterThan(0)
+        assertThat(pixelsOfTintInField(YellowDark)).isEqualTo(0)
+        assertThat(pixelsOfTintInField(Color(0xFF82AAFF))).isEqualTo(0)
     }
 
     /** Pixels inside the field whose colour is [tint], the glyphs of a command being drawn in it (see [pixelsOfTint]). */
@@ -393,3 +405,7 @@ class ComposerPillsTest {
 
 /** How far a channel may be from the tint's and still be the tint: a rounding step of 8-bit colour, not a blend. */
 private const val Tolerance = 2.5f / 255f
+
+/** The desktop's glass `--cursor-yellow`, dark and light: the command chip's text and the Plan pill's tint. */
+private val YellowDark = Color(0xFFF1B467)
+private val YellowLight = Color(0xFFA46701)
