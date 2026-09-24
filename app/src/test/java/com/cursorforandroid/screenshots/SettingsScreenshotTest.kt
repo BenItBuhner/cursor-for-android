@@ -9,7 +9,6 @@ import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.assertIsDisplayed
-import androidx.compose.ui.test.hasAnyAncestor
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
 import com.google.common.truth.Truth.assertThat
@@ -64,8 +63,7 @@ import java.util.TimeZone
  * Settings on a signed-in install — the demo walkthrough in [AppScreenshotTest] never shows the account's own rows
  * or the Advanced section. The whole list on one tall canvas, dark and light, so its structure reads in one image;
  * its scroll edges on a phone-height frame at the top, the middle and the end, dark and light; the bottom of the page with Extended mode off (the transcript engine beside it dimmed, with the reason) and on
- * (the engine live and on, Beta being the default), and with it switched off; Haptic feedback closing the Appearance card, on
- * (dark and light) and switched off; the account sheet, dark and light; and the debug sheet a long
+ * (the engine live and on, Beta being the default), and with it switched off; the account sheet, dark and light; and the debug sheet a long
  * press on the version row opens, with the exports, About and the credits that left the list, dark and light. Same
  * device qualifiers as [AppScreenshotTest], but for the tall frames.
  */
@@ -275,31 +273,6 @@ class SettingsScreenshotTest {
         assertThat(runBlocking { graph.extendedMode.capabilities() }.accountTranscript).isFalse()
         capture("477_settings_transcript_engine_off")
     }
-
-    /** Appearance brought to the top, where Haptic feedback closes the card: on as it comes, or switched off by a tap. */
-    private fun hapticFeedbackFrame(mode: ThemeMode, name: String, switchOff: Boolean = false) {
-        composeSettings(mode)
-        compose.scrollSettingsGroupToTop(SettingsCopy.GROUP_APPEARANCE)
-        val row = hasTestTag(SettingsTags.HAPTIC_FEEDBACK)
-        compose.onNode(row).assertIsDisplayed()
-        compose.onNodeWithText(SettingsCopy.HAPTIC_FEEDBACK_DETAIL).assertIsDisplayed()
-        compose.waitUntil(10_000) { compose.onAllNodes(isOn() and hasAnyAncestor(row)).fetchSemanticsNodes().isNotEmpty() }
-        if (switchOff) {
-            compose.onNode(row).performClick()
-            compose.waitUntil(10_000) { compose.onAllNodes(isOff() and hasAnyAncestor(row)).fetchSemanticsNodes().isNotEmpty() }
-            assertThat(runBlocking { graph.prefs.hapticFeedback.first() }).isFalse()
-        }
-        capture(name)
-    }
-
-    @Test
-    fun hapticFeedbackOnDark() = hapticFeedbackFrame(ThemeMode.Dark, "520_settings_haptic_feedback_dark")
-
-    @Test
-    fun hapticFeedbackOffDark() = hapticFeedbackFrame(ThemeMode.Dark, "521_settings_haptic_feedback_off", switchOff = true)
-
-    @Test
-    fun hapticFeedbackOnLight() = hapticFeedbackFrame(ThemeMode.Light, "522_settings_haptic_feedback_light")
 
     /** With the mode off the engine chooses nothing: its switch is shown dimmed and off, and a tap on it changes nothing. */
     @Test

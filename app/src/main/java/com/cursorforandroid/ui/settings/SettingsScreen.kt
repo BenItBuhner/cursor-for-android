@@ -60,8 +60,6 @@ import com.cursorforandroid.ui.components.CursorIcons
 import com.cursorforandroid.ui.components.CursorSheet
 import com.cursorforandroid.ui.components.FlatIconButton
 import com.cursorforandroid.ui.components.HairlineDivider
-import com.cursorforandroid.ui.components.Haptic
-import com.cursorforandroid.ui.components.rememberHaptics
 import com.cursorforandroid.ui.components.RunStopCopy
 import com.cursorforandroid.ui.components.SheetHeader
 import com.cursorforandroid.ui.components.contentColumn
@@ -85,8 +83,6 @@ object SettingsCopy {
     const val UNREAD_THIS_PHONE_DETAIL = "Chats from elsewhere show as read until opened here."
     const val SHORTEN_PROJECTS = "Shorten long Projects list"
     const val SHORTEN_PROJECTS_DETAIL = "Shows 5 Projects until you tap Show more."
-    const val HAPTIC_FEEDBACK = "Haptic feedback"
-    const val HAPTIC_FEEDBACK_DETAIL = "Light taps as you send, hold and swipe."
     const val GROUP_UPDATES = "Version and updates"
     const val SIGN_OUT = "Sign out"
     const val LEAVE_DEMO = "Leave demo"
@@ -112,7 +108,6 @@ object SettingsTags {
     const val SIGN_OUT = "settings_sign_out"
     const val UNREAD_THIS_PHONE = "settings_unread_this_phone"
     const val SHORTEN_PROJECTS = "settings_shorten_projects"
-    const val HAPTIC_FEEDBACK = "settings_haptic_feedback"
     const val VERSION_ROW = "settings_version"
     const val WHATS_NEW_ROW = "settings_whats_new"
     const val DEBUG_SHEET = "settings_debug_sheet"
@@ -214,8 +209,6 @@ fun SettingsScreen(
                 }
                 HairlineDivider()
                 ShortenProjectsRow(graph)
-                HairlineDivider()
-                HapticFeedbackRow(graph)
             }
 
             Group(NewChatHomePickerCopy.GROUP)
@@ -383,30 +376,6 @@ private fun ShortenProjectsRow(graph: AppGraph) {
 }
 
 /**
- * Whether the app plays its haptics ([com.cursorforandroid.ui.components.Haptics]); the system's touch feedback switch
- * silences them either way. Turned on, the switch plays its own click, so the reader feels what came back; turned off,
- * it plays nothing, having just been told not to.
- */
-@Composable
-private fun HapticFeedbackRow(graph: AppGraph) {
-    val scope = rememberCoroutineScope()
-    val haptics = rememberHaptics()
-    // On the main dispatcher for the reason the Extended mode switch is (see SettingsScreen).
-    val enabled by graph.prefs.hapticFeedback.collectAsStateWithLifecycle(initialValue = true, context = Dispatchers.Main.immediate)
-    SettingsToggleRow(
-        title = SettingsCopy.HAPTIC_FEEDBACK,
-        description = SettingsCopy.HAPTIC_FEEDBACK_DETAIL,
-        checked = enabled,
-        onCheckedChange = { on ->
-            if (on) haptics.preview(Haptic.ToggleOn)
-            scope.launch { graph.prefs.setHapticFeedback(on) }
-        },
-        modifier = Modifier.testTag(SettingsTags.HAPTIC_FEEDBACK),
-        felt = false,
-    )
-}
-
-/**
  * Live notification toggle plus the system pages it depends on: notification permission, and on Android 16 the
  * per-app Live Updates switch. The hints re-check when the screen resumes so a trip to Settings is reflected.
  */
@@ -492,7 +461,7 @@ private fun ConfirmStopRow(graph: AppGraph) {
 /**
  * The in-app updater: the installed version with what the last check found and the one action that follows from it
  * (check, download, install, retry); beneath it, while they are unread, the installed version's release notes
- * ([onOpenWhatsNew]); the two preferences; and — until the user has allowed it — the system page where installing
+ * ([onOpenWhatsNew]); automatic updates; and — until the user has allowed it — the system page where installing
  * from this app is permitted. The permission is re-read when the screen resumes. A long press on the version row is
  * the way into the debug sheet ([onDebug]); a tap does nothing, so the row is not announced as a button.
  */
@@ -504,7 +473,6 @@ private fun UpdateRows(graph: AppGraph, open: (String) -> Unit, onDebug: () -> U
     val updates = graph.updates
     val state by updates.state.collectAsStateWithLifecycle()
     val autoUpdate by updates.autoUpdate.collectAsStateWithLifecycle(initialValue = true)
-    val includePreReleases by updates.includePreReleases.collectAsStateWithLifecycle(initialValue = false)
     // On the main dispatcher for the reason the Extended mode switch is (see SettingsScreen): the value comes from
     // the store's thread, and the row must not miss the write that would show it.
     val whatsNew by graph.whatsNew.unread.collectAsStateWithLifecycle(initialValue = null, context = Dispatchers.Main.immediate)
@@ -577,12 +545,6 @@ private fun UpdateRows(graph: AppGraph, open: (String) -> Unit, onDebug: () -> U
         },
         checked = autoUpdate,
         onCheckedChange = { scope.launch { updates.setAutoUpdate(it) } },
-    )
-    HairlineDivider()
-    SettingsToggleRow(
-        title = "Include pre-releases",
-        checked = includePreReleases,
-        onCheckedChange = { scope.launch { updates.setIncludePreReleases(it) } },
     )
     if (!canInstall) {
         HairlineDivider()
