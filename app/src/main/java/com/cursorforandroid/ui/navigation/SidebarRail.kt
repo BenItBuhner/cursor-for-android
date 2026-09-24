@@ -8,7 +8,6 @@ import androidx.compose.animation.expandHorizontally
 import androidx.compose.animation.shrinkHorizontally
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.width
 import androidx.compose.runtime.Composable
@@ -30,8 +29,9 @@ import com.cursorforandroid.ui.theme.CursorTheme
  * only its visible width animates: the content stays anchored to the moving edge, so it travels off to the start of
  * the window and returns from there rather than being wiped, and nothing inside it — the chat list, the search field —
  * lays out again for any frame of the motion. The detail pane beside it reflows into the room the rail gives up, as on
- * cursor.com. The hairline that separates the two rides inside the animated box so it always marks the boundary while
- * it moves. [width] is read at layout, so a drag resizes the column without recomposing the list in it.
+ * cursor.com. The hairline that separates the two is drawn over the column's end edge, so the rail takes [width] and
+ * not a dp more, and rides inside the animated box so it always marks the boundary while it moves. [width] is read at
+ * layout, so a drag resizes the column without recomposing the list in it.
  *
  * Unlike the phone drawer it covers nothing: the pane reflows beside it, so a composer holding the keyboard keeps both
  * while the rail comes back, where the drawer takes them. Collapsing, the rail is the drawer shutting: its own search,
@@ -61,17 +61,17 @@ fun SidebarRail(
             exit = shrinkHorizontally(sidebarRailMotion(), shrinkTowards = Alignment.End),
             label = "sidebarRail",
         ) {
-            Row(Modifier.fillMaxHeight()) {
-                Box(
-                    Modifier
-                        .fillMaxHeight()
-                        .layout { measurable, constraints ->
-                            val columnWidth = width().roundToPx()
-                            val placeable = measurable.measure(constraints.copy(minWidth = columnWidth, maxWidth = columnWidth))
-                            layout(columnWidth, placeable.height) { placeable.placeRelative(0, 0) }
-                        },
-                ) { content() }
-                Box(Modifier.fillMaxHeight().width(CursorDimens.hairline).background(colors.strokeSubtle))
+            Box(
+                Modifier
+                    .fillMaxHeight()
+                    .layout { measurable, constraints ->
+                        val railWidth = width().roundToPx()
+                        val placeable = measurable.measure(constraints.copy(minWidth = railWidth, maxWidth = railWidth))
+                        layout(railWidth, placeable.height) { placeable.placeRelative(0, 0) }
+                    },
+            ) {
+                content()
+                Box(Modifier.align(Alignment.CenterEnd).fillMaxHeight().width(CursorDimens.hairline).background(colors.strokeSubtle))
             }
         }
     }

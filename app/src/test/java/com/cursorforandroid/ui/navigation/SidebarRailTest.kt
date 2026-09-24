@@ -26,8 +26,8 @@ import org.robolectric.annotation.GraphicsMode
 
 /**
  * Steps the clock through the rail's slide and reads where the detail pane's left edge is at each point: at rest it
- * sits past the rail and its hairline, and while the rail is on the move it must be somewhere in between — the cut the
- * rail used to make would take it from one to the other in a single frame.
+ * sits past the rail, whose hairline is drawn inside its width, and while the rail is on the move it must be somewhere
+ * in between — the cut the rail used to make would take it from one to the other in a single frame.
  */
 @RunWith(AndroidJUnit4::class)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
@@ -39,7 +39,7 @@ class SidebarRailTest {
 
     private var expanded by mutableStateOf(true)
 
-    private val railWidth: Dp = CursorDimens.sidebarWidth + CursorDimens.hairline
+    private val railWidth: Dp = CursorDimens.sidebarWidth
 
     private fun show() {
         compose.mainClock.autoAdvance = false
