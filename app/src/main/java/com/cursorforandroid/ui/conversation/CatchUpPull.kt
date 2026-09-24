@@ -149,6 +149,10 @@ internal fun catchUpTension(fraction: Float): Float {
  * drag leaves over past the bottom edge (a scroll toward the newest row the list could not take) is the pull's too.
  * Only the finger's: a fling that reaches the bottom, the jump button's scroll, never arm it. [enabled] is asked at
  * the pull's first pixel: a chat still loading, or a pull already being answered, stretches without pulling.
+ *
+ * Taken back, the pull is the finger's first, as the sidebar's is: the list scrolls only once it is home. The
+ * platform's stretch goes back with it, but not every phone has one to take the drag — with animations off, Android
+ * draws no stretch and takes nothing — and the list would scroll away under the indicator going home.
  */
 @OptIn(ExperimentalFoundationApi::class)
 internal class CatchUpOverscroll(
@@ -160,12 +164,14 @@ internal class CatchUpOverscroll(
     override fun applyToScroll(delta: Offset, source: NestedScrollSource, performScroll: (Offset) -> Offset): Offset {
         if (source != NestedScrollSource.UserInput) return platform.applyToScroll(delta, source, performScroll)
         // Screen terms: the finger moving up is a negative delta, and at the bottom it is left over.
+        val out = if (delta.y > 0f) pull.distance else 0f
         if (delta.y > 0f) pull.relax(delta.y)
         return platform.applyToScroll(delta, source) { available ->
-            val consumed = performScroll(available)
-            val left = available.y - consumed.y
+            val back = (out - (delta.y - available.y)).coerceIn(0f, available.y.coerceAtLeast(0f))
+            val consumed = performScroll(available.copy(y = available.y - back))
+            val left = available.y - back - consumed.y
             if (left < 0f && (pull.holding || enabled())) pull.stretch(-left)
-            consumed
+            consumed.copy(y = consumed.y + back)
         }
     }
 

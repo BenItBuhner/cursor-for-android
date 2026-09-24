@@ -12,7 +12,8 @@ import org.junit.Test
 
 /**
  * The pull to catch up read off the platform's overscroll ([CatchUpOverscroll]): the reader's drag past the newest
- * message stretches it and arms it at the threshold, and a release armed pulls once; a drag back relaxes it, a fling
+ * message stretches it and arms it at the threshold, and a release armed pulls once; a drag back relaxes it before
+ * the list scrolls, whether or not the platform's stretch takes the drag too; a fling
  * reaching the edge never pulls, a chat that cannot be caught up stretches without pulling, and every delta still
  * reaches the platform's own stretch. As the sidebar's pull to refresh, it is a `PullToRefreshState`: its fraction is
  * the finger's up to the threshold and Material's tension past it, left where the finger let go, and the finger's
@@ -21,13 +22,23 @@ import org.junit.Test
 @OptIn(ExperimentalFoundationApi::class)
 class CatchUpPullTest {
 
-    /** The platform's effect, passing every delta through as Android's stretch does and noting what it was given. */
+    /**
+     * The platform's effect, noting what it was given. Without [stretches] it passes every delta through, as Android
+     * does with animations off; with it, it holds what the list left over as a stretch and takes a drag back out of
+     * that first, as Android's stretch does.
+     */
     private class Platform : OverscrollEffect {
         val scrolls = mutableListOf<Offset>()
         var flings = 0
+        var stretches = false
+        private var stretch = 0f
         override fun applyToScroll(delta: Offset, source: NestedScrollSource, performScroll: (Offset) -> Offset): Offset {
             scrolls += delta
-            return performScroll(delta)
+            val relaxed = if (stretches && delta.y > 0f) minOf(stretch, delta.y) else 0f
+            stretch -= relaxed
+            val consumed = performScroll(delta.copy(y = delta.y - relaxed))
+            if (stretches && delta.y < 0f) stretch += consumed.y - delta.y
+            return consumed.copy(y = consumed.y + relaxed)
         }
         override suspend fun applyToFling(velocity: Velocity, performFling: suspend (Velocity) -> Velocity) {
             flings++
@@ -43,9 +54,12 @@ class CatchUpPullTest {
     private var pulls = 0
     private val effect = CatchUpOverscroll(platform, pull, enabled = { enabled }, onPulled = { pulls++ })
 
+    /** What the list scrolled, drag by drag. */
+    private val listScrolls = mutableListOf<Float>()
+
     /** The list at its newest edge: a finger moving up (a negative delta, in screen terms) is left over whole. */
     private fun drag(dy: Float, source: NestedScrollSource = NestedScrollSource.UserInput, listTakes: Boolean = false) {
-        effect.applyToScroll(Offset(0f, dy), source) { available -> if (listTakes || available.y > 0f) available else Offset.Zero }
+        effect.applyToScroll(Offset(0f, dy), source) { available -> (if (listTakes || available.y > 0f) available else Offset.Zero).also { listScrolls += it.y } }
     }
 
     private fun release() = runBlocking { effect.applyToFling(Velocity.Zero) { it } }
@@ -80,6 +94,31 @@ class CatchUpPullTest {
         release()
         assertThat(pulls).isEqualTo(0)
         assertThat(pull.awaiting).isFalse()
+    }
+
+    @Test
+    fun `taken back, the pull is the finger's first - the list scrolls only once it is home`() {
+        drag(-120f)
+        listScrolls.clear()
+        drag(80f)
+        assertThat(pull.distance).isEqualTo(40f)
+        drag(60f)
+        assertThat(pull.distance).isEqualTo(0f)
+        assertThat(listScrolls).containsExactly(0f, 20f).inOrder()
+        // Every delta still reached the platform.
+        assertThat(platform.scrolls).containsExactly(Offset(0f, -120f), Offset(0f, 80f), Offset(0f, 60f)).inOrder()
+    }
+
+    @Test
+    fun `with the platform's stretch taking the drag back too, the list still scrolls only once the pull is home`() {
+        platform.stretches = true
+        drag(-120f)
+        listScrolls.clear()
+        drag(80f)
+        assertThat(pull.distance).isEqualTo(40f)
+        drag(60f)
+        assertThat(pull.distance).isEqualTo(0f)
+        assertThat(listScrolls).containsExactly(0f, 20f).inOrder()
     }
 
     @Test
