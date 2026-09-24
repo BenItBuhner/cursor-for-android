@@ -35,6 +35,7 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.testTag
@@ -52,6 +53,7 @@ import com.cursorforandroid.domain.SubagentLook
 import com.cursorforandroid.domain.SubagentModel
 import com.cursorforandroid.domain.SubagentPlacement
 import com.cursorforandroid.domain.SubagentRows
+import com.cursorforandroid.domain.SystemNotification
 import com.cursorforandroid.domain.ToolCall
 import com.cursorforandroid.domain.ToolPayload
 import com.cursorforandroid.ui.components.CursorCard
@@ -116,6 +118,64 @@ internal fun SubagentRowView(call: ToolCall, subagent: SubagentCall, modifier: M
     }
 }
 
+/**
+ * A subagent's or a worker's notice — its report come in, or a worker's update — drawn as that subagent's row (see
+ * [SubagentRowView], [SubagentRows.notice]): the dot for how it ended, the title, the model and the glyph, and
+ * "Completed" or "Stopped with error" under them. A repeat is the one row. Tapping opens the child's conversation
+ * when it is a cloud agent the app can open; any other row opens onto the report. The agent's remark on the notice
+ * reads under the row, dimmed, as the desktop leaves the agent's reply to a notice in view.
+ */
+@Composable
+internal fun SubagentNoticeRow(item: SystemNotification, modifier: Modifier = Modifier) {
+    val controls = LocalTranscriptControls.current
+    val start = controls.subagents.startOf(item)
+    val agentId = item.agentId ?: start?.agentId
+    val worker = agentId?.let { controls.subagents.workers[it] }
+    val agent = agentId?.takeIf { it.startsWith("bc-") }?.let(controls.agentById)
+    val notice = remember(item, start, worker, agent?.name) { SubagentRows.notice(item, start, worker?.name, agent?.name) } ?: return
+    val model = SubagentRows.modelLabel(notice.subagent, controls.models, worker?.modelId, agent)
+    val placement = SubagentRows.placement(notice.subagent, controls.placement, agent)
+    val open = controls.onOpenAgent?.takeIf { notice.subagent.isCloudAgent }?.let { handler -> { handler(notice.subagent.agentId!!) } }
+    val report = item.body?.trim()?.takeIf { open == null && it.isNotEmpty() && it != item.summary?.trim() }
+    val remark = item.narration?.trim()?.takeIf { it.isNotEmpty() }
+    var expanded by rememberSaveable(item.id) { mutableStateOf(false) }
+    val taps = LocalDisclosureTaps.current
+    val colors = CursorTheme.colors
+    Column(modifier.fillMaxWidth().testTag("event-row")) {
+        MessageActions(
+            text = item.raw,
+            onClick = open ?: report?.let { { taps.toggling(opening = !expanded); expanded = !expanded } },
+            modifier = Modifier.offset(x = -(ROW_PADDING + ROW_OUTSET)).clip(CursorTheme.shapes.base),
+        ) {
+            SubagentRowContent(
+                title = notice.title,
+                look = notice.look,
+                model = model,
+                placement = placement,
+                modifier = Modifier
+                    .padding(horizontal = ROW_PADDING, vertical = 3.dp)
+                    .testTag("subagent-notice")
+                    .semantics { contentDescription = "Subagent ${notice.title}, ${notice.look.status}" },
+            )
+        }
+        if (remark != null) {
+            MarkdownText(
+                remark,
+                Modifier.padding(start = SLOT_WIDTH + SLOT_GAP - ROW_OUTSET, bottom = 4.dp).testTag("notification-narration"),
+                style = CursorTheme.typography.base,
+                color = colors.textTertiary,
+            )
+        }
+        if (report != null) {
+            AnimatedVisibility(visible = expanded) {
+                CursorCard(Modifier.fillMaxWidth().padding(start = SLOT_WIDTH + SLOT_GAP - ROW_OUTSET, top = 2.dp, bottom = 6.dp), fill = colors.fillFaint, border = Color.Transparent) {
+                    MarkdownText(report, style = CursorTheme.typography.base, color = colors.textSecondary, modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp))
+                }
+            }
+        }
+    }
+}
+
 /** Where a subagent's row stands: what is known of its child — the cloud agent the list holds, if any — and the row's state. */
 internal data class SubagentState(val child: SubagentChild?, val agent: Agent?, val look: SubagentLook)
 
@@ -127,7 +187,8 @@ internal val LocalSubagentStates = compositionLocalOf<Map<String, SubagentState>
 
 /**
  * [call]'s state: the stretch's word for it when it has one (see [LocalSubagentStates]), else read here — the live
- * child of the newest row about a cloud worker or task, else the account record's in-VM subagent, else the list's row.
+ * child of the newest row about a cloud worker or task, else the account record's in-VM subagent, else the list's
+ * row, else how a notice after the call said its child ended (a background task's call returns before its child does).
  */
 @Composable
 internal fun rememberSubagentState(call: ToolCall, subagent: SubagentCall): SubagentState {
@@ -141,6 +202,7 @@ internal fun rememberSubagentState(call: ToolCall, subagent: SubagentCall): Suba
     }
     val live by activity.collectAsState(null)
     val child = live ?: controls.subagentRuns[call.callId] ?: agent?.let { SubagentRows.childOf(it, controls.models) }
+        ?: controls.subagents.endingOf(call)?.let { SubagentChild(status = it) }
     return SubagentState(child, agent, SubagentRows.look(call, subagent, child, latest))
 }
 
