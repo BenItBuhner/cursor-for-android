@@ -44,6 +44,19 @@ class DiskSweepTest {
     }
 
     @Test
+    fun `a file still in use counts against the bound but is never what goes`() {
+        val dir = folder.newFolder("in-use")
+        dir.file("a", 100, 1_000L)
+        dir.file("b", 100, 2_000L)
+        dir.file("shown", 150, 9_000L)
+
+        val left = DiskSweep.trimToBytes(dir, maxBytes = 200, keepAfterMillis = 5_000L)
+
+        assertThat(left).isEqualTo(150L)
+        assertThat(dir.list()!!.toList()).containsExactly("shown")
+    }
+
+    @Test
     fun `a directory within its bound is left alone, and one that is missing weighs nothing`() {
         val dir = folder.newFolder("fits")
         dir.file("a", 100, 1_000L)

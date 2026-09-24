@@ -19,14 +19,20 @@ object DiskSweep {
 
     /**
      * Deletes the least recently modified files directly in [dir] until the ones left fit [maxBytes]. Files named in
-     * [keep] (the one just written, say) and those [skip] names are never deleted, and [skip]'s are not counted either.
-     * Answers the bytes left.
+     * [keep] (the one just written, say), those modified at or after [keepAfterMillis] (still in use) and those [skip]
+     * names are never deleted; [skip]'s are not counted either. Answers the bytes left.
      */
-    fun trimToBytes(dir: File, maxBytes: Long, keep: Set<String> = emptySet(), skip: (File) -> Boolean = { false }): Long {
+    fun trimToBytes(
+        dir: File,
+        maxBytes: Long,
+        keep: Set<String> = emptySet(),
+        keepAfterMillis: Long = Long.MAX_VALUE,
+        skip: (File) -> Boolean = { false },
+    ): Long {
         val files = dir.listFiles { f -> f.isFile && !skip(f) }?.map { Sized(it, it.length(), it.lastModified()) } ?: return 0L
         var total = files.sumOf { it.bytes }
         if (total <= maxBytes) return total
-        for (file in files.filter { it.file.name !in keep }.sortedBy { it.modifiedAt }) {
+        for (file in files.filter { it.file.name !in keep && it.modifiedAt < keepAfterMillis }.sortedBy { it.modifiedAt }) {
             if (total <= maxBytes) break
             if (file.file.delete()) total -= file.bytes
         }

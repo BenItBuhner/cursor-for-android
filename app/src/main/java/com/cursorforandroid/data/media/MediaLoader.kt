@@ -8,6 +8,7 @@ import android.util.LruCache
 import androidx.core.net.toUri
 import coil3.ImageLoader
 import coil3.decode.BitmapFactoryDecoder
+import coil3.disk.DiskCache
 import coil3.network.HttpException
 import coil3.network.okhttp.OkHttpNetworkFetcherFactory
 import coil3.request.ErrorResult
@@ -19,6 +20,7 @@ import coil3.size.Scale
 import coil3.svg.SvgDecoder
 import coil3.toBitmap
 import com.cursorforandroid.data.api.userMessage
+import com.cursorforandroid.data.local.DiskSweep
 import com.cursorforandroid.data.repo.AgentFileRepository
 import com.cursorforandroid.data.repo.ArtifactRepository
 import com.cursorforandroid.data.repo.FileRead
@@ -34,6 +36,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okio.Path.Companion.toOkioPath
 import java.io.File
 import java.io.IOException
 import java.security.MessageDigest
@@ -72,6 +75,7 @@ class MediaLoader(
             add(BitmapFactoryDecoder.Factory())
             add(OkHttpNetworkFetcherFactory(okHttp))
         }
+        .diskCache { imageDiskCache(context.cacheDir) }
         .build()
 
     private val posters = LruCache<String, VideoPoster>(12)
@@ -164,9 +168,9 @@ class MediaLoader(
 
     /**
      * The bytes behind [ref] as a file of this app's cache (`cache/media/`), for handing to another app — the share
-     * sheet, a viewer, the gallery — through the `FileProvider`. Fetched once per artifact and kept; a copy already
-     * there is answered without a request. [fileName] gives the copy its name and so its type, as the other app
-     * reads it.
+     * sheet, a viewer, the gallery — through the `FileProvider`. Fetched once per artifact and kept while it is among
+     * the most recently used ([MEDIA_MAX_BYTES]); a copy already there is answered without a request. [fileName] gives
+     * the copy its name and so its type, as the other app reads it.
      */
     suspend fun file(ref: MediaRef, fileName: String): File = onMain { named { materialize(ref, fileName) } }
 
@@ -179,10 +183,13 @@ class MediaLoader(
             val digest = MessageDigest.getInstance("SHA-1").digest(bytes).joinToString("") { "%02x".format(it) }.take(16)
             val dir = File(context.cacheDir, "$MEDIA_DIR/$OPENED_DIR").apply { mkdirs() }
             val target = File(dir, "$digest-${safeName(fileName)}")
-            if (!(target.isFile && target.length() == bytes.size.toLong())) {
+            if (target.isFile && target.length() == bytes.size.toLong()) {
+                target.setLastModified(System.currentTimeMillis())
+            } else {
                 val partial = File(dir, "${target.name}.part")
                 partial.writeBytes(bytes)
                 if (!partial.renameTo(target)) partial.copyTo(target, overwrite = true).also { partial.delete() }
+                trimCopies(dir, OPENED_MAX_BYTES, System.currentTimeMillis())
             }
             "file://${target.absolutePath}"
         }
@@ -211,7 +218,10 @@ class MediaLoader(
     private suspend fun materialize(ref: MediaRef, fileName: String, wake: Boolean = false): File = withContext(Dispatchers.IO) {
         val dir = File(context.cacheDir, MEDIA_DIR).apply { mkdirs() }
         val target = File(dir, "${ref.cacheKey.hashCode().toUInt().toString(16)}-${safeName(fileName)}")
-        if (target.isFile && target.length() > 0L) return@withContext target
+        if (target.isFile && target.length() > 0L) {
+            target.setLastModified(System.currentTimeMillis())
+            return@withContext target
+        }
         val partial = File(dir, "${target.name}.part")
         try {
             when (ref) {
@@ -223,6 +233,7 @@ class MediaLoader(
                 is MediaRef.Unavailable -> throw MediaProblemException(MediaProblem.NotReadable("This file isn't available", unavailableDetail(ref)))
             }
             if (!partial.renameTo(target)) partial.copyTo(target, overwrite = true)
+            trimCopies(dir, MEDIA_MAX_BYTES, System.currentTimeMillis())
             target
         } finally {
             partial.delete()
@@ -408,6 +419,54 @@ class MediaLoader(
         const val MEDIA_DIR = "media"
         /** Under [MEDIA_DIR]: the files the panel and the file viewer hand to the media viewer ([keep]). */
         private const val OPENED_DIR = "opened"
+        /**
+         * The copies [file] makes at most, least recently used going first. They are for handing a file to another
+         * app or the player, a few at a time; kept past that they were a second copy of every artifact ever shared.
+         */
+        private const val MEDIA_MAX_BYTES = 64L shl 20
+        /** [keep]'s copies at most: bytes the app already held, written again at no cost. */
+        private const val OPENED_MAX_BYTES = 32L shl 20
+        /** A copy nothing has asked for in this long goes at the next start ([sweepCopies]): the other app has long read it. */
+        private const val COPY_MAX_AGE_MS = 24 * 60 * 60 * 1000L
+        /**
+         * A copy used this recently counts against its bound but is never what the bound takes: it may still be on
+         * screen (a player reopens its file to seek), or the app it was shared to may not have read it yet.
+         */
+        private const val IN_USE_MS = 60 * 60 * 1000L
+        /**
+         * Coil's own default directory, so the entries a build without a bound wrote are adopted and trimmed rather than
+         * left behind; its default size was 2% of the disk, up to 250 MB, for pictures the memory cache already holds.
+         */
+        private const val IMAGE_CACHE_DIR = "coil3_disk_cache"
+        private const val IMAGE_CACHE_BYTES = 64L shl 20
+
+        /** One per directory for the process, as Coil's own default is: two caches over one journal corrupt each other. */
+        private val imageDiskCaches = HashMap<File, DiskCache>()
+
+        private fun imageDiskCache(cacheDir: File): DiskCache = synchronized(imageDiskCaches) {
+            imageDiskCaches.getOrPut(cacheDir) {
+                DiskCache.Builder().directory(File(cacheDir, IMAGE_CACHE_DIR).toOkioPath()).maxSizeBytes(IMAGE_CACHE_BYTES).build()
+            }
+        }
+
+        private fun isPartial(file: File): Boolean = file.name.endsWith(".part")
+
+        private fun trimCopies(dir: File, maxBytes: Long, nowMillis: Long) {
+            DiskSweep.trimToBytes(dir, maxBytes, keepAfterMillis = nowMillis - IN_USE_MS, skip = ::isPartial)
+        }
+
+        /**
+         * At start: the copies made for other apps and the viewer that nothing has asked for in a day, and a transfer's
+         * leftover `.part`, then what is left held to the bounds. Blocking; call off the main thread.
+         */
+        fun sweepCopies(cacheDir: File, nowMillis: Long = System.currentTimeMillis()) {
+            val media = File(cacheDir, MEDIA_DIR)
+            val opened = File(media, OPENED_DIR)
+            for ((dir, max) in listOf(media to MEDIA_MAX_BYTES, opened to OPENED_MAX_BYTES)) {
+                DiskSweep.deleteOlderThan(dir, nowMillis - COPY_MAX_AGE_MS)
+                trimCopies(dir, max, nowMillis)
+            }
+        }
         /** Where into a recording its poster is read: a third of the way in, at most this far. A tile's poster is read at the same frame. */
         internal const val POSTER_AT_MS = 1_500L
         /** A file of this device that is not there (any more): the one thing [MediaRef.Local] can go wrong with. */
