@@ -59,6 +59,7 @@ class DraftStoreTest {
                 modelLabel = "Claude Fable 5.1",
                 modelChosen = true,
                 planMode = true,
+                mode = "DEBUG",
                 autoCreatePr = true,
             ),
         )
@@ -76,8 +77,10 @@ class DraftStoreTest {
         assertThat(first.modelParams).containsExactly(ModelParam("context", "300k"), ModelParam("effort", "low")).inOrder()
         assertThat(first.modelChosen).isTrue()
         assertThat(first.planMode).isTrue()
+        assertThat(first.mode).isEqualTo("DEBUG")
         assertThat(store.readImage("d-1", first.images.single())!!.bytes).isEqualTo(byteArrayOf(1, 2, 3))
         assertThat(read.getValue("d-2").images).isEmpty()
+        assertThat(read.getValue("d-2").mode).isNull()
     }
 
     @Test
