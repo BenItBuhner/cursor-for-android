@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The compose bar's surface: the composer box's corners (CursorDimens.composerRadius, 24dp — concentric with the
+  24dp discs in its footer, each 12dp in from the edge), drawn white and tinted at render time. Its hairline stroke
+  is a second copy one dp larger behind it, tinted to the stroke colour.
+-->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <solid android:color="#FFFFFFFF" />
+    <corners android:radius="24dp" />
+</shape>

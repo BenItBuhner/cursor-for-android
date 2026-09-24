@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The picker's picture of the compose bar on Android 12+ (older launchers show @drawable/widget_compose_bar_preview,
+  Android 15+ asks the widget itself): the composer's line on a white surface — "+", the placeholder, send at rest.
+-->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@android:id/background"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent">
+
+    <FrameLayout
+        android:layout_width="match_parent"
+        android:layout_height="48dp"
+        android:layout_gravity="center_vertical"
+        android:background="@drawable/widget_composer_surface"
+        android:backgroundTint="#14141414">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:layout_margin="1dp"
+            android:background="@drawable/widget_composer_surface_inner"
+            android:backgroundTint="#FFFFFFFF"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:paddingHorizontal="11dp">
+
+            <ImageView
+                android:layout_width="24dp"
+                android:layout_height="24dp"
+                android:background="@drawable/widget_disc"
+                android:backgroundTint="#14141414"
+                android:importantForAccessibility="no"
+                android:padding="3.5dp"
+                android:src="@drawable/widget_plus"
+                android:tint="#A8141414" />
+
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="10dp"
+                android:layout_marginEnd="8dp"
+                android:layout_weight="1"
+                android:ellipsize="end"
+                android:maxLines="1"
+                android:text="@string/composer_placeholder"
+                android:textColor="#99141414"
+                android:textSize="14sp" />
+
+            <ImageView
+                android:layout_width="24dp"
+                android:layout_height="24dp"
+                android:background="@drawable/widget_disc"
+                android:backgroundTint="#0F141414"
+                android:importantForAccessibility="no"
+                android:padding="3.5dp"
+                android:src="@drawable/widget_arrow_up"
+                android:tint="#47141414" />
+        </LinearLayout>
+    </FrameLayout>
+</FrameLayout>

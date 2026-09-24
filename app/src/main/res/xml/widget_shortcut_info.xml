@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The "New chat" shortcut widget: a round button on the home screen that opens the composer over the launcher (or,
+  configured, the sidebar's search, a chat or a Project). One cell by default; stretched to two or more across it
+  becomes the compose bar (see widget_compose_bar_info.xml, the same widget offered in that shape). It reads nothing
+  of the account and renders once placed; the app re-renders it on a theme change, so no update period is needed
+  beyond the platform's floor.
+-->
+<appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
+    android:configure="com.cursorforandroid.widget.WidgetConfigureActivity"
+    android:description="@string/shortcut_widget_description"
+    android:initialLayout="@layout/widget_shortcut_loading"
+    android:minWidth="40dp"
+    android:minHeight="40dp"
+    android:minResizeWidth="40dp"
+    android:minResizeHeight="40dp"
+    android:previewImage="@drawable/widget_shortcut_preview"
+    android:previewLayout="@layout/widget_shortcut_preview"
+    android:resizeMode="horizontal|vertical"
+    android:targetCellWidth="1"
+    android:targetCellHeight="1"
+    android:updatePeriodMillis="0"
+    android:widgetCategory="home_screen"
+    android:widgetFeatures="reconfigurable|configuration_optional" />

@@ -4,6 +4,7 @@ import android.content.Context
 import android.os.Build
 import android.util.Log
 import androidx.glance.GlanceId
+import androidx.glance.appwidget.GlanceAppWidget
 import androidx.glance.appwidget.GlanceAppWidgetManager
 import androidx.glance.appwidget.updateAll
 import com.cursorforandroid.AppGraph
@@ -78,8 +79,23 @@ object WidgetSync {
      */
     internal var placedWidgets: suspend (Context) -> Boolean = ::glanceIdsPresent
 
+    /**
+     * Whether a widget of any kind but [removed] is still placed, asked when the last widget of one kind goes (see
+     * [stopIfNoneLeft]). Its own seam, so a test holding [placedWidgets] open to a stale answer does not also hold this.
+     */
+    internal var remainingWidgets: suspend (Context, removed: Class<out GlanceAppWidget>) -> Boolean = ::otherGlanceIdsPresent
+
     /** What a render is: every placed widget composed again. A seam, so the pipeline's timing can be pinned without a launcher. */
     internal var renderer: suspend (Context) -> Unit = { app -> ChatsWidget().updateAll(app) }
+
+    /**
+     * The shortcut widgets composed again. They read nothing of the list, so this runs only when the theme has
+     * changed (see the follower), not on every render.
+     */
+    internal var shortcutRenderer: suspend (Context) -> Unit = { app ->
+        ShortcutButtonWidget().updateAll(app)
+        ComposeBarWidget().updateAll(app)
+    }
 
     /**
      * From the application: follow the app if widgets are placed. One question to the launcher, off the main
@@ -125,11 +141,12 @@ object WidgetSync {
 
     /**
      * One widget rendered again, off whatever lifetime asked for it: the configuration screen finishes the moment a
-     * choice is written, and a render on its own scope would be cancelled with it.
+     * choice is written, and a render on its own scope would be cancelled with it. [widget] is the kind the id
+     * belongs to — the Chats list unless a kind says otherwise.
      */
-    fun render(context: Context, id: GlanceId) {
+    fun render(context: Context, id: GlanceId, widget: GlanceAppWidget = ChatsWidget()) {
         val app = context.applicationContext
-        scope.launch { runCatching { ChatsWidget().update(app, id) }.onFailure { Log.w(TAG, "Widget render failed", it) } }
+        scope.launch { runCatching { widget.update(app, id) }.onFailure { Log.w(TAG, "Widget render failed", it) } }
     }
 
     /** From a render: a widget exists, so what changes from here on has to reach it. Idempotent. */
@@ -160,9 +177,14 @@ object WidgetSync {
                 delay(SETTLE_MS)
                 val current = snapshots.first()
                 if (current == rendered) return@collect
+                // The shortcut widgets draw nothing of the list; the theme changing is the one thing that is news to them.
+                val themeChanged = rendered?.let { it.theme != current.theme || it.oledBlack != current.oledBlack } ?: true
                 rendered = current
                 // A render in progress is finished even if the follower is stopped meanwhile; the next change starts another.
-                withContext(NonCancellable) { renderAll(app) }
+                withContext(NonCancellable) {
+                    renderAll(app)
+                    if (themeChanged) runCatching { shortcutRenderer(app) }.onFailure { Log.w(TAG, "Shortcut widget render failed", it) }
+                }
             }
         }
         return true
@@ -183,12 +205,40 @@ object WidgetSync {
         }
     }
 
+    /**
+     * From a receiver when the last widget of its kind is removed: [stop], then — should a widget of another kind
+     * still be placed (a shortcut button beside the Chats list, or the other way round) — follow again for it. The
+     * stop is at once, as before; the launcher is asked afterwards, and a widget set that has changed again meanwhile
+     * is left to its own receiver.
+     */
+    fun stopIfNoneLeft(context: Context, removed: Class<out GlanceAppWidget>) {
+        val app = context.applicationContext
+        stop()
+        val seen = generationNow()
+        scope.launch {
+            if (!remainingWidgets(app, removed)) return@launch
+            val graph = runCatching { app.appGraph }.getOrNull() ?: return@launch
+            followIfCurrent(app, graph, seen)
+        }
+    }
+
     internal fun isFollowing(): Boolean = synchronized(this) { followJob?.isActive == true }
 
     private fun generationNow(): Int = synchronized(this) { generation }
 
-    private suspend fun glanceIdsPresent(app: Context): Boolean =
-        runCatching { GlanceAppWidgetManager(app).getGlanceIds(ChatsWidget::class.java).isNotEmpty() }.getOrDefault(false)
+    /** Every kind of widget the app places: the Chats list, the shortcut button and the compose bar. */
+    private val widgetKinds: List<Class<out GlanceAppWidget>> = listOf(ChatsWidget::class.java, ShortcutButtonWidget::class.java, ComposeBarWidget::class.java)
+
+    /** Any of the app's widgets: the Chats list, or a shortcut button or compose bar (which follow the theme). */
+    private suspend fun glanceIdsPresent(app: Context): Boolean = runCatching {
+        val manager = GlanceAppWidgetManager(app)
+        widgetKinds.any { manager.getGlanceIds(it).isNotEmpty() }
+    }.getOrDefault(false)
+
+    private suspend fun otherGlanceIdsPresent(app: Context, removed: Class<out GlanceAppWidget>): Boolean = runCatching {
+        val manager = GlanceAppWidgetManager(app)
+        widgetKinds.filter { it != removed }.any { manager.getGlanceIds(it).isNotEmpty() }
+    }.getOrDefault(false)
 
     /**
      * One render of every widget, tried twice: a failure is logged and the widgets are left as they were, never

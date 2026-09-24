@@ -148,10 +148,14 @@ class ChatsWidgetReceiver : GlanceAppWidgetReceiver() {
         WidgetRefreshWork.schedulePeriodic(context)
     }
 
-    /** The last widget was removed: there is nothing left for [WidgetSync] or the periodic refresh to keep in step. */
+    /**
+     * The last Chats widget was removed: nothing is left for the periodic refresh to keep in step. [WidgetSync] is
+     * stopped only when no widget of any kind is left; a shortcut widget still placed keeps it following, since it
+     * takes the theme from the same snapshots.
+     */
     override fun onDisabled(context: Context) {
         WidgetRefreshWork.cancelPeriodic(context)
-        WidgetSync.stop()
+        WidgetSync.stopIfNoneLeft(context, ChatsWidget::class.java)
         super.onDisabled(context)
     }
 }

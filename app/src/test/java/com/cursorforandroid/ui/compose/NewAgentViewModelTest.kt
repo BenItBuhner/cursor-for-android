@@ -5,9 +5,11 @@ import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.cursorforandroid.AppGraph
 import com.cursorforandroid.data.api.CursorApi
+import com.cursorforandroid.data.api.CursorApiException
 import com.cursorforandroid.data.api.dto.CreateAgentRequestDto
 import com.cursorforandroid.data.api.dto.CreateAgentResponseDto
 import com.cursorforandroid.data.demo.DemoBackendFactory
+import com.cursorforandroid.data.local.DraftStore
 import com.cursorforandroid.data.repo.CursorBackend
 import com.cursorforandroid.data.repo.LaunchIdempotency
 import com.cursorforandroid.data.repo.LaunchRequest
@@ -55,6 +57,9 @@ class NewAgentViewModelTest {
     /** Every create the composer sent, as the API received it. */
     private val created = CopyOnWriteArrayList<CreateAgentRequestDto>()
 
+    /** Thrown by the next create the API receives, then cleared: the server refusing a launch. */
+    @Volatile private var failNextCreate: Throwable? = null
+
     @Before
     fun setUp() {
         graph = process()
@@ -68,6 +73,7 @@ class NewAgentViewModelTest {
         val api = object : CursorApi by demoApi {
             override suspend fun createAgent(body: CreateAgentRequestDto): CreateAgentResponseDto {
                 created += body
+                failNextCreate?.let { failNextCreate = null; throw it }
                 return demoApi.createAgent(body)
             }
         }
@@ -80,8 +86,13 @@ class NewAgentViewModelTest {
     }
 
 
-    private fun loaded(draftSaveDelayMs: Long = 400L, graph: AppGraph = this.graph, resume: String? = null): NewAgentViewModel {
-        val vm = NewAgentViewModel(graph, draftSaveDelayMs, resume = resume)
+    private fun loaded(
+        draftSaveDelayMs: Long = 400L,
+        graph: AppGraph = this.graph,
+        resume: String? = null,
+        origin: String = DraftStore.ORIGIN_COMPOSER,
+    ): NewAgentViewModel {
+        val vm = NewAgentViewModel(graph, draftSaveDelayMs, resume = resume, origin = origin)
         runBlocking { withTimeout(10_000) { vm.state.first { it.models.isNotEmpty() && !it.isLoadingRepos && !it.isLoadingDevices } } }
         return vm
     }
@@ -185,6 +196,105 @@ class NewAgentViewModelTest {
 
     /** The sidebar's drafts, as the shell lists them while the New Chat pane is on screen with [vm] in it. */
     private fun listed(vm: NewAgentViewModel) = DraftRow.listed(graph.newChatDrafts.state.value.drafts, open = vm.draftId.value)
+
+    /**
+     * The quick composer over the launcher has no screen of the app behind it to show the chat in, so its send waits
+     * for the server: the chat opens only once it exists, and the draft — on screen and on disk — is cleared then.
+     */
+    @Test
+    fun `a send waited out opens the chat only once the server has answered, and the draft is gone from disk`() = runBlocking {
+        val vm = loaded(draftSaveDelayMs = 10, origin = DraftStore.ORIGIN_QUICK_COMPOSER)
+        vm.setPrompt("Do the thing")
+        awaitUntil { onDisk().singleOrNull()?.prompt == "Do the thing" }
+        var opened: String? = null
+
+        vm.launch(onOpen = { opened = it }, awaitServer = true)
+
+        // Busy, and nothing opened, for as long as the server has not said.
+        awaitUntil { vm.state.value.isLaunching }
+        assertThat(opened).isNull()
+        assertThat(vm.state.value.canLaunch).isFalse()
+        awaitUntil { opened != null }
+        assertThat(accepted(opened!!)).isTrue()
+        awaitUntil { !vm.state.value.isLaunching && vm.state.value.prompt.isEmpty() }
+        awaitUntil { onDisk().isEmpty() }
+        assertThat(vm.state.value.error).isNull()
+    }
+
+    @Test
+    fun `a send waited out and refused keeps the draft where it is, with the server's words under it`() = runBlocking {
+        val vm = loaded(origin = DraftStore.ORIGIN_QUICK_COMPOSER)
+        vm.setPrompt("Do the thing")
+        failNextCreate = CursorApiException(429, "rate_limited", "Slow down.")
+        var opened: String? = null
+
+        vm.launch(onOpen = { opened = it }, awaitServer = true)
+        awaitUntil { vm.state.value.error != null }
+
+        assertThat(opened).isNull()
+        assertThat(vm.state.value.prompt).isEqualTo("Do the thing")
+        assertThat(vm.state.value.isLaunching).isFalse()
+        assertThat(vm.state.value.error).isEqualTo("Rate limited by Cursor: Slow down. Try again in a moment.")
+        assertThat(vm.state.value.canLaunch).isTrue()
+        assertThat(created).hasSize(1)
+
+        // Sent again as it stands, it goes through — and the composer clears, its draft with it.
+        vm.launch(onOpen = { opened = it }, awaitServer = true)
+        awaitUntil { opened != null }
+        assertThat(created).hasSize(2)
+        awaitUntil { vm.state.value.prompt.isEmpty() && !vm.state.value.isLaunching }
+        assertThat(vm.state.value.error).isNull()
+    }
+
+    @Test
+    fun `stopping a send being waited out returns the draft without a word`() = runBlocking {
+        val vm = loaded(origin = DraftStore.ORIGIN_QUICK_COMPOSER)
+        vm.setPrompt("Do the thing")
+        var opened: String? = null
+
+        vm.launch(onOpen = { opened = it }, awaitServer = true)
+        // The chat's row is on the list a beat before the request is on its entry (ConversationRepository.launch
+        // publishes the chat, then hands the request to the entry's scope), and a stop in between finds nothing to
+        // stop; so wait for the request to have reached the API — the demo answers it half a second later.
+        awaitUntil { vm.state.value.isLaunching && created.isNotEmpty() && graph.agents.state.value.agents.any { it.name == "Do the thing" } }
+        vm.cancelLaunch()
+
+        awaitUntil { !vm.state.value.isLaunching }
+        assertThat(opened).isNull()
+        assertThat(vm.state.value.prompt).isEqualTo("Do the thing")
+        assertThat(vm.state.value.error).isNull()
+        assertThat(vm.state.value.canLaunch).isTrue()
+        assertThat(graph.agents.state.value.agents.none { it.name == "Do the thing" }).isTrue()
+    }
+
+    /** Leaving the quick composer keeps what was typed at once, not after typing has settled; Cancel throws it away. */
+    @Test
+    fun `keeping a draft writes it at once, and discarding it clears the screen and the disk`() = runBlocking {
+        val vm = loaded(draftSaveDelayMs = 60_000, origin = DraftStore.ORIGIN_QUICK_COMPOSER)
+        vm.setPrompt("Half a thou")
+        delay(100)
+        assertThat(onDisk()).isEmpty()
+
+        vm.keepDraft()
+        awaitUntil { onDisk().singleOrNull()?.prompt == "Half a thou" }
+
+        vm.discardDraft()
+        assertThat(vm.state.value.prompt).isEmpty()
+        awaitUntil { onDisk().isEmpty() }
+    }
+
+    /** The quick composer has no sidebar to reopen a draft from: opened again, it picks up the one it was left with. */
+    @Test
+    fun `a quick composer opened again picks up the draft it was left with`() = runBlocking {
+        val first = loaded(draftSaveDelayMs = 60_000, origin = DraftStore.ORIGIN_QUICK_COMPOSER)
+        first.setPrompt("Half a thou")
+        first.keepDraft()
+        awaitUntil { onDisk().singleOrNull()?.prompt == "Half a thou" }
+
+        val again = loaded(origin = DraftStore.ORIGIN_QUICK_COMPOSER)
+        assertThat(again.state.value.prompt).isEqualTo("Half a thou")
+        assertThat(again.draftId.value).isEqualTo(first.draftId.value)
+    }
 
     @Test
     fun `a draft that comes back does not overwrite what is being written, and waits in the sidebar`() = runBlocking<Unit> {

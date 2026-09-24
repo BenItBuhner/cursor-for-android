@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The launcher's long-press menu on the app icon: the two fixed entries. New chat opens the composer over the
+  launcher (QuickComposerActivity); Search opens the app on the sidebar's search. The pinned chats and Projects
+  beside them are dynamic shortcuts, published by shortcuts/LauncherShortcuts.kt.
+
+  targetPackage is the applicationId, which a resource cannot take from the build: src/debug/res/xml carries the same
+  file for the debug build's `.debug` suffix. Change both together.
+-->
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <shortcut
+        android:enabled="true"
+        android:icon="@drawable/shortcut_new_chat"
+        android:shortcutId="new-chat"
+        android:shortcutLongLabel="@string/shortcut_new_chat_long"
+        android:shortcutShortLabel="@string/shortcut_new_chat_short">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:targetClass="com.cursorforandroid.ui.quick.QuickComposerActivity"
+            android:targetPackage="com.cursorforandroid" />
+    </shortcut>
+    <shortcut
+        android:enabled="true"
+        android:icon="@drawable/shortcut_search"
+        android:shortcutId="search"
+        android:shortcutLongLabel="@string/shortcut_search_long"
+        android:shortcutShortLabel="@string/shortcut_search_short">
+        <intent
+            android:action="com.cursorforandroid.action.SEARCH"
+            android:targetClass="com.cursorforandroid.MainActivity"
+            android:targetPackage="com.cursorforandroid" />
+    </shortcut>
+</shortcuts>
