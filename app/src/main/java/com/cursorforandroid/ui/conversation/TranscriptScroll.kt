@@ -319,7 +319,9 @@ internal class ReaderScroll(
 ) {
     val screen = ScreenScroll(scroll.list)
     val dragged: ScrollableState = if (pull != null) PullableScroll(screen) else screen
-    val overscroll: OverscrollEffect = pull?.let { CatchUpOverscroll(platform, it, enabled = canCatchUp, onPulled = onCatchUp) } ?: platform
+    val overscroll: OverscrollEffect = pull?.let {
+        CatchUpOverscroll(platform, it, atNewest = { !screen.canScrollForward }, enabled = canCatchUp, onPulled = onCatchUp)
+    } ?: platform
 }
 
 @OptIn(ExperimentalFoundationApi::class)
