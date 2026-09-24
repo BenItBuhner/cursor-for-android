@@ -4,6 +4,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -14,7 +15,6 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import com.cursorforandroid.domain.Agent
 import com.cursorforandroid.ui.components.CursorIcons
-import com.cursorforandroid.ui.components.FlatIconButton
 import com.cursorforandroid.ui.projects.NameSheet
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.util.TimeFormat
@@ -32,8 +32,7 @@ internal fun SideChatsSection(state: PanelState, actions: PanelActions) {
     val canStart = DefaultPanelSections.canStartSideChat(state.capabilities, state)
     var naming by rememberSaveable("side-chat-name-${state.agentId}") { mutableStateOf(false) }
     Column(Modifier.fillMaxWidth().padding(bottom = 6.dp).testTag("side-chats-section")) {
-        // A row opens the side chat beside this conversation, as a tab of the panel; its trailing button opens it in place.
-        chats.forEach { chat -> SideChatRow(chat, onOpen = { actions.openSideChat(chat.id) }, onOpenAsChat = { actions.openAgent(chat.id) }) }
+        chats.forEach { chat -> SideChatRow(chat, onOpen = { actions.openAgent(chat.id) }) }
         when (val load = state.sideChatsLoad) {
             RemoteLoad.Loading -> if (chats.isEmpty()) LoadingRow("Looking for side chats…")
             is RemoteLoad.Failed -> FailedRow(load.message, onRetry = if (load.retryable) ({ actions.refreshSideChats() }) else null)
@@ -69,9 +68,9 @@ internal fun SideChatsSection(state: PanelState, actions: PanelActions) {
     }
 }
 
-/** One side chat: its name, what it is doing, how long since it last moved; opens it as a tab, or as a chat of its own. */
+/** One side chat: its name, what it is doing, how long since it last moved; opens it. */
 @Composable
-private fun SideChatRow(chat: Agent, onOpen: () -> Unit, onOpenAsChat: () -> Unit) {
+private fun SideChatRow(chat: Agent, onOpen: () -> Unit) {
     val colors = CursorTheme.colors
     val detail = listOfNotNull(
         when {
@@ -87,7 +86,7 @@ private fun SideChatRow(chat: Agent, onOpen: () -> Unit, onOpenAsChat: () -> Uni
         icon = CursorIcons.Ask,
         iconTint = if (chat.isRunning) colors.accent else colors.iconTertiary,
         subtitle = detail,
-        trailing = { FlatIconButton(CursorIcons.ExternalLink, "Open ${chat.name} as a chat", onClick = onOpenAsChat, size = 24.dp, iconSize = 13.dp, modifier = Modifier.testTag("side-chat-open-as-chat")) },
+        trailing = { Icon(CursorIcons.ChevronRight, null, tint = colors.iconQuaternary, modifier = Modifier.size(14.dp)) },
         onClick = onOpen,
         modifier = Modifier.testTag("side-chat"),
     )

@@ -9,7 +9,6 @@ import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onAllNodesWithText
-import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
@@ -58,7 +57,6 @@ class SideChatsSectionTest {
         override fun refreshSideChats() { asked += "refresh" }
         override fun startSideChat(name: String?) { asked += "start:$name" }
         override fun openAgent(agentId: String) { asked += "open:$agentId" }
-        override fun openSideChat(agentId: String) { asked += "side:$agentId" }
     }
 
     private fun show() {
@@ -88,10 +86,7 @@ class SideChatsSectionTest {
         assertThat(shown("Should the widget follow the toggle?")).isTrue()
         assertThat(shown("Working · 12m")).isTrue()
         assertThat(shown("Light theme contrast check")).isTrue()
-        // A row opens the side chat beside the conversation, as a tab of the panel; its trailing button opens it in place.
         compose.onAllNodesWithTag("side-chat")[1].performClick()
-        assertThat(asked).contains("side:bc-side-2")
-        compose.onNodeWithContentDescription("Open Light theme contrast check as a chat").performClick()
         assertThat(asked).contains("open:bc-side-2")
     }
 
@@ -153,7 +148,7 @@ class SideChatsSectionTest {
         assertThat(shown("Needs Extended mode")).isFalse()
         assertThat(shown("No side chats yet")).isFalse()
         compose.onAllNodesWithTag("side-chat")[0].performClick()
-        assertThat(asked).contains("side:bc-side-1")
+        assertThat(asked).contains("open:bc-side-1")
 
         // None known and the mode off: no section at all.
         state = PanelFixtures.loaded()
