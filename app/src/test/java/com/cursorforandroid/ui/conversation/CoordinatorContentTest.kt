@@ -6,6 +6,7 @@ import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onAllNodesWithContentDescription
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
@@ -267,7 +268,7 @@ class CoordinatorContentTest {
     }
 
     @Test
-    fun `a remark folded under an injected turn's row opens with the row, under the report`() {
+    fun `a local subagent's notice is its subagent's row, the remark folded under it in view and the report a tap away`() {
         show(
             SystemNotification(
                 id = "n2", kind = SystemNotification.Kind.Subagent, title = "Subagent completed", summary = "Land merge train and prep release",
@@ -275,13 +276,15 @@ class CoordinatorContentTest {
                 narration = "Noted; the release worker is done and nothing else needs doing.",
             ),
         )
-        compose.onNodeWithText("Land merge train and prep release").assertIsDisplayed()
-        compose.onNodeWithText(" \u00B7 completed").assertIsDisplayed()
-        assertThat(compose.onAllNodesWithText("Noted; the release worker is done and nothing else needs doing.").fetchSemanticsNodes()).isEmpty()
-        compose.onNodeWithText("Land merge train and prep release").performClick()
-        compose.onNodeWithText("The merge train landed: #113 merged, v0.3.4 tagged.").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Subagent Land merge train and prep release, ${SubagentRows.COMPLETED}").assertIsDisplayed()
+        assertThat(compose.onAllNodesWithText(" \u00B7 completed").fetchSemanticsNodes()).isEmpty()
+        // The agent's reply to the notice stays in view, as on the desktop; the report waits behind the row.
         compose.onNodeWithTag("notification-narration", useUnmergedTree = true).assertIsDisplayed()
         compose.onNodeWithText("Noted; the release worker is done and nothing else needs doing.").assertIsDisplayed()
+        assertThat(compose.onAllNodesWithText("The merge train landed: #113 merged, v0.3.4 tagged.").fetchSemanticsNodes()).isEmpty()
+        compose.onNodeWithTag("subagent-notice", useUnmergedTree = true).performClick()
+        compose.onNodeWithText("The merge train landed: #113 merged, v0.3.4 tagged.").assertIsDisplayed()
+        assertThat(opened).isEmpty()
     }
 
     @Test
@@ -302,21 +305,22 @@ class CoordinatorContentTest {
     }
 
     @Test
-    fun `a worker's completion notice is a compact row whose button opens the worker's chat`() {
+    fun `a worker's completion notice is the worker's row, and tapping it opens the worker's chat`() {
         show(
             SystemNotification(
                 id = "n1", kind = SystemNotification.Kind.Worker, title = "Worker completed", summary = "Usage events aggregation",
                 body = "Added the aggregates. PR #215 merged.", tone = NoticeTone.Success, raw = "<system_notification>…</system_notification>", agentId = "bc-w1",
             ),
         )
-        // One line: the worker's title, what became of it, no "Worker completed" label.
-        compose.onNodeWithText("Usage events aggregation").assertIsDisplayed()
-        compose.onNodeWithText(" \u00B7 completed").assertIsDisplayed()
+        // The worker's row: the title the notice named it by, the glyph of a cloud agent, "Completed"; no "Worker completed" label.
+        compose.onNodeWithContentDescription("Subagent Usage events aggregation, ${SubagentRows.COMPLETED}").assertIsDisplayed()
+        compose.onNodeWithTag("subagent-placement", useUnmergedTree = true).assertExists()
         assertThat(compose.onAllNodesWithText("Worker completed").fetchSemanticsNodes()).isEmpty()
-        // The row opens the report; the button at its end opens the worker.
-        compose.onNodeWithText("Usage events aggregation").performClick()
-        compose.onNodeWithText("Added the aggregates. PR #215 merged.").assertIsDisplayed()
-        compose.onNodeWithContentDescription("Open agent").performClick()
+        assertThat(compose.onAllNodesWithText(" \u00B7 completed").fetchSemanticsNodes()).isEmpty()
+        // The row is a tap from the worker's chat, as the worker's row among the calls is; the report is read there.
+        assertThat(compose.onAllNodesWithContentDescription("Open agent").fetchSemanticsNodes()).isEmpty()
+        compose.onNodeWithTag("subagent-notice", useUnmergedTree = true).performClick()
         assertThat(opened).containsExactly("bc-w1")
+        assertThat(compose.onAllNodesWithText("Added the aggregates. PR #215 merged.").fetchSemanticsNodes()).isEmpty()
     }
 }

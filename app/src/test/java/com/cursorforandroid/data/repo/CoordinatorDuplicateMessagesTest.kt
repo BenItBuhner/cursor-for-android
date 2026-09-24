@@ -205,13 +205,21 @@ class CoordinatorDuplicateMessagesTest {
 
     private fun List<TranscriptRow>.stretches(): List<TranscriptRow.Stretch> = filterIsInstance<TranscriptRow.Stretch>()
 
-    /** Each row as a word: a stretch by its summary, a subagent by where it came from, a message as itself. */
+    /** Each row as a word: a stretch by its summary, a message as itself. */
     private fun List<TranscriptRow>.shape(): List<String> = map { row ->
         when (row) {
             is TranscriptRow.Stretch -> "stretch:${row.summary.text}"
-            is TranscriptRow.Subagent -> "subagent:${row.subagent.source}"
             is TranscriptRow.Message -> "message"
             else -> row::class.simpleName!!
+        }
+    }
+
+    /** A stretch's steps as words, in order: a subagent by where it came from, a run's end by how long it ran. */
+    private fun TranscriptRow.Stretch.steps(): List<String> = entries.map { entry ->
+        when (entry) {
+            is TranscriptRow.Entry.Call -> entry.subagent?.let { "subagent:${it.source}" } ?: "call:${entry.call.kind}"
+            is TranscriptRow.Entry.Footer -> "footer:${entry.footer.durationMs?.div(1000)}s"
+            else -> entry::class.simpleName!!.lowercase()
         }
     }
 
@@ -249,8 +257,8 @@ class CoordinatorDuplicateMessagesTest {
     /**
      * The frame itself: the account's record refused (the documented path stands), `/v0` behind the runs, the six
      * finished runs replayed from their logs, the seventh followed. Three messages were sent; three are drawn, each
-     * once, in order; between two of them each worker the coordinator addressed is a row of its own, and the stretches
-     * around those rows cover every run in between, each footer once.
+     * once, in order; between two of them one stretch covers every run in between, each footer once, each worker the
+     * coordinator addressed a row among its steps.
      */
     @Test
     fun `the documented path draws each of the coordinator's messages once although the silent runs' logs carry the last one again`() = runBlocking<Unit> {
@@ -268,33 +276,29 @@ class CoordinatorDuplicateMessagesTest {
         assertThat(rows.messages()).containsExactly(SevenRunCoordinator.M1, SevenRunCoordinator.M2, SevenRunCoordinator.M6).inOrder()
         assertThat(rows.filterIsInstance<TranscriptRow.Message>().map { it.call.callId }).containsNoDuplicates()
         assertThat(rows.map { it.key }).containsNoDuplicates()
-        // Between the second and the third message: run 2's remaining work and the three silent runs — each worker
-        // they queued work for a row, as the desktop draws every SendToAgent; the rest the stretches around them,
-        // each run's work (its edit, its status check, its notes) closed by its footer: 20 s, 21 s, 22 s, 2 m 7 s.
+        // Between the second and the third message: run 2's remaining work and the three silent runs behind one line —
+        // each run's work (the worker it queued work for, its edit, its status check, its notes) closed by its
+        // footer: 20 s, 21 s, 22 s, 2 m 7 s — the workers' rows in their places, as the desktop's work group holds them.
         val between = rows.between(SevenRunCoordinator.M2, SevenRunCoordinator.M6)
-        assertThat(between.shape()).containsExactly(
-            "stretch:1 note",
-            "subagent:Queued",
-            "stretch:Worked 20s · 1 edit · 1 agent · 2 notes",
-            "subagent:Queued",
-            "stretch:Worked 21s · 1 edit · 1 agent · 1 note",
-            "subagent:Queued",
-            "stretch:Worked 22s · 1 edit · 1 agent · 1 note",
-            "subagent:Queued",
-            "stretch:Worked 2m 7s · 1 note",
+        val first = rows.between(SevenRunCoordinator.M1, SevenRunCoordinator.M2)
+        val after = rows.drop(rows.indexOfLast { it is TranscriptRow.Message } + 1)
+        assertThat(between.shape()).containsExactly("stretch:Worked 3m 10s · 1 edit · 7 agents · 6 notes")
+        assertThat(between.stretches().single().steps()).containsExactly(
+            "note", "subagent:Queued", "call:Edit", "call:Coordinator", "note", "footer:20s",
+            "call:Edit", "note", "subagent:Queued", "call:Coordinator", "note", "footer:21s",
+            "call:Edit", "subagent:Queued", "call:Coordinator", "note", "footer:22s",
+            "call:Edit", "subagent:Queued", "note", "footer:127s",
         ).inOrder()
         assertThat(between.footers()).containsExactly(20_000L, 21_000L, 22_000L, 127_000L).inOrder()
-        assertThat(between.stretches().mapNotNull { it.summary.lineStats }).containsExactly("+2 -2", "+1 -1", "+1 -1").inOrder()
+        assertThat(between.stretches().single().summary.lineStats).isEqualTo("+4 -4")
         // Between the first two: run 1's tail and run 2's opening, the two workers it queued for, its one footer, 59 s.
-        val first = rows.between(SevenRunCoordinator.M1, SevenRunCoordinator.M2)
-        assertThat(first.shape()).containsExactly("stretch:1 note", "subagent:Queued", "subagent:Queued", "stretch:Worked 59s · 1 note").inOrder()
-        // After the third: run 6's tail closed by its footer, then the running run — the five workers it queued for,
-        // and its live stretch, the run still writing into it.
-        val after = rows.drop(rows.indexOfLast { it is TranscriptRow.Message } + 1)
-        assertThat(after.shape()).containsExactly(
-            "stretch:Worked 1m 1s · 1 edit · 1 note",
-            "subagent:Queued", "subagent:Queued", "subagent:Queued", "subagent:Queued", "subagent:Queued",
-            "stretch:Working · 1 step",
+        assertThat(first.shape()).containsExactly("stretch:Worked 59s · 2 agents · 2 notes")
+        assertThat(first.stretches().single().steps()).containsExactly("note", "subagent:Queued", "subagent:Queued", "note", "footer:59s").inOrder()
+        // After the third: run 6's tail closed by its footer, then the running run — the five workers it queued for
+        // and its step — the run still writing into it.
+        assertThat(after.shape()).containsExactly("stretch:Working · 1 edit · 5 agents · 1 note")
+        assertThat(after.stretches().single().steps()).containsExactly(
+            "call:Edit", "note", "footer:61s", "subagent:Queued", "subagent:Queued", "subagent:Queued", "subagent:Queued", "subagent:Queued", "call:Other",
         ).inOrder()
         assertThat(after.footers()).containsExactly(61_000L)
         // The diagnostics name the repeats, so a dump says which run's log said what again.
@@ -311,7 +315,7 @@ class CoordinatorDuplicateMessagesTest {
      * The same chat in Extended mode's record path: the record has every turn, the silent turns with their calls
      * and no `SendMessage` among them — so they sent none, and their logs are not asked for (see
      * `RecordTurn.wantsLogForMessage`): the copies the logs carry never reach the screen, and the message is drawn
-     * once, where the record has it, the silent turns reading as the stretches and worker rows under it.
+     * once, where the record has it, the silent turns reading as the one stretch under it, their workers' rows inside.
      */
     @Test
     fun `the record path keeps the message in its own turn and asks no silent turn for its log`() = runBlocking<Unit> {
@@ -334,17 +338,14 @@ class CoordinatorDuplicateMessagesTest {
         val before = rows.subList(0, m2).stretches().last()
         assertThat(before.eventCount).isEqualTo(1)
         val between = rows.between(SevenRunCoordinator.M2, SevenRunCoordinator.M6)
-        // The events that opened turns 3 to 6 — each followed by its turn's work, so none groups with the next.
-        assertThat(between.shape()).containsExactly(
-            "stretch:1 note",
-            "subagent:Queued",
-            "stretch:Worked 20s · 1 event · 1 edit · 1 agent",
-            "subagent:Queued",
-            "stretch:Worked 21s · 1 event · 1 edit · 1 agent",
-            "subagent:Queued",
-            "stretch:Worked 22s · 1 event · 1 edit · 1 agent",
-            "subagent:Queued",
-            "stretch:Worked 2m 7s · 1 event",
+        // The events that opened turns 3 to 6 — each followed by its turn's work, so none groups with the next — and
+        // the worker each turn messaged, all behind one line.
+        assertThat(between.shape()).containsExactly("stretch:Worked 3m 10s · 4 events · 1 edit · 7 agents").inOrder()
+        assertThat(between.stretches().single().steps()).containsExactly(
+            "note", "subagent:Queued", "call:Edit", "call:Coordinator", "note", "footer:20s",
+            "event", "call:Edit", "subagent:Queued", "call:Coordinator", "footer:21s",
+            "event", "call:Edit", "subagent:Queued", "call:Coordinator", "footer:22s",
+            "event", "call:Edit", "subagent:Queued", "footer:127s", "event",
         ).inOrder()
         assertThat(between.stretches().sumOf { it.eventCount }).isEqualTo(4)
         assertThat(between.footers()).containsExactly(20_000L, 21_000L, 22_000L, 127_000L).inOrder()
@@ -366,7 +367,7 @@ class CoordinatorDuplicateMessagesTest {
         val between = rows.between(SevenRunCoordinator.M2, SevenRunCoordinator.M6)
         assertThat(between.footers()).containsExactly(20_000L, 21_000L, 22_000L, 127_000L).inOrder()
         assertThat(between.stretches().sumOf { it.eventCount }).isEqualTo(4)
-        assertThat(between.count { it is TranscriptRow.Subagent }).isEqualTo(4)
+        assertThat(between.stretches().flatMap { it.subagents }).hasSize(4)
         val lines = conversations.loadDiagnostics(agentId)!!.runs.filter { line -> SevenRunCoordinator.SILENT_RUNS.any { line.idTail.endsWith(it) } }
         lines.forEach { assertThat(it.message).isEqualTo("record=none rendered=none via=record") }
     }

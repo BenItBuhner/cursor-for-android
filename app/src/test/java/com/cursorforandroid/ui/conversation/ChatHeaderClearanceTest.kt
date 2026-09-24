@@ -234,7 +234,8 @@ class ChatHeaderClearanceTest {
 
     @Test
     fun `a drag across the column under the header's row moves the transcript beneath it`() {
-        pane = DpSize(1001.dp, 420.dp)
+        // Short enough that the Project's transcript, its workers' rows closed inside their groups, runs well past it.
+        pane = DpSize(1001.dp, 280.dp)
         open(DemoData.PROJECT_ID, sidebar = true)
         // Both turns and their activity drawn, so nothing lands in the transcript while it is being dragged.
         compose.waitUntil(30_000) {

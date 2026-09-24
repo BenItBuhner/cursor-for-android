@@ -845,6 +845,38 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
     /** Clears this chat's cached transcript and traces and fetches it again (see `ConversationRepository.reloadTranscript`). */
     fun reloadTranscript() = graph.conversations.reloadTranscript(agentId)
 
+    private var refreshWordJob: Job? = null
+
+    /**
+     * Ctrl+R: the chat brought up to what the server has, then a word on it — "Up to date", "2 new" (see [RefreshWord]).
+     * A press while one is still reading is the same press. This is the chat's refresh until the repository has a
+     * catch-up that reads only what follows the chat's newest event; that call, and its own count, then go here.
+     */
+    fun catchUp() {
+        if (refreshWordJob?.isActive == true) return
+        refreshWithWord { graph.conversations.reload(agentId) }
+    }
+
+    /** Ctrl+Shift+R: [reloadTranscript], with [catchUp]'s word once the chat has been read again. */
+    fun reloadTranscriptWithWord() {
+        refreshWordJob?.cancel()
+        refreshWithWord { reloadTranscript() }
+    }
+
+    /**
+     * A load already under way — the chat's first read, just opened — is waited for before the chat is taken as it
+     * was: what that load brings was never the refresh's to count, as the pull's catch-up counts it.
+     */
+    private fun refreshWithWord(start: () -> Unit) {
+        refreshWordJob = viewModelScope.launch {
+            graph.conversations.awaitLoad(agentId)
+            val before = conversation.value
+            start()
+            graph.conversations.awaitLoad(agentId)
+            toast.value = RefreshWord.of(before, conversation.value)
+        }
+    }
+
     /** The reader neared the oldest turn shown: the turns before it are paged in (see [ConversationState.hasOlder]). */
     fun loadOlder() = graph.conversations.loadOlder(agentId)
 

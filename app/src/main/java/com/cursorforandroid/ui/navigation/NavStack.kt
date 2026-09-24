@@ -27,6 +27,11 @@ sealed interface Screen {
         override val route: String get() = "whats-new"
     }
 
+    /** The hardware keyboard's shortcuts; pushed over Settings' row, like [WhatsNew]. */
+    data object KeyboardShortcuts : Screen {
+        override val route: String get() = "keyboard-shortcuts"
+    }
+
     data class Agent(val id: String) : Screen {
         override val route: String get() = "agent/$id"
     }
@@ -39,6 +44,7 @@ sealed interface Screen {
             route == Home.route -> Home
             route == Settings.route -> Settings
             route == WhatsNew.route -> WhatsNew
+            route == KeyboardShortcuts.route -> KeyboardShortcuts
             route.startsWith("agent/") -> route.removePrefix("agent/").takeIf { it.isNotBlank() }?.let(::Agent)
             route.startsWith(LEGACY_PROJECT_PREFIX) -> route.removePrefix(LEGACY_PROJECT_PREFIX).takeIf { it.isNotBlank() }?.let(::Agent)
             else -> null

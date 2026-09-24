@@ -2208,6 +2208,11 @@ class ConversationRepository(
         e.loadJob = e.scope.launch { load(e, agentId, force = true) }
     }
 
+    /** Returns once the chat's load in flight, if any — the one [reload] or [reloadTranscript] just started — is over. */
+    suspend fun awaitLoad(agentId: String) {
+        synchronized(entries) { entries[agentId] }?.loadJob?.join()
+    }
+
     /**
      * Throws away everything kept for the chat — in memory and on disk: its transcript, its traces, the record's
      * window — and reads it again from the server, for a chat that shows less than it should because a copy an

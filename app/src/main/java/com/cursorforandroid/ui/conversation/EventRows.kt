@@ -50,14 +50,25 @@ import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.util.TimeFormat
 
 /**
- * A turn Cursor injected — a subagent's report, a subscribed pull request's change, a timer, a goal continued — as
- * one line: the kind's glyph, the subject, what happened to it, who did it, how long ago ("#64 · opened ·
- * BenItBuhner   2h"; "Hand & Arm Renders · completed   3h"). [count] above one says the same notice came that many
- * times in a row ("#12 · synchronize · cursor[bot] ×2"). Tapping opens the report, or the reply the agent folded
- * under the row; a worker's or subagent's row also opens that agent's chat.
+ * A turn Cursor injected, as its row. A subagent's or a worker's report is that subagent's own row, as the transcript
+ * draws it where the call that started it is ([SubagentNoticeRow]); anything else — a subscribed pull request's
+ * change, a timer, a goal continued, a shell task — is its one line ([EventLineRow]). [count] above one says the
+ * same notice came that many times in a row.
  */
 @Composable
 internal fun EventRow(item: SystemNotification, count: Int = 1, modifier: Modifier = Modifier) {
+    if (item.kind == SystemNotification.Kind.Subagent || item.kind == SystemNotification.Kind.Worker) SubagentNoticeRow(item, modifier)
+    else EventLineRow(item, count, modifier)
+}
+
+/**
+ * An injected turn as one line: the kind's glyph, the subject, what happened to it, who did it, how long ago ("#64 ·
+ * opened · BenItBuhner   2h"; "Goal continued · Ship the release   3h"). [count] above one says the same notice came
+ * that many times in a row ("#12 · synchronize · cursor[bot] ×2"). Tapping opens the report, or the reply the agent
+ * folded under the row; a row naming an agent also opens that agent's chat.
+ */
+@Composable
+private fun EventLineRow(item: SystemNotification, count: Int, modifier: Modifier) {
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
     val line = remember(item) { EventLine.of(item) }
