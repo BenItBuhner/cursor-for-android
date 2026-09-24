@@ -64,8 +64,17 @@ class NavEntry internal constructor(val id: String, val screen: Screen) {
 }
 
 /**
- * The app's back stack: a snapshot-state list of [NavEntry], always at least one deep. Mutations apply immediately;
- * [CursorNavHost] observes the top and animates whatever changed.
+ * The app's back stack: a snapshot-state list of [NavEntry], always at least one deep, with the New Chat pane at the
+ * root. Back follows where the reader came from:
+ *
+ * - [open] is a destination reached from the one on top — a worker's row, a subagent, the panel's Project section,
+ *   a side chat, a link, Settings, What's new. It is pushed, so back returns to the screen it was opened from, with
+ *   that screen's scroll position, composer draft and open panel as they were left.
+ * - [resetTo] is a destination picked from the app's top level — a sidebar row, the New Chat pane's lists, a
+ *   notification, a widget, a launcher shortcut, a link from outside. It sits on the root, so back from it is the New
+ *   Chat pane, and from there the system's back leaves the app as it would from any home.
+ *
+ * Mutations apply immediately; [CursorNavHost] observes the top and animates whatever changed.
  */
 @Stable
 class NavStack private constructor(initial: List<NavEntry>) {
@@ -83,37 +92,35 @@ class NavStack private constructor(initial: List<NavEntry>) {
 
     fun contains(entry: NavEntry): Boolean = list.any { it.id == entry.id }
 
+    /**
+     * Puts [screen] on top, unless it already is: two entries in a row for one screen would make back look as if it
+     * did nothing. Past [MAX_DEPTH] the oldest entry above the root makes room, so a long chain of chats opened one
+     * from another cannot hold on to every one of them; the root, and the newest trail back from the top, stay.
+     */
     fun push(screen: Screen) {
+        if (top.screen == screen) return
         list += NavEntry(newId(), screen)
+        while (list.size > MAX_DEPTH) list.removeAt(1)
     }
 
     /**
-     * Swaps the top entry for [screen] without growing the stack (opening one chat from another). The root is never
-     * swapped out: with nothing above it, [screen] is pushed instead, so there is always a home to go back to.
+     * Opens [screen] from the destination on top, so back returns there: pushed, unless it is already on top (nothing
+     * happens), or it is the entry just beneath the top — the chat this one was opened from, reached again through the
+     * way back to it (a primary's link to its coordinator), which is going back: that entry is popped to, as it was
+     * left, rather than stacked a second time above its own child. Decided from the stack as it is *now*, not from
+     * what a caller saw when it was composed — a callback created while a chat was on top may well be invoked after
+     * that chat has been popped.
      */
-    fun replaceTop(screen: Screen) {
-        if (!canPop) {
-            push(screen)
-            return
+    fun open(screen: Screen) {
+        when (screen) {
+            top.screen -> Unit
+            underTop?.screen -> pop()
+            else -> push(screen)
         }
-        list[list.lastIndex] = NavEntry(newId(), screen)
     }
 
-    /**
-     * Opens a chat — a Project's coordinator included: over anything that is not a chat, or in place of the chat on
-     * top, so chats never pile up when one is opened from another (a primary from its coordinator's panel, the
-     * coordinator from a primary's); nothing happens when it is already on top. Decided from the stack as it is
-     * *now*, not from what a caller saw when it was composed — a callback created while a chat was on top may well
-     * be invoked after that chat has been popped.
-     */
-    fun openAgent(id: String) {
-        val current = top.screen
-        when {
-            current is Screen.Agent && current.id == id -> Unit
-            current is Screen.Agent -> replaceTop(Screen.Agent(id))
-            else -> push(Screen.Agent(id))
-        }
-    }
+    /** [open] for a chat — a Project's coordinator included. */
+    fun openAgent(id: String) = open(Screen.Agent(id))
 
     fun pop(): Boolean {
         if (!canPop) return false
@@ -124,7 +131,8 @@ class NavStack private constructor(initial: List<NavEntry>) {
     /**
      * Top-level navigation: everything above [screen] goes, and [screen] sits on the root (or is the root). An entry
      * already showing it is kept rather than replaced, so tapping the destination you are on is a no-op instead of
-     * a rebuild that clears its view model and loses the scroll position.
+     * a rebuild that clears its view model and loses the scroll position, and a chat picked again from the sidebar
+     * comes back as it was left.
      */
     fun resetTo(screen: Screen) {
         while (list.size > 1 && list.last().screen != screen) list.removeAt(list.lastIndex)
@@ -132,18 +140,33 @@ class NavStack private constructor(initial: List<NavEntry>) {
     }
 
     companion object {
+        /**
+         * How deep the stack goes, the root included. Every entry below the top keeps its view models and its saved
+         * state (a transcript's scroll, each dropdown it opened) for as long as it is on the stack, and all of it is
+         * written into the activity's saved state; nine steps back from the New Chat pane is more than anyone
+         * retraces, and keeps that bounded.
+         */
+        const val MAX_DEPTH = 10
+
         private fun newId(): String = UUID.randomUUID().toString()
 
-        /** Saves the stack as alternating id / route strings so it survives process death. */
+        /**
+         * Saves the stack as alternating id / route strings so it survives process death. What comes back is held to
+         * the same rules as what is built: the New Chat pane at the root, no screen twice in a row, [MAX_DEPTH] deep.
+         */
         val Saver: Saver<NavStack, Any> = listSaver<NavStack, String>(
             save = { stack -> stack.list.flatMap { listOf(it.id, it.screen.route) } },
-            restore = { flat ->
-                val restored = flat.chunked(2).mapNotNull { pair ->
-                    if (pair.size != 2) return@mapNotNull null
-                    Screen.fromRoute(pair[1])?.let { NavEntry(pair[0], it) }
-                }
-                NavStack(restored.ifEmpty { listOf(NavEntry(newId(), Screen.Home)) })
-            },
+            restore = { flat -> NavStack(restored(flat)) },
         )
+
+        internal fun restored(flat: List<String>): List<NavEntry> {
+            val entries = flat.chunked(2).mapNotNull { pair ->
+                if (pair.size != 2) return@mapNotNull null
+                Screen.fromRoute(pair[1])?.let { NavEntry(pair[0], it) }
+            }
+            val rooted = if (entries.firstOrNull()?.screen == Screen.Home) entries else listOf(NavEntry(newId(), Screen.Home)) + entries
+            val distinct = rooted.filterIndexed { index, entry -> index == 0 || rooted[index - 1].screen != entry.screen }
+            return if (distinct.size <= MAX_DEPTH) distinct else listOf(distinct.first()) + distinct.takeLast(MAX_DEPTH - 1)
+        }
     }
 }
