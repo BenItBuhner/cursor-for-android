@@ -76,6 +76,7 @@ import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.unit.dp
 import com.cursorforandroid.ui.components.BackGestureEdges
+import com.cursorforandroid.ui.components.Haptic
 import com.cursorforandroid.ui.components.Haptics
 import com.cursorforandroid.ui.components.LocalScrollFadeSurface
 import com.cursorforandroid.ui.components.PaneResizeEdge
@@ -124,7 +125,7 @@ import kotlinx.coroutines.launch
  * rail, opened and shut by its buttons and the keyboard alone: a swipe across the chat is the chat's, back is the
  * chat's, and a composer holding the keyboard keeps it as the panel opens. Its edge drags to resize it
  * ([PaneResizeEdge]), and the shell keeps it open or shut for every chat ([PinnedPanelSync]). A button's slide is felt
- * once, as the panel passes half-way; a key's jump, and every chat's panel put where the shell has it, are not felt.
+ * once, as the panel lands open or shut; a key's jump, and every chat's panel put where the shell has it, are not felt.
  */
 @Composable
 fun SidePanelHost(
@@ -366,8 +367,8 @@ class SidePanelState(initialValue: SidePanelValue) {
     val isPinned: Boolean get() = pin != null
 
     /**
-     * Plays the half-way threshold (see [halfwayCrossing]): a sheet's as a drag takes it across, a pinned panel's as its
-     * slide does; set by the [SidePanel] showing this state.
+     * Plays a sheet's drag across half-way (see [halfwayCrossing]) and a pinned panel's slide as it lands; set by the
+     * [SidePanel] showing this state.
      */
     internal var haptics: Haptics? = null
 
@@ -414,13 +415,16 @@ class SidePanelState(initialValue: SidePanelValue) {
             val millis = (SlideMillis * distance).roundToInt().coerceIn(MinSlideMillis, SlideMillis)
             val jump = jumps
             runAnimation {
+                var landed = false
                 animate(fraction, target, animationSpec = tween(millis, easing = SlideEasing)) { v, _ ->
                     if (jumps != jump) return@animate
-                    val before = fraction
                     fraction = v
                     // Pinned, the slide is the one way a hand moves the panel (it has no drag and no back gesture), so it is
-                    // felt as it passes half-way. A sheet's is not: it can end a back gesture already felt on its commit.
-                    if (isPinned) halfwayCrossing(before, v, restingOpen = value == SidePanelValue.Closed)?.let { haptics?.perform(it) }
+                    // felt once, as it lands. A sheet's is not: it can end a back gesture already felt on its commit.
+                    if (isPinned && !landed && abs(v - target) <= LandedWithin) {
+                        landed = true
+                        haptics?.perform(Haptic.GestureEnd)
+                    }
                 }
             }
         }
@@ -667,5 +671,8 @@ private val ExpandGain = 120.dp
 private const val SlideMillis = 300
 private const val MinSlideMillis = 100
 private val SlideEasing: Easing = CubicBezierEasing(0.2f, 0f, 0f, 1f)
+
+/** How near its end a pinned panel's slide has landed: the ease's last stretch is too slight to see, and is not waited for. */
+private const val LandedWithin = 0.01f
 private val FlingThreshold = 400.dp
 private val FlingSpec = spring<Float>(dampingRatio = Spring.DampingRatioNoBouncy, stiffness = 1000f, visibilityThreshold = 0.0005f)

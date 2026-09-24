@@ -549,28 +549,28 @@ class PinnedPanelFlowTest {
         assertThat(chatBounds().width).isWithin(0.5f).of(400f)
     }
 
-    private val threshold: Int get() = Haptic.ThresholdActivate.constant()
+    private val landed: Int get() = Haptic.GestureEnd.constant()
 
     private val stop: Int get() = Haptic.SlotTick.constant()
 
     @Test
     @Config(shadows = [ShadowHapticLog::class])
-    fun `the pinned panel is felt once each way a button slides it, and not as a key puts it in place or the next chat opens on it`() {
+    fun `the pinned panel is felt once each way a button slides it, as it lands, and not as a key puts it in place or the next chat opens on it`() {
         showShell()
         openChat(CLI)
         HapticLog.clear()
 
         openPanel()
-        assertThat(HapticLog.played).containsExactly(threshold)
+        assertThat(HapticLog.played).containsExactly(landed)
         compose.onNode(hasTestTag(PANEL_CLOSE)).performClick()
         compose.waitUntil(10_000) { !panelShown() && described(OPEN_PANEL) }
         compose.waitForIdle()
-        assertThat(HapticLog.played).containsExactly(threshold, threshold)
+        assertThat(HapticLog.played).containsExactly(landed, landed)
         openPanel()
         compose.onNodeWithContentDescription(HIDE_PANEL).performClick()
         compose.waitUntil(10_000) { !panelShown() && described(OPEN_PANEL) }
         compose.waitForIdle()
-        assertThat(HapticLog.played).containsExactly(threshold, threshold, threshold, threshold)
+        assertThat(HapticLog.played).containsExactly(landed, landed, landed, landed)
 
         HapticLog.clear()
         chord(KeyEvent.KEYCODE_B, shift = true)
@@ -585,28 +585,35 @@ class PinnedPanelFlowTest {
 
     @Test
     @Config(shadows = [ShadowHapticLog::class])
-    fun `a pinned panel's slide turned back is felt only for each time it passes half-way`() {
+    fun `a pinned panel's slide turned back is felt once, as it lands where it was last sent, and never on its way`() {
         showShell()
         openChat(CLI)
         HapticLog.clear()
         compose.mainClock.autoAdvance = false
 
-        // Turned back a sixth of the way out, it never passed half-way.
+        // Turned back a sixth of the way out: the open it never finished is not felt, the shut it lands is.
         compose.onNodeWithContentDescription(OPEN_PANEL).performClick()
         compose.mainClock.advanceTimeBy(SLIDE_MS / 10)
         compose.onNodeWithContentDescription(HIDE_PANEL).performClick()
         compose.mainClock.advanceTimeBy(SLIDE_MS * 2)
         assertThat(chatBounds().right).isWithin(0.5f).of(1280f)
-        assertThat(HapticLog.played).isEmpty()
+        assertThat(HapticLog.played).containsExactly(landed)
 
-        // Turned back most of the way out, it passed half-way going and passes it again coming back.
+        // Most of the way out it is still on its way, and turned back it is felt only as it lands shut.
         compose.onNodeWithContentDescription(OPEN_PANEL).performClick()
         compose.mainClock.advanceTimeBy(SLIDE_MS * 2 / 5)
-        assertThat(HapticLog.played).containsExactly(threshold)
+        assertThat(chatBounds().right).isLessThan(1280f - 200f)
+        assertThat(HapticLog.played).containsExactly(landed)
         compose.onNodeWithContentDescription(HIDE_PANEL).performClick()
         compose.mainClock.advanceTimeBy(SLIDE_MS * 2)
         assertThat(chatBounds().right).isWithin(0.5f).of(1280f)
-        assertThat(HapticLog.played).containsExactly(threshold, threshold)
+        assertThat(HapticLog.played).containsExactly(landed, landed)
+
+        // Let run, it is felt as it lands open.
+        compose.onNodeWithContentDescription(OPEN_PANEL).performClick()
+        compose.mainClock.advanceTimeBy(SLIDE_MS * 2)
+        assertThat(panelBounds().width).isWithin(0.5f).of(400f)
+        assertThat(HapticLog.played).containsExactly(landed, landed, landed)
         compose.mainClock.autoAdvance = true
     }
 
@@ -640,16 +647,16 @@ class PinnedPanelFlowTest {
 
     @Test
     @Config(qualifiers = "w840dp-h700dp-night-mdpi", shadows = [ShadowHapticLog::class])
-    fun `on a foldable the pinned panel is felt once as it slides, whatever the rail does beside it, and the rail making way for its edge is not felt`() {
+    fun `on a foldable the pinned panel is felt once as it lands, whatever the rail does beside it, and the rail making way for its edge is not felt`() {
         showShell()
         openChat(CLI)
         HapticLog.clear()
 
-        // Opened, it sends the rail off with it: the one slide is felt, not the rail's too.
+        // Opened, it sends the rail off with it: the one landing is felt, not the rail's slide too.
         openPanel()
         compose.waitUntil(10_000) { !railShown() && described(OPEN_SIDEBAR) }
         compose.waitForIdle()
-        assertThat(HapticLog.played).containsExactly(threshold)
+        assertThat(HapticLog.played).containsExactly(landed)
 
         // Narrowed to its least, which brings the rail back, and widened again, which sends it off: only the stop.
         HapticLog.clear()
@@ -660,7 +667,7 @@ class PinnedPanelFlowTest {
         compose.waitForIdle()
         assertThat(HapticLog.played).containsExactly(stop)
 
-        // Shut with the rail over the chat, which then settles in beside it: the one slide again.
+        // Shut with the rail over the chat, which then settles in beside it: the one landing again.
         compose.onNodeWithContentDescription(OPEN_SIDEBAR).performClick()
         compose.waitUntil(10_000) { described(CLOSE_DRAWER) && railShown() }
         compose.waitForIdle()
@@ -668,7 +675,7 @@ class PinnedPanelFlowTest {
         compose.onNodeWithContentDescription(HIDE_PANEL).performSemanticsAction(SemanticsActions.OnClick)
         compose.waitUntil(10_000) { !described(CLOSE_DRAWER) && !panelShown() && !described(OPEN_SIDEBAR) }
         compose.waitForIdle()
-        assertThat(HapticLog.played).containsExactly(threshold)
+        assertThat(HapticLog.played).containsExactly(landed)
     }
 
     private fun fieldText(node: SemanticsNodeInteraction): String =
