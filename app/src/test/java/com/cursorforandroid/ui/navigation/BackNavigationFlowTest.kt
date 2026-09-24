@@ -10,7 +10,9 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.test.hasAnyAncestor
 import androidx.compose.ui.test.hasAnyDescendant
+import androidx.compose.ui.test.hasClickAction
 import androidx.compose.ui.test.hasContentDescription
+import androidx.compose.ui.test.hasParent
 import androidx.compose.ui.test.hasScrollToNodeAction
 import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.hasTestTag
@@ -132,6 +134,19 @@ class BackNavigationFlowTest {
 
     private fun firstWorkerRow() = compose.onAllNodes(workerRow(WORKER)).onFirst()
 
+    /**
+     * The line of the first turn's group of work, where the coordinator read the code and started its two workers
+     * ("2 files, 1 search · 2 agents"); their rows are inside it. The current turn's group counts the same two agents.
+     */
+    private val workersLine = hasClickAction() and hasParent(hasTestTag("stretch")) and hasText("1 search", substring = true) and hasText("2 agents", substring = true)
+
+    /** Scrolls to the workers' group and opens it, so their rows are on screen. */
+    private fun openWorkersGroup() {
+        compose.onAllNodes(transcript).onFirst().performScrollToNode(workersLine)
+        compose.onNode(workersLine).performClick()
+        compose.waitUntil(20_000) { compose.onAllNodes(workerRow(WORKER)).fetchSemanticsNodes().isNotEmpty() }
+    }
+
     private val followUp = hasSetTextAction() and hasAnyAncestor(hasTestTag("follow-up-composer"))
 
     private val transcript = hasScrollToNodeAction() and
@@ -171,6 +186,7 @@ class BackNavigationFlowTest {
     }
 
     private fun openWorkerFromTranscript() {
+        openWorkersGroup()
         compose.onAllNodes(transcript).onFirst().performScrollToNode(workerRow(WORKER))
         firstWorkerRow().performClick()
         waitForOnly(WORKER, COORDINATOR)
@@ -190,6 +206,7 @@ class BackNavigationFlowTest {
         compose.onNode(followUp).performTextInput(DRAFT)
         // Up to where the coordinator started its workers, away from the latest reply the chat opened on.
         compose.onAllNodes(transcript).onFirst().performScrollToNode(hasText(COORDINATOR_PROMPT, substring = true))
+        openWorkersGroup()
         compose.onAllNodes(transcript).onFirst().performScrollToNode(workerRow(WORKER))
         compose.waitForIdle()
         assertThat(onScreen(LATEST_REPLY)).isFalse()
