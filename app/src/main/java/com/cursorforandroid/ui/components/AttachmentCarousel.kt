@@ -9,6 +9,7 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
@@ -83,7 +84,9 @@ fun ComposerAttachments(
     media: MediaLoader? = null,
 ) {
     val context = LocalContext.current
-    val previews = remember(context) { ComposerMediaPreviews(File(context.cacheDir, "composer-media")) }
+    val previews = remember(context) { ComposerMediaPreviews(File(context.cacheDir, ComposerMediaPreviews.DIR)) }
+    // Callers drop the row once nothing is attached, so this is the send, the discard, or the chat left.
+    DisposableEffect(previews) { onDispose { previews.release() } }
     // Everything that is a picture or a recording, whichever way it came in, in the order attached: pasted and
     // shared-in images first (the strip's), then the picked files that are media. The viewer pages through these.
     val mediaItems = remember(images, files, uploads) {

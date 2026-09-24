@@ -1347,7 +1347,8 @@ class ConversationRepositoryTest {
 
         assertThat(traces.read("bc-1").keys).containsExactly("run-1", "run-2", "run-3")
         val files = folder.root.walkTopDown().filter { it.isFile && it.path.contains("/traces/") }.map { it.name }.toList()
-        assertThat(files).containsExactly("run-1.json", "run-2.json", "run-3.json", "_index.json")
+        // And the marker that the chat was read, which keeps it past chats whose traces only the run monitor wrote.
+        assertThat(files).containsExactly("run-1.json", "run-2.json", "run-3.json", "_index.json", ".opened")
         // One write per run and one per index update: nothing was rewritten wholesale.
         assertThat(traceWrites.get()).isEqualTo(6)
     }

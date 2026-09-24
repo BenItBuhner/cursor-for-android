@@ -50,6 +50,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.cursorforandroid.data.local.DiskSweep
 import com.cursorforandroid.data.media.MediaLoader
 import com.cursorforandroid.domain.MediaRef
 import com.cursorforandroid.ui.media.LocalMediaViewer
@@ -60,6 +61,11 @@ import com.cursorforandroid.ui.media.thumbnailSlot
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.util.TimeFormat
 import com.cursorforandroid.util.ioThenMain
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -104,25 +110,59 @@ class ComposerMediaItem(
  * app's cache while its tile is shown ([ensureAll]). The viewer pages through all of them and a page swiped to reads
  * its own copy: with only the tapped tile's written, every other page said "no longer on this device" until it had
  * been opened itself. The path is a function of the chip's id, so a tile can register its thumbnail for the
- * transition under the reference before the copy exists. Copies are the cache's to drop: one no row has asked for in
- * a day goes the next time a row's copies are written.
+ * transition under the reference before the copy exists.
+ *
+ * A copy is a whole picked recording, so it goes as soon as nothing shows it: when its item leaves the row (removed)
+ * and when the row itself goes (the message was sent, the draft discarded), [releaseAfterMs] later so that a row
+ * composed again at once (a rotation, a quick trip back to the chat) finds its copies still there. The New Chat
+ * composer's row and a chat's share the directory, so a copy goes only once no row holds it. One no row has held
+ * in a day, a process's leftovers, goes the next time a row's copies are written or at the next start ([sweep]).
  */
-class ComposerMediaPreviews(private val dir: File) {
+class ComposerMediaPreviews(private val dir: File, private val releaseAfterMs: Long = RELEASE_AFTER_MS) {
+    /** The copies this row holds; guarded by [lock]. */
+    private val mine = HashSet<File>()
+
     /** The `file://` reference the tile registers and the viewer opens. */
     fun src(id: String, mimeType: String): String = Uri.fromFile(file(id, mimeType)).toString()
 
     /** The copy on disk, written if it is not there yet; the reference the viewer opens. */
     suspend fun ensure(id: String, mimeType: String, bytes: ByteArray): String = ioThenMain {
-        lock.withLock { Uri.fromFile(write(file(id, mimeType), bytes)).toString() }
+        lock.withLock { Uri.fromFile(write(file(id, mimeType), bytes).also(::hold)).toString() }
     }
 
-    /** Every one of [items]' copies on disk, each written if it is not there yet, and any other copy not asked for in a day dropped. */
+    /**
+     * Every one of [items]' copies on disk, each written if it is not there yet. The copies of the items that have left
+     * the row since are let go of, and any other copy nobody holds that no row has asked for in a day is dropped.
+     */
     suspend fun ensureAll(items: List<ComposerMediaItem>) {
         ioThenMain {
             lock.withLock {
                 val keep = items.mapNotNullTo(HashSet()) { item -> runCatching { write(file(item.id, item.mimeType), item.bytes) }.getOrNull() }
+                keep.forEach(::hold)
+                (mine - keep).forEach(::drop)
                 pruneStale(keep)
             }
+        }
+    }
+
+    /** The row has left the screen: its copies go [releaseAfterMs] from now, those another row holds by then excepted. */
+    fun release(): Job = cleanup.launch {
+        delay(releaseAfterMs)
+        lock.withLock { mine.toList().forEach(::drop) }
+    }
+
+    private fun hold(file: File) {
+        if (mine.add(file)) holders[file.path] = (holders[file.path] ?: 0) + 1
+    }
+
+    private fun drop(file: File) {
+        if (!mine.remove(file)) return
+        val left = (holders[file.path] ?: 1) - 1
+        if (left > 0) {
+            holders[file.path] = left
+        } else {
+            holders.remove(file.path)
+            file.delete()
         }
     }
 
@@ -153,14 +193,26 @@ class ComposerMediaPreviews(private val dir: File) {
             ?: mimeType.substringAfter('/', "bin").takeWhile { it.isLetterOrDigit() }.ifEmpty { "bin" }
 
     private fun pruneStale(keep: Set<File>) {
-        val cutoff = System.currentTimeMillis() - STALE_AFTER_MS
-        dir.listFiles()?.forEach { f -> if (f !in keep && f.lastModified() < cutoff) f.delete() }
+        DiskSweep.deleteOlderThan(dir, System.currentTimeMillis() - STALE_AFTER_MS) { it in keep || it.path in holders }
     }
 
-    private companion object {
-        val STALE_AFTER_MS = TimeUnit.DAYS.toMillis(1)
+    companion object {
+        /** Under the cache. */
+        const val DIR = "composer-media"
+        private val STALE_AFTER_MS = TimeUnit.DAYS.toMillis(1)
+        /** Long enough for a row composed again at once to take its copies back; short next to how long a sent video is worth keeping. */
+        private const val RELEASE_AFTER_MS = 15_000L
         /** One writer at a time for every row: the New Chat composer's and a chat's share the directory, and a prune must not take a copy mid-write. */
-        val lock = Mutex()
+        private val lock = Mutex()
+        /** How many rows hold each copy, by path; guarded by [lock]. */
+        private val holders = HashMap<String, Int>()
+        /** Outlives the row whose [release] it runs. */
+        private val cleanup = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+        /** At start: the copies a previous process left that no row has asked for in a day, `.part` files included. */
+        suspend fun sweep(dir: File, nowMillis: Long = System.currentTimeMillis()) {
+            lock.withLock { DiskSweep.deleteOlderThan(dir, nowMillis - STALE_AFTER_MS) { it.path in holders } }
+        }
     }
 }
 

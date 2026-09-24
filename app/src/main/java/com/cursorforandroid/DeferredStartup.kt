@@ -14,7 +14,8 @@ import kotlinx.coroutines.launch
 
 /**
  * The wiring between the app and the rest of the system that the first frame does not need: the notification
- * channels and the live-run service's coordinator, the periodic update check, and the widget picker's preview.
+ * channels and the live-run service's coordinator, the periodic update check, the widget picker's preview, and the
+ * sweep of what earlier processes left in the cache directory.
  *
  * All of it is held back until the activity has been on screen for [SETTLE_MS]. Each one talks to a system
  * service — `NotificationManager`, `JobScheduler`, the launcher's widget host — and the periodic update check is
@@ -45,6 +46,8 @@ object DeferredStartup {
             WidgetSync.publishPreviews(activity)
             // The launcher's long-press menu names the pinned chats and Projects; kept in step for as long as the process lives.
             LauncherShortcuts.start(activity, graph)
+            // The process's, not the activity's: a rotation mid-sweep would otherwise cancel it for the whole process.
+            ProcessLifecycleOwner.get().lifecycleScope.launch { graph.sweepLeftovers() }
         }
     }
 }

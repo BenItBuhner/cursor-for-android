@@ -71,6 +71,7 @@ import com.cursorforandroid.data.demo.DemoPullRequests
 import com.cursorforandroid.data.demo.DemoReview
 import com.cursorforandroid.data.local.AppCaches
 import com.cursorforandroid.data.local.AttachmentStore
+import com.cursorforandroid.data.local.DiskSweep
 import com.cursorforandroid.data.local.DraftFiles
 import com.cursorforandroid.data.local.DraftStore
 import com.cursorforandroid.data.local.FollowUpStore
@@ -143,8 +144,10 @@ import com.cursorforandroid.domain.WorkerSpawnKind
 import com.cursorforandroid.domain.WorkspaceTree
 import com.cursorforandroid.notifications.LiveNotifications
 import com.cursorforandroid.share.ShareInbox
+import com.cursorforandroid.ui.components.ComposerMediaPreviews
 import com.cursorforandroid.ui.conversation.AttachmentImages
 import com.cursorforandroid.ui.conversation.OutgoingSends
+import com.cursorforandroid.ui.settings.DIAGNOSTICS_DIR
 import com.cursorforandroid.update.AndroidUpdatePlatform
 import com.cursorforandroid.update.allocatableBytes
 import com.cursorforandroid.util.AppClock
@@ -152,6 +155,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Hand-rolled dependency graph. Small enough that a DI framework would only add build time.
@@ -847,6 +852,24 @@ class AppGraph(
         )
     }
     val whatsNew: WhatsNewRepository get() = lazyWhatsNew.value
+
+    private val swept = AtomicBoolean(false)
+
+    /**
+     * Deletes what an earlier process left in the cache directory and nothing will ever read again: media copies past
+     * their budget, composer previews and staged prompts of sends that never finished, old diagnostics exports. Once
+     * per process; each sweep stands alone, so one directory that cannot be listed leaves the others to theirs.
+     */
+    suspend fun sweepLeftovers() {
+        if (!swept.compareAndSet(false, true)) return
+        withContext(Dispatchers.IO) {
+            val now = System.currentTimeMillis()
+            runCatching { MediaLoader.sweepCopies(app.cacheDir, now) }
+            runCatching { ComposerMediaPreviews.sweep(File(app.cacheDir, ComposerMediaPreviews.DIR), now) }
+            runCatching { attachments.sweepStaging(now) }
+            runCatching { DiskSweep.deleteOlderThan(File(app.cacheDir, DIAGNOSTICS_DIR), now - TimeUnit.DAYS.toMillis(1)) }
+        }
+    }
 
     init {
         session.onSignedIn = {

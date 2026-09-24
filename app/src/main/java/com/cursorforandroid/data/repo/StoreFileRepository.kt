@@ -44,6 +44,7 @@ class StoreFileRepository(
     private val http: OkHttpClient = OkHttpClient(),
     private val now: () -> Long = AppClock::now,
     private val maxBlobBytes: Long = MAX_BLOB_BYTES,
+    private val maxTexts: Int = MAX_TEXTS,
 ) {
     /** The store id of each owner, by the owner's id; a miss is remembered for a while too, so a missing store is not asked for on every figure. */
     private val stores = HashMap<String, Resolved>()
@@ -146,7 +147,12 @@ class StoreFileRepository(
     suspend fun readText(ref: MediaRef.Store, refresh: Boolean = false): String {
         val disk = cache?.child(TEXTS)
         val key = textKey(ref)
-        if (!refresh) disk?.read(key, CachedText.serializer(), VERSION)?.let { return it.value.text }
+        if (!refresh && disk != null) {
+            disk.read(key, CachedText.serializer(), VERSION)?.let {
+                disk.touch(key)
+                return it.value.text
+            }
+        }
         if (!available()) throw IOException(NOT_AVAILABLE)
         val storeId = storeId(ref.ownerId) ?: throw IOException(NO_STORE)
         val store = api() ?: throw IOException(NOT_AVAILABLE)
@@ -155,7 +161,7 @@ class StoreFileRepository(
         } catch (e: CancellationException) {
             throw e
         }
-        disk?.write(key, CachedText.serializer(), VERSION, CachedText(text))
+        if (disk != null && disk.write(key, CachedText.serializer(), VERSION, CachedText(text))) disk.prune(maxTexts, MAX_TEXT_BYTES)
         return text
     }
 
@@ -272,6 +278,9 @@ class StoreFileRepository(
         private const val STRIPES = 8
         /** A few dozen screenshots of a Project's context; the oldest go when more arrive. */
         const val MAX_BLOB_BYTES = 64L * 1024 * 1024
+        /** The context documents read, least recently read going first: every document of every Project's store opened. */
+        const val MAX_TEXTS = 500
+        private const val MAX_TEXT_BYTES = 16L shl 20
         private val STALE_URL_CODES = setOf(400, 401, 403, 404, 410)
     }
 }

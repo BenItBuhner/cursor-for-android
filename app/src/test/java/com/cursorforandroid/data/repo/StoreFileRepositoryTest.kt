@@ -84,8 +84,12 @@ class StoreFileRepositoryTest {
     private var capabilities = Capabilities.EXTENDED
 
     private fun cache() = JsonDiskCache(File(folder.root, "json"), nowProvider = { now }, dispatcher = Dispatchers.Unconfined)
-    private fun repository(api: AgentStoreApi? = this.api, cache: JsonDiskCache? = cache(), maxBlobBytes: Long = StoreFileRepository.MAX_BLOB_BYTES) =
-        StoreFileRepository(api = { api }, capabilities = { capabilities }, cache = cache, blobs = File(folder.root, "blobs"), http = OkHttpClient(), now = { now }, maxBlobBytes = maxBlobBytes)
+    private fun repository(
+        api: AgentStoreApi? = this.api,
+        cache: JsonDiskCache? = cache(),
+        maxBlobBytes: Long = StoreFileRepository.MAX_BLOB_BYTES,
+        maxTexts: Int = StoreFileRepository.MAX_TEXTS,
+    ) = StoreFileRepository(api = { api }, capabilities = { capabilities }, cache = cache, blobs = File(folder.root, "blobs"), http = OkHttpClient(), now = { now }, maxBlobBytes = maxBlobBytes, maxTexts = maxTexts)
 
     private fun png(): ByteArray = CoordinatorFixtures::class.java.classLoader!!.getResourceAsStream("fixtures/coordinator/tab-landscape-icon-only-project.png")!!.readBytes()
 
@@ -229,6 +233,27 @@ class StoreFileRepositoryTest {
         assertThat(files.readText(document, refresh = true)).isEqualTo("# Project UI parity\n\nRevised.")
         assertThat(api.calls.filter { it.startsWith("read:") }).hasSize(2)
         assertThat(api.calls.first { it.startsWith("read:") }).isEqualTo("read:st-proj:docs/project-ui-parity-spec.md")
+    }
+
+    @Test
+    fun `the documents kept are bounded, the least recently read going first`() = runBlocking<Unit> {
+        val files = repository(maxTexts = 2)
+        val texts = File(folder.root, "json/texts")
+        val docs = (1..3).map { MediaRef.Store(store, "docs/$it.md") }
+        val longAgo = System.currentTimeMillis() - 60 * 60_000L
+        files.readText(docs[0])
+        texts.listFiles()!!.forEach { it.setLastModified(longAgo) }
+        files.readText(docs[1])
+        texts.listFiles()!!.filter { it.lastModified() != longAgo }.forEach { it.setLastModified(longAgo + 1_000) }
+
+        // Opened again from the disk, the first is read more recently than the second.
+        files.readText(docs[0])
+        files.readText(docs[2])
+
+        assertThat(files.cachedText(docs[0])).isNotNull()
+        assertThat(files.cachedText(docs[1])).isNull()
+        assertThat(files.cachedText(docs[2])).isNotNull()
+        assertThat(api.calls.count { it.startsWith("read:") }).isEqualTo(3)
     }
 
     @Test

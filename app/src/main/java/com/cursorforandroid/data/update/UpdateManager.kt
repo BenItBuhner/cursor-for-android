@@ -566,6 +566,8 @@ class UpdateManager(
     // ---- internals --------------------------------------------------------------------------------------------------
 
     private suspend fun restore() {
+        // Separately guarded: a directory that cannot be listed must not keep the rest of the state from coming back.
+        runCatching { sweepDownloads() }
         val pending = prefs.pendingUpdateVersionCode.first()
         if (pending != null) {
             prefs.setPendingUpdateVersionCode(null)
@@ -699,7 +701,9 @@ class UpdateManager(
         else -> "Installation failed" + (message?.takeIf { it.isNotBlank() }?.let { ": $it" } ?: ".")
     }
 
-    private fun apkFile(release: AppRelease): File = File(downloadDir, "${release.versionCode}.apk")
+    private fun apkFile(release: AppRelease): File = apkFile(release.versionCode)
+
+    private fun apkFile(versionCode: Int): File = File(downloadDir, "$versionCode.apk")
 
     /** Where a download is written while it is still only bytes; [apkFile]'s name means "checked". */
     private fun partialFile(release: AppRelease): File = File(downloadDir, "${release.versionCode}.apk.part")
@@ -709,6 +713,21 @@ class UpdateManager(
         val keepName = keep?.let { apkFile(it).name }
         downloadDir.listFiles()?.forEach { if (it.name != keepName) it.delete() }
         if (keep == null) cache.clearVerified()
+    }
+
+    /**
+     * Empties [downloadDir] of everything but a verified APK for a build newer than the one installed. An update that
+     * was applied (by this manager, a sideload or adb) leaves its APK behind, as does a transfer that died as a
+     * `.part`; [pruneDownloads] only reaches them after a check succeeds, which with automatic updates off or no
+     * network may be never, and each one is a full APK.
+     */
+    private suspend fun sweepDownloads() {
+        val marker = cache.readVerified()
+        val keep = marker?.takeIf { it.versionCode > platform.installedVersionCode }?.let { m ->
+            apkFile(m.versionCode).takeIf { it.isFile && it.length() == m.sizeBytes }
+        }
+        withContext(Dispatchers.IO) { downloadDir.listFiles()?.forEach { if (it != keep) it.deleteRecursively() } }
+        if (marker != null && keep == null) cache.clearVerified()
     }
 
     /** Forgets a file and what vouched for it, when the installer says it is not something to keep trying. */
