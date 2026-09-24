@@ -8,6 +8,11 @@ import com.cursorforandroid.data.api.CursorApi
 import com.cursorforandroid.data.api.CursorApiException
 import com.cursorforandroid.data.api.dto.CreateAgentRequestDto
 import com.cursorforandroid.data.api.dto.CreateAgentResponseDto
+import com.cursorforandroid.data.api.dto.ListModelsResponseDto
+import com.cursorforandroid.data.api.dto.ListRepositoriesResponseDto
+import com.cursorforandroid.data.api.dto.ModelListItemDto
+import com.cursorforandroid.data.api.dto.RepositoryDto
+import com.cursorforandroid.data.repo.CatalogRefresher
 import com.cursorforandroid.data.demo.DemoBackendFactory
 import com.cursorforandroid.data.local.DraftStore
 import com.cursorforandroid.data.repo.CursorBackend
@@ -60,6 +65,10 @@ class NewAgentViewModelTest {
     /** Thrown by the next create the API receives, then cleared: the server refusing a launch. */
     @Volatile private var failNextCreate: Throwable? = null
 
+    /** Listed after the demo's own: a model Cursor announces, a repository the user connects, while the app is open. */
+    @Volatile private var announcedModels: List<ModelListItemDto> = emptyList()
+    @Volatile private var connectedRepos: List<String> = emptyList()
+
     @Before
     fun setUp() {
         graph = process()
@@ -76,6 +85,9 @@ class NewAgentViewModelTest {
                 failNextCreate?.let { failNextCreate = null; throw it }
                 return demoApi.createAgent(body)
             }
+            override suspend fun models(): ListModelsResponseDto = demoApi.models().let { it.copy(items = it.items + announcedModels) }
+            override suspend fun repositories(): ListRepositoriesResponseDto =
+                demoApi.repositories().let { it.copy(items = it.items + connectedRepos.map(::RepositoryDto)) }
         }
         val graph = AppGraph(
             ApplicationProvider.getApplicationContext<Context>(),
@@ -119,6 +131,29 @@ class NewAgentViewModelTest {
 
     private suspend fun awaitUntil(timeoutMs: Long = 10_000, condition: suspend () -> Boolean) = withTimeout(timeoutMs) {
         while (!condition()) delay(10)
+    }
+
+    /**
+     * The composer read the catalogs once; a list fetched after that — the background pass's, once they are stale —
+     * never reached its pickers, so a model announced while the app was open stayed missing until a restart.
+     */
+    @Test
+    fun `a list the background refresh brings reaches the open composer's pickers, and the selection holds`() = runBlocking {
+        val vm = loaded()
+        awaitUntil { !vm.state.value.isLoadingModels }
+        val selected = vm.state.value.selectedModel?.id
+        announcedModels = listOf(ModelListItemDto(id = "claude-opus-6", displayName = "Claude Opus 6"))
+        connectedRepos = listOf("https://github.com/acme/just-connected")
+        val clock = AppClock.nowMillis
+        try {
+            AppClock.nowMillis = { System.currentTimeMillis() + CatalogRefresher.STALE_AFTER_MS + 60_000 }
+            graph.catalog.revalidateDue()
+            awaitUntil { vm.state.value.models.any { it.id == "claude-opus-6" } && vm.state.value.repositories.any { it.shortName == "just-connected" } }
+        } finally {
+            AppClock.nowMillis = clock
+        }
+        assertThat(vm.state.value.selectedModel?.id).isEqualTo(selected)
+        assertThat(vm.state.value.modelsUnavailable).isFalse()
     }
 
     @Test

@@ -73,8 +73,8 @@ import com.cursorforandroid.ui.components.CursorButton
 import com.cursorforandroid.ui.components.CursorIcons
 import com.cursorforandroid.ui.components.CursorSheet
 import com.cursorforandroid.ui.components.FadingLazyColumn
-import com.cursorforandroid.ui.components.FlatIconButton
 import com.cursorforandroid.ui.components.ProjectGlyph
+import com.cursorforandroid.ui.components.RefreshableSheetHeader
 import com.cursorforandroid.ui.components.SheetHeader
 import com.cursorforandroid.ui.components.SpinnerRing
 import com.cursorforandroid.ui.components.fadingVerticalScroll
@@ -179,7 +179,7 @@ fun ProjectEditorHost(graph: AppGraph, target: ProjectEditorTarget, onOpenAgent:
         modelsUnavailable = modelsUnavailable,
         pinnedModelIds = pinnedModelIds,
         onTogglePinnedModel = { id -> scope.launch { graph.prefs.togglePinnedModel(id) } },
-        onRetryModels = { loadModels(force = true) },
+        onRefreshModels = { loadModels(force = true) },
         busy = busy,
         error = error,
         onRefreshRepositories = { loadRepositories(force = true) },
@@ -250,7 +250,7 @@ fun ProjectEditorSheet(
     modelsUnavailable: Boolean = false,
     pinnedModelIds: List<String> = emptyList(),
     onTogglePinnedModel: (String) -> Unit = {},
-    onRetryModels: () -> Unit = {},
+    onRefreshModels: () -> Unit = {},
 ) {
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
@@ -407,7 +407,7 @@ fun ProjectEditorSheet(
             unavailable = modelsUnavailable,
             onPlanMode = null,
             onAutoCreatePr = null,
-            onRetry = onRetryModels,
+            onRefresh = onRefreshModels,
             onSelect = { chosenModel, chosenVariant -> if (chosenModel != null) pickedModel = ModelChoice(chosenModel, chosenVariant) },
             onDismiss = { modelSheetOpen = false },
             pinnedIds = pinnedModelIds,
@@ -441,12 +441,7 @@ private fun RepositoryPickerSheet(
     }
     val visible = ordered.filter { query.isBlank() || it.slug.contains(query.trim(), ignoreCase = true) }
     CursorSheet(onDismiss = onDismiss) { dismiss ->
-        SheetHeader(
-            "Choose repositories",
-            trailing = {
-                if (loading) SpinnerRing(modifier = Modifier.padding(end = 12.dp)) else FlatIconButton(CursorIcons.Refresh, "Refresh repositories", onClick = onRefresh)
-            },
-        )
+        RefreshableSheetHeader("Choose repositories", loading, "Refresh repositories", onRefresh)
         Text("Pick every repository this Project should work on.", style = type.small, color = colors.textTertiary, modifier = Modifier.padding(horizontal = 20.dp).padding(bottom = 10.dp))
         SearchField(value = query, onValueChange = { query = it }, placeholder = "Search repositories")
         Spacer(Modifier.height(6.dp))

@@ -624,7 +624,9 @@ class AppGraph(
     private val lazyProjectEditor = lazy { ProjectEditor(session, agents, projects, creation = { lazyProjectCreation.value }, capabilities = capabilities) }
     val projectEditor: ProjectEditor get() = lazyProjectEditor.value
 
-    private val lazyCatalog = lazy { CatalogRepository(session, caches.catalog) }
+    private val lazyCatalog = lazy {
+        CatalogRepository(session, caches.catalog, throttlePausedUntil = { if (lazyAccountRpc.isInitialized()) lazyAccountRpc.value.throttle.pausedUntil() else null })
+    }
     val catalog: CatalogRepository get() = lazyCatalog.value
 
     /**
