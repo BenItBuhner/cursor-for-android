@@ -176,8 +176,11 @@ class FalseOfflineTest {
     fun `a lookup that fails with the phone online is not said as offline, and the chat reads itself again once the host answers`() = runBlocking<Unit> {
         DeviceNetwork.install { true }
         val disk = folder.newFolder("disk")
-        rig(disk).openAtRest(project)
-        val before = rigs.single().state(project).items.size
+        val first = rig(disk)
+        first.openAtRest(project)
+        // A coordinator's window goes on widening and filling in behind the first paint: the saved copy is all of it.
+        first.awaitUntil(30_000) { !first.state(project).isLoadingOlder && first.conversations.loadDiagnostics(project)!!.beta!!.incomplete == 0 }
+        val before = first.state(project).items.size
         rigs.single().close()
         rigs.clear()
 
