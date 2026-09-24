@@ -1,5 +1,6 @@
 package com.cursorforandroid.ui.conversation
 
+import android.content.Context
 import android.view.HapticFeedbackConstants
 import android.view.View
 import androidx.compose.foundation.layout.Arrangement
@@ -25,7 +26,11 @@ import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.swipeUp
 import androidx.compose.ui.unit.dp
+import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.cursorforandroid.ui.components.Haptic
+import com.cursorforandroid.ui.components.Haptics
+import com.cursorforandroid.ui.components.constant
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.ui.theme.ThemeMode
 import com.google.common.truth.Truth.assertThat
@@ -36,10 +41,10 @@ import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
 
 /**
- * What the pull to catch up says through the finger ([CatchUpHaptic]): a tick as the pull crosses the threshold and
- * again if it drops back under, a confirm as an armed pull is let go (and never an un-arming tick for the release),
- * and one light cue per answer as it arrives — none for an answer already up when the screen comes back. Played
- * through the view's own feedback with no flags, so the system's touch-feedback setting has the last word.
+ * What the pull to catch up says through the finger, in the app's own [Haptic]s: the threshold pair as the pull
+ * crosses it and again if it drops back under, a confirm as an armed pull is let go (and never an un-arming for the
+ * release), and one cue per answer as it arrives, none for an answer already up when the screen comes back. Played
+ * through [Haptics], so Settings › Haptic feedback silences all of it.
  */
 @RunWith(AndroidJUnit4::class)
 @Config(sdk = [35])
@@ -48,13 +53,23 @@ class CatchUpHapticsTest {
     @get:Rule
     val compose = createComposeRule()
 
-    private val played = mutableListOf<CatchUpHaptic>()
+    private val recorder = RecordingView(ApplicationProvider.getApplicationContext())
     private var status by mutableStateOf<CatchUpStatus>(CatchUpStatus.Idle)
+    private var hapticsOn by mutableStateOf(true)
     private lateinit var pull: CatchUpPull
+    private lateinit var view: View
 
-    private fun chat() {
+    /** What was felt, as the [Haptic]s that play those constants. */
+    private fun felt(vararg haptics: Haptic) = haptics.map { it.constant() }
+
+    /**
+     * The chat with the pull under it, felt on [recorder]; or, [throughSetting], on the screen's own view as the app's
+     * theme is given Settings › Haptic feedback ([hapticsOn]).
+     */
+    private fun chat(throughSetting: Boolean = false) {
         compose.setContent {
-            CursorTheme(mode = ThemeMode.Dark) {
+            view = LocalView.current
+            CursorTheme(mode = ThemeMode.Dark, haptics = hapticsOn) {
                 val density = LocalDensity.current
                 pull = remember { with(density) { CatchUpPull(CatchUpPullThreshold.toPx(), CatchUpPullReveal.toPx()) } }
                 val reveal = rememberCatchUpReveal(pull, status)
@@ -71,24 +86,33 @@ class CatchUpHapticsTest {
                     ) {
                         items(60, key = { it }) { Text("Row $it", Modifier.fillMaxWidth().height(56.dp)) }
                     }
-                    CatchUpIndicator(pull, status, reveal, onDismiss = {}, modifier = Modifier.align(Alignment.BottomCenter).fillMaxWidth(), haptics = { played += it })
+                    val indicator = Modifier.align(Alignment.BottomCenter).fillMaxWidth()
+                    if (throughSetting) {
+                        CatchUpIndicator(pull, status, reveal, onDismiss = {}, modifier = indicator)
+                    } else {
+                        CatchUpIndicator(pull, status, reveal, onDismiss = {}, modifier = indicator, haptics = remember { Haptics(recorder) { true } })
+                    }
                 }
             }
         }
         compose.waitForIdle()
     }
 
-    @Test
-    fun `a real pull ticks at the threshold and confirms as it is let go, with no un-arming tick for the release`() {
-        chat()
+    private fun pullUp() {
         compose.onNodeWithTag("transcript").performTouchInput { swipeUp(startY = bottom - 4f, endY = top + 4f, durationMillis = 900) }
         compose.waitForIdle()
-        assertThat(status).isEqualTo(CatchUpStatus.Checking)
-        assertThat(played).containsExactly(CatchUpHaptic.Armed, CatchUpHaptic.Released).inOrder()
     }
 
     @Test
-    fun `dropping back under the threshold ticks again, and a release short of it is silent`() {
+    fun `a real pull is felt arming at the threshold and confirms as it is let go, with no disarming for the release`() {
+        chat()
+        pullUp()
+        assertThat(status).isEqualTo(CatchUpStatus.Checking)
+        assertThat(recorder.played).containsExactlyElementsIn(felt(Haptic.ThresholdActivate, Haptic.Confirm)).inOrder()
+    }
+
+    @Test
+    fun `dropping back under the threshold is felt disarming, and a release short of it is silent`() {
         chat()
         pull.stretch(pull.thresholdPx * 1.2f)
         compose.waitForIdle()
@@ -96,23 +120,25 @@ class CatchUpHapticsTest {
         compose.waitForIdle()
         assertThat(pull.release()).isFalse()
         compose.waitForIdle()
-        assertThat(played).containsExactly(CatchUpHaptic.Armed, CatchUpHaptic.Disarmed).inOrder()
+        assertThat(recorder.played).containsExactlyElementsIn(felt(Haptic.ThresholdActivate, Haptic.ThresholdDeactivate)).inOrder()
 
         pull.stretch(pull.thresholdPx * 2f)
         compose.waitForIdle()
         assertThat(pull.release()).isTrue()
         compose.waitForIdle()
-        assertThat(played).containsExactly(CatchUpHaptic.Armed, CatchUpHaptic.Disarmed, CatchUpHaptic.Armed, CatchUpHaptic.Released).inOrder()
+        assertThat(recorder.played).containsExactlyElementsIn(
+            felt(Haptic.ThresholdActivate, Haptic.ThresholdDeactivate, Haptic.ThresholdActivate, Haptic.Confirm),
+        ).inOrder()
     }
 
     @Test
-    fun `each answer plays once as it arrives, a failure as a failure, and the wait before it plays nothing`() {
+    fun `each answer plays once as it arrives, lightest for an answer and a reject for a failure, and the wait before it plays nothing`() {
         chat()
         status = CatchUpStatus.Waiting(untilMillis = 0L)
         compose.waitForIdle()
         status = CatchUpStatus.Checking
         compose.waitForIdle()
-        assertThat(played).isEmpty()
+        assertThat(recorder.played).isEmpty()
         status = CatchUpStatus.Done(newMessages = 2, changed = true)
         compose.waitForIdle()
         status = CatchUpStatus.Idle
@@ -121,43 +147,40 @@ class CatchUpHapticsTest {
         compose.waitForIdle()
         status = CatchUpStatus.Failed("Cursor couldn't be reached. Check your connection.")
         compose.waitForIdle()
-        assertThat(played).containsExactly(CatchUpHaptic.Answered, CatchUpHaptic.Failed).inOrder()
+        assertThat(recorder.played).containsExactlyElementsIn(felt(Haptic.Subtle, Haptic.Reject)).inOrder()
     }
 
     @Test
     fun `an answer already up when the screen comes back plays nothing`() {
         status = CatchUpStatus.Done(newMessages = 1, changed = true)
         chat()
-        assertThat(played).isEmpty()
+        assertThat(recorder.played).isEmpty()
     }
 
     @Test
-    fun `the cues are the gesture-threshold pair from 34 with a clock tick before it, and CONFIRM and REJECT from 30`() {
-        assertThat(CatchUpHaptic.Armed.feedback(sdk = 35)).isEqualTo(HapticFeedbackConstants.GESTURE_THRESHOLD_ACTIVATE)
-        assertThat(CatchUpHaptic.Disarmed.feedback(sdk = 34)).isEqualTo(HapticFeedbackConstants.GESTURE_THRESHOLD_DEACTIVATE)
-        assertThat(CatchUpHaptic.Armed.feedback(sdk = 33)).isEqualTo(HapticFeedbackConstants.CLOCK_TICK)
-        assertThat(CatchUpHaptic.Disarmed.feedback(sdk = 26)).isEqualTo(HapticFeedbackConstants.CLOCK_TICK)
-        assertThat(CatchUpHaptic.Released.feedback(sdk = 30)).isEqualTo(HapticFeedbackConstants.CONFIRM)
-        assertThat(CatchUpHaptic.Released.feedback(sdk = 29)).isEqualTo(HapticFeedbackConstants.VIRTUAL_KEY)
-        assertThat(CatchUpHaptic.Failed.feedback(sdk = 30)).isEqualTo(HapticFeedbackConstants.REJECT)
-        assertThat(CatchUpHaptic.Failed.feedback(sdk = 29)).isEqualTo(HapticFeedbackConstants.CLOCK_TICK)
-        assertThat(CatchUpHaptic.Answered.feedback(sdk = 35)).isEqualTo(HapticFeedbackConstants.CLOCK_TICK)
-        assertThat(CatchUpHaptic.Answered.feedback(sdk = 26)).isEqualTo(HapticFeedbackConstants.CLOCK_TICK)
-    }
+    fun `with Settings › Haptic feedback off a pull still catches up and nothing is felt, and turned back on the next is`() {
+        hapticsOn = false
+        chat(throughSetting = true)
+        val before = shadowOf(view).lastHapticFeedbackPerformed()
+        pullUp()
+        assertThat(status).isEqualTo(CatchUpStatus.Checking)
+        assertThat(shadowOf(view).lastHapticFeedbackPerformed()).isEqualTo(before)
 
-    @Test
-    fun `the cues go through the view's own feedback, without the flags that would override the system setting`() {
-        lateinit var view: View
-        lateinit var haptics: (CatchUpHaptic) -> Unit
-        compose.setContent {
-            view = LocalView.current
-            haptics = rememberCatchUpHaptics()
-        }
+        status = CatchUpStatus.Idle
+        hapticsOn = true
         compose.waitForIdle()
-        // Robolectric records the flagless overload only: a call passing FLAG_IGNORE_GLOBAL_SETTING would not show here.
-        compose.runOnIdle { haptics(CatchUpHaptic.Armed) }
-        assertThat(shadowOf(view).lastHapticFeedbackPerformed()).isEqualTo(HapticFeedbackConstants.GESTURE_THRESHOLD_ACTIVATE)
-        compose.runOnIdle { haptics(CatchUpHaptic.Released) }
+        pullUp()
+        assertThat(status).isEqualTo(CatchUpStatus.Checking)
         assertThat(shadowOf(view).lastHapticFeedbackPerformed()).isEqualTo(HapticFeedbackConstants.CONFIRM)
+    }
+
+    /** A view that keeps every haptic it is asked for. */
+    private class RecordingView(context: Context) : View(context) {
+        val played = mutableListOf<Int>()
+
+        override fun performHapticFeedback(feedbackConstant: Int): Boolean {
+            played += feedbackConstant
+            return true
+        }
     }
 }
