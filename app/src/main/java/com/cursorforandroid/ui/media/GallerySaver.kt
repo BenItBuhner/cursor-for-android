@@ -9,6 +9,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
+import androidx.annotation.ChecksSdkIntAtLeast
 import androidx.annotation.RequiresApi
 import androidx.core.content.ContextCompat
 import com.cursorforandroid.data.media.MediaProblem
@@ -41,13 +42,15 @@ class GallerySaver(private val context: Context, private val sdk: Int = Build.VE
 
     /** Before Android 10 the shared folders are written as files, which takes the storage permission; from 10 on the MediaStore needs none. */
     val needsPermission: Boolean
-        get() = sdk < Build.VERSION_CODES.Q &&
-            ContextCompat.checkSelfPermission(context, Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED
+        get() = !scoped && ContextCompat.checkSelfPermission(context, Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED
+
+    @ChecksSdkIntAtLeast(api = Build.VERSION_CODES.Q)
+    private val scoped: Boolean = sdk >= Build.VERSION_CODES.Q
 
     /** Saves [file], shown as [fileName] with the declared [mimeType] (either may be wrong); [onProgress] hears the share of it copied. */
     suspend fun save(file: File, fileName: String, mimeType: String?, expected: MediaEntry.Kind, onProgress: (Float) -> Unit = {}): Folder = withContext(Dispatchers.IO) {
         val target = targetFor(file.head(), fileName, mimeType, expected)
-        if (sdk >= Build.VERSION_CODES.Q) intoMediaStore(file, target, onProgress) else intoSharedFolder(file, target, onProgress)
+        if (scoped) intoMediaStore(file, target, onProgress) else intoSharedFolder(file, target, onProgress)
     }
 
     @RequiresApi(Build.VERSION_CODES.Q)
