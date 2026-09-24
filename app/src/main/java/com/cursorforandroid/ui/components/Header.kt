@@ -15,6 +15,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
@@ -75,17 +76,26 @@ fun CursorHeader(
  * target centred on each starts at the bar's edge, and the row ends at their bottom edge. The targets reach the
  * other 8dp over the transcript's top edge, and the row is drawn over what follows it so that strip still takes the
  * tap; the buttons in [leading] and [trailing] pass `touchHeight = CursorDimens.minTouchTarget`.
+ *
+ * The row paints nothing: the band it takes, with the transcript's fade beneath it, is what reads as the header. With
+ * a [clearance], each end's controls are measured against the transcript's column, and where both ends stand clear
+ * of it the row gives its band back: it still draws the buttons in the same place, over the transcript, and takes
+ * only the status bar's height from what follows (see [HeaderClearance]).
  */
 @Composable
 fun ChatHeader(
     label: String,
     modifier: Modifier = Modifier,
+    clearance: HeaderClearance? = null,
     leading: (@Composable RowScope.() -> Unit)? = null,
     trailing: (@Composable RowScope.() -> Unit)? = null,
 ) {
+    val reach = with(LocalDensity.current) { HeaderClearance.ControlReach.toPx() }
+    val band = clearance?.let { rememberHeaderBandRelease(it) }
     Row(
         modifier
             .zIndex(1f)
+            .then(if (band != null) Modifier.headerBand(band) else Modifier)
             .fillMaxWidth()
             .windowInsetsPadding(WindowInsets.statusBars)
             .heightIn(min = CursorDimens.chatHeaderHeight)
@@ -97,8 +107,8 @@ fun ChatHeader(
             .testTag("chat-header"),
         verticalAlignment = Alignment.Bottom,
     ) {
-        leading?.invoke(this)
+        Row(clearance?.controls(HeaderClearance.Side.Start, reach) ?: Modifier, verticalAlignment = Alignment.Bottom) { leading?.invoke(this) }
         Spacer(Modifier.weight(1f))
-        trailing?.invoke(this)
+        Row(clearance?.controls(HeaderClearance.Side.End, reach) ?: Modifier, verticalAlignment = Alignment.Bottom) { trailing?.invoke(this) }
     }
 }
