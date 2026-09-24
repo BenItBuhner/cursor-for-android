@@ -295,6 +295,9 @@ class ConversationCache(
     suspend fun read(agentId: String): JsonDiskCache.Entry<CachedConversation>? =
         cache.read(agentId, CachedConversation.serializer(), VERSION)?.also { cache.touch(agentId) }
 
+    /** [read] without counting as an open: the search palette reads every chat's file, and must not reorder which ones are kept. */
+    suspend fun peek(agentId: String): CachedConversation? = cache.read(agentId, CachedConversation.serializer(), VERSION)?.value
+
     suspend fun write(conversation: CachedConversation, token: Int = cache.token()) {
         if (cache.write(conversation.agentId, CachedConversation.serializer(), VERSION, conversation, token)) cache.prune(maxEntries, maxBytes)
     }
@@ -419,7 +422,7 @@ class TraceCache(
      * files are read [READ_PARALLELISM] at a time: a turn's file is a few hundred kilobytes of JSON, and a window of
      * thirty read one after another on a phone was the second the tool calls took to come up after a restart.
      */
-    suspend fun read(agentId: String, runIds: Collection<String>): Map<String, CachedTrace> {
+    suspend fun read(agentId: String, runIds: Collection<String>, markOpened: Boolean = true): Map<String, CachedTrace> {
         if (runIds.isEmpty()) return emptyMap()
         migrate(agentId)
         val files = agentCache(agentId)
@@ -447,8 +450,14 @@ class TraceCache(
         }
         val found = LinkedHashMap<String, CachedTrace>()
         wanted.forEachIndexed { i, runId -> read[i]?.let { found[runId] = it } }
-        if (found.isNotEmpty()) markOpened(files.root)
+        if (found.isNotEmpty() && markOpened) markOpened(files.root)
         return found
+    }
+
+    /** The [limit] newest runs the agent has a trace for, newest first, from the index alone. */
+    suspend fun newestRunIds(agentId: String, limit: Int): List<String> {
+        migrate(agentId)
+        return readIndex(agentId).runs.sortedByDescending { it.createdAtMillis }.take(limit).map { it.runId }
     }
 
     /** Stamps an agent's traces as shown on this device, which is what ranks them above the ones only the monitor wrote (see [trim]). */
