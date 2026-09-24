@@ -204,18 +204,26 @@ private fun CheckCircle(checked: Boolean) {
 }
 
 /**
- * A miniature's widest: a phone's pane at a little under two fifths, and a wider pane's at three tenths, so a
- * tablet's page is drawn no smaller for its size than a phone's — whatever the width the card gives it.
+ * A miniature's widest: the page at the scale a phone's is drawn (156dp for a 411dp pane, a little under two fifths),
+ * never less than a phone's — so the words in a foldable's or a tablet's miniature read as large as a phone's do,
+ * whatever the width the card gives it.
  */
-internal fun miniatureMaxWidth(page: DpSize): Dp = maxOf(PhoneMiniatureWidth, page.width * 0.3f)
+internal fun miniatureMaxWidth(page: DpSize): Dp = maxOf(PhoneMiniatureWidth, PhoneMiniatureWidth * (page.width / PhonePaneWidth))
 
 private val PhoneMiniatureWidth = 156.dp
+private val PhonePaneWidth = 411.dp
 private val MiniatureRadius = 12.dp
 private val RingWidth = 2.dp
 private val RingGap = 3.dp
 
-/** The pane's proportions for a miniature: its width, and its height up to 1.75 times that — the first screenful. */
+/**
+ * The page a miniature draws: the pane's width up to the New Chat page's column and its gutters, and its height up
+ * to 1.75 times that width — the first screenful. A pane wider than that column only adds empty margin either side
+ * of the same column, which scaled down left the column a sliver in the middle of a mostly empty miniature.
+ */
 internal fun miniaturePage(pane: DpSize): DpSize {
-    val width = pane.width.coerceAtLeast(320.dp)
+    val width = pane.width.coerceIn(320.dp, MiniaturePageMaxWidth)
     return DpSize(width, pane.height.coerceIn(width * 0.9f, width * 1.75f))
 }
+
+private val MiniaturePageMaxWidth = CursorDimens.composerMaxWidth + CursorDimens.pageGutter * 2
