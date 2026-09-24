@@ -52,6 +52,7 @@ import com.cursorforandroid.ui.components.cursorSurface
 import com.cursorforandroid.ui.components.dockedCard
 import com.cursorforandroid.ui.components.highlightSlashCommands
 import com.cursorforandroid.ui.components.icon
+import com.cursorforandroid.ui.components.sendOnHardwareEnter
 import com.cursorforandroid.ui.components.slashCommandTint
 import com.cursorforandroid.ui.components.stylusWriting
 import com.cursorforandroid.ui.theme.CursorDimens
@@ -294,6 +295,7 @@ private fun AccountQueueRow(
         Icon(CursorIcons.Cloud, null, tint = colors.iconQuaternary, modifier = Modifier.size(12.dp))
         Spacer(Modifier.width(8.dp))
         if (editing) {
+            val save = { editing = false; onUpdate(text.text) }
             BasicTextField(
                 value = text,
                 onValueChange = { text = it },
@@ -301,12 +303,19 @@ private fun AccountQueueRow(
                 cursorBrush = SolidColor(colors.textPrimary),
                 // The commands painted as they are reworded, the way the composer paints them.
                 visualTransformation = SlashCommandVisualTransformation(slashCommandTint()),
-                modifier = Modifier.weight(1f).stylusWriting().padding(vertical = 8.dp).testTag("account-queue-edit"),
+                modifier = Modifier
+                    .weight(1f)
+                    .stylusWriting()
+                    // A physical Enter saves, as submitting a queued message being edited does on the desktop (it goes back
+                    // into its place in the queue); a message emptied out is not saved from the keyboard.
+                    .sendOnHardwareEnter(text, onValueChange = { text = it }, onSend = save.takeIf { text.text.isNotBlank() })
+                    .padding(vertical = 8.dp)
+                    .testTag("account-queue-edit"),
             )
             Spacer(Modifier.width(8.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
                 GlyphButton(CursorIcons.Close, "Cancel editing", colors.iconTertiary) { editing = false; text = TextFieldValue(item.text, TextRange(item.text.length)); onEditing(false) }
-                GlyphButton(CursorIcons.Check, "Save queued follow-up", colors.iconPrimary) { editing = false; onUpdate(text.text) }
+                GlyphButton(CursorIcons.Check, "Save queued follow-up", colors.iconPrimary, save)
             }
         } else {
             Column(Modifier.weight(1f).padding(vertical = 4.dp)) {

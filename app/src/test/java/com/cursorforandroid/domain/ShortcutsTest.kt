@@ -56,14 +56,22 @@ class ShortcutsTest {
         assertThat(ShortcutWidgetSettings.decode(null)).isEqualTo(ShortcutWidgetSettings.Default)
         assertThat(ShortcutWidgetSettings.decode("not json")).isEqualTo(ShortcutWidgetSettings.Default)
         // A style a later build added costs that field its default, nothing else.
-        assertThat(ShortcutWidgetSettings.decode("""{"style":"Neon","target_kind":"search"}""")).isEqualTo(ShortcutWidgetSettings(ShortcutStyle.White).withTarget(ShortcutTarget.Search))
+        assertThat(ShortcutWidgetSettings.decode("""{"style":"Neon","target_kind":"search"}""")).isEqualTo(ShortcutWidgetSettings(ShortcutStyle.Solid).withTarget(ShortcutTarget.Search))
     }
 
     @Test
-    fun `a style parses by name and falls back to white`() {
+    fun `a style parses by name and falls back to the solid disc`() {
         assertThat(ShortcutStyle.parse("Glass")).isEqualTo(ShortcutStyle.Glass)
-        assertThat(ShortcutStyle.parse("neon")).isEqualTo(ShortcutStyle.White)
-        assertThat(ShortcutStyle.parse(null)).isEqualTo(ShortcutStyle.White)
+        assertThat(ShortcutStyle.parse("neon")).isEqualTo(ShortcutStyle.Solid)
+        assertThat(ShortcutStyle.parse(null)).isEqualTo(ShortcutStyle.Solid)
+    }
+
+    /** The solid disc was the white one, white in every theme; a widget set to it keeps it, and a build before reads it. */
+    @Test
+    fun `the solid disc is stored under the white disc's name`() {
+        val stored = """{"style":"White","target_kind":"new_chat"}"""
+        assertThat(ShortcutWidgetSettings.decode(stored).style).isEqualTo(ShortcutStyle.Solid)
+        assertThat(ShortcutWidgetSettings(ShortcutStyle.Solid).encode()).contains("\"White\"")
     }
 
     @Test

@@ -9,13 +9,14 @@ import androidx.compose.animation.shrinkHorizontally
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.width
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.IntSize
+import com.cursorforandroid.ui.components.rememberSheetFocus
+import com.cursorforandroid.ui.components.sheetFocus
 import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
 
@@ -29,24 +30,33 @@ import com.cursorforandroid.ui.theme.CursorTheme
  * The detail pane beside it reflows into the room the rail gives up, as on cursor.com. The hairline that separates the
  * two rides inside the animated box so it always marks the boundary while it moves.
  *
+ * Unlike the phone drawer it covers nothing: the pane reflows beside it, so a composer holding the keyboard keeps both
+ * while the rail comes back, where the drawer takes them. Collapsing, the rail is the drawer shutting: its own search,
+ * holding focus, lets it go and the keyboard is put away as the collapse begins, and a composer beside it that holds
+ * them keeps both ([com.cursorforandroid.ui.components.SheetFocus]).
+ *
  * First composition with [expanded] true shows the rail at once, without a slide: that is what a Fold unfolding or a
  * phone rotating sees when the drawer layout is swapped for this one, and a rail that arrived by sliding in would
  * read as if it had opened on its own. Hidden, the content leaves the composition, as it did when the rail was a
  * plain `if`.
  */
 @Composable
-fun RowScope.SidebarRail(expanded: Boolean, modifier: Modifier = Modifier, content: @Composable () -> Unit) {
+fun SidebarRail(expanded: Boolean, modifier: Modifier = Modifier, content: @Composable () -> Unit) {
     val colors = CursorTheme.colors
-    AnimatedVisibility(
-        visible = expanded,
-        enter = expandHorizontally(sidebarRailMotion(), expandFrom = Alignment.End),
-        exit = shrinkHorizontally(sidebarRailMotion(), shrinkTowards = Alignment.End),
-        label = "sidebarRail",
-        modifier = modifier,
-    ) {
-        Row(Modifier.fillMaxHeight()) {
-            Box(Modifier.width(CursorDimens.sidebarWidth).fillMaxHeight()) { content() }
-            Box(Modifier.fillMaxHeight().width(CursorDimens.hairline).background(colors.strokeSubtle))
+    val focus = rememberSheetFocus { expanded }
+    // Around the slide rather than on it: hidden, the slide composes nothing, so nothing on it would stay to hear a
+    // focused search leave with it.
+    Box(modifier.sheetFocus(focus)) {
+        AnimatedVisibility(
+            visible = expanded,
+            enter = expandHorizontally(sidebarRailMotion(), expandFrom = Alignment.End),
+            exit = shrinkHorizontally(sidebarRailMotion(), shrinkTowards = Alignment.End),
+            label = "sidebarRail",
+        ) {
+            Row(Modifier.fillMaxHeight()) {
+                Box(Modifier.width(CursorDimens.sidebarWidth).fillMaxHeight()) { content() }
+                Box(Modifier.fillMaxHeight().width(CursorDimens.hairline).background(colors.strokeSubtle))
+            }
         }
     }
 }

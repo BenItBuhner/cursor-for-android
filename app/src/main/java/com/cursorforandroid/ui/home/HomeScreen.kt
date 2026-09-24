@@ -71,9 +71,8 @@ import com.cursorforandroid.ui.components.HairlineDivider
 import com.cursorforandroid.ui.components.ModePills
 import com.cursorforandroid.ui.components.Pill
 import com.cursorforandroid.ui.components.PullRequestPill
+import com.cursorforandroid.ui.components.RefreshableSheetHeader
 import com.cursorforandroid.ui.components.RunningGlyph
-import com.cursorforandroid.ui.components.SheetHeader
-import com.cursorforandroid.ui.components.SpinnerRing
 import com.cursorforandroid.ui.components.pressable
 import com.cursorforandroid.ui.components.pullRequestTint
 import com.cursorforandroid.ui.components.AttachmentCounts
@@ -274,7 +273,7 @@ fun HomeScreen(
             unavailable = state.modelsUnavailable,
             onPlanMode = viewModel::setPlanMode,
             onAutoCreatePr = viewModel::setAutoCreatePr,
-            onRetry = viewModel::refreshModels,
+            onRefresh = viewModel::refreshModels,
             onSelect = viewModel::selectModel,
             onDismiss = { modelSheet = false },
             pinnedIds = state.pinnedModelIds,
@@ -440,9 +439,7 @@ internal fun RepositorySheet(
             onSelect(repo)
             dismiss()
         }
-        SheetHeader("Repository") {
-            if (loading) SpinnerRing(modifier = Modifier.padding(end = 8.dp)) else FlatIconButton(CursorIcons.Refresh, "Refresh repositories", onClick = onRefresh)
-        }
+        RefreshableSheetHeader("Repository", loading, "Refresh repositories", onRefresh, Modifier.testTag("repository-sheet-header"))
         SheetSearchField(value = filter, onValueChange = { filter = it }, placeholder = "Filter repositories")
         Spacer(Modifier.height(6.dp))
         // The list keys rows on the URL, so duplicates from the catalogue must go before they reach the LazyColumn.

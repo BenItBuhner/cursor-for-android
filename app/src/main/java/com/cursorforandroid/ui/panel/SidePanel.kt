@@ -68,7 +68,10 @@ import androidx.compose.ui.unit.dp
 import com.cursorforandroid.ui.components.BackGestureEdges
 import com.cursorforandroid.ui.components.LocalScrollFadeSurface
 import com.cursorforandroid.ui.components.backGestureEdges
+import com.cursorforandroid.ui.components.coveredFocus
 import com.cursorforandroid.ui.components.rememberBackGestureEdges
+import com.cursorforandroid.ui.components.rememberSheetFocus
+import com.cursorforandroid.ui.components.sheetFocus
 import com.cursorforandroid.ui.theme.CursorTheme
 import kotlin.coroutines.cancellation.CancellationException
 import kotlin.math.abs
@@ -91,6 +94,12 @@ import kotlinx.coroutines.launch
  * ([BackGestureEdges]) never opens it: from the end edge that is the system's back swipe, which runs the same way as
  * the open drag. Open, the scrim and the sheet take the drag, so a swipe anywhere puts it away, the sheet's own
  * scrollers handing over at their ends the same way. Back closes the sheet before anything behind it goes back.
+ *
+ * Committed to opening, the sheet takes the keyboard from a field in the content under it, the composer's draft left
+ * as it was ([com.cursorforandroid.ui.components.SheetFocus]). That holds on every width: the scrim covers the whole
+ * chat, composer included, even where the sheet itself would clear it. Committed to closing, it takes the keyboard
+ * from a field in the sheet, which would otherwise go on taking keystrokes from off screen until it left the
+ * composition, and the keyboard with it after that.
  */
 @Composable
 fun SidePanelHost(
@@ -112,6 +121,7 @@ fun SidePanelHost(
     val edges = rememberBackGestureEdges()
     val opening = remember(state, scope, edges) { ScrollerHandoff(state, scope, from = SidePanelValue.Closed, edges = edges) }
     val closing = remember(state, scope) { ScrollerHandoff(state, scope, from = SidePanelValue.Open, edges = null) }
+    val focus = rememberSheetFocus { state.isOpen }
     SideEffect {
         state.widthPx = widthPx
         opening.update(gesturesEnabled, rtl, flingThreshold)
@@ -134,6 +144,7 @@ fun SidePanelHost(
     Box(modifier.fillMaxSize().backGestureEdges(edges)) {
         Box(
             Modifier
+                .coveredFocus(focus)
                 .nestedScroll(opening)
                 .openDrag(state, scope, edges, enabled = gesturesEnabled && !state.isOpen, rtl = rtl, flingThreshold = flingThreshold),
         ) { content() }
@@ -164,6 +175,7 @@ fun SidePanelHost(
                 .fillMaxHeight()
                 .width(panelWidth)
                 .offset { IntOffset(((1f - state.fraction) * widthPx).roundToInt(), 0) }
+                .sheetFocus(focus)
                 .nestedScroll(closing)
                 // Open or not, as the drawer's: a sheet caught mid-slide either way follows the finger.
                 .then(drag)
