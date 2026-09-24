@@ -8,10 +8,13 @@ import androidx.activity.ComponentActivity
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
+import androidx.datastore.preferences.core.preferencesOf
 import androidx.glance.appwidget.ExperimentalGlanceRemoteViewsApi
 import androidx.glance.appwidget.GlanceRemoteViews
+import androidx.glance.appwidget.compose
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.cursorforandroid.AppGraph
@@ -19,6 +22,7 @@ import com.cursorforandroid.data.local.SecureKeyStore
 import com.cursorforandroid.domain.ChatsWidgetSettings
 import com.cursorforandroid.domain.CornerAction
 import com.cursorforandroid.domain.CornerStyle
+import com.cursorforandroid.domain.HeaderElement
 import com.cursorforandroid.domain.RowDensity
 import com.cursorforandroid.domain.WidgetAppearance
 import com.cursorforandroid.domain.WidgetLayout
@@ -27,17 +31,21 @@ import com.cursorforandroid.domain.WidgetTheme
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.ui.theme.ThemeMode
 import com.cursorforandroid.util.AppClock
+import com.cursorforandroid.widget.ChatsWidget
 import com.cursorforandroid.widget.ChatsWidgetContent
 import com.cursorforandroid.widget.ChatsWidgetOptions
+import com.cursorforandroid.widget.PreviewHostView
 import com.cursorforandroid.widget.ProjectsWidgetFixture
 import com.cursorforandroid.widget.WidgetConfigureScreen
 import com.cursorforandroid.widget.WidgetData
+import com.cursorforandroid.widget.HomeScreenHost
 import com.cursorforandroid.widget.WidgetSizes
 import com.cursorforandroid.widget.WidgetSnapshot
 import com.github.takahirom.roborazzi.ExperimentalRoborazziApi
 import com.github.takahirom.roborazzi.RoborazziOptions
 import com.github.takahirom.roborazzi.captureRoboImage
 import com.github.takahirom.roborazzi.captureScreenRoboImage
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Before
@@ -160,11 +168,76 @@ class WidgetScreenshotTest {
         captureScreenRoboImage(File(outDir, "326_widget_configure_projects_extended_off.png").path, RoborazziOptions())
     }
 
-    private fun showOptions(snapshot: WidgetSnapshot, settings: ChatsWidgetSettings) {
+    /**
+     * The header's parts one at a time off the defaults (the list's name, refresh and "+" on, the cube off), none of
+     * them, and a placement too short for it — a 4x2 in landscape — where it gives its room to the rows unless told to stay.
+     */
+    @Test
+    fun headers() {
+        val dark = WidgetData.sample(ThemeMode.Dark, FIXED_NOW)
+        val defaults = ChatsWidgetSettings()
+        capture("347_widget_header_logo", dark, defaults.toggled(HeaderElement.Logo), FOUR_BY_TWO)
+        capture("348_widget_header_no_title", dark, defaults.toggled(HeaderElement.Title), FOUR_BY_TWO)
+        capture("349_widget_header_none", dark, defaults.copy(header = emptySet()), FOUR_BY_TWO)
+        capture("350_widget_header_auto_hidden", dark, defaults, FOUR_BY_TWO_LANDSCAPE)
+        capture("351_widget_header_kept", dark, defaults.copy(headerAutoHide = false), FOUR_BY_TWO_LANDSCAPE)
+        capture("352_widget_header_light", WidgetData.sample(ThemeMode.Light, FIXED_NOW), defaults, FOUR_BY_TWO)
+    }
+
+    /**
+     * A 4x4 Projects widget as the home screen draws it — [ChatsWidget] composed for the sizes the launcher reports,
+     * shown by a widget host at the placement's space — next to the settings screen's preview of the same placement.
+     * The two are one picture: one-line rows, the age and the counts at each row's end.
+     */
+    @Test
+    fun projectsLiveAndPreview() {
+        val dark = ProjectsWidgetFixture.snapshot(ThemeMode.Dark, FIXED_NOW)
+        val projects = ChatsWidgetSettings(mode = WidgetMode.Projects)
+        captureLive("353_widget_projects_live_4x4", dark, projects, FOUR_BY_FOUR, FOUR_BY_FOUR_LANDSCAPE)
+        capturePreview("354_widget_projects_preview_4x4", dark, projects, FOUR_BY_FOUR)
+        captureLive("355_widget_projects_live_4x2", dark, projects, FOUR_BY_TWO, FOUR_BY_TWO_LANDSCAPE)
+        capturePreview("356_widget_projects_preview_4x2", dark, projects, FOUR_BY_TWO)
+    }
+
+    /** The settings screen for a placed 4x4 Projects widget: the preview is that placement, rows and all. */
+    @OptIn(ExperimentalRoborazziApi::class)
+    @Test
+    fun configurePlaced() {
+        showOptions(ProjectsWidgetFixture.snapshot(ThemeMode.Dark, FIXED_NOW), ChatsWidgetSettings(mode = WidgetMode.Projects), placement = FOUR_BY_FOUR)
+        captureScreenRoboImage(File(outDir, "357_widget_configure_4x4.png").path, RoborazziOptions())
+    }
+
+    /** A placement wider than the stage (a 4x4 in landscape) is shown whole, scaled down to fit. */
+    @OptIn(ExperimentalRoborazziApi::class)
+    @Test
+    fun configurePlacedWide() {
+        showOptions(WidgetData.sample(ThemeMode.Dark, FIXED_NOW), ChatsWidgetSettings(), placement = FOUR_BY_FOUR_LANDSCAPE)
+        captureScreenRoboImage(File(outDir, "358_widget_configure_wide.png").path, RoborazziOptions())
+    }
+
+    /** The header's options, with the logo on: each part the header can show, and whether it hides itself on short placements. */
+    @OptIn(ExperimentalRoborazziApi::class)
+    @Test
+    fun configureHeader() {
+        showOptions(WidgetData.sample(ThemeMode.Dark, FIXED_NOW), ChatsWidgetSettings().toggled(HeaderElement.Logo), placement = FOUR_BY_TWO)
+        compose.onNodeWithTag("option-header").performScrollTo()
+        compose.waitForIdle()
+        captureScreenRoboImage(File(outDir, "359_widget_configure_header.png").path, RoborazziOptions())
+    }
+
+    /** The same screen under the light app theme. */
+    @OptIn(ExperimentalRoborazziApi::class)
+    @Test
+    fun configureLight() {
+        showOptions(WidgetData.sample(ThemeMode.Light, FIXED_NOW), ChatsWidgetSettings(), placement = FOUR_BY_TWO, appMode = ThemeMode.Light)
+        captureScreenRoboImage(File(outDir, "360_widget_configure_light.png").path, RoborazziOptions())
+    }
+
+    private fun showOptions(snapshot: WidgetSnapshot, settings: ChatsWidgetSettings, placement: DpSize? = null, appMode: ThemeMode = ThemeMode.Dark) {
         compose.setContent {
-            CursorTheme(mode = ThemeMode.Dark) {
+            CursorTheme(mode = appMode) {
                 WidgetConfigureScreen(title = "Chats widget", subtitle = "What it shows and how it looks", onDone = {}, onClose = {}) {
-                    ChatsWidgetOptions(settings = settings, snapshot = snapshot, onChange = {})
+                    ChatsWidgetOptions(settings = settings, snapshot = snapshot, onChange = {}, placement = placement)
                 }
             }
         }
@@ -222,18 +295,39 @@ class WidgetScreenshotTest {
         val remoteViews = runBlocking {
             GlanceRemoteViews().compose(context, size) { ChatsWidgetContent(snapshot, settings, AppWidgetManager.INVALID_APPWIDGET_ID) }.remoteViews
         }
-        lateinit var host: AppWidgetHostView
+        // The list's remote adapter is only applied under a real widget host, as on a launcher.
+        captureHost(name, size) { activity -> AppWidgetHostView(activity).also { it.addView(remoteViews.apply(activity, it)) } }
+    }
+
+    /** The home-screen widget: [ChatsWidget] composed for the portrait and landscape sizes, the host picking one at [portrait]. */
+    private fun captureLive(name: String, snapshot: WidgetSnapshot, settings: ChatsWidgetSettings, portrait: DpSize, landscape: DpSize) {
+        val options = HomeScreenHost.launcherOptions(portrait, landscape)
+        val views = runBlocking {
+            ChatsWidget { flowOf(snapshot) }.compose(context, options = options, state = preferencesOf(ChatsWidget.SETTINGS_KEY to settings.encode()))
+        }
+        captureHost(name, portrait) { activity -> HomeScreenHost.host(activity, views, portrait) }
+    }
+
+    /** The settings screen's preview of a placement ([WidgetPreview]'s host, unscaled). */
+    @OptIn(ExperimentalGlanceRemoteViewsApi::class)
+    private fun capturePreview(name: String, snapshot: WidgetSnapshot, settings: ChatsWidgetSettings, size: DpSize) {
+        val views = runBlocking {
+            GlanceRemoteViews().compose(context, size) { ChatsWidgetContent(snapshot, settings, AppWidgetManager.INVALID_APPWIDGET_ID) }.remoteViews
+        }
+        captureHost(name, size) { activity -> PreviewHostView(activity).also { it.show(views) } }
+    }
+
+    private fun captureHost(name: String, size: DpSize, host: (ComponentActivity) -> AppWidgetHostView) {
+        lateinit var view: AppWidgetHostView
         compose.activityRule.scenario.onActivity { activity ->
             val density = activity.resources.displayMetrics.density
-            // The list's remote adapter is only applied under a real widget host, as on a launcher.
-            host = AppWidgetHostView(activity)
-            host.addView(remoteViews.apply(activity, host))
-            activity.setContentView(host, ViewGroup.LayoutParams((size.width.value * density).toInt(), (size.height.value * density).toInt()))
+            view = host(activity)
+            activity.setContentView(view, ViewGroup.LayoutParams((size.width.value * density).toInt(), (size.height.value * density).toInt()))
         }
         compose.waitForIdle()
         // A launcher's list shows its scrollbar only while scrolling; Robolectric would paint it at rest.
-        host.findListViews().forEach { it.isVerticalScrollBarEnabled = false }
-        host.captureRoboImage(File(outDir, "$name.png").path, RoborazziOptions())
+        view.findListViews().forEach { it.isVerticalScrollBarEnabled = false }
+        view.captureRoboImage(File(outDir, "$name.png").path, RoborazziOptions())
     }
 
     private fun android.view.View.findListViews(): List<android.widget.AbsListView> = when (this) {
@@ -245,5 +339,11 @@ class WidgetScreenshotTest {
     private companion object {
         /** Wednesday 2025-01-15 14:00 UTC, as in [AppScreenshotTest]. */
         val FIXED_NOW: Long = Instant.parse("2025-01-15T14:00:00Z").toEpochMilli()
+
+        /** A 4x2 and a 4x4 placement on this 411dp phone, in portrait and in landscape, as a launcher reports them. */
+        val FOUR_BY_TWO = DpSize(338.dp, 176.dp)
+        val FOUR_BY_TWO_LANDSCAPE = DpSize(610.dp, 110.dp)
+        val FOUR_BY_FOUR = DpSize(338.dp, 380.dp)
+        val FOUR_BY_FOUR_LANDSCAPE = DpSize(610.dp, 240.dp)
     }
 }

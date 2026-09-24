@@ -32,6 +32,7 @@ import com.cursorforandroid.domain.WidgetMode
 import com.cursorforandroid.domain.WidgetTheme
 import com.cursorforandroid.ui.theme.ThemeMode
 import com.cursorforandroid.util.AppClock
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 
 /**
@@ -45,20 +46,25 @@ import kotlinx.coroutines.flow.first
  * keeps the session — 45 s after the first frame, 5 s once the device is idle — so a page that lands after that, a
  * run that finishes an hour later, reaches the widget through [WidgetSync] or not at all. That is why following is
  * installed from the application (see `CursorApp`) and not only from the app's screens.
+ *
+ * [source] is where a render's rows come from: the app's repository, made ready and followed, for every widget
+ * the launcher places; a fixed snapshot for a test that composes the widget as the launcher would.
  */
-class ChatsWidget : GlanceAppWidget() {
+class ChatsWidget internal constructor(private val source: suspend (Context) -> Flow<WidgetSnapshot>) : GlanceAppWidget() {
+
+    constructor() : this(::followedSnapshots)
 
     override val stateDefinition: GlanceStateDefinition<*> = PreferencesGlanceStateDefinition
 
-    /** One arrangement per cell size ([WidgetSizes]); the launcher shows the largest that fits without a render. */
-    override val sizeMode: SizeMode = SizeMode.Responsive(WidgetSizes.all)
+    /**
+     * Composed once for each size the launcher reports for the placement ([WidgetPlacement]) — the sizes it draws
+     * the widget at — so each composition knows its own width and height, and the settings screen's preview,
+     * composed at the same size, is the widget the home screen shows.
+     */
+    override val sizeMode: SizeMode = SizeMode.Exact
 
     override suspend fun provideGlance(context: Context, id: GlanceId) {
-        val graph = context.appGraph
-        WidgetData.prepare(graph, deviceRefreshBudget(context))
-        // This widget exists, so from now on the app's changes must reach it (a no-op once following).
-        WidgetSync.follow(context, graph)
-        val snapshots = WidgetData.snapshots(graph)
+        val snapshots = source(context)
         val initial = snapshots.first()
         val appWidgetId = GlanceAppWidgetManager(context).getAppWidgetId(id)
         provideContent {
@@ -74,11 +80,11 @@ class ChatsWidget : GlanceAppWidget() {
     /**
      * The launcher's live preview (Android 15+): the widget with sample rows. Follows the system theme like the
      * picker around it does, and reads nothing of the account — it has to work before the app was ever opened. The
-     * arrangement is pinned to the 4x2 one: the picker composes the preview at the smallest responsive size, and a
-     * one-line preview in a 4x2 box says nothing about the widget.
+     * arrangement is pinned to the 4x2 one, header and all: the picker composes the preview once, at the provider's
+     * minimum size, which is short enough for the header to hide itself, and the picture is shown in a 4x2 box.
      */
     override suspend fun providePreview(context: Context, widgetCategory: Int) {
-        val settings = ChatsWidgetSettings(layout = WidgetLayout.Medium, appearance = WidgetAppearance(theme = WidgetTheme.System))
+        val settings = ChatsWidgetSettings(layout = WidgetLayout.Medium, appearance = WidgetAppearance(theme = WidgetTheme.System), headerAutoHide = false)
         provideContent { ChatsWidgetContent(WidgetData.sample(ThemeMode.System), settings, AppWidgetManager.INVALID_APPWIDGET_ID) }
     }
 
@@ -96,6 +102,15 @@ class ChatsWidget : GlanceAppWidget() {
          */
         val REFRESHING_SINCE_KEY = longPreferencesKey("refreshing_since")
     }
+}
+
+/** The app's snapshots for a placed widget: the repository made ready, then followed while this process lives. */
+private suspend fun followedSnapshots(context: Context): Flow<WidgetSnapshot> {
+    val graph = context.appGraph
+    WidgetData.prepare(graph, deviceRefreshBudget(context))
+    // This widget exists, so from now on the app's changes must reach it (a no-op once following).
+    WidgetSync.follow(context, graph)
+    return WidgetData.snapshots(graph)
 }
 
 /** One widget's settings in its Glance state: the JSON under [ChatsWidget.SETTINGS_KEY], else what an older build kept. */
