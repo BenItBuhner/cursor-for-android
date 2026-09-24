@@ -19,8 +19,10 @@ import androidx.compose.ui.test.hasContentDescription
 import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTextInput
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -51,8 +53,8 @@ import android.view.KeyEvent as NativeKeyEvent
  * Shift+Tab stepping from no mode through Plan, Debug, Multitask and Ask and back to none, a frame after each press;
  * and the popover listing the commands, the modes and the catalog's models under their headers in both themes, the
  * models narrowed by a name ("/Opus 5") with the current one checked and a keyboard's highlight on the best match,
- * a worn mode checked, and parameter words spelling a variant beside the model's name. Written to `screenshots/`;
- * CI compares them pixel for pixel.
+ * a worn mode checked, and parameter words spelling a variant beside the model's name; and the "+" menu opening on
+ * Plan, the one mode it offers, off and (light) on. Written to `screenshots/`; CI compares them pixel for pixel.
  */
 @RunWith(AndroidJUnit4::class)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
@@ -186,6 +188,23 @@ class AgentModesScreenshotTest {
     @Test
     fun slashModelVariant() =
         popover(ThemeMode.Dark, "Fix the rounding /opus 5.5 max fast", "495_slash_model_variant_dark", settled = "Max effort · Fast")
+
+    private fun plusMenu(mode: ThemeMode, name: String) {
+        show(mode)
+        compose.onNodeWithContentDescription("Add to prompt").performClick()
+        compose.waitUntil(10_000) { shown(Pill.Plan.description) }
+        captureScreen(name)
+    }
+
+    @Test
+    fun plusMenuPlanDark() = plusMenu(ThemeMode.Dark, "497_plus_menu_plan_dark")
+
+    @Test
+    @Config(qualifiers = LIGHT)
+    fun plusMenuPlanOnLight() {
+        modePill = Pill.Plan
+        plusMenu(ThemeMode.Light, "498_plus_menu_plan_on_light")
+    }
 
     private companion object {
         const val LIGHT = "w411dp-h914dp-notnight-420dpi"
