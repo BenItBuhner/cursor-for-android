@@ -77,6 +77,7 @@ import com.cursorforandroid.ui.components.CursorIcons
 import com.cursorforandroid.ui.components.CursorMenu
 import com.cursorforandroid.ui.components.CursorMenuItem
 import com.cursorforandroid.ui.components.FlatIconButton
+import com.cursorforandroid.ui.components.HeaderClearance
 import com.cursorforandroid.ui.components.LocalMarkdownMedia
 import com.cursorforandroid.ui.components.LocalRunStopConfirmation
 import com.cursorforandroid.ui.components.MarkdownMediaContext
@@ -360,7 +361,11 @@ fun ConversationScreen(
     // has listed after them; the list is read at the tap, off the items as they are then.
     val latestItems = rememberUpdatedState(conversation.items)
     val latestArtifacts = rememberUpdatedState(panel.artifacts.valueOrNull.orEmpty())
-    val markdownMedia = remember(agentId, canReadStores) {
+    // A link to an agent — a coordinator cites its workers by id — opens that agent's chat the way a worker card does,
+    // read by its id first when the list does not hold it (see [AgentLinkOpener]); a store sheet it was tapped in goes
+    // away with the chat it stood over.
+    val agentLinks = rememberAgentLinkOpener(graph, onOpenChat = onOpenAgent?.let { open -> { id: String -> openStorePath = null; open(id) } })
+    val markdownMedia = remember(agentId, canReadStores, agentLinks) {
         MarkdownMediaContext(
             agentId, graph.media,
             canReadStores = canReadStores,
@@ -369,6 +374,7 @@ fun ConversationScreen(
                 if (canReadStores && target != null) openStorePath = path.text else runCatching { uriHandler.openUri(StorePath.webUrl(target?.ownerId ?: agentId)) }
             },
             entries = { ConversationMedia.of(latestItems.value, latestArtifacts.value) },
+            onOpenAgentLink = agentLinks::open,
         )
     }
     // The agent's VM desktop is reached from the header menu (Extended mode, `GetMachine` then noVNC), for the chats
@@ -399,8 +405,12 @@ fun ConversationScreen(
     ) {
     Column(Modifier.fillMaxSize().background(colors.canvas)) {
         val touchHeight = CursorDimens.minTouchTarget
+        // Where the header's buttons stand in the margin beside the transcript's column (a wide pane), the header gives
+        // its band to the transcript, which then reads up to the status bar; where they reach the column it keeps it.
+        val headerClearance = remember { HeaderClearance() }
         ChatHeader(
             label = agent?.name ?: "Chat",
+            clearance = headerClearance,
             leading = {
                 when {
                     onBack != null -> FlatIconButton(CursorIcons.ChevronLeft, "Back", onClick = onBack, touchHeight = touchHeight)
@@ -456,6 +466,8 @@ fun ConversationScreen(
 
         Box(Modifier.weight(1f).fillMaxWidth()) {
             val paneWidth = Modifier.widthIn(max = CursorDimens.composerMaxWidth).fillMaxWidth()
+            // The column the rows are laid out in, measured whether or not there are any rows yet.
+            Box(Modifier.align(Alignment.TopCenter).padding(horizontal = TranscriptGutter).then(paneWidth).then(headerClearance.transcriptColumn))
             // The items above and below the rows, by their keys in [order].
             val edgeItem: @Composable (String) -> Unit = { key ->
                 when (key) {
@@ -517,15 +529,17 @@ fun ConversationScreen(
                     userScrollEnabled = false,
                     // Not fillMaxSize: a short transcript then sizes to its content and reads from the top. Once it
                     // overflows, the items dissolve at whichever edge still has transcript past it rather than clipping
-                    // flat against the header or the composer. The fade is painted in the canvas colour: this list is
-                    // resized on every frame the keyboard moves, and an offscreen dissolve would re-allocate and
-                    // re-render a full-screen layer on each of them.
+                    // flat against the header or the composer — or against the status bar, where the header has given
+                    // its band back, so no row is cut through under the bar's icons and nothing is dimmed at rest. The
+                    // fade is painted in the canvas colour: this list is resized on every frame the keyboard moves, and
+                    // an offscreen dissolve would re-allocate and re-render a full-screen layer on each of them.
                     modifier = Modifier
                         .fillMaxWidth()
                         .align(Alignment.TopCenter)
                         .scrollEdgeFade(listState, reverseLayout = listReversed, surface = colors.canvas)
-                        .readerScrolling(transcriptScroll),
-                    contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 6.dp, bottom = 12.dp),
+                        .readerScrolling(transcriptScroll)
+                        .testTag("transcript"),
+                    contentPadding = PaddingValues(start = TranscriptGutter, end = TranscriptGutter, top = 6.dp, bottom = 12.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp),
                     horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
@@ -671,7 +685,7 @@ fun ConversationScreen(
                 modePill = picker.modePill,
                 onModePill = viewModel::setModePill,
                 extendedModes = capabilities.agentModes && !isDemo,
-                modifier = Modifier.widthIn(max = CursorDimens.composerMaxWidth).testTag("follow-up-composer"),
+                modifier = Modifier.widthIn(max = CursorDimens.composerMaxWidth).then(headerClearance.composerColumn).testTag("follow-up-composer"),
             )
         }
     }
@@ -740,6 +754,7 @@ fun ConversationScreen(
         )
     }
     RunStopDialog(stopConfirmation)
+    AgentLinkDialog(agentLinks)
 }
 
 /** The keys of the list's items that are not rows of the transcript (see [TranscriptOrder]). */
@@ -748,6 +763,9 @@ private const val TRACES_KEY = "traces"
 private const val OLDER_KEY = "older"
 private const val EMPTY_KEY = "empty"
 private const val LOADING_KEY = "loading"
+
+/** The transcript's side margins, inside which its rows take [CursorDimens.composerMaxWidth] at most. */
+private val TranscriptGutter = 16.dp
 
 /**
  * How many rows from the oldest one shown the reader may be before the turns before it are asked for: about a

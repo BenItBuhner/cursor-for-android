@@ -37,6 +37,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.isSpecified
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.PointerInputChange
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
@@ -65,6 +66,7 @@ import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.isSpecified
+import com.cursorforandroid.domain.AgentLink
 import com.cursorforandroid.domain.MediaMarkup
 import com.cursorforandroid.domain.SlashCommands
 import com.cursorforandroid.domain.StorePath
@@ -100,6 +102,13 @@ object InlineMarkdown {
     fun isLinkAt(annotated: AnnotatedString, offset: Int): Boolean =
         annotated.getLinkAnnotations(0, annotated.length).any { offset >= it.start && offset < it.end }
 
+    /** The target of the link to an agent ([AgentLink]) that [offset] of [annotated] falls in, if any. */
+    fun agentLinkAt(annotated: AnnotatedString, offset: Int): String? =
+        annotated.getLinkAnnotations(0, annotated.length)
+            .firstOrNull { offset >= it.start && offset < it.end }
+            ?.let { (it.item as? LinkAnnotation.Url)?.url }
+            ?.takeIf { AgentLink.parse(it) != null }
+
     private val tags = mapOf(
         "b" to Tag.Bold, "strong" to Tag.Bold, "summary" to Tag.Bold,
         "i" to Tag.Italic, "em" to Tag.Italic,
@@ -127,6 +136,9 @@ object InlineMarkdown {
      * The address `[text](target)` should open, or null when the target is not something the system can be asked
      * for. Agents write repository-relative links constantly (`./diff.patch`, `app/src/main/…`), and a scheme-less
      * URI resolves to no activity at all: those stay plain text instead of becoming a link that fails on tap.
+     *
+     * Two scheme-less targets are opened here rather than by the system, so they are links: a path into an Agent
+     * Store, and an agent's id (`bc-…`, as a Project's coordinator cites its workers; see [AgentLink]).
      */
     fun linkTarget(raw: String): String? {
         val target = raw.trim()
@@ -134,6 +146,8 @@ object InlineMarkdown {
         if (target.startsWith("//")) return "https:$target"
         // A path into an Agent Store is opened here (the document sheet, or the Project on cursor.com), so it is a link.
         StorePath.parse(target)?.let { return it.text }
+        // An agent's id opens that agent's chat (or, with `#desktop`, its page on cursor.com).
+        if (AgentLink.parse(target) != null) return target
         val scheme = schemeRegex.matchAt(target, 0) ?: return null
         if (scheme.value.dropLast(1).lowercase() !in openableSchemes) return null
         return target.takeIf { it.length > scheme.value.length }
@@ -713,12 +727,15 @@ internal fun InlineText(text: String, style: TextStyle, color: Color, modifier: 
     val uriHandler = LocalUriHandler.current
     val media = LocalMarkdownMedia.current
     // A store link goes where the screen sends it — the document sheet — or to the Project on cursor.com when
-    // nothing here reads the store; anything else to the system.
+    // nothing here reads the store; an agent's link to the screen too — its chat — or to its page on cursor.com;
+    // anything else to the system.
     val openLink: (String) -> Unit = remember(uriHandler, media) {
         val system = InlineMarkdown.opener(uriHandler)
         val open: (String) -> Unit = { url ->
-            val store = StorePath.parse(url)
+            val agent = AgentLink.parse(url)
+            val store = if (agent == null) StorePath.parse(url) else null
             when {
+                agent != null -> media?.onOpenAgentLink?.invoke(agent) ?: system(agent.webUrl)
                 store == null -> system(url)
                 media?.onOpenStorePath != null -> media.onOpenStorePath.invoke(store)
                 else -> store.ownerId(media?.agentId)?.let { system(StorePath.webUrl(it)) }
@@ -738,34 +755,38 @@ internal fun InlineText(text: String, style: TextStyle, color: Color, modifier: 
             commandColor = commandColor,
         )
     }
-    // Press and hold on an inline code span copies it, as the block's button does its code. The text and its layout
-    // are kept in a plain holder read at press time, so a paragraph still arriving — a new string every delta —
-    // neither recomposes nor restarts the gesture for it.
+    // Press and hold on an inline code span copies it, as the block's button does its code; on a link to an agent it
+    // copies the link. The text, its layout and where its links go are kept in a plain holder read at press time, so
+    // a paragraph still arriving — a new string every delta — neither recomposes nor restarts the gesture for it.
     val copy = rememberCopyCode()
     val paragraph = remember { ParagraphHolder() }
     paragraph.annotated = annotated
+    paragraph.open = openLink
     Text(
         text = annotated,
         style = style.copy(color = color),
         onTextLayout = { paragraph.layout = it },
-        modifier = modifier.copyInlineCodeOnLongPress(paragraph, copy),
+        modifier = modifier.copyInlineSpanOnLongPress(paragraph, copy),
     )
 }
 
-/** A paragraph as it stands: its text, written as it is composed, and its layout, written as it lays out. */
+/** A paragraph as it stands: its text and where its links go, written as it is composed, and its layout, written as it lays out. */
 private class ParagraphHolder {
     var annotated: AnnotatedString? = null
     var layout: TextLayoutResult? = null
+    var open: ((String) -> Unit)? = null
 }
 
 /**
- * Copies an inline code span that is pressed and held, the way cursor.com's chat does. The press is claimed in the
- * initial pass, and only when it lands on a code span that is not also a link: the message's own press-and-hold
- * menu (a parent, which waits for an unclaimed press) then stays shut, while the paragraph's links — and a code span
- * that opens a document — keep their taps. A plain tap on code does nothing, as before. Once the hold has copied, the
- * rest of the gesture is swallowed so the release is not read as a tap by whatever sits under the finger.
+ * Copies an inline code span that is pressed and held, the way cursor.com's chat does, and the address of a link to
+ * an agent ([AgentLink.webUrl]). The press is claimed in the initial pass, and only when it lands on one of those:
+ * the message's own press-and-hold menu (a parent, which waits for an unclaimed press) then stays shut, while the
+ * paragraph's other links — and a code span that opens a document — keep their taps. Claiming the press takes it
+ * from the link's own click too, so a short press on an agent's link is opened from here; a plain tap on code does
+ * nothing, as before. Once the hold has copied, the rest of the gesture is swallowed so the release is not read as a
+ * tap by whatever sits under the finger.
  */
-private fun Modifier.copyInlineCodeOnLongPress(paragraph: ParagraphHolder, onCopy: (String) -> Unit): Modifier =
+private fun Modifier.copyInlineSpanOnLongPress(paragraph: ParagraphHolder, onCopy: (String) -> Unit): Modifier =
     pointerInput(paragraph) {
         awaitEachGesture {
             val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
@@ -776,14 +797,22 @@ private fun Modifier.copyInlineCodeOnLongPress(paragraph: ParagraphHolder, onCop
             // Off the end of a line the nearest offset is still a character; a press there is not on the code.
             if (position.x < result.getLineLeft(line) || position.x > result.getLineRight(line)) return@awaitEachGesture
             val offset = result.getOffsetForPosition(position)
-            if (InlineMarkdown.isLinkAt(annotated, offset)) return@awaitEachGesture
-            val code = InlineMarkdown.codeSpanAt(annotated, offset) ?: return@awaitEachGesture
+            val agentLink = InlineMarkdown.agentLinkAt(annotated, offset)
+            val copied = when {
+                agentLink != null -> AgentLink.parse(agentLink)?.webUrl ?: return@awaitEachGesture
+                InlineMarkdown.isLinkAt(annotated, offset) -> return@awaitEachGesture
+                else -> InlineMarkdown.codeSpanAt(annotated, offset) ?: return@awaitEachGesture
+            }
             down.consume()
             val released = withTimeoutOrNull(viewConfiguration.longPressTimeoutMillis) {
                 waitForUpOrCancellation(PointerEventPass.Initial) ?: Cancelled
             }
+            if (released is PointerInputChange && agentLink != null) {
+                released.consume()
+                paragraph.open?.invoke(agentLink)
+            }
             if (released != null) return@awaitEachGesture
-            onCopy(code)
+            onCopy(copied)
             do {
                 val event = awaitPointerEvent(PointerEventPass.Initial)
                 event.changes.forEach { it.consume() }
