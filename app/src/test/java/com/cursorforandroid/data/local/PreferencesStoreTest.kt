@@ -15,6 +15,7 @@ import com.cursorforandroid.domain.CredentialInfo
 import com.cursorforandroid.domain.CursorUser
 import com.cursorforandroid.domain.NewChatHome
 import com.cursorforandroid.domain.SignInMethod
+import com.cursorforandroid.ui.panel.PaneWidthClass
 import com.cursorforandroid.ui.theme.ThemeMode
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.CoroutineScope
@@ -280,6 +281,30 @@ class PreferencesStoreTest {
         assertThat(prefs.newChatHome.first()).isEqualTo(NewChatHome.COMPOSER)
         prefs.setNewChatHome(NewChatHome.RECENT)
         assertThat(prefs.newChatHome.first()).isEqualTo(NewChatHome.RECENT)
+    }
+
+    @Test
+    fun `the wide layout's pane widths and each size class's panel are kept for the device`() = runBlocking<Unit> {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val prefs = PreferencesStore(context)
+        assertThat(prefs.panelWidthDp.first()).isNull()
+        assertThat(prefs.railWidthDp.first()).isNull()
+        assertThat(prefs.panelOpen(PaneWidthClass.Medium).first()).isFalse()
+        assertThat(prefs.panelOpen(PaneWidthClass.Expanded).first()).isFalse()
+        prefs.setPanelWidthDp(512)
+        prefs.setRailWidthDp(240)
+        prefs.setPanelOpen(PaneWidthClass.Expanded, true)
+        // Each class keeps its own: opened on a tablet on its side, still shut upright.
+        assertThat(prefs.panelOpen(PaneWidthClass.Expanded).first()).isTrue()
+        assertThat(prefs.panelOpen(PaneWidthClass.Medium).first()).isFalse()
+        // The device's, not the account's: a sign-out leaves them, and the next start reads them back.
+        prefs.clearSession()
+        val restarted = PreferencesStore(context)
+        assertThat(restarted.panelWidthDp.first()).isEqualTo(512)
+        assertThat(restarted.railWidthDp.first()).isEqualTo(240)
+        assertThat(restarted.panelOpen(PaneWidthClass.Expanded).first()).isTrue()
+        restarted.setPanelOpen(PaneWidthClass.Expanded, false)
+        assertThat(restarted.panelOpen(PaneWidthClass.Expanded).first()).isFalse()
     }
 
     @Test
