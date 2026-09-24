@@ -67,6 +67,7 @@ import com.cursorforandroid.domain.SubagentChild
 import com.cursorforandroid.domain.SystemNotification
 import com.cursorforandroid.domain.SystemNotifications
 import com.cursorforandroid.domain.TimelineItem
+import com.cursorforandroid.domain.newMessageCount
 import com.cursorforandroid.util.AppClock
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
@@ -102,6 +103,13 @@ import java.time.Instant
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
+
+/**
+ * What a catch-up found (see [ConversationRepository.catchUp]): the messages it brought that the screen did not have —
+ * prompts, replies, notices — and whether anything else moved (a turn's steps, its status). [error]: the read failed,
+ * in the server's words; what the screen had stands.
+ */
+data class CatchUp(val newMessages: Int = 0, val changed: Boolean = false, val error: String? = null)
 
 data class ConversationState(
     val agentId: String,
@@ -810,6 +818,8 @@ class ConversationRepository(
         var rereadAfterLoad = false
         /** That reread is owed the documented transcript beside the run list (see [revalidateNow]'s `fresh`). */
         var freshAfterLoad = false
+        /** The reader's catch-up being answered; a second one asked for while it is shares its answer (see [catchUp]). */
+        var catchUpJob: Deferred<CatchUp>? = null
         /** Cuts the window back a while after the last screen left (see [trimWindow]); cancelled by a screen coming back. */
         var trimJob: Job? = null
         /**
@@ -2218,6 +2228,43 @@ class ConversationRepository(
             traceCache?.remove(agentId)
             load(e, agentId, force = true)
         }
+    }
+
+    /**
+     * The reader asked for what the server has that this chat does not (Ctrl+R), read as the chat's own load reads it
+     * again — not a reload. Beta: the account's state and the newest turns, a turn held under the same blob not read
+     * again (see [loadFromRecord]); Stable: the run list's first page, and the documented transcript only when that
+     * page names a run this device has not seen or a status that moved (see [runsUnchanged]). The live follow stands,
+     * and a run under way the read finds is followed. A load already under way is waited for — what it brings is not
+     * the catch-up's to count — and a second catch-up asked for while one is being answered shares its answer.
+     */
+    suspend fun catchUp(agentId: String): CatchUp {
+        val e = entry(agentId)
+        val job = synchronized(e) { e.catchUpJob?.takeIf { it.isActive } ?: e.scope.async { catchUpNow(e) }.also { e.catchUpJob = it } }
+        return job.await()
+    }
+
+    private suspend fun catchUpNow(e: Entry): CatchUp {
+        synchronized(e) { e.loadJob }?.join()
+        // A chat still being launched has nothing on the server to read; the launch settles it when the server answers.
+        if (synchronized(e) { e.launching }) return CatchUp()
+        val before = e.state.value
+        // As with [reload]: after the server's own failure the record is asked at once; a refusal keeps its pause.
+        synchronized(e) { if (before.recordFallback?.serverError == true) e.recordRefusedUntil = 0L }
+        loadAsJob(e) { load(e, e.agentId) }
+        val after = e.state.value
+        return CatchUp(
+            newMessages = newMessageCount(before.items, after.items),
+            changed = after.items != before.items || after.runStatus != before.runStatus || after.activeRunId != before.activeRunId,
+            // A load says its failure on the screen and returns; the catch-up says it too, in the same words.
+            error = after.error ?: after.transcriptError,
+        )
+    }
+
+    /** [block] as the entry's load, so a revalidation meanwhile waits on it rather than reading the chat a second time; waited for. */
+    private suspend fun loadAsJob(e: Entry, block: suspend () -> Unit) {
+        val job = synchronized(e) { e.scope.launch { block() }.also { e.loadJob = it } }
+        job.join()
     }
 
     /**

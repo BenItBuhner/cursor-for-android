@@ -1,11 +1,8 @@
 package com.cursorforandroid.ui.conversation
 
+import com.cursorforandroid.data.repo.CatchUp
 import com.cursorforandroid.data.repo.ConversationState
-import com.cursorforandroid.domain.AssistantMessage
-import com.cursorforandroid.domain.QueuePlacement
-import com.cursorforandroid.domain.SystemNotification
-import com.cursorforandroid.domain.TimelineItem
-import com.cursorforandroid.domain.UserMessage
+import com.cursorforandroid.domain.newMessageCount
 
 /**
  * The brief word a refresh the reader asked for leaves on the chat: "Up to date" when the server had nothing the chat
@@ -16,34 +13,14 @@ object RefreshWord {
 
     fun new(count: Int): String = "$count new"
 
-    /** Told from the chat as it was before the refresh and as the refresh left it. */
+    /** Told from the chat as it was before the refresh and as the refresh left it (see [newMessageCount]). */
     fun of(before: ConversationState, after: ConversationState): String {
         (after.error ?: after.transcriptError)?.let { return it }
-        val count = newMessages(before.items, after.items)
-        return if (count == 0) UP_TO_DATE else new(count)
+        return count(newMessageCount(before.items, after.items))
     }
 
-    /**
-     * The prompts, replies and notices in [after] that [before] did not have, told by what they say rather than their
-     * ids: a reload rebuilds the chat from its runs' traces, and a reply read off the conversation comes back from the
-     * trace under a new id; a prompt sent from here hands over to the server's copy. The same words twice are two.
-     */
-    fun newMessages(before: List<TimelineItem>, after: List<TimelineItem>): Int {
-        val seen = HashMap<String, Int>()
-        before.forEach { item -> item.messageKey()?.let { seen.merge(it, 1, Int::plus) } }
-        return after.count { item ->
-            val key = item.messageKey() ?: return@count false
-            val left = seen[key] ?: 0
-            if (left > 0) seen[key] = left - 1
-            left == 0
-        }
-    }
+    /** Told from what the repository's catch-up found. */
+    fun of(catchUp: CatchUp): String = catchUp.error ?: count(catchUp.newMessages)
 
-    /** A reply still streaming is not a message yet: its words are only part of what it will say. */
-    private fun TimelineItem.messageKey(): String? = when (this) {
-        is UserMessage -> "u:" + QueuePlacement.textKey(text)
-        is AssistantMessage -> if (isStreaming) null else "a:" + markdown.trim()
-        is SystemNotification -> "n:$id"
-        else -> null
-    }
+    private fun count(newMessages: Int): String = if (newMessages == 0) UP_TO_DATE else new(newMessages)
 }
