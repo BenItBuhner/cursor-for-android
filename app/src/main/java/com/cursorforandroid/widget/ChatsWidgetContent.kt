@@ -53,6 +53,7 @@ import com.cursorforandroid.domain.ChatsWidgetSettings
 import com.cursorforandroid.domain.CornerAction
 import com.cursorforandroid.domain.CornerStyle
 import com.cursorforandroid.domain.EnvType
+import com.cursorforandroid.domain.HeaderElement
 import com.cursorforandroid.domain.RowElement
 import com.cursorforandroid.domain.WidgetLayout
 import com.cursorforandroid.domain.WidgetMode
@@ -60,24 +61,29 @@ import com.cursorforandroid.util.AppClock
 import com.cursorforandroid.util.TimeFormat
 
 /**
- * The cell sizes the widget lays itself out for (see [WidgetLayout]). Glance renders one arrangement per size and
- * the launcher shows the largest that fits, so a widget dragged from 4x2 to 2x1 changes shape without a render.
+ * The sizes the widget's arrangements start at (see [WidgetLayout]). The widget is composed at the sizes the
+ * launcher reports for it ([WidgetPlacement]), not at these: an arrangement picked from a fixed set of buckets is
+ * picked by the launcher's host by nearest distance, which put a 4x2 widget on one line and gave a 4x4 one another
+ * arrangement than its settings screen showed.
  */
 object WidgetSizes {
     /** A 2x1 cell: one line. */
     val SMALL = DpSize(110.dp, 40.dp)
-    /**
-     * Wider one-line cells, 3x1 to 5x1 on a typical grid. A list of chats reads the same on one line at any width, but
-     * a Projects widget fits as many Projects as the line has room for, and a Glance render knows its width only as
-     * the size it is drawn for — so the line is drawn once more for each of these.
-     */
-    val SMALL_WIDE: List<DpSize> = listOf(170, 250, 330).map { DpSize(it.dp, 40.dp) }
     /** The 4x2 default: header and rows. */
     val MEDIUM = DpSize(180.dp, 110.dp)
     /** 4x4 and up: header and two-line rows. */
     val LARGE = DpSize(250.dp, 230.dp)
 
-    val all: Set<DpSize> = setOf(SMALL) + SMALL_WIDE + setOf(MEDIUM, LARGE)
+    /**
+     * Below this height the header row gives its room to the rows while [ChatsWidgetSettings.headerAutoHide] is on:
+     * the 40dp header over two regular rows and a scrap of a third. A 4x2 cell in portrait keeps it; the same cell
+     * in landscape, and a 2-row cell on a dense grid, do not.
+     */
+    val HEADER_MIN_HEIGHT = 140.dp
+
+    /** Whether a widget of [size] draws its header under [settings]. */
+    fun showsHeader(size: DpSize, settings: ChatsWidgetSettings): Boolean =
+        settings.headerParts.isNotEmpty() && !(settings.headerAutoHide && size.height < HEADER_MIN_HEIGHT)
 
     /** The arrangement for [size] under [WidgetLayout.Auto]. */
     fun layoutFor(size: DpSize): WidgetLayout = when {
@@ -96,10 +102,15 @@ object WidgetSizes {
 
 /**
  * The widget, drawn in the sidebar's proportions on the sidebar's surface (`CursorDimens`, `AgentRowItem`), in one
- * of three arrangements ([WidgetLayout]): a single line for a 2x1 cell; the 40dp header — cube, the list's title as
- * a picker, refresh — over one-line rows; or the same header over two-line rows for a tall placement. A round
- * action button sits in the bottom-right corner, concentric with the widget's own corner (see [CornerButton]). The
- * whole widget is one tap deep: a row opens its chat, the cube opens the app, the title opens the settings.
+ * of three arrangements ([WidgetLayout]): a single line for a 2x1 cell; the 40dp header — the list's title as a
+ * picker, refresh, "+", and the cube if it is shown ([Header]) — over one-line rows; or the same header over two-line
+ * chat rows for a tall placement. The header is left out when none of its parts is shown, and under
+ * [WidgetSizes.HEADER_MIN_HEIGHT] while it hides itself there. A round action button sits in the bottom-right corner,
+ * concentric with the widget's own corner (see [CornerButton]). The whole widget is one tap deep: a row opens its
+ * chat, the cube opens the app, the title opens the settings.
+ *
+ * The same composition draws the home-screen widget and its settings screen's preview; both compose it at the size
+ * the launcher reports for the placement ([WidgetPlacement]), so the arrangement chosen for one is the other's.
  *
  * [appWidgetId] is [AppWidgetManager.INVALID_APPWIDGET_ID] for the launcher's preview, which has nothing to configure
  * and nothing to refresh. [refreshing] is the widget's own refresh (the header button, or a periodic pass) being under
@@ -121,18 +132,24 @@ fun ChatsWidgetContent(
     val title = remember(settings.mode, settings.projectId, snapshot) { snapshot.title(settings) }
     val corner = CornerButtonSpec.of(context, settings, layout)
 
+    val logo = settings.shows(HeaderElement.Logo)
     // The Projects list on one line is a strip of Project icons, when the line has room for more than one.
-    val stripSlots = if (layout == WidgetLayout.Small && settings.mode == WidgetMode.Projects && !snapshot.isSignedOut && rows.isNotEmpty()) projectSlots(size.width, corner) else 0
+    val stripSlots = if (layout == WidgetLayout.Small && settings.mode == WidgetMode.Projects && !snapshot.isSignedOut && rows.isNotEmpty()) projectSlots(size.width, corner, logo) else 0
 
     Box(GlanceModifier.fillMaxSize().appWidgetBackground().surface(palette)) {
         when (layout) {
             WidgetLayout.Small -> if (stripSlots >= MIN_STRIP_SLOTS) {
                 ProjectStrip(rows, settings, palette, corner, appWidgetId, refreshing, stripSlots)
             } else {
-                SmallLine(title, smallDetail(context, snapshot, rows, settings, refreshing), palette, corner, appWidgetId, refreshing)
+                SmallLine(title, smallDetail(context, snapshot, rows, settings, refreshing), palette, corner, appWidgetId, refreshing, logo)
             }
             else -> Column(GlanceModifier.fillMaxSize()) {
-                Header(title, palette, appWidgetId, refreshing, settings)
+                if (WidgetSizes.showsHeader(size, settings)) {
+                    Header(title, palette, appWidgetId, refreshing, settings.headerParts)
+                } else {
+                    // The rows' own top inset, where the header would have ended.
+                    Spacer(GlanceModifier.height(8.dp))
+                }
                 // Whatever follows the header takes the rest of the widget.
                 val body = GlanceModifier.fillMaxWidth().defaultWeight()
                 when {
@@ -145,7 +162,7 @@ fun ChatsWidgetContent(
                     rows.isEmpty() -> Notice(emptyText(context, snapshot, settings.mode), palette, body)
                     else -> LazyColumn(body.padding(horizontal = 8.dp)) {
                         itemsIndexed(rows, itemId = { index, row -> (index.toLong() shl 32) or (row.agent.id.hashCode().toLong() and 0xFFFFFFFFL) }) { _, row ->
-                            if (settings.mode == WidgetMode.Projects) ProjectRowItem(row, settings, layout, palette, nowMillis) else AgentRowItem(row, settings, layout, palette, nowMillis)
+                            if (settings.mode == WidgetMode.Projects) ProjectRowItem(row, settings, palette, nowMillis) else AgentRowItem(row, settings, layout, palette, nowMillis)
                         }
                         // Room for the last row to scroll clear of the corner button.
                         if (corner != null) item { Spacer(GlanceModifier.height(corner.size + corner.inset)) }
@@ -173,41 +190,49 @@ private fun GlanceModifier.surface(palette: WidgetPalette): GlanceModifier =
     }
 
 /**
- * The sidebar header and its "Chats" label folded into one row: the cube where the sidebar has it (14dp in, a
- * 22dp slot), the list's name in the group-label voice (12sp at 60 %) with the picker chevron the filter sheet's
- * "Group by" row uses, then the flat icon buttons the corner button does not already stand for — refresh, which
- * becomes a spinner while the refresh it asked for runs, and "+".
+ * The sidebar header and its "Chats" label folded into one row, drawing the [parts] it is set to
+ * ([ChatsWidgetSettings.headerParts]): the cube where the sidebar has it (14dp in, a 22dp slot), the list's name in
+ * the group-label voice (12sp at 60 %) with the picker chevron the filter sheet's "Group by" row uses — 16dp in
+ * without the cube, over the rows' glyphs — then the flat icon buttons: refresh, which becomes a spinner while the
+ * refresh it asked for runs, and "+". Without the name, the gap it filled keeps the buttons at the end.
  */
 @Composable
-private fun Header(title: String, palette: WidgetPalette, appWidgetId: Int, refreshing: Boolean, settings: ChatsWidgetSettings) {
+private fun Header(title: String, palette: WidgetPalette, appWidgetId: Int, refreshing: Boolean, parts: Set<HeaderElement>) {
     val context = LocalContext.current
+    val logo = HeaderElement.Logo in parts
     Row(
-        GlanceModifier.fillMaxWidth().height(40.dp).padding(start = 14.dp, end = 6.dp),
+        GlanceModifier.fillMaxWidth().height(40.dp).padding(start = if (logo) 14.dp else 16.dp, end = 6.dp),
         verticalAlignment = Alignment.Vertical.CenterVertically,
     ) {
-        Image(
-            provider = ImageProvider(R.drawable.widget_cube),
-            contentDescription = context.getString(R.string.app_name),
-            modifier = GlanceModifier.size(22.dp).clickable(actionStartActivity(WidgetIntents.openApp(context))),
-            colorFilter = ColorFilter.tint(palette.iconPrimary),
-        )
-        Spacer(GlanceModifier.width(10.dp))
-        val titleSlot = GlanceModifier.defaultWeight().fillMaxHeight()
-        Row(
-            if (appWidgetId != AppWidgetManager.INVALID_APPWIDGET_ID) titleSlot.clickable(actionStartActivity(WidgetIntents.configure(context, appWidgetId))) else titleSlot,
-            verticalAlignment = Alignment.Vertical.CenterVertically,
-        ) {
-            Text(title, style = TextStyle(color = palette.textTertiary, fontSize = 12.sp), maxLines = 1)
-            Spacer(GlanceModifier.width(3.dp))
+        if (logo) {
             Image(
-                provider = ImageProvider(R.drawable.widget_chevron_down),
-                contentDescription = context.getString(R.string.widget_choose_list),
-                modifier = GlanceModifier.size(15.dp),
-                colorFilter = ColorFilter.tint(palette.iconQuaternary),
+                provider = ImageProvider(R.drawable.widget_cube),
+                contentDescription = context.getString(R.string.app_name),
+                modifier = GlanceModifier.size(22.dp).clickable(actionStartActivity(WidgetIntents.openApp(context))),
+                colorFilter = ColorFilter.tint(palette.iconPrimary),
             )
+            Spacer(GlanceModifier.width(10.dp))
         }
-        if (settings.cornerAction != CornerAction.Refresh) RefreshButton(palette, appWidgetId, refreshing)
-        if (settings.cornerAction != CornerAction.NewChat) {
+        val titleSlot = GlanceModifier.defaultWeight().fillMaxHeight()
+        if (HeaderElement.Title in parts) {
+            Row(
+                if (appWidgetId != AppWidgetManager.INVALID_APPWIDGET_ID) titleSlot.clickable(actionStartActivity(WidgetIntents.configure(context, appWidgetId))) else titleSlot,
+                verticalAlignment = Alignment.Vertical.CenterVertically,
+            ) {
+                Text(title, style = TextStyle(color = palette.textTertiary, fontSize = 12.sp), maxLines = 1)
+                Spacer(GlanceModifier.width(3.dp))
+                Image(
+                    provider = ImageProvider(R.drawable.widget_chevron_down),
+                    contentDescription = context.getString(R.string.widget_choose_list),
+                    modifier = GlanceModifier.size(15.dp),
+                    colorFilter = ColorFilter.tint(palette.iconQuaternary),
+                )
+            }
+        } else {
+            Spacer(titleSlot)
+        }
+        if (HeaderElement.Refresh in parts) RefreshButton(palette, appWidgetId, refreshing)
+        if (HeaderElement.NewChat in parts) {
             Box(
                 GlanceModifier.size(32.dp).cornerRadius(8.dp).clickable(actionStartActivity(WidgetIntents.newChat(context))),
                 contentAlignment = Alignment.Center,
@@ -253,25 +278,27 @@ private fun RefreshButton(palette: WidgetPalette, appWidgetId: Int, refreshing: 
 }
 
 /**
- * The one-line arrangement of a 2x1 cell: the cube, the list's name with what it holds ("3 running", "2 unread"),
- * and the corner action at the end. The line itself opens the app. The words take what the cube and the corner
- * button leave — a LinearLayout measures its weighted child last — so in the narrowest cell they give way to the
- * button rather than push it off the end.
+ * The one-line arrangement of a 2x1 cell: the cube while the [logo] is shown, the list's name with what it holds
+ * ("3 running", "2 unread"), and the corner action at the end. The line itself opens the app. The words take what
+ * the cube and the corner button leave — a LinearLayout measures its weighted child last — so in the narrowest cell
+ * they give way to the button rather than push it off the end.
  */
 @Composable
-private fun SmallLine(title: String, detail: String, palette: WidgetPalette, corner: CornerButtonSpec?, appWidgetId: Int, refreshing: Boolean) {
+private fun SmallLine(title: String, detail: String, palette: WidgetPalette, corner: CornerButtonSpec?, appWidgetId: Int, refreshing: Boolean, logo: Boolean) {
     val context = LocalContext.current
     Row(
-        GlanceModifier.fillMaxSize().padding(start = 12.dp, end = if (corner != null) corner.inset else 12.dp).clickable(actionStartActivity(WidgetIntents.openApp(context))),
+        GlanceModifier.fillMaxSize().padding(start = if (logo) 12.dp else 16.dp, end = if (corner != null) corner.inset else 12.dp).clickable(actionStartActivity(WidgetIntents.openApp(context))),
         verticalAlignment = Alignment.Vertical.CenterVertically,
     ) {
-        Image(
-            provider = ImageProvider(R.drawable.widget_cube),
-            contentDescription = context.getString(R.string.app_name),
-            modifier = GlanceModifier.size(18.dp),
-            colorFilter = ColorFilter.tint(palette.iconPrimary),
-        )
-        Spacer(GlanceModifier.width(10.dp))
+        if (logo) {
+            Image(
+                provider = ImageProvider(R.drawable.widget_cube),
+                contentDescription = context.getString(R.string.app_name),
+                modifier = GlanceModifier.size(18.dp),
+                colorFilter = ColorFilter.tint(palette.iconPrimary),
+            )
+            Spacer(GlanceModifier.width(10.dp))
+        }
         Row(GlanceModifier.defaultWeight(), verticalAlignment = Alignment.Vertical.CenterVertically) {
             Text(title, style = TextStyle(color = palette.textTertiary, fontSize = 12.sp), maxLines = 1)
             Spacer(GlanceModifier.width(8.dp))

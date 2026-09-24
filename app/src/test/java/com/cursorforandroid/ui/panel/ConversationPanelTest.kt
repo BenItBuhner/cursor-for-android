@@ -1,5 +1,7 @@
 package com.cursorforandroid.ui.panel
 
+import androidx.activity.OnBackPressedDispatcher
+import androidx.activity.compose.LocalOnBackPressedDispatcherOwner
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -438,5 +440,32 @@ class ConversationPanelTest {
         compose.waitForIdle()
         compose.onNodeWithTag("diff-block").assertIsDisplayed()
         assertThat(shown("1 edit · +5 -2")).isTrue()
+    }
+
+    @Test
+    fun `back from a file opened in the panel returns to the sections, and leaves the panel open`() {
+        state = PanelFixtures.loaded().copy(browser = PanelFixtures.loaded().browser.copy(file = FileView.Transcript(PanelFixtures.themeRead)))
+        var closes = 0
+        val closing = object : PanelActions by actions {
+            override fun closeFile() {
+                asked += "close-file"
+                state = state.copy(browser = state.browser.copy(file = null))
+            }
+        }
+        lateinit var dispatcher: OnBackPressedDispatcher
+        compose.setContent {
+            dispatcher = LocalOnBackPressedDispatcherOwner.current!!.onBackPressedDispatcher
+            CursorTheme(mode = ThemeMode.Dark) { ConversationPanel(state, closing, onClose = { closes++ }) }
+        }
+        compose.onNodeWithTag("file-viewer").assertIsDisplayed()
+        assertThat(dispatcher.hasEnabledCallbacks()).isTrue()
+
+        compose.runOnIdle { dispatcher.onBackPressed() }
+        compose.waitForIdle()
+        assertThat(asked.count { it == "close-file" }).isEqualTo(1)
+        compose.onNodeWithTag("panel-sections").assertExists()
+        assertThat(closes).isEqualTo(0)
+        // With the sections showing, back is no longer the panel content's: the host's closes the panel.
+        assertThat(dispatcher.hasEnabledCallbacks()).isFalse()
     }
 }

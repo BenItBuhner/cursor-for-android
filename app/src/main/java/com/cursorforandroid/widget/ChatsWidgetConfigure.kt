@@ -28,6 +28,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import androidx.glance.appwidget.GlanceAppWidgetReceiver
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -36,6 +37,7 @@ import com.cursorforandroid.domain.Agent
 import com.cursorforandroid.domain.ChatsWidgetSettings
 import com.cursorforandroid.domain.CornerAction
 import com.cursorforandroid.domain.CornerStyle
+import com.cursorforandroid.domain.HeaderElement
 import com.cursorforandroid.domain.RowDensity
 import com.cursorforandroid.domain.RowElement
 import com.cursorforandroid.domain.WidgetAppearance
@@ -85,21 +87,32 @@ object ChatsWidgetKind : WidgetKind {
         LaunchedEffect(Unit) {
             snapshotFlow { latest }.drop(1).debounce(400).collect { WidgetSync.render(scope.context, scope.glanceId) }
         }
-        ChatsWidgetOptions(settings = current, snapshot = shown, onChange = { settings = it })
+        val placement = remember { WidgetPlacement.of(scope.context, scope.appWidgetId) }
+        ChatsWidgetOptions(settings = current, snapshot = shown, onChange = { settings = it }, placement = placement)
     }
 }
 
 /**
  * The screen's body for one Chats widget: the live preview on its stage, then the option groups. Stateless, so the
  * screenshot tests can draw it with any settings.
+ *
+ * [placement] is the size the widget is drawn at on the home screen ([WidgetPlacement]); the preview is composed at
+ * it, so it shows the arrangement, the rows and the header the home screen does. Without one — nothing reported
+ * yet — the preview takes the size the chosen arrangement is best shown at, the 4x2 one for "Auto".
  */
 @Composable
-fun ChatsWidgetOptions(settings: ChatsWidgetSettings, snapshot: WidgetSnapshot, onChange: (ChatsWidgetSettings) -> Unit, modifier: Modifier = Modifier) {
+fun ChatsWidgetOptions(
+    settings: ChatsWidgetSettings,
+    snapshot: WidgetSnapshot,
+    onChange: (ChatsWidgetSettings) -> Unit,
+    modifier: Modifier = Modifier,
+    placement: DpSize? = null,
+) {
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
     Column(modifier.fillMaxWidth()) {
-        val previewLayout = if (settings.layout == WidgetLayout.Auto) WidgetLayout.Medium else settings.layout
-        WidgetPreview(size = WidgetSizes.sizeFor(previewLayout), key = settings to snapshot, modifier = Modifier.padding(top = 12.dp)) {
+        val previewSize = placement ?: WidgetSizes.sizeFor(if (settings.layout == WidgetLayout.Auto) WidgetLayout.Medium else settings.layout)
+        WidgetPreview(size = previewSize, key = settings to snapshot, modifier = Modifier.padding(top = 12.dp)) {
             ChatsWidgetContent(snapshot, settings, AppWidgetManager.INVALID_APPWIDGET_ID)
         }
 
@@ -135,6 +148,19 @@ fun ChatsWidgetOptions(settings: ChatsWidgetSettings, snapshot: WidgetSnapshot, 
             WidgetAppearanceOptions(settings.appearance, onChange = { onChange(settings.copy(appearance = it)) })
         }
 
+        OptionGroup(stringResource(R.string.widget_configure_header), modifier = Modifier.testTag("option-header")) {
+            // A button the corner button already stands for is not drawn twice, so it is not offered either.
+            HeaderElement.entries.filterNot { settings.cornerStandsFor(it) }.forEach { element ->
+                OptionToggle(element.label, checked = settings.shows(element), onChange = { onChange(settings.toggled(element)) }, detail = element.detail)
+            }
+            OptionToggle(
+                stringResource(R.string.widget_configure_header_auto_hide),
+                checked = settings.headerAutoHide,
+                onChange = { onChange(settings.copy(headerAutoHide = it)) },
+                detail = stringResource(R.string.widget_configure_header_auto_hide_detail, WidgetSizes.HEADER_MIN_HEIGHT.value.toInt()),
+            )
+        }
+
         OptionGroup(stringResource(R.string.widget_configure_rows)) {
             SegmentedControl(RowDensity.entries.map { it.label }, settings.density.ordinal, onSelect = { onChange(settings.copy(density = RowDensity.entries[it])) }, modifier = Modifier.testTag("option-density"))
             RowElement.entries.forEach { element ->
@@ -163,8 +189,12 @@ fun ChatsWidgetOptions(settings: ChatsWidgetSettings, snapshot: WidgetSnapshot, 
             }
         }
 
+        val note = stringResource(if (settings.mode == WidgetMode.Projects) R.string.widget_configure_note_projects else R.string.widget_configure_note)
+        val shownLayout = if (settings.layout == WidgetLayout.Auto) WidgetSizes.layoutFor(previewSize) else settings.layout
+        val titleShown = shownLayout != WidgetLayout.Small && WidgetSizes.showsHeader(previewSize, settings) && HeaderElement.Title in settings.headerParts
+        val back = stringResource(if (titleShown) R.string.widget_configure_back_title else R.string.widget_configure_back_long_press)
         Text(
-            stringResource(if (settings.mode == WidgetMode.Projects) R.string.widget_configure_note_projects else R.string.widget_configure_note),
+            "$note $back",
             style = type.small,
             color = colors.textQuaternary,
             modifier = Modifier.padding(top = 12.dp, start = 2.dp),

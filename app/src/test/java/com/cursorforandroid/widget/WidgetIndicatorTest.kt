@@ -19,6 +19,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.cursorforandroid.domain.ChatsWidgetSettings
 import com.cursorforandroid.domain.CornerAction
 import com.cursorforandroid.domain.CornerStyle
+import com.cursorforandroid.domain.HeaderElement
 import com.cursorforandroid.domain.WidgetMode
 import com.cursorforandroid.ui.theme.ThemeMode
 import com.google.common.truth.Truth.assertThat
@@ -86,14 +87,18 @@ class WidgetIndicatorTest {
     fun `the corner button takes its action out of the header`() {
         val sample = WidgetData.sample(ThemeMode.Dark, now)
         val newChatCorner = render(sample, ChatsWidgetSettings(cornerAction = CornerAction.NewChat), refreshing = false)
-        assertThat(newChatCorner.descriptions()).containsExactly("Cursor", "Choose what the widget lists", "Refresh", "New chat").inOrder()
+        assertThat(newChatCorner.descriptions()).containsExactly("Choose what the widget lists", "Refresh", "New chat").inOrder()
 
         val refreshCorner = render(sample, ChatsWidgetSettings(cornerAction = CornerAction.Refresh), refreshing = false)
-        assertThat(refreshCorner.descriptions()).containsExactly("Cursor", "Choose what the widget lists", "New chat", "Refresh").inOrder()
+        assertThat(refreshCorner.descriptions()).containsExactly("Choose what the widget lists", "New chat", "Refresh").inOrder()
 
         val none = render(sample, ChatsWidgetSettings(cornerAction = CornerAction.None), refreshing = false)
-        assertThat(none.descriptions()).containsExactly("Cursor", "Choose what the widget lists", "Refresh", "New chat").inOrder()
+        assertThat(none.descriptions()).containsExactly("Choose what the widget lists", "Refresh", "New chat").inOrder()
         assertThat(none.headerProgressBars()).isEmpty()
+
+        // The cube is off by default; turned on, it leads the header.
+        val withLogo = render(sample, ChatsWidgetSettings(cornerAction = CornerAction.None).toggled(HeaderElement.Logo), refreshing = false)
+        assertThat(withLogo.descriptions()).containsExactly("Cursor", "Choose what the widget lists", "Refresh", "New chat").inOrder()
     }
 
     /** A refresh asked for from the corner button turns that button, not the header, into the spinner. */
