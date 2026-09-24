@@ -73,10 +73,11 @@ class CoordinatorRepeatedMessagesTest {
             val m2 = rows.filterIsInstance<TranscriptRow.Message>()[1]
             assertThat(m2.group.id).startsWith("activity-run-2-")
             // Nothing of the silent runs stands as a message: their calls, notes and footers are entries of the
-            // stretches after it, and the workers they addressed are the subagent rows between those.
+            // stretch after it, the workers they addressed its subagent rows.
             val between = rows.subList(rows.indexOf(m2) + 1, rows.indexOfFirst { it is TranscriptRow.Message && (it.call.payload as ToolPayload.CoordinatorMessage).message == SevenRunCoordinator.M6 })
-            assertThat(between.map { it::class.simpleName }.distinct()).containsExactly("Stretch", "Subagent")
+            assertThat(between.map { it::class.simpleName }).containsExactly("Stretch")
             val stretches = between.filterIsInstance<TranscriptRow.Stretch>()
+            assertThat(stretches.single().subagents).hasSize(4)
             val footers = stretches.flatMap { stretch -> stretch.entries.filterIsInstance<TranscriptRow.Entry.Footer>().map { it.footer } }
             assertThat(footers.map { it.runId }).containsExactly("run-2", "run-3", "run-4", "run-5").inOrder()
             assertThat(footers.sumOf { it.durationMs ?: 0L }).isEqualTo(190_000L)

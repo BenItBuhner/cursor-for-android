@@ -24,6 +24,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -44,6 +45,7 @@ import androidx.compose.ui.text.style.LineHeightStyle
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.cursorforandroid.domain.Agent
 import com.cursorforandroid.domain.SubagentCall
 import com.cursorforandroid.domain.SubagentChild
 import com.cursorforandroid.domain.SubagentLook
@@ -78,15 +80,8 @@ import kotlinx.coroutines.flow.flowOf
 internal fun SubagentRowView(call: ToolCall, subagent: SubagentCall, modifier: Modifier = Modifier) {
     val controls = LocalTranscriptControls.current
     val agentId = subagent.agentId
-    val latest = controls.subagents.isLatest(call, subagent)
     val worker = agentId?.let { controls.subagents.workers[it] }
-    val agent = agentId?.takeIf { subagent.isCloudAgent }?.let(controls.agentById)
-    val activity = remember(agentId, latest, controls.subagentActivity) {
-        if (latest && agentId != null && subagent.isCloudAgent) controls.subagentActivity(agentId) else flowOf(null)
-    }
-    val live by activity.collectAsState(null)
-    val child = live ?: controls.subagentRuns[call.callId] ?: agent?.let { SubagentRows.childOf(it, controls.models) }
-    val look = SubagentRows.look(call, subagent, child, latest)
+    val (child, agent, look) = rememberSubagentState(call, subagent)
     val title = SubagentRows.title(subagent, look, worker?.name, child?.name ?: agent?.name)
     val model = SubagentRows.modelLabel(subagent, controls.models, worker?.modelId, agent, child?.model)
     val placement = SubagentRows.placement(subagent, controls.placement, agent)
@@ -119,6 +114,34 @@ internal fun SubagentRowView(call: ToolCall, subagent: SubagentCall, modifier: M
             }
         }
     }
+}
+
+/** Where a subagent's row stands: what is known of its child — the cloud agent the list holds, if any — and the row's state. */
+internal data class SubagentState(val child: SubagentChild?, val agent: Agent?, val look: SubagentLook)
+
+/**
+ * The states of the subagents a stretch holds, by call id: resolved once by the stretch, whose line counts the ones
+ * still at work while it is closed, and read by their rows once it opens rather than followed a second time.
+ */
+internal val LocalSubagentStates = compositionLocalOf<Map<String, SubagentState>> { emptyMap() }
+
+/**
+ * [call]'s state: the stretch's word for it when it has one (see [LocalSubagentStates]), else read here — the live
+ * child of the newest row about a cloud worker or task, else the account record's in-VM subagent, else the list's row.
+ */
+@Composable
+internal fun rememberSubagentState(call: ToolCall, subagent: SubagentCall): SubagentState {
+    LocalSubagentStates.current[call.callId]?.let { return it }
+    val controls = LocalTranscriptControls.current
+    val agentId = subagent.agentId
+    val latest = controls.subagents.isLatest(call, subagent)
+    val agent = agentId?.takeIf { subagent.isCloudAgent }?.let(controls.agentById)
+    val activity = remember(agentId, latest, controls.subagentActivity) {
+        if (latest && agentId != null && subagent.isCloudAgent) controls.subagentActivity(agentId) else flowOf(null)
+    }
+    val live by activity.collectAsState(null)
+    val child = live ?: controls.subagentRuns[call.callId] ?: agent?.let { SubagentRows.childOf(it, controls.models) }
+    return SubagentState(child, agent, SubagentRows.look(call, subagent, child, latest))
 }
 
 /** What a row that cannot open a chat opens onto: the task's own card, or what was said to the worker. */

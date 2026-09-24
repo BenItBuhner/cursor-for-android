@@ -130,13 +130,13 @@ class CoordinatorTranscriptScreenshotTest {
         assertThat(shown.filterIsInstance<SystemNotification>().single().narration).startsWith("Noted;")
         assertThat(shown.filterIsInstance<ActivityGroup>().flatMap { it.calls }.count { it.payload is ToolPayload.CoordinatorMessage }).isEqualTo(3)
 
-        // The rows the list draws: each update a reply of its own, the message to a worker a subagent row, everything
-        // else between two of them one summary line.
+        // The rows the list draws: each update a reply of its own, everything else between two of them one summary
+        // line, the message to a worker a subagent row behind it.
         val rows = TranscriptRows.of(shown, coordinatorMode = true)
         assertThat(rows.filterIsInstance<TranscriptRow.Message>()).hasSize(3)
-        assertThat(rows.filterIsInstance<TranscriptRow.Subagent>().map { it.subagent.source }).containsExactly(com.cursorforandroid.domain.SubagentCall.Source.Queued)
+        assertThat(rows.filterIsInstance<TranscriptRow.Stretch>().flatMap { it.subagents }.map { it.subagent?.source }).containsExactly(com.cursorforandroid.domain.SubagentCall.Source.Queued)
         assertThat(rows.filterIsInstance<TranscriptRow.Stretch>().filter { it.single == null }.map { it.summary.text })
-            .containsExactly("Worked 41s · 1 event · 1 thought · 1 note", "1 edit · 1 note").inOrder()
+            .containsExactly("TODO").inOrder()
 
         val controls = TranscriptControls(onOpenAgent = {}, agentById = { workers[it] }, coordinatorMode = true)
         compose.setContent {

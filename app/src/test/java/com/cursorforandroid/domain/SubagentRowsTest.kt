@@ -159,6 +159,20 @@ class SubagentRowsTest {
         assertThat(look(stopped(isError = true))).isEqualTo(SubagentLook(SubagentLook.Indicator.Error, SubagentRows.COULD_NOT_STOP))
     }
 
+    @Test
+    fun `the group a row sits in counts it as working while it runs, starts or waits, not while it stops`() {
+        fun working(call: ToolCall, child: SubagentChild? = null, latest: Boolean = true) = SubagentRows.isWorking(SubagentCall.of(call)!!, look(call, child, latest))
+        assertThat(working(task(), SubagentChild(SubagentChild.Status.Running, step = "Wiring the hover state"))).isTrue()
+        assertThat(working(task())).isTrue()
+        assertThat(working(created(agentId = null, status = ToolCall.STATUS_RUNNING))).isTrue()
+        assertThat(working(created(), SubagentChild(SubagentChild.Status.Running, waiting = true))).isTrue()
+        assertThat(working(stopped(status = ToolCall.STATUS_RUNNING))).isFalse()
+        assertThat(working(task(status = ToolCall.STATUS_COMPLETED), SubagentChild(SubagentChild.Status.Succeeded))).isFalse()
+        assertThat(working(created(), SubagentChild(SubagentChild.Status.Failed))).isFalse()
+        // A later row speaks for the worker: this one no longer holds the group open.
+        assertThat(working(created(), SubagentChild(SubagentChild.Status.Running), latest = false)).isFalse()
+    }
+
     // -- the action line ------------------------------------------------------------------------------------------
 
     @Test
@@ -261,7 +275,10 @@ class SubagentRowsTest {
         val create = created(model = "composer-2.5")
         val steer = sent(ToolPayload.WorkerAction.Delivery.Followup, callId = "s1")
         val queue = sent(ToolPayload.WorkerAction.Delivery.Queue, callId = "s2")
-        val rows = listOf(create, steer, queue, task()).map { call -> TranscriptRow.Subagent(ActivityGroup("g-${call.callId}", listOf(call)), call, SubagentCall.of(call)!!) }
+        // The rows sit among the other steps of the stretches they were made in.
+        fun stretch(vararg calls: ToolCall) = TranscriptRow.Stretch(calls.map { TranscriptRow.Entry.Call(it, "g:${it.callId}") })
+        val read = ToolCall("r1", "read_file", ToolKind.Read, ToolCall.STATUS_COMPLETED, "Main.kt")
+        val rows = listOf(stretch(read, create, steer), stretch(queue, read.copy(callId = "r2"), task()))
         val index = SubagentRows.index(rows)
         assertThat(index.latest).containsExactly("bc-w1", "s2")
         assertThat(index.workers).containsExactly("bc-w1", SubagentRows.Index.Worker("Build Projects under Extended mode", "composer-2.5"))

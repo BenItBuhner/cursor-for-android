@@ -231,6 +231,13 @@ object SubagentRows {
         }
     }
 
+    /**
+     * Whether the row's child is still at work, as the group it sits in counts it (the desktop's running tasks,
+     * `composerWorkGroupRunningTasks`): working, starting up, or waiting on the reader. A stop under way is not.
+     */
+    fun isWorking(subagent: SubagentCall, look: SubagentLook): Boolean =
+        subagent.source != SubagentCall.Source.Stopped && (look.indicator == SubagentLook.Indicator.Running || look.indicator == SubagentLook.Indicator.Attention)
+
     /** The desktop's status text while the child works (`gRa`): its own step, else its latest action, else planning. */
     private fun running(child: SubagentChild?): SubagentLook {
         val text = child?.step?.trim()?.takeIf { it.isNotEmpty() } ?: child?.action?.trim()?.takeIf { it.isNotEmpty() } ?: PLANNING
@@ -447,17 +454,17 @@ object SubagentRows {
     fun index(rows: List<TranscriptRow>): Index {
         var latest: MutableMap<String, String>? = null
         var workers: MutableMap<String, Index.Worker>? = null
+        fun note(call: ToolCall, subagent: SubagentCall) {
+            val id = subagent.agentId ?: return
+            if (!subagent.isWorker) return
+            (latest ?: LinkedHashMap<String, String>().also { latest = it })[id] = call.callId
+            if (subagent.source == SubagentCall.Source.Created) {
+                (workers ?: LinkedHashMap<String, Index.Worker>().also { workers = it })[id] = Index.Worker(subagent.title, subagent.modelId)
+            }
+        }
         fun visit(row: TranscriptRow) {
             when (row) {
-                is TranscriptRow.Subagent -> {
-                    val subagent = row.subagent
-                    val id = subagent.agentId ?: return
-                    if (!subagent.isWorker) return
-                    (latest ?: LinkedHashMap<String, String>().also { latest = it })[id] = row.call.callId
-                    if (subagent.source == SubagentCall.Source.Created) {
-                        (workers ?: LinkedHashMap<String, Index.Worker>().also { workers = it })[id] = Index.Worker(subagent.title, subagent.modelId)
-                    }
-                }
+                is TranscriptRow.Stretch -> row.subagents.forEach { entry -> entry.subagent?.let { note(entry.call, it) } }
                 is TranscriptRow.Events -> row.rows.forEach(::visit)
                 else -> Unit
             }
