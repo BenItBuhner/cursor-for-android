@@ -2,7 +2,6 @@ package com.cursorforandroid.data.api
 
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Semaphore
-import kotlinx.coroutines.sync.withPermit
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.JsonArray
@@ -171,13 +170,41 @@ class ApiThrottle(
      * long chat opens, as Cursor's own client reads them — in a lane of their own, so a chat's turns are not read three
      * at a time behind the sidebar's refresh; [WATCH], an open chat's live stream (see `ConversationStateReader.watch`),
      * which stays open for as long as the chat is on screen and would otherwise hold one of the control lane's few
-     * permits the whole while. Every lane waits out the same pause, and a refusal on any of them pauses them all.
+     * permits the whole while; [MEDIA], the reads behind a figure on screen — which store a Project has, a store
+     * file's presigned link, a file of the agent's machine — which someone is looking at a spinner for, and which
+     * waited behind a big Project's refresh and its record's blob prefetch when they shared the control lane. Every
+     * lane waits out the same pause, and a refusal on any of them pauses them all.
      */
-    enum class Lane { CONTROL, BLOBS, WATCH }
+    enum class Lane { CONTROL, BLOBS, WATCH, MEDIA }
 
-    private val permits = Semaphore(maxInFlight)
-    private val blobPermits = Semaphore(blobsInFlight)
-    private val watchPermits = Semaphore(WATCHES_IN_FLIGHT)
+    private class Gate(val size: Int) {
+        val semaphore = Semaphore(size)
+        val waiting = java.util.concurrent.atomic.AtomicInteger()
+        val inFlight = java.util.concurrent.atomic.AtomicInteger()
+
+        suspend fun <T> run(block: suspend () -> T): T {
+            waiting.incrementAndGet()
+            try {
+                semaphore.acquire()
+            } finally {
+                waiting.decrementAndGet()
+            }
+            inFlight.incrementAndGet()
+            try {
+                return block()
+            } finally {
+                inFlight.decrementAndGet()
+                semaphore.release()
+            }
+        }
+    }
+
+    private val gates = mapOf(
+        Lane.CONTROL to Gate(maxInFlight),
+        Lane.BLOBS to Gate(blobsInFlight),
+        Lane.WATCH to Gate(WATCHES_IN_FLIGHT),
+        Lane.MEDIA to Gate(MEDIA_IN_FLIGHT),
+    )
     @Volatile private var pausedUntilMillis = 0L
     private val refusals = java.util.concurrent.atomic.AtomicInteger()
 
@@ -206,12 +233,7 @@ class ApiThrottle(
             val wait = pausedUntilMillis - now()
             if (wait > 0) delay(wait)
             try {
-                val lanePermits = when (lane) {
-                    Lane.CONTROL -> permits
-                    Lane.BLOBS -> blobPermits
-                    Lane.WATCH -> watchPermits
-                }
-                return lanePermits.withPermit { block() }
+                return gates.getValue(lane).run(block)
             } catch (e: ConnectRpcException) {
                 if (!e.isRateLimited) throw e
                 refusals.incrementAndGet()
@@ -221,13 +243,34 @@ class ApiThrottle(
         }
     }
 
+    /** Calls of [lane] on the wire now, and waiting for a permit of it. */
+    fun inFlight(lane: Lane): Int = gates.getValue(lane).inFlight.get()
+    fun waiting(lane: Lane): Int = gates.getValue(lane).waiting.get()
+
+    /** Every lane as `control 3/3 +5 waiting`, the pause and the refusals after them: where a call is waiting, for the diagnostics. */
+    fun describe(): String = buildString {
+        append(Lane.entries.joinToString(" · ") { lane ->
+            val gate = gates.getValue(lane)
+            "${lane.name.lowercase()} ${gate.inFlight.get()}/${gate.size}" + gate.waiting.get().takeIf { it > 0 }?.let { " +$it waiting" }.orEmpty()
+        })
+        pausedUntil()?.let { append(" · paused ${(it - now() + 999) / 1000}s") }
+        if (refusalCount > 0) append(" · $refusalCount refusals")
+    }
+
     companion object {
         /** Calls on the wire at once: enough to overlap round trips, few enough that the account service does not refuse them. */
         const val DEFAULT_MAX_IN_FLIGHT = 3
+        /** A figure's reads on the wire at once (see [Lane.MEDIA]): a screenful of pictures, each a round trip or two. */
+        const val MEDIA_IN_FLIGHT = 4
         /** Blob reads on the wire at once (see [Lane.BLOBS]). */
         const val BLOBS_IN_FLIGHT = 8
         /** Open chats' live streams at once (see [Lane.WATCH]): one per chat on screen, two panes at most. */
         const val WATCHES_IN_FLIGHT = 2
+        /**
+         * Every lane's permits together with the defaults: the calls a client sharing one throttle can have on the wire
+         * at once, which its dispatcher's per-host limit must let through, or the lanes queue behind each other there.
+         */
+        const val ON_THE_WIRE = DEFAULT_MAX_IN_FLIGHT + BLOBS_IN_FLIGHT + WATCHES_IN_FLIGHT + MEDIA_IN_FLIGHT
         const val DEFAULT_PAUSE_MS = 1_500L
         const val MIN_PAUSE_MS = 250L
         const val MAX_PAUSE_MS = 15_000L
