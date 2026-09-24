@@ -457,7 +457,7 @@ class AppScreenshotTest {
         compose.onNodeWithText("Read all").performClick()
         // The row's own word is the UI's word that the write landed. Do not read DataStore from waitUntil:
         // that blocks the main thread and the mark-all coroutine never finishes.
-        waitForText("Nothing unread", 10_000)
+        waitForText("Nothing unread")
         compose.waitForIdle()
         // Nothing left to read: the action stays listed, dimmed, so the sheet reads the same either way.
         capture("58_chats_filter_all_read")

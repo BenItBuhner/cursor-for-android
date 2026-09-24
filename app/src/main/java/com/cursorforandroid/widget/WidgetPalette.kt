@@ -109,12 +109,22 @@ class WidgetPalette private constructor(private val mode: ThemeMode, private val
          * The palette for one widget's [appearance]: its own theme when it has one, else the app's ([appMode] and
          * [appOledBlack], the settings every widget followed before this was a choice).
          */
-        fun forAppearance(appearance: WidgetAppearance, appMode: ThemeMode, appOledBlack: Boolean): WidgetPalette = when (appearance.theme) {
-            WidgetTheme.App -> WidgetPalette(appMode, appOledBlack, appearance.opacityFraction)
-            WidgetTheme.System -> WidgetPalette(ThemeMode.System, oledBlack = false, appearance.opacityFraction)
-            WidgetTheme.Light -> WidgetPalette(ThemeMode.Light, oledBlack = false, appearance.opacityFraction)
-            WidgetTheme.Dark -> WidgetPalette(ThemeMode.Dark, oledBlack = false, appearance.opacityFraction)
-            WidgetTheme.Oled -> WidgetPalette(ThemeMode.Dark, oledBlack = true, appearance.opacityFraction)
+        fun forAppearance(appearance: WidgetAppearance, appMode: ThemeMode, appOledBlack: Boolean): WidgetPalette {
+            val (mode, oledBlack) = appearance.theme.resolve(appMode, appOledBlack)
+            return WidgetPalette(mode, oledBlack, appearance.opacityFraction)
         }
     }
+}
+
+/**
+ * The colours a widget's [WidgetTheme] stands for, as every widget kind reads it: a [ThemeMode] — one side, or
+ * [ThemeMode.System] for a day / night pair the launcher picks from — and whether the dark side is OLED black.
+ * [WidgetTheme.App] is the app's own setting ([appMode], [appOledBlack]).
+ */
+internal fun WidgetTheme.resolve(appMode: ThemeMode, appOledBlack: Boolean): Pair<ThemeMode, Boolean> = when (this) {
+    WidgetTheme.App -> appMode to appOledBlack
+    WidgetTheme.System -> ThemeMode.System to false
+    WidgetTheme.Light -> ThemeMode.Light to false
+    WidgetTheme.Dark -> ThemeMode.Dark to false
+    WidgetTheme.Oled -> ThemeMode.Dark to true
 }
