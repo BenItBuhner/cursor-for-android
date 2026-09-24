@@ -1,5 +1,6 @@
 package com.cursorforandroid
 
+import android.annotation.SuppressLint
 import android.content.Intent
 import android.os.Bundle
 import android.view.KeyEvent
@@ -84,7 +85,11 @@ class MainActivity : ComponentActivity() {
     /**
      * A hardware keyboard's shortcut is taken here, ahead of the focused view — the composer's field included — so it
      * works wherever the focus is; every other key, and every key of the on-screen keyboard, goes on as before.
+     *
+     * `Activity.dispatchKeyEvent` is the platform's public API; androidx.core's `ComponentActivity` re-declares it
+     * restricted to its own library group, which lint reads as this override calling a restricted method.
      */
+    @SuppressLint("RestrictedApi")
     override fun dispatchKeyEvent(event: KeyEvent): Boolean = shortcuts.onKeyEvent(event) || super.dispatchKeyEvent(event)
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
