@@ -26,10 +26,12 @@ import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.swipeRight
+import androidx.compose.ui.unit.dp
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.cursorforandroid.AppGraph
 import com.cursorforandroid.data.repo.SessionState
+import com.cursorforandroid.ui.components.BackEdgeMinWidth
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.ui.theme.ThemeMode
 import com.google.common.truth.Truth.assertThat
@@ -221,7 +223,7 @@ class PredictiveBackTest {
         compose.onNodeWithText("Demo User").performClick()
         waitForText(SETTINGS_PAGE)
         compose.waitForIdle()
-        compose.onRoot().performTouchInput { swipeRight(startX = 0f, endX = width * 0.9f) }
+        compose.onRoot().performTouchInput { swipeRight(startX = BackEdgeMinWidth.toPx() + 8.dp.toPx(), endX = width * 0.9f) }
         compose.waitForIdle()
         assertThat(drawerSheet().positionInRoot.x).isWithin(1f).of(0f)
         dispatcher.swipe(0.6f)
