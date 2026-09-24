@@ -808,6 +808,8 @@ class ConversationRepository(
         var loadJob: Job? = null
         /** A forced revalidation asked for while [loadJob] was in flight: the chat is read again once it lands (see [revalidateNow]). */
         var rereadAfterLoad = false
+        /** That reread is owed the documented transcript beside the run list (see [revalidateNow]'s `fresh`). */
+        var freshAfterLoad = false
         /** Cuts the window back a while after the last screen left (see [trimWindow]); cancelled by a screen coming back. */
         var trimJob: Job? = null
         /**
@@ -2224,7 +2226,12 @@ class ConversationRepository(
      */
     fun revalidate(agentId: String, force: Boolean = false) = offload(agentId) { e -> revalidateNow(e, force) }
 
-    private fun revalidateNow(e: Entry, force: Boolean = false) {
+    /**
+     * [fresh]: the caller knows the chat has changed on the server — a turn it has not read, the watch's word — so the
+     * documented transcript is read beside the run list rather than after it, and read even when the list, already
+     * merged with the new run, would call it unchanged (see [load]).
+     */
+    private fun revalidateNow(e: Entry, force: Boolean = false, fresh: Boolean = false) {
         synchronized(e) {
             // A chat still being launched has nothing on the server to fetch; the launch settles it when the server answers.
             if (e.attached == 0 || e.launching) return
@@ -2232,11 +2239,12 @@ class ConversationRepository(
             if (inFlight != null) {
                 // The load under way read its run page before whatever prompted this; what it publishes is that
                 // page's word. A forced revalidation is owed a read that postdates the cause: once, when the load lands.
+                if (fresh) e.freshAfterLoad = true
                 if (force && !e.rereadAfterLoad) {
                     e.rereadAfterLoad = true
                     inFlight.invokeOnCompletion {
-                        synchronized(e) { e.rereadAfterLoad = false }
-                        revalidateNow(e, force = true)
+                        val owedFresh = synchronized(e) { e.rereadAfterLoad = false; e.freshAfterLoad.also { e.freshAfterLoad = false } }
+                        revalidateNow(e, force = true, fresh = owedFresh)
                     }
                 }
                 return
@@ -2244,7 +2252,7 @@ class ConversationRepository(
             if (!force && AppClock.now() - e.fetchedAt < REVALIDATE_MIN_INTERVAL_MS) return
             // Beta: confirmed current by the account's word since (see [Entry.currentAt]) — nothing to read.
             if (!force && e.recordAllowedAtLoad == true && e.isCurrent(AppClock.now())) return
-            e.loadJob = e.scope.launch { load(e, e.agentId) }
+            e.loadJob = e.scope.launch { load(e, e.agentId, force = fresh) }
         }
     }
 
@@ -3232,6 +3240,9 @@ class ConversationRepository(
         // own reading of the record, like every run record that reaches a row (see `AgentRepository.recordRun`).
         agents.recordRun(agentId, run, adopt = true)
         if (follow) startStreaming(e, agentId, run)
+        // A run this device did not send — a turn started elsewhere, a worker's report to its coordinator — has a
+        // prompt its stream never carries: the chat is read for it now, not once the turn is over.
+        if (follow && synchronized(e) { e.local.none { it.run.id == run.id } }) revalidateNow(e, force = true, fresh = true)
         // A new run is where a message the account queued from here lands (see [expectDelivery]).
         requestAdoption(e)
         return true
@@ -3356,7 +3367,7 @@ class ConversationRepository(
             val gap = WATCH_MIN_GAP_MS - (System.nanoTime() - movedAt) / 1_000_000
             if (gap > 0) delay(gap)
             movedAt = System.nanoTime()
-            revalidateNow(e, force = true)
+            revalidateNow(e, force = true, fresh = true)
         }
     }
 
