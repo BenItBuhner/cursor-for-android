@@ -1,5 +1,6 @@
 package com.cursorforandroid.ui.conversation
 
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -15,6 +16,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -50,6 +52,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.LifecycleStartEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -577,9 +580,10 @@ fun ConversationScreen(
                 onRise = { snackbar.currentSnackbarData?.dismiss() },
             )
 
+            val jumpShown = !following && items.size > 2
             androidx.compose.animation.AnimatedVisibility(
-                visible = !following && items.size > 2,
-                modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 10.dp),
+                visible = jumpShown,
+                modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = JumpButtonGap),
                 enter = fadeIn(tween(160)) + scaleIn(tween(160), initialScale = 0.8f),
                 exit = fadeOut(tween(120)) + scaleOut(tween(120), targetScale = 0.8f),
             ) {
@@ -594,7 +598,10 @@ fun ConversationScreen(
                     Icon(CursorIcons.ArrowDown, "Scroll to latest", tint = colors.iconPrimary, modifier = Modifier.size(16.dp))
                 }
             }
-            SnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter)) { data ->
+            // A word up while the jump button is out sits above it, never over it: the button stays the reader's to
+            // tap (a catch-up's answer lands there as the reader flings back to the newest message). Read at layout.
+            val snackbarLift = animateDpAsState(if (jumpShown) CursorDimens.iconButton + JumpButtonGap else 0.dp, tween(160), label = "snackbar-lift")
+            SnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter).offset { IntOffset(0, -snackbarLift.value.roundToPx()) }) { data ->
                 Snackbar(snackbarData = data, containerColor = colors.elevated, contentColor = colors.textPrimary, shape = CursorTheme.shapes.lg)
             }
         }
@@ -796,6 +803,9 @@ private const val LOADING_KEY = "loading"
 
 /** The transcript's side margins, inside which its rows take [CursorDimens.composerMaxWidth] at most. */
 private val TranscriptGutter = 16.dp
+
+/** The jump button's lift off the transcript's bottom edge. */
+private val JumpButtonGap = 10.dp
 
 /**
  * How many rows from the oldest one shown the reader may be before the turns before it are asked for: about a
