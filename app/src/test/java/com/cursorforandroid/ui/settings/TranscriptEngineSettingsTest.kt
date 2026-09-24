@@ -125,7 +125,7 @@ class TranscriptEngineSettingsTest {
     }
 
     @Test
-    fun `the mode off shows the switch off whatever is stored, and the mode back on shows the choice: the default, or an explicit Stable`() {
+    fun `the mode off shows the switch off whatever is stored, and the mode back on shows the choice, the default or an explicit Stable`() {
         turnModeOn()
         compose.waitUntil(10_000) { engineReads(on = true, enabled = true) }
 
