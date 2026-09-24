@@ -624,7 +624,7 @@ class AppGraph(
      * out of the chat list — from the account in Extended mode, from the public record of a parent the list names but
      * lacks in either — and, in Extended mode, what a Project's view shows and does.
      */
-    private val lazyProjects = lazy { ProjectRepository(session, agents, projectAccount, actions = projectAccount, store = projectAccount, capabilities = capabilities, stats = refreshStats, demoStore = DemoStores) }
+    private val lazyProjects = lazy { ProjectRepository(session, agents, projectAccount, actions = projectAccount, store = projectAccount, capabilities = capabilities, stats = refreshStats) }
     val projects: ProjectRepository get() = lazyProjects.value
 
     /** Creating a Project and editing its name and look, from the sidebar, the panel and the Project's own view (Extended mode). */
