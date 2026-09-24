@@ -22,11 +22,15 @@ sealed interface TranscriptRow {
 
     /**
      * A turn Cursor injected — a subagent's report, a subscribed pull request's change, a timer — as its one-line
-     * row. [count] is above one when the same notice arrived that many times in a row ("#12 · synchronize ×2").
+     * row. [count] is above one when the same notice arrived that many times in a row ("#12 · synchronize ×2"); a
+     * subagent's row says it once, with the newest report (see `TranscriptRows.foldEvents`).
      */
     data class Event(val notification: SystemNotification, val count: Int = 1) : TranscriptRow {
         override val key: String get() = notification.id
         val line: EventLine get() = EventLine.of(notification)
+
+        /** Which agent a subagent's or worker's notice is about, for counting agents rather than notices. */
+        internal val agentKey: String get() = notification.agentId ?: notification.summary?.trim() ?: key
     }
 
     /**
@@ -338,6 +342,8 @@ data class EventLine(val source: Source, val subject: String, val verb: String?,
 /**
  * The line of a collapsed [TranscriptRow.Events]: how many notices, then which kinds, most first ("14 events ·
  * 9 GitHub · 5 subagents"), then how long they span when the turns carry their times and it is a minute or more.
+ * Subagents and workers are counted as agents, each once however many times it reported ("3 events · 2 subagents"):
+ * their rows carry no count for a repeat. Every other kind counts its notices.
  */
 data class EventGroupSummary(val count: String, val kinds: String?, val span: String?) {
     val text: String get() = listOfNotNull(count, kinds, span).joinToString(" \u00B7 ")
@@ -348,7 +354,10 @@ data class EventGroupSummary(val count: String, val kinds: String?, val span: St
         fun of(group: TranscriptRow.Events): EventGroupSummary {
             val events = group.events
             val total = group.count
-            val byKind = events.groupBy { it.line.source }.mapValues { (_, rows) -> rows.sumOf { it.count } }
+            val byKind = events.groupBy { it.line.source }.mapValues { (source, rows) ->
+                if (source == EventLine.Source.Subagent || source == EventLine.Source.Worker) rows.distinctBy { it.agentKey }.size
+                else rows.sumOf { it.count }
+            }
             val kinds = byKind.entries
                 .sortedWith(compareByDescending<Map.Entry<EventLine.Source, Int>> { it.value }.thenBy { it.key.ordinal })
                 .take(MAX_KINDS)
@@ -575,7 +584,8 @@ object TranscriptRows {
 
     /**
      * The stretch's entries with its injected turns folded: the same notice arriving several times in a row — a
-     * pull request synchronized twice — is one row counted twice, and two or more events in a row (the footers of
+     * pull request synchronized twice, a subagent reporting again — is one row counted twice, with the newest
+     * report (see [merged]), and two or more events in a row (the footers of
      * their runs between them, which the summary carries) are one [TranscriptRow.Events] behind one line. Anything
      * else between two events — a note, a thought, a call — keeps them apart.
      */
@@ -585,7 +595,8 @@ object TranscriptRows {
         for (entry in entries) {
             val previous = deduped.lastOrNull { it !is TranscriptRow.Entry.Footer }
             if (entry is TranscriptRow.Entry.Event && previous is TranscriptRow.Entry.Event && sameNotice(previous.row.notification, entry.row.notification)) {
-                deduped[deduped.indexOf(previous)] = TranscriptRow.Entry.Event(previous.row.copy(count = previous.row.count + entry.row.count))
+                val merged = merged(previous.row.notification, entry.row.notification)
+                deduped[deduped.indexOf(previous)] = TranscriptRow.Entry.Event(TranscriptRow.Event(merged, previous.row.count + entry.row.count))
             } else {
                 deduped += entry
             }
@@ -620,6 +631,19 @@ object TranscriptRows {
 
     private fun sameNotice(a: SystemNotification, b: SystemNotification): Boolean =
         a.kind == b.kind && a.title == b.title && a.summary == b.summary && a.agentId == b.agentId
+
+    /**
+     * The row a repeated notice folds into: the first one's place (its id and time, which key the row and start the
+     * group's span), the newest one's report, and every remark the agent folded under either, in order.
+     */
+    private fun merged(first: SystemNotification, next: SystemNotification): SystemNotification {
+        val remarks = listOfNotNull(first.narration, next.narration).map { it.trim() }.filter { it.isNotEmpty() }.distinct()
+        return first.copy(
+            body = next.body ?: first.body,
+            raw = next.raw,
+            narration = remarks.joinToString("\n\n").ifEmpty { null },
+        )
+    }
 
     /** The newest group of events in the transcript opens on its own when it holds fewer than [OPEN_BELOW] events. */
     private fun openNewestGroup(rows: List<TranscriptRow>): List<TranscriptRow> {
