@@ -26,10 +26,11 @@ import com.cursorforandroid.ui.components.SheetHeader
 import com.cursorforandroid.ui.theme.CursorTheme
 
 /**
- * The composer's branch picker: the repository's default branch, then every branch agents in the repository started
- * from or pushed ([branches], see `KnownBranches`), filtered by the search field. The Cloud Agents API cannot list a
- * repository's branches, so a name typed into the field that matches none of them is offered as a row of its own —
- * that is the only way to start from a branch no agent has touched yet.
+ * The composer's branch picker: the repository's default branch — or, for a machine's checkout ([fromCheckout]), the
+ * branch that checkout is on — then every branch agents in the repository started from or pushed and, with an account
+ * session, the repository's own branches ([branches], see `KnownBranches`), filtered by the search field. A name typed
+ * into the field that matches none of them is offered as a row of its own: without the account's list, that is the
+ * only way to start from a branch no agent has touched yet.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -39,6 +40,8 @@ internal fun BranchSheet(
     selected: String,
     onSelect: (String) -> Unit,
     onDismiss: () -> Unit,
+    fromCheckout: Boolean = false,
+    listedByAccount: Boolean = false,
 ) {
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
@@ -64,7 +67,11 @@ internal fun BranchSheet(
         FadingLazyColumn(Modifier.fillMaxWidth().weight(1f, fill = false), contentPadding = PaddingValues(bottom = 12.dp)) {
             if (typed.isEmpty()) {
                 item("default") {
-                    SheetRow(title = "Default branch", subtitle = "The repository's default branch", checked = current.isEmpty(), icon = CursorIcons.GitBranch) { pick("") }
+                    if (fromCheckout) {
+                        SheetRow(title = "Current branch", subtitle = "The machine's checkout, on the branch it is on", checked = current.isEmpty(), icon = CursorIcons.GitBranch) { pick("") }
+                    } else {
+                        SheetRow(title = "Default branch", subtitle = "The repository's default branch", checked = current.isEmpty(), icon = CursorIcons.GitBranch) { pick("") }
+                    }
                     HairlineDivider(Modifier.padding(horizontal = 20.dp, vertical = 4.dp))
                 }
             }
@@ -86,7 +93,7 @@ internal fun BranchSheet(
                     Text("\u201C$typed\u201D can't be a branch name", style = type.small, color = colors.textQuaternary, modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp))
                 }
             }
-            if (repo != null) {
+            if (repo != null && !listedByAccount) {
                 item("note") {
                     Text(
                         "Cursor's API can't list a repository's branches, so these are the ones your agents started from or pushed in ${repo.shortName}. Search for any other branch by name to use it.",

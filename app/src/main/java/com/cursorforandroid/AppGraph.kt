@@ -14,7 +14,10 @@ import com.cursorforandroid.data.api.BackgroundComposerApi
 import com.cursorforandroid.data.api.BlobCache
 import com.cursorforandroid.data.api.ComposerLifecycleApi
 import com.cursorforandroid.data.api.ComposerSnapshot
+import com.cursorforandroid.data.api.AccountBranch
 import com.cursorforandroid.data.api.AgentStartApi
+import com.cursorforandroid.data.api.ConnectRepositoryBranchesApi
+import com.cursorforandroid.data.api.RepositoryBranchesApi
 import com.cursorforandroid.data.api.ConnectAgentStartApi
 import com.cursorforandroid.data.api.ConnectJsonClient
 import com.cursorforandroid.data.api.ConnectProjectCreationApi
@@ -198,6 +201,8 @@ class AppGraph(
     promptUploadApi: PromptUploadApi? = null,
     /** Injectable for tests only: the account's start, so a chat started on one of the user's machines can be driven from the composer against a scripted account. */
     agentStartApi: AgentStartApi? = null,
+    /** Injectable for tests only: the account's branch lists, for the composer's branch picker against a scripted account. */
+    repositoryBranchesApi: RepositoryBranchesApi? = null,
 ) {
     private val app = context.applicationContext
 
@@ -508,6 +513,17 @@ class AppGraph(
     /** A new chat started on the account service, for the first prompt that carries files (see [ConnectAgentStartApi]). */
     private val lazyAgentStart: Lazy<AgentStartApi> = lazy {
         agentStartApi ?: ConnectAgentStartApi(lazyAccountRpc.value, lazySessionTokens.value, noRepoEnvironment = { lazyProjectCreation.value.noRepoEnvironmentPublicId() })
+    }
+
+    private val lazyRepositoryBranches: Lazy<RepositoryBranchesApi> = lazy { repositoryBranchesApi ?: ConnectRepositoryBranchesApi(lazyAccountRpc.value, lazySessionTokens.value) }
+
+    /**
+     * [repoUrl]'s branches as the account lists them (`GetRepositoryBranches`, Extended mode) for the composer's branch
+     * picker; nothing in the default mode, the demo, or when the account cannot say.
+     */
+    suspend fun accountBranches(repoUrl: String): List<AccountBranch> {
+        if (session.isDemo || !capabilities().accountSession) return emptyList()
+        return runCatching { lazyRepositoryBranches.value.branches(repoUrl) }.getOrDefault(emptyList())
     }
 
     /** What the last refresh cost, stage by stage, across the list, the account round, the Projects and the badges (see [RefreshStats]). */

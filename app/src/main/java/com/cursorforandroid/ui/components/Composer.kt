@@ -161,6 +161,11 @@ fun ComposerBox(
     extendedModes: Boolean = false,
     footerExtra: (@Composable RowScope.() -> Unit)? = null,
     minLines: Int = 1,
+    /**
+     * Takes focus — and so the keyboard — as it first appears: for a composer that is the whole point of its screen
+     * (the quick composer over the launcher). Off, arriving on a screen never throws the keyboard up.
+     */
+    focusOnOpen: Boolean = false,
 ) {
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
@@ -174,7 +179,7 @@ fun ComposerBox(
     // had it. The want is taken from it once, before the field has reported its own state over the top; a field that
     // was not focused is never given focus, since arriving on a screen must not throw the keyboard up.
     var focused by rememberSaveable(saver = FocusedSaver) { mutableStateOf(false) }
-    var wantsFocus by remember { mutableStateOf(focused) }
+    var wantsFocus by remember { mutableStateOf(focused || focusOnOpen) }
     var menuOpen by rememberSaveable { mutableStateOf(false) }
     val focus = remember { FocusRequester() }
     // Waits for the "+" menu to be gone: its popup holds focus while it is up, and a request made under it is lost.

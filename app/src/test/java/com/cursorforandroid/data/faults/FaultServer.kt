@@ -909,6 +909,9 @@ class FaultServer(
         return run
     }
 
+    /** The test changed [agentId] by hand — its runs, its record, its status: the chat's held live streams hear it at once. */
+    fun touch(agentId: String) = changed(agentId)
+
     /** A step blob with its tool result's heavy strings emptied (over [HEAVY_CHARS] characters), as `filter_heavy_step_data` asks. */
     private fun filteredStep(bytes: ByteArray): ByteArray {
         val schema = com.cursorforandroid.data.api.proto.AgentSchemas.CONVERSATION_STEP

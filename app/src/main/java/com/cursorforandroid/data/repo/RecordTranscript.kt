@@ -215,8 +215,12 @@ class RecordWindow(
     /** How many turns the chat has, counting the ones before the window: the state's count when known, else at least the loaded ones. */
     val turnCount: Int get() = maxOf(state?.turnCount ?: 0, turns.size)
 
-    /** The whole-chat index of the [i]th loaded turn (0 is the chat's first turn), counted back from the newest. */
-    fun turnIndex(i: Int): Int = turnCount - turns.size + i
+    /**
+     * The whole-chat index of the [i]th loaded turn (0 is the chat's first turn): the turn's own on the blob-backed
+     * record, else counted back from the newest — which a state read ahead of the window's turns moves by the turns
+     * it has and the window has not.
+     */
+    fun turnIndex(i: Int): Int = if (turnIndexed) turns[i].stepIndex else turnCount - turns.size + i
 
     /** The timing of the [i]th loaded turn, when the state has one for it. */
     fun timing(i: Int): TurnTiming? = state?.timings?.getOrNull(turnIndex(i))
@@ -585,7 +589,11 @@ object RecordTranscript {
             val turn = cut[read.index] ?: return@mapIndexedNotNull null
             val count = turn.steps.size + (if (turn.prompt != null) 1 else 0)
             val same = held != null && held.blobId == read.blobId && held.complete == read.complete && held.stepCount == count && held.prompt == turn.prompt
-            val items = if (same) held!!.items else build(turn, RecordTurn.traceKey(read.index, true))
+            val built = if (same) held!!.items else build(turn, RecordTurn.traceKey(read.index, true))
+            // A read short of the turn — a piece the server failed to give this time, or fewer messages than the
+            // structure counts — keeps the messages the turn was read with before: a turn read again only adds.
+            val short = read.unavailable > 0 || (read.messageSteps?.let { CoordinatorTranscript.sent(built).size < it } ?: false)
+            val items = if (!same && short && held != null && held.prompt == turn.prompt) CoordinatorTranscript.keepMessages(held.items, built) else built
             val shape = if (i >= shapesFrom) HeadlessTranscript.shape(turn, read.index) else held?.shape
             RecordTurn(read.index, count, turn.prompt, turn.projectMode, items, shape, errorMessage = HeadlessTranscript.errorMessage(turn), turnIndexed = true, blobId = read.blobId, complete = read.complete, stepTotal = read.stepTotal, messageSteps = read.messageSteps, unavailable = read.unavailable)
         }

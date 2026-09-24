@@ -9,14 +9,31 @@ data class BranchOption(
     val pushedBy: String?,
     val startedAgents: Int,
     val lastUsedAtMillis: Long,
+    /** The account listed it as the repository's default branch (`GetRepositoryBranches`, `is_default`). */
+    val isDefault: Boolean = false,
 ) {
     /** One line saying why the branch is in the list. */
     val description: String
         get() = when {
             pushedBy != null -> "Pushed by $pushedBy"
             startedAgents == 1 -> "Starting point of 1 agent"
-            else -> "Starting point of $startedAgents agents"
+            startedAgents > 1 -> "Starting point of $startedAgents agents"
+            isDefault -> "The repository's default branch"
+            else -> "On the repository"
         }
+
+    companion object {
+        /**
+         * [known] (the agents' branches, most recent first) and then the rest of what the account lists for the
+         * repository, its default branch first: every row is a real ref.
+         */
+        fun merged(known: List<BranchOption>, listed: List<Pair<String, Boolean>>): List<BranchOption> {
+            val names = known.mapTo(HashSet()) { it.name }
+            val defaults = listed.filter { it.second }.map { it.first }.toSet()
+            val rest = listed.filterNot { it.first in names }.sortedByDescending { it.second }.map { (name, isDefault) -> BranchOption(name, null, 0, 0L, isDefault) }
+            return known.map { if (it.name in defaults) it.copy(isDefault = true) else it } + rest
+        }
+    }
 }
 
 /**

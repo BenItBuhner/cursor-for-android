@@ -279,8 +279,11 @@ object CoordinatorTranscript {
     }
 
     /** The message calls of [items] whose text, normalised, is among [texts]: the copies of messages already shown. */
-    fun messageCallsReading(items: List<TimelineItem>, texts: Set<String>): Set<String> {
-        if (texts.isEmpty()) return emptySet()
+    fun messageCallsReading(items: List<TimelineItem>, texts: Set<String>): Set<String> =
+        if (texts.isEmpty()) emptySet() else messageCallsReading(items) { it in texts }
+
+    /** The message calls of [items] whose text, normalised, [reads] says is another's, by [messageKey]. */
+    fun messageCallsReading(items: List<TimelineItem>, reads: (String) -> Boolean): Set<String> {
         var out: MutableSet<String>? = null
         for (item in items) {
             if (item !is ActivityGroup) continue
@@ -288,7 +291,7 @@ object CoordinatorTranscript {
                 if (step !is ToolCall) continue
                 val payload = (reinterpret(step).payload as? ToolPayload.CoordinatorMessage) ?: continue
                 if (payload.missing && payload.message.isBlank()) continue
-                if (normalize(payload.message) in texts) (out ?: HashSet<String>().also { out = it }) += messageKey(item, step)
+                if (reads(normalize(payload.message))) (out ?: HashSet<String>().also { out = it }) += messageKey(item, step)
             }
         }
         return out ?: emptySet()
@@ -305,8 +308,94 @@ object CoordinatorTranscript {
         return out
     }
 
+    /**
+     * One of the coordinator's messages to the user as sent: the call as drawn, the [group] it was drawn in, its
+     * text as compared ([normalize]), the account's id for the delivered message, and whether the text was read
+     * leniently out of pieces (see `MessageRecovery`).
+     */
+    class Sent(val group: ActivityGroup, val call: ToolCall, val text: String, val messageId: String?, val recovered: Boolean) {
+        /**
+         * [other] is this message in another copy: the same words; words one of which the other grew to (a copy
+         * cut short, or read before the call ended — a prefix of [MIN_PREFIX] characters at least, so a greeting is
+         * not taken for every message that opens with it); or, one of them read leniently, the same delivered message.
+         */
+        fun sameAs(other: Sent): Boolean {
+            if (text == other.text) return true
+            val (short, long) = if (text.length <= other.text.length) text to other.text else other.text to text
+            if (short.length >= MIN_PREFIX && long.startsWith(short)) return true
+            return (recovered || other.recovered) && messageId != null && messageId == other.messageId
+        }
+    }
+
+    /**
+     * The messages [items] show the user, in order: every call of the message tool with its body that went out — the
+     * call completed, or the account gave the message an id. A call still being written is no message yet.
+     */
+    fun sent(items: List<TimelineItem>): List<Sent> {
+        var out: MutableList<Sent>? = null
+        for (item in items) {
+            if (item !is ActivityGroup) continue
+            for (step in item.steps) {
+                val sent = sentBy(item, step) ?: continue
+                (out ?: ArrayList<Sent>().also { out = it }) += sent
+            }
+        }
+        return out ?: emptyList()
+    }
+
+    /** [step] of [group] as a message sent (see [sent]), or null when it is none. */
+    fun sentBy(group: ActivityGroup, step: ActivityStep): Sent? {
+        if (step !is ToolCall) return null
+        val call = reinterpret(step)
+        val payload = call.payload as? ToolPayload.CoordinatorMessage ?: return null
+        if (payload.missing || payload.message.isBlank()) return null
+        val messageId = payload.messageId?.takeIf { it.isNotBlank() }
+        if (call.status != ToolCall.STATUS_COMPLETED && messageId == null) return null
+        return Sent(group, step, normalize(payload.message), messageId, payload.recovered)
+    }
+
+    /**
+     * [items] — one turn as a newer read gives it — with every message [earlier] (the same turn as read before) sent
+     * that they lack put back: each after the group it was drawn in when [items] have it, else ahead of the turn's
+     * footer, else at the end, in its own group. A message read leniently in either copy is taken as the other's
+     * when [items] have any message at all: the two readings of one message need not read alike. The same list when
+     * nothing is missing.
+     *
+     * A read of a turn can lack a message the turn sent: a piece of the record that failed this time, a run's log
+     * that carries the call in no shape this app reads, the stream's story before the call's end. None of that is
+     * the message being taken back, and a read that adds to a turn or updates what it said never loses what it had.
+     */
+    fun keepMessages(earlier: List<TimelineItem>, items: List<TimelineItem>): List<TimelineItem> {
+        val wanted = sent(earlier)
+        if (wanted.isEmpty()) return items
+        val have = sent(items)
+        val missing = wanted.filter { w -> have.none { it.sameAs(w) || w.recovered || it.recovered } }
+        if (missing.isEmpty()) return items
+        val footer = items.indexOfLast { it is RunFooter }.takeIf { it >= 0 } ?: items.size
+        val at = LinkedHashMap<Int, MutableList<TimelineItem>>()
+        for (m in missing) {
+            val group = items.indexOfFirst { it.id == m.group.id }
+            val index = if (group >= 0) group + 1 else footer
+            at.getOrPut(index) { ArrayList(1) } += keptGroup(m)
+        }
+        val out = ArrayList<TimelineItem>(items.size + missing.size)
+        for (i in 0..items.size) {
+            at[i]?.let { out.addAll(it) }
+            if (i < items.size) out += items[i]
+        }
+        return out
+    }
+
+    /** [sent]'s call on its own, in a group whose id says whose it was. */
+    fun keptGroup(sent: Sent): ActivityGroup = ActivityGroup("${sent.group.id}$KEPT_SUFFIX${sent.call.callId}", listOf(sent.call))
+
     /** [text] as compared: trimmed, every run of whitespace one space. */
     fun normalize(text: String): String = text.trim().replace(WHITESPACE, " ")
+
+    /** How long a message's opening words must be to be taken as the same message cut short (see [Sent.sameAs]). */
+    const val MIN_PREFIX = 24
+    /** What a group holding a message put back is named after its own group's id (see [keepMessages]). */
+    const val KEPT_SUFFIX = "~kept-"
 
     private val WHITESPACE = Regex("\\s+")
 

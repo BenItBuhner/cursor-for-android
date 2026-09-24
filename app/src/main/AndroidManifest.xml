@@ -79,7 +79,52 @@
                 <category android:name="android.intent.category.DEFAULT" />
                 <data android:mimeType="image/*" />
             </intent-filter>
+            <!-- Long-press the app icon: New chat and Search (res/xml/shortcuts.xml); pinned chats and Projects are published at run time. -->
+            <meta-data
+                android:name="android.app.shortcuts"
+                android:resource="@xml/shortcuts" />
         </activity>
+
+        <!--
+          The composer over the launcher: the shortcut widget's and the launcher shortcut's "new chat". A translucent
+          window rather than the app, in its own task and out of recents, so dismissing it lands back on the home
+          screen; sending opens the app on the chat. The keyboard comes up with it.
+        -->
+        <activity
+            android:name=".ui.quick.QuickComposerActivity"
+            android:excludeFromRecents="true"
+            android:exported="true"
+            android:label="@string/shortcut_new_chat_short"
+            android:launchMode="singleTask"
+            android:taskAffinity=""
+            android:theme="@style/Theme.Cursor.QuickComposer"
+            android:windowSoftInputMode="adjustResize|stateVisible"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|uiMode" />
+
+        <!-- The "New chat" shortcut widget: a round button that opens the composer over the launcher (or a chat, a Project, search). -->
+        <receiver
+            android:name=".widget.ShortcutButtonWidgetReceiver"
+            android:exported="true"
+            android:label="@string/shortcut_widget_label">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/widget_shortcut_info" />
+        </receiver>
+        <!-- The same widget offered as the compose bar: the composer's line on the home screen. -->
+        <receiver
+            android:name=".widget.ComposeBarWidgetReceiver"
+            android:exported="true"
+            android:label="@string/compose_bar_widget_label">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/widget_compose_bar_info" />
+        </receiver>
 
         <!--
           CursorApp supplies WorkManager's configuration (see its workManagerConfiguration), which the default

@@ -306,6 +306,8 @@ class MachineFleetServer : Dispatcher() {
     @Volatile var workers: String = WORKERS
     /** Each connected machine's registered repository, as its `repo` label has it; blank for an any-repo worker. */
     @Volatile var registered: Map<String, String> = mapOf("devbox" to "acme/payments-service", "laptop" to "acme/web", "bennett" to "bennett/codex-poly-bot", "scratch-box" to "")
+    /** The account's earlier chats, as `GET /v1/agents` lists them; `GET /v0/agents` gives each one's repository. */
+    @Volatile var history: List<JsonObject> = emptyList()
 
     /** What `GET /v1/repositories` lists: the repositories reachable through Cursor's GitHub app. */
     private val reachable = listOf("acme/payments-service", "acme/web")
@@ -319,8 +321,8 @@ class MachineFleetServer : Dispatcher() {
             request.method == "GET" && path == "/v1/repositories" -> json("""{"items":[{"url":"https://github.com/acme/payments-service"},{"url":"https://github.com/acme/web"}]}""")
             request.method == "GET" && path == "/v0/private-workers" -> json(if (query?.queryParameter("scope") == "team_pool") """{"workers":[],"totalCount":0}""" else workers)
             request.method == "GET" && path == "/v0/private-workers/pools" -> json("""{"pools":[]}""")
-            request.method == "GET" && path == "/v1/agents" -> json("""{"items":[]}""")
-            request.method == "GET" && path == "/v0/agents" -> json("""{"agents":[]}""")
+            request.method == "GET" && path == "/v1/agents" -> json(buildJsonObject { put("items", JsonArray(history)) }.toString())
+            request.method == "GET" && path == "/v0/agents" -> json(buildJsonObject { put("agents", JsonArray(history.map(::legacy))) }.toString())
             request.method == "POST" && path == "/v1/agents" -> create(request)
             else -> contract.dispatch(request)
         }
@@ -344,6 +346,14 @@ class MachineFleetServer : Dispatcher() {
             }
         }
         return contract.dispatch(request)
+    }
+
+    /** The v0 record of a v1 [agent]: `source.repository` is where the list learns a chat's repository. */
+    private fun legacy(agent: JsonObject): JsonObject = buildJsonObject {
+        put("id", agent["id"]!!)
+        put("name", agent["name"]!!)
+        put("status", "FINISHED")
+        ((agent["repos"] as? JsonArray)?.firstOrNull() as? JsonObject)?.get("url")?.let { url -> putJsonObject("source") { put("repository", url) } }
     }
 
     private fun json(body: String): MockResponse = MockResponse().setResponseCode(200).setHeader("Content-Type", "application/json").setBody(body)

@@ -234,6 +234,8 @@ fun HomeScreen(
             repo = state.selectedRepo,
             branches = state.branches,
             selected = state.ref,
+            fromCheckout = state.startsFromCheckout,
+            listedByAccount = state.branchesListedByAccount,
             onSelect = viewModel::setRef,
             onDismiss = { branchSheet = false },
         )
@@ -422,9 +424,10 @@ internal fun ComposerErrorLine(error: String, asked: String?, onDismiss: () -> U
     }
 }
 
+/** The source picker: Start from scratch, the device's checkout, the recent repositories, the catalogue. Shared with the quick composer. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun RepositorySheet(
+internal fun RepositorySheet(
     repos: List<Repository>,
     recent: List<Repository>,
     selected: Repository?,

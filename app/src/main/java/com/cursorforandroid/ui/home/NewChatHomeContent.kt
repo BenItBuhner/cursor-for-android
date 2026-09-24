@@ -277,7 +277,7 @@ private fun ProjectsNoteCard(note: ProjectsNote, onAction: (() -> Unit)?, modifi
 internal fun NewChatSelectors(
     repoLabel: String,
     noRepo: Boolean,
-    ref: String,
+    branchLabel: String,
     device: DeviceTarget,
     onRepo: () -> Unit,
     onBranch: () -> Unit,
@@ -287,8 +287,7 @@ internal fun NewChatSelectors(
         // The source: a repository, or "Start from scratch" as the web composer names a chat without one.
         SelectorChip(repoLabel, onClick = onRepo, icon = if (noRepo) CursorIcons.Cloud else CursorIcons.Repo, modifier = Modifier.weight(1f, fill = false))
         if (!noRepo) {
-            // A blank ref leaves the starting point to the repository's default branch.
-            SelectorChip(ref.ifBlank { "default" }, onClick = onBranch, icon = CursorIcons.GitBranch)
+            SelectorChip(branchLabel, onClick = onBranch, icon = CursorIcons.GitBranch)
         }
         SelectorChip(device.label, onClick = onDevice, icon = deviceIcon(device))
     }
@@ -356,7 +355,7 @@ internal fun NewChatPageMiniature(
                     horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
                     Column(Modifier.widthIn(max = CursorDimens.composerMaxWidth).fillMaxWidth()) {
-                        NewChatSelectors(chips.repoLabel, chips.noRepo, chips.ref, chips.device, onRepo = {}, onBranch = {}, onDevice = {})
+                        NewChatSelectors(chips.repoLabel, chips.noRepo, chips.ref.ifBlank { NewAgentUiState.DEFAULT_BRANCH }, chips.device, onRepo = {}, onBranch = {}, onDevice = {})
                         ComposerBox(
                             value = "",
                             onValueChange = {},
@@ -415,4 +414,4 @@ private val MiniatureActions = HomeBlockActions(onOpenAgent = {}, rowActions = n
 /** [NewAgentUiState]'s chips as [NewChatSelectors] draws them. */
 @Composable
 internal fun NewChatSelectors(state: NewAgentUiState, onRepo: () -> Unit, onBranch: () -> Unit, onDevice: () -> Unit) =
-    NewChatSelectors(state.repoLabel, state.noRepo, state.ref, state.selectedDevice, onRepo, onBranch, onDevice)
+    NewChatSelectors(state.repoLabel, state.noRepo, state.branchLabel, state.selectedDevice, onRepo, onBranch, onDevice)
