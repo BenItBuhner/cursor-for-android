@@ -158,17 +158,58 @@ class HapticsTest {
     }
 
     @Test
-    fun `a drag is felt crossing half-way, each way, from wherever the sheet rests`() {
-        assertThat(halfwayCrossing(0.2f, 0.4f, restingOpen = false)).isNull()
-        assertThat(halfwayCrossing(0.45f, 0.55f, restingOpen = false)).isEqualTo(Haptic.ThresholdActivate)
-        assertThat(halfwayCrossing(0.55f, 0.8f, restingOpen = false)).isNull()
-        assertThat(halfwayCrossing(0.55f, 0.45f, restingOpen = false)).isEqualTo(Haptic.ThresholdDeactivate)
+    fun `a sheet is felt once as a swipe lands it on the other side, and never springing back`() {
+        val landing = SheetLanding()
+        fun SheetLanding.settle(vararg frames: Float): List<Haptic> = frames.toList().mapNotNull(::at)
 
-        assertThat(halfwayCrossing(1f, 0.7f, restingOpen = true)).isNull()
-        assertThat(halfwayCrossing(0.6f, 0.4f, restingOpen = true)).isEqualTo(Haptic.ThresholdActivate)
-        assertThat(halfwayCrossing(0.4f, 0.6f, restingOpen = true)).isEqualTo(Haptic.ThresholdDeactivate)
-        // A flick across the whole sheet in one frame still crosses once.
-        assertThat(halfwayCrossing(0f, 1f, restingOpen = false)).isEqualTo(Haptic.ThresholdActivate)
+        // A short flick: the finger takes the sheet a tenth of the way, the fling the rest.
+        landing.dragged(0f)
+        landing.dragged(0.05f)
+        landing.released(wasOpen = false, open = true)
+        assertThat(landing.settle(0.1f, 0.5f, 0.9f, 0.995f, 1f)).containsExactly(Haptic.GestureEnd)
+
+        // Closing again, the same: felt as it lands shut, not before.
+        landing.dragged(1f)
+        landing.released(wasOpen = true, open = false)
+        assertThat(landing.settle(0.9f, 0.4f, 0.02f, 0f)).containsExactly(Haptic.GestureEnd)
+
+        // Let go short of committing, or taken past half-way and back: it springs back without a sound.
+        landing.dragged(0f)
+        landing.dragged(0.3f)
+        landing.released(wasOpen = false, open = false)
+        assertThat(landing.settle(0.2f, 0f)).isEmpty()
+        landing.dragged(0f)
+        landing.dragged(0.7f)
+        landing.dragged(0.4f)
+        landing.released(wasOpen = false, open = false)
+        assertThat(landing.settle(0.2f, 0f)).isEmpty()
+
+        // A slow drag held fully open lands as the finger lets go.
+        landing.dragged(0f)
+        landing.dragged(1f)
+        landing.released(wasOpen = false, open = true)
+        assertThat(landing.settle(1f, 1f)).containsExactly(Haptic.GestureEnd)
+    }
+
+    @Test
+    fun `a sheet caught on its way lands once, and a slide or a jump in between leaves nothing behind`() {
+        val landing = SheetLanding()
+        // Flicked open, caught half-way and sent on open: one landing, not none and not two.
+        landing.dragged(0f)
+        landing.released(wasOpen = false, open = true)
+        assertThat(listOf(0.3f, 0.5f).mapNotNull(landing::at)).isEmpty()
+        landing.dragged(0.5f)
+        landing.released(wasOpen = true, open = true)
+        assertThat(listOf(0.8f, 1f).mapNotNull(landing::at)).containsExactly(Haptic.GestureEnd)
+
+        // Flicked shut, and a shortcut jumps it open before it lands: the next drag starts from rest, and a drag that
+        // springs back to where the shortcut left it is silent.
+        landing.dragged(1f)
+        landing.released(wasOpen = true, open = false)
+        assertThat(landing.at(0.6f)).isNull()
+        landing.dragged(1f)
+        landing.released(wasOpen = true, open = true)
+        assertThat(listOf(0.9f, 1f).mapNotNull(landing::at)).isEmpty()
     }
 
     @Test
