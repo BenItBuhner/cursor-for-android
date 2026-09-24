@@ -118,13 +118,13 @@ class ShortcutWidgetScreenshotTest {
      */
     @Test
     fun themes() {
-        captureWidget("339_shortcut_widget_solid_light", ShortcutWidgetSettings(ShortcutStyle.Solid), ShortcutVariant.Button, CELL, ThemeMode.Light, ground = LightGround)
-        captureWidget("340_shortcut_widget_glass_light", ShortcutWidgetSettings(ShortcutStyle.Glass), ShortcutVariant.Button, CELL, ThemeMode.Light, ground = LightGround)
-        captureWidget("341_shortcut_widget_solid_oled", ShortcutWidgetSettings(ShortcutStyle.Solid), ShortcutVariant.Button, CELL, oledBlack = true, ground = BlackGround)
-        captureWidget("342_compose_bar_widget_light", ShortcutWidgetSettings(ShortcutStyle.Solid), ShortcutVariant.Bar, DpSize(320.dp, 72.dp), ThemeMode.Light, ground = LightGround)
-        captureWidget("343_compose_bar_widget_tall_light", ShortcutWidgetSettings(ShortcutStyle.Solid), ShortcutVariant.TallBar, DpSize(320.dp, 140.dp), ThemeMode.Light, ground = LightGround)
+        captureWidget("400_shortcut_widget_solid_light", ShortcutWidgetSettings(ShortcutStyle.Solid), ShortcutVariant.Button, CELL, ThemeMode.Light, ground = LightGround)
+        captureWidget("401_shortcut_widget_glass_light", ShortcutWidgetSettings(ShortcutStyle.Glass), ShortcutVariant.Button, CELL, ThemeMode.Light, ground = LightGround)
+        captureWidget("402_shortcut_widget_solid_oled", ShortcutWidgetSettings(ShortcutStyle.Solid), ShortcutVariant.Button, CELL, oledBlack = true, ground = BlackGround)
+        captureWidget("403_compose_bar_widget_light", ShortcutWidgetSettings(ShortcutStyle.Solid), ShortcutVariant.Bar, DpSize(320.dp, 72.dp), ThemeMode.Light, ground = LightGround)
+        captureWidget("404_compose_bar_widget_tall_light", ShortcutWidgetSettings(ShortcutStyle.Solid), ShortcutVariant.TallBar, DpSize(320.dp, 140.dp), ThemeMode.Light, ground = LightGround)
         val pinnedDark = ShortcutWidgetSettings(ShortcutStyle.Solid, appearance = WidgetAppearance(theme = WidgetTheme.Dark))
-        captureWidget("344_compose_bar_widget_pinned_dark", pinnedDark, ShortcutVariant.Bar, DpSize(320.dp, 72.dp), ThemeMode.Light, ground = LightGround)
+        captureWidget("405_compose_bar_widget_pinned_dark", pinnedDark, ShortcutVariant.Bar, DpSize(320.dp, 72.dp), ThemeMode.Light, ground = LightGround)
     }
 
     /** The quick composer over the launcher: as it opens, with a draft and an image, and with a refusal under it. */
@@ -165,7 +165,7 @@ class ShortcutWidgetScreenshotTest {
     @Test
     fun configureLight() {
         showConfigure(ShortcutWidgetSettings(ShortcutStyle.Solid), ThemeMode.Light)
-        capture("345_shortcut_widget_configure_light")
+        capture("406_shortcut_widget_configure_light")
     }
 
     /**
@@ -175,7 +175,7 @@ class ShortcutWidgetScreenshotTest {
     @Test
     fun configurePinnedDark() {
         showConfigure(ShortcutWidgetSettings(ShortcutStyle.Solid, appearance = WidgetAppearance(theme = WidgetTheme.Dark)), ThemeMode.Light)
-        capture("346_shortcut_widget_configure_pinned_dark")
+        capture("407_shortcut_widget_configure_pinned_dark")
     }
 
     @OptIn(ExperimentalMaterial3Api::class)

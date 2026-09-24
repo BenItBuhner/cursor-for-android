@@ -173,10 +173,10 @@ class WidgetScreenshotTest {
     fun headers() {
         val dark = WidgetData.sample(ThemeMode.Dark, FIXED_NOW)
         val defaults = ChatsWidgetSettings()
-        capture("347_widget_header_logo", dark, defaults.toggled(HeaderElement.Logo), FOUR_BY_TWO)
-        capture("348_widget_header_no_title", dark, defaults.toggled(HeaderElement.Title), FOUR_BY_TWO)
-        capture("349_widget_header_none", dark, defaults.copy(header = emptySet()), FOUR_BY_TWO)
-        capture("352_widget_header_light", WidgetData.sample(ThemeMode.Light, FIXED_NOW), defaults, FOUR_BY_TWO)
+        capture("408_widget_header_logo", dark, defaults.toggled(HeaderElement.Logo), FOUR_BY_TWO)
+        capture("409_widget_header_no_title", dark, defaults.toggled(HeaderElement.Title), FOUR_BY_TWO)
+        capture("410_widget_header_none", dark, defaults.copy(header = emptySet()), FOUR_BY_TWO)
+        capture("413_widget_header_light", WidgetData.sample(ThemeMode.Light, FIXED_NOW), defaults, FOUR_BY_TWO)
     }
 
     /**
@@ -187,8 +187,8 @@ class WidgetScreenshotTest {
     @Config(qualifiers = "w914dp-h411dp-land-night-420dpi")
     fun headersLandscape() {
         val dark = WidgetData.sample(ThemeMode.Dark, FIXED_NOW)
-        capture("350_widget_header_auto_hidden", dark, ChatsWidgetSettings(), FOUR_BY_TWO_LANDSCAPE)
-        capture("351_widget_header_kept", dark, ChatsWidgetSettings(headerAutoHide = false), FOUR_BY_TWO_LANDSCAPE)
+        capture("411_widget_header_auto_hidden", dark, ChatsWidgetSettings(), FOUR_BY_TWO_LANDSCAPE)
+        capture("412_widget_header_kept", dark, ChatsWidgetSettings(headerAutoHide = false), FOUR_BY_TWO_LANDSCAPE)
     }
 
     /**
@@ -200,10 +200,10 @@ class WidgetScreenshotTest {
     fun projectsLiveAndPreview() {
         val dark = ProjectsWidgetFixture.snapshot(ThemeMode.Dark, FIXED_NOW)
         val projects = ChatsWidgetSettings(mode = WidgetMode.Projects)
-        captureLive("353_widget_projects_live_4x4", dark, projects, FOUR_BY_FOUR, FOUR_BY_FOUR_LANDSCAPE)
-        capturePreview("354_widget_projects_preview_4x4", dark, projects, FOUR_BY_FOUR)
-        captureLive("355_widget_projects_live_4x2", dark, projects, FOUR_BY_TWO, FOUR_BY_TWO_LANDSCAPE)
-        capturePreview("356_widget_projects_preview_4x2", dark, projects, FOUR_BY_TWO)
+        captureLive("414_widget_projects_live_4x4", dark, projects, FOUR_BY_FOUR, FOUR_BY_FOUR_LANDSCAPE)
+        capturePreview("415_widget_projects_preview_4x4", dark, projects, FOUR_BY_FOUR)
+        captureLive("416_widget_projects_live_4x2", dark, projects, FOUR_BY_TWO, FOUR_BY_TWO_LANDSCAPE)
+        capturePreview("417_widget_projects_preview_4x2", dark, projects, FOUR_BY_TWO)
     }
 
     /** The settings screen for a placed 4x4 Projects widget: the preview is that placement, rows and all. */
@@ -211,7 +211,7 @@ class WidgetScreenshotTest {
     @Test
     fun configurePlaced() {
         showOptions(ProjectsWidgetFixture.snapshot(ThemeMode.Dark, FIXED_NOW), ChatsWidgetSettings(mode = WidgetMode.Projects), placement = FOUR_BY_FOUR)
-        captureScreenRoboImage(File(outDir, "357_widget_configure_4x4.png").path, RoborazziOptions())
+        captureScreenRoboImage(File(outDir, "418_widget_configure_4x4.png").path, RoborazziOptions())
     }
 
     /** A placement wider than the stage (a 4x4 in landscape) is shown whole, scaled down to fit. */
@@ -219,7 +219,7 @@ class WidgetScreenshotTest {
     @Test
     fun configurePlacedWide() {
         showOptions(WidgetData.sample(ThemeMode.Dark, FIXED_NOW), ChatsWidgetSettings(), placement = FOUR_BY_FOUR_LANDSCAPE)
-        captureScreenRoboImage(File(outDir, "358_widget_configure_wide.png").path, RoborazziOptions())
+        captureScreenRoboImage(File(outDir, "419_widget_configure_wide.png").path, RoborazziOptions())
     }
 
     /** The header's options, with the logo on: each part the header can show, and whether it hides itself on short placements. */
@@ -229,7 +229,7 @@ class WidgetScreenshotTest {
         showOptions(WidgetData.sample(ThemeMode.Dark, FIXED_NOW), ChatsWidgetSettings().toggled(HeaderElement.Logo), placement = FOUR_BY_TWO)
         compose.onNodeWithTag("option-header").performScrollTo()
         compose.waitForIdle()
-        captureScreenRoboImage(File(outDir, "359_widget_configure_header.png").path, RoborazziOptions())
+        captureScreenRoboImage(File(outDir, "420_widget_configure_header.png").path, RoborazziOptions())
     }
 
     /** The same screen under the light app theme. */
@@ -237,7 +237,7 @@ class WidgetScreenshotTest {
     @Test
     fun configureLight() {
         showOptions(WidgetData.sample(ThemeMode.Light, FIXED_NOW), ChatsWidgetSettings(), placement = FOUR_BY_TWO, appMode = ThemeMode.Light)
-        captureScreenRoboImage(File(outDir, "360_widget_configure_light.png").path, RoborazziOptions())
+        captureScreenRoboImage(File(outDir, "421_widget_configure_light.png").path, RoborazziOptions())
     }
 
     private fun showOptions(snapshot: WidgetSnapshot, settings: ChatsWidgetSettings, placement: DpSize? = null, appMode: ThemeMode = ThemeMode.Dark) {
