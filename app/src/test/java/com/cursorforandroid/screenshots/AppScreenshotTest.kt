@@ -526,10 +526,12 @@ class AppScreenshotTest {
         list.performScrollToNode(hasTestTag("subagent-row"))
         compose.waitForIdle()
         capture("39_project_coordinator_transcript")
-        // The Project itself is the chat's panel: its Project section, open by default, right under the Overview —
-        // the primaries with their status and menus, New primary and Adopt a chat (the demo stands in for the
+        // The Project itself is the chat's panel: under Details, its Project section, open by default, right under the
+        // header — the primaries with their status and menus, New primary and Adopt a chat (the demo stands in for the
         // account, so its actions are offered), and the shared context as the named empty state.
         compose.onNodeWithContentDescription("Open panel").performClick()
+        compose.waitUntil(20_000) { compose.onAllNodes(hasTestTag("panel-tab-details")).fetchSemanticsNodes().isNotEmpty() }
+        compose.onNodeWithTag("panel-tab-details").performClick()
         waitForText("Stripe webhook handler")
         waitForText("New primary")
         waitForText("No shared context for this Project yet.")
