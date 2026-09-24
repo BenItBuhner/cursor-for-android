@@ -18,13 +18,19 @@ import androidx.compose.ui.semantics.getOrNull
 import androidx.compose.ui.test.hasClickAction
 import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.isSelected
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
-import androidx.compose.ui.test.performKeyPress
+import androidx.compose.ui.test.onNodeWithContentDescription
+import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.test.performTextInput
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.cursorforandroid.domain.AgentSource
+import com.cursorforandroid.domain.PendingFollowup
 import com.cursorforandroid.domain.SlashCatalog
 import com.cursorforandroid.domain.SlashCommand
+import com.cursorforandroid.ui.conversation.AccountQueueRows
 import com.cursorforandroid.ui.projects.SteerSheet
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.ui.theme.ThemeMode
@@ -265,8 +271,8 @@ class ImeHardwareEnterTest {
     fun `a physical key lately counts as a keyboard attached, for a while`() {
         show(attached = false)
         typedWithIme("ship it")
-        // Reaches the composer after the IME only, as with an IME that hands keys on but reads Enter itself.
-        field.pressKey(NativeKeyEvent.KEYCODE_SHIFT_LEFT)
+        compose.pressAfterIme(view, NativeKeyEvent.KEYCODE_SHIFT_LEFT)
+        assertThat(PhysicalKeyboard.reachesFieldsFirst).isFalse()
         ime { tapEnter() }
         assertThat(sends).isEqualTo(1)
         assertThat(draft()).isEqualTo("ship it")
@@ -281,9 +287,20 @@ class ImeHardwareEnterTest {
     fun `a newline typed while Shift is held stays a newline`() {
         show(attached = true)
         typedWithIme("line one")
-        field.performKeyPress(keyEvent(NativeKeyEvent.KEYCODE_SHIFT_LEFT, NativeKeyEvent.ACTION_DOWN, shift = true))
+        compose.pressAfterIme(view, NativeKeyEvent.KEYCODE_SHIFT_LEFT, shift = true, release = false)
+        assertThat(PhysicalKeyboard.reachesFieldsFirst).isFalse()
         ime { tapEnter() }
         assertThat(draft()).isEqualTo("line one\n")
+        assertThat(sends).isEqualTo(0)
+    }
+
+    @Test
+    fun `a newline committed over a word still composing is not an Enter`() {
+        show(attached = true)
+        typedWithIme("ship ")
+        ime { compose("it") }
+        ime { tapEnter() }
+        assertThat(draft()).isEqualTo("ship \n")
         assertThat(sends).isEqualTo(0)
     }
 
@@ -320,6 +337,41 @@ class ImeHardwareEnterTest {
     }
 
     @Test
+    fun `the popover's highlight shows for a physical key the IME keeps`() {
+        show(commands = catalog)
+        typedWithIme("/go", FakeIme.Style.TakesEveryKey)
+        compose.waitUntil(10_000) { popoverOpen() }
+        assertThat(compose.onAllNodes(isSelected()).fetchSemanticsNodes()).isEmpty()
+        press(NativeKeyEvent.KEYCODE_SHIFT_LEFT)
+        assertThat(compose.onAllNodes(isSelected()).fetchSemanticsNodes()).hasSize(1)
+    }
+
+    @Test
+    fun `a queued follow-up being edited saves on a physical Enter the IME would have made a newline`() {
+        val updated = mutableListOf<String>()
+        compose.setContent {
+            CursorTheme(mode = ThemeMode.Dark) {
+                AccountQueueRows(
+                    queue = listOf(PendingFollowup("fu-1", "Then add a test", 1_000L, AgentSource.GLASS)),
+                    inFlightIds = emptySet(),
+                    onSendNow = {},
+                    onRemove = {},
+                    onUpdate = { _, text -> updated += text },
+                    onEditing = { _, _ -> },
+                )
+            }
+        }
+        compose.onNodeWithContentDescription("Edit queued follow-up").performClick()
+        val edit = compose.onNodeWithTag("account-queue-edit")
+        edit.performTextInput(" for dark ")
+        view = edit.windowView
+        compose.runOnIdle { FakeIme.bind(view, FakeIme.Style.CommitsNewline) }
+        ime { compose("mode") }
+        pressEnter()
+        assertThat(updated).containsExactly("Then add a test for dark mode")
+    }
+
+    @Test
     fun `a sheet's field steers on a physical Enter the IME would have made a newline`() {
         val steered = mutableListOf<String>()
         compose.setContent {
@@ -339,7 +391,8 @@ class ImeHardwareEnterTest {
         }
         typedWithIme("use the v2 API")
         // The sheet's window has a configuration of its own; a physical key lately is the keyboard's evidence here.
-        field.pressKey(NativeKeyEvent.KEYCODE_SHIFT_LEFT)
+        compose.pressAfterIme(view, NativeKeyEvent.KEYCODE_SHIFT_LEFT)
+        assertThat(PhysicalKeyboard.reachesFieldsFirst).isFalse()
         ime { tapEnter() }
         assertThat(steered).containsExactly("use the v2 API")
     }

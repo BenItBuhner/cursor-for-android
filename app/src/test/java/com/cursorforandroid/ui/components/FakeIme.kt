@@ -60,6 +60,9 @@ internal object FakeIme {
 
         /** Confirms the composition and types nothing more, as a conversion IME (pinyin, kana) does on Enter. */
         ConfirmsComposition,
+
+        /** Takes every key it is handed and hands none on, answering Enter as [CommitsNewline] does. */
+        TakesEveryKey,
     }
 
     var style = Style.PassesKeysOn
@@ -104,7 +107,8 @@ internal object FakeIme {
     fun take(event: InputEvent): Boolean {
         if (event !is NativeKeyEvent) return false
         heard += NativeKeyEvent(event)
-        if (style == Style.PassesKeysOn || event.keyCode != NativeKeyEvent.KEYCODE_ENTER) return false
+        if (style == Style.PassesKeysOn) return false
+        if (event.keyCode != NativeKeyEvent.KEYCODE_ENTER) return style == Style.TakesEveryKey
         if (event.action == NativeKeyEvent.ACTION_DOWN && event.repeatCount == 0) answerEnter()
         return true
     }
@@ -114,7 +118,7 @@ internal object FakeIme {
         val word = composing
         composing = null
         when (style) {
-            Style.CommitsNewline -> {
+            Style.CommitsNewline, Style.TakesEveryKey -> {
                 if (word != null) connection.commitText(word, 1)
                 connection.commitText("\n", 1)
             }
@@ -155,10 +159,29 @@ internal fun ComposeTestRule.pressThroughWindow(
     ctrl: Boolean = false,
 ) {
     val root = checkNotNull(View::class.java.getMethod("getViewRootImpl").invoke(view)) { "the view is in no window" }
+    // A window without focus drops its keys. The system focuses the window it shows on top; Robolectric leaves a
+    // dialog's (a sheet's) without.
+    if (!view.hasWindowFocus()) {
+        runOnUiThread { root.javaClass.getMethod("windowFocusChanged", Boolean::class.javaPrimitiveType).invoke(root, true) }
+        waitForIdle()
+    }
     val enqueue = root.javaClass.getMethod("enqueueInputEvent", InputEvent::class.java)
     for (action in listOf(NativeKeyEvent.ACTION_DOWN, NativeKeyEvent.ACTION_UP)) {
         val event = keyEvent(keyCode, action, keyboard, shift = shift, ctrl = ctrl).nativeKeyEvent
         runOnUiThread { enqueue.invoke(root, event) }
+        waitForIdle()
+    }
+}
+
+/**
+ * Hands [keyCode] from a physical keyboard to [view]'s window as the IME hands a key back: past the views' pre-IME
+ * pass, which never sees it. Unless [release], the key is left held down.
+ */
+internal fun ComposeTestRule.pressAfterIme(view: View, keyCode: Int, shift: Boolean = false, release: Boolean = true) {
+    val actions = if (release) listOf(NativeKeyEvent.ACTION_DOWN, NativeKeyEvent.ACTION_UP) else listOf(NativeKeyEvent.ACTION_DOWN)
+    for (action in actions) {
+        val event = keyEvent(keyCode, action, shift = shift).nativeKeyEvent
+        runOnUiThread { view.rootView.dispatchKeyEvent(event) }
         waitForIdle()
     }
 }
