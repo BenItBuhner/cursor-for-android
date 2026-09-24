@@ -83,6 +83,32 @@ class NavEntryLifetimeTest {
     }
 
     @Test
+    fun `a chat under a chat opened from it keeps its view models, and has them back when the top is popped`() {
+        val stack = NavStack(Screen.Home)
+        host(stack)
+        navigate { stack.openAgent("bc-1") }
+        val coordinator = sentinels.getValue("agent/bc-1")
+        navigate { stack.openAgent("bc-2") }
+        assertThat(coordinator.cleared).isFalse()
+        navigate { stack.pop() }
+        // The same view model — the composer's draft and the transcript it read — not a fresh one.
+        assertThat(sentinels.getValue("agent/bc-1")).isSameInstanceAs(coordinator)
+        assertThat(sentinels.getValue("agent/bc-2").cleared).isTrue()
+    }
+
+    @Test
+    fun `an entry the depth cap drops releases its view models`() {
+        val stack = NavStack(Screen.Home)
+        host(stack)
+        navigate { stack.openAgent("bc-1") }
+        val oldest = sentinels.getValue("agent/bc-1")
+        for (n in 2..NavStack.MAX_DEPTH) navigate { stack.openAgent("bc-$n") }
+        assertThat(stack.entries.map { it.screen }).doesNotContain(Screen.Agent("bc-1"))
+        assertThat(oldest.cleared).isTrue()
+        assertThat(sentinels.getValue("home").cleared).isFalse()
+    }
+
+    @Test
     fun `an entry still animating out is not released early`() {
         val stack = NavStack(Screen.Home)
         host(stack)

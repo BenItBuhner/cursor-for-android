@@ -87,7 +87,7 @@ class ModelSheetTest {
         selected: ModelOption? = models.firstOrNull(),
         loading: Boolean = false,
         unavailable: Boolean = false,
-        onRetry: () -> Unit = {},
+        onRefresh: () -> Unit = {},
         onAutoCreatePr: ((Boolean) -> Unit)? = {},
         pinnedIds: List<String> = emptyList(),
         noModelRow: NoModelRow? = null,
@@ -113,7 +113,7 @@ class ModelSheetTest {
                     unavailable = unavailable,
                     onPlanMode = {},
                     onAutoCreatePr = onAutoCreatePr,
-                    onRetry = onRetry,
+                    onRefresh = onRefresh,
                     onSelect = { model, variant ->
                         picked = model to variant
                         selectedModel = model
@@ -241,12 +241,14 @@ class ModelSheetTest {
     }
 
     @Test
-    fun `a failed catalogue load offers a retry instead of loading forever`() {
-        var retries = 0
-        show(emptyList(), unavailable = true, onRetry = { retries++ })
-        compose.onNodeWithText("Retry").performClick()
+    fun `a failed catalogue load says so and is refreshed from the header instead of loading forever`() {
+        var refreshes = 0
+        show(emptyList(), unavailable = true, onRefresh = { refreshes++ })
+        compose.onNodeWithText("Couldn't load the model list. Refresh to try again.").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Refresh models").performClick()
         compose.waitForIdle()
-        assertThat(retries).isEqualTo(1)
+        assertThat(refreshes).isEqualTo(1)
+        assertAbsent("Retry")
         assertThat(compose.onAllNodes(hasText("Loading models", substring = true)).fetchSemanticsNodes()).isEmpty()
         assertAbsent("Default still works")
     }
@@ -255,6 +257,28 @@ class ModelSheetTest {
     fun `an empty catalogue shows the loading row while the request is in flight`() {
         show(emptyList(), loading = true)
         compose.onNodeWithText("Loading models…").assertIsDisplayed()
+    }
+
+    /** The repository picker's control, in the same place: the refresh glyph at the end of the header row. */
+    @Test
+    fun `the header's refresh button sits at its end and asks for the list again`() {
+        var refreshes = 0
+        show(listOf(composer, sonnet), onRefresh = { refreshes++ })
+        val header = compose.onNodeWithTag("model-sheet-header", useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
+        val button = compose.onNodeWithContentDescription("Refresh models").fetchSemanticsNode().boundsInRoot
+        assertThat(header.right - button.right).isLessThan(header.width / 8)
+        assertThat(button.top).isAtLeast(header.top)
+        assertThat(button.bottom).isAtMost(header.bottom + 1f)
+        compose.onNodeWithContentDescription("Refresh models").performClick()
+        compose.waitForIdle()
+        assertThat(refreshes).isEqualTo(1)
+    }
+
+    @Test
+    fun `a spinner stands in for the refresh button while the list is fetched, and the list shown stays`() {
+        show(listOf(composer, sonnet), loading = true)
+        assertThat(compose.onAllNodes(hasContentDescription("Refresh models")).fetchSemanticsNodes()).isEmpty()
+        compose.onNodeWithText("Claude 4.6 Sonnet").assertIsDisplayed()
     }
 
     @Test

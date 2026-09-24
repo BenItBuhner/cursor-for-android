@@ -3,8 +3,8 @@
   Static picture of the widget for the launcher's widget picker (Android 12+ renders this layout; older launchers
   show @drawable/widget_chats_preview, and Android 15+ asks the widget itself for a live preview, falling back to
   this one whenever that preview is not in the system's memory — before the app has run, after a reboot). Same
-  geometry as the rendered widget on its defaults: a 40dp header — cube, list title with its picker chevron, refresh
-  — then the sidebar's 36dp rows in their 16dp glyph slot / 13sp title proportions with the repository and age in
+  geometry as the rendered widget on its defaults: a 40dp header — list title with its picker chevron, refresh; the
+  cube is off by default — then the sidebar's 36dp rows in their 16dp glyph slot / 13sp title proportions with the repository and age in
   the quaternary tone, and the white new-chat disc in the corner, with the demo's showcase chats as sample rows.
 
   A launcher inflates this through RemoteViews' filter, which admits only classes annotated @RemoteView: the
@@ -30,20 +30,12 @@
             android:layout_height="40dp"
             android:gravity="center_vertical"
             android:orientation="horizontal"
-            android:paddingStart="14dp"
+            android:paddingStart="16dp"
             android:paddingEnd="6dp">
-
-            <ImageView
-                android:layout_width="22dp"
-                android:layout_height="22dp"
-                android:contentDescription="@string/app_name"
-                android:src="@drawable/widget_cube"
-                android:tint="@color/widget_text_primary" />
 
             <LinearLayout
                 android:layout_width="0dp"
                 android:layout_height="match_parent"
-                android:layout_marginStart="10dp"
                 android:layout_weight="1"
                 android:gravity="center_vertical"
                 android:orientation="horizontal">

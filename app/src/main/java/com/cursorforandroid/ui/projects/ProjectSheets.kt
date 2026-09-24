@@ -43,6 +43,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.cursorforandroid.domain.Agent
@@ -57,6 +58,7 @@ import com.cursorforandroid.ui.components.SheetHeader
 import com.cursorforandroid.ui.components.fadingVerticalScroll
 import com.cursorforandroid.ui.components.pressable
 import com.cursorforandroid.ui.components.scrollEdgeFade
+import com.cursorforandroid.ui.components.sendOnHardwareEnter
 import com.cursorforandroid.ui.components.stylusWriting
 import com.cursorforandroid.ui.home.SheetRow
 import com.cursorforandroid.ui.home.SheetSearchField
@@ -84,13 +86,15 @@ sealed interface ProjectSheet : java.io.Serializable {
 internal fun NewWorkerSheet(root: Agent?, onLaunch: (prompt: String, name: String?) -> Unit, onDismiss: () -> Unit) {
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
-    var prompt by rememberSaveable { mutableStateOf("") }
-    var name by rememberSaveable { mutableStateOf("") }
+    var prompt by rememberSaveable(stateSaver = TextFieldValue.Saver) { mutableStateOf(TextFieldValue()) }
+    var name by rememberSaveable(stateSaver = TextFieldValue.Saver) { mutableStateOf(TextFieldValue()) }
     CursorSheet(onDismiss = onDismiss) { dismiss ->
+        val start = { onLaunch(prompt.text, name.text); dismiss() }
+        val canStart = prompt.text.isNotBlank()
         SheetHeader("New primary")
         Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            SheetField(value = prompt, onValueChange = { prompt = it }, placeholder = "What should this agent do?", minLines = 4, label = "Prompt")
-            SheetField(value = name, onValueChange = { name = it }, placeholder = "Name (optional)", minLines = 1, label = "Name")
+            SheetField(value = prompt, onValueChange = { prompt = it }, placeholder = "What should this agent do?", minLines = 4, label = "Prompt", onSubmit = start, canSubmit = canStart)
+            SheetField(value = name, onValueChange = { name = it }, placeholder = "Name (optional)", minLines = 1, label = "Name", onSubmit = start, canSubmit = canStart)
             val where = listOfNotNull(root?.repoSlug, root?.startingRef?.takeIf { it.isNotBlank() }).joinToString(" \u00B7 ")
             Text(
                 if (where.isNotEmpty()) "Runs in $where, like the coordinator, and reports to it." else "Runs where the coordinator runs and reports to it.",
@@ -99,7 +103,7 @@ internal fun NewWorkerSheet(root: Agent?, onLaunch: (prompt: String, name: Strin
             Row(Modifier.fillMaxWidth().padding(top = 4.dp, bottom = 16.dp), horizontalArrangement = Arrangement.End) {
                 CursorButton("Cancel", onClick = dismiss)
                 Spacer(Modifier.width(8.dp))
-                CursorButton("Start", primary = true, enabled = prompt.isNotBlank(), onClick = { onLaunch(prompt, name); dismiss() })
+                CursorButton("Start", primary = true, enabled = canStart, onClick = start)
             }
         }
     }
@@ -161,7 +165,7 @@ internal fun MoveSheet(workerName: String, projects: List<Agent>, onPick: (Strin
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun NameSheet(title: String, placeholder: String, action: String, onConfirm: (String?) -> Unit, onDismiss: () -> Unit) {
-    var value by rememberSaveable { mutableStateOf("") }
+    var value by rememberSaveable(stateSaver = TextFieldValue.Saver) { mutableStateOf(TextFieldValue()) }
     CursorSheet(onDismiss = onDismiss) { dismiss ->
         SheetHeader(title)
         Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -169,7 +173,7 @@ internal fun NameSheet(title: String, placeholder: String, action: String, onCon
             Row(Modifier.fillMaxWidth().padding(top = 4.dp, bottom = 16.dp), horizontalArrangement = Arrangement.End) {
                 CursorButton("Cancel", onClick = dismiss)
                 Spacer(Modifier.width(8.dp))
-                CursorButton(action, primary = true, onClick = { onConfirm(value.takeIf { it.isNotBlank() }); dismiss() })
+                CursorButton(action, primary = true, onClick = { onConfirm(value.text.takeIf { it.isNotBlank() }); dismiss() })
             }
         }
     }
@@ -181,16 +185,18 @@ internal fun NameSheet(title: String, placeholder: String, action: String, onCon
 internal fun SteerSheet(workerName: String, onSteer: (String) -> Unit, onDismiss: () -> Unit) {
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
-    var text by rememberSaveable { mutableStateOf("") }
+    var text by rememberSaveable(stateSaver = TextFieldValue.Saver) { mutableStateOf(TextFieldValue()) }
     CursorSheet(onDismiss = onDismiss) { dismiss ->
+        val steer = { onSteer(text.text); dismiss() }
+        val canSteer = text.text.isNotBlank()
         SheetHeader("Steer $workerName")
         Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            SheetField(value = text, onValueChange = { text = it }, placeholder = "Change course without stopping the turn\u2026", minLines = 3, label = null)
+            SheetField(value = text, onValueChange = { text = it }, placeholder = "Change course without stopping the turn\u2026", minLines = 3, label = null, onSubmit = steer, canSubmit = canSteer)
             Text("Delivered into the running turn at the agent's next step; a follow-up would wait for the turn to end.", style = type.small, color = colors.textQuaternary)
             Row(Modifier.fillMaxWidth().padding(top = 4.dp, bottom = 16.dp), horizontalArrangement = Arrangement.End) {
                 CursorButton("Cancel", onClick = dismiss)
                 Spacer(Modifier.width(8.dp))
-                CursorButton("Steer", primary = true, enabled = text.isNotBlank(), onClick = { onSteer(text); dismiss() })
+                CursorButton("Steer", primary = true, enabled = canSteer, onClick = steer)
             }
         }
     }
@@ -354,9 +360,20 @@ internal fun ContextFileSheet(file: OpenContextFile, onDismiss: () -> Unit) {
     }
 }
 
-/** The sheets' text field: a labelled box in the composer's idiom. */
+/**
+ * The sheets' text field: a labelled box in the composer's idiom. With [onSubmit], a physical keyboard's Enter presses
+ * the sheet's action as the composer's presses send, and does nothing while [canSubmit] is false (see [sendOnHardwareEnter]).
+ */
 @Composable
-private fun SheetField(value: String, onValueChange: (String) -> Unit, placeholder: String, minLines: Int, label: String?) {
+private fun SheetField(
+    value: TextFieldValue,
+    onValueChange: (TextFieldValue) -> Unit,
+    placeholder: String,
+    minLines: Int,
+    label: String?,
+    onSubmit: (() -> Unit)? = null,
+    canSubmit: Boolean = true,
+) {
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
     val shape = CursorTheme.shapes.base
@@ -377,9 +394,12 @@ private fun SheetField(value: String, onValueChange: (String) -> Unit, placehold
                 minLines = minLines,
                 textStyle = type.base.copy(color = colors.textPrimary),
                 cursorBrush = SolidColor(colors.textPrimary),
-                modifier = Modifier.fillMaxWidth().semantics { contentDescription = placeholder },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .then(if (onSubmit != null) Modifier.sendOnHardwareEnter(value, onValueChange, onSend = onSubmit.takeIf { canSubmit }) else Modifier)
+                    .semantics { contentDescription = placeholder },
                 decorationBox = { inner ->
-                    Box { if (value.isEmpty()) Text(placeholder, style = type.base, color = colors.textQuaternary); inner() }
+                    Box { if (value.text.isEmpty()) Text(placeholder, style = type.base, color = colors.textQuaternary); inner() }
                 },
             )
         }

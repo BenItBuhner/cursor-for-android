@@ -223,14 +223,15 @@ private val ShortcutTarget.glyph: Int
 
 /**
  * The colours one [ShortcutStyle] paints with, as Glance providers. The widget sits on the wallpaper, so a look
- * decides what goes under the glyph: white keeps to white whatever the theme; the app tint takes the composer's own
- * surface, stroke and tones for the app's theme (a day / night pair under "Match system", like the Chats widget);
- * glass is a wash of the foreground the system theme would use — dark by day, white at night — with the wallpaper
- * through it; icon only paints nothing behind the glyph and lets the glyph itself follow day and night.
+ * decides what goes under the glyph: solid is an opaque disc — white, or raised grey in the dark; the app tint takes
+ * the composer's own surface, stroke and tones; glass is a wash of the theme's foreground with the wallpaper through
+ * it; icon only paints nothing behind the glyph.
  *
- * The [WidgetAppearance] every widget of this app shares applies here too: its theme decides which colours the
- * app-tinted look takes (the app's own, or a pinned one), and its opacity is how much of the wallpaper shows through
- * the white and app-tinted discs and the glass wash (icon only has nothing to see through).
+ * The [WidgetAppearance] every widget of this app shares decides the rest, as it does for the Chats widget
+ * ([resolve]): its theme picks the side of each look — the light one, the dark one (OLED black for the solid disc
+ * and the app tint), or both as a day / night pair the launcher resolves itself, which is what the default ("App",
+ * with the app following the system) comes to — and its opacity is how much of the wallpaper shows through the
+ * solid and app-tinted discs and the glass wash (icon only has nothing to see through).
  *
  * Fills and text carry the app's translucent tokens as they are. Glyph tints do not: a RemoteViews image tint is
  * `setColorFilter`, SRC_ATOP over the drawable's white strokes, so a 28 % tint would come out nearly white. Each
@@ -254,88 +255,135 @@ class ShortcutLook private constructor(
     val sendGlyph: ColorProvider,
 ) {
     companion object {
+        /**
+         * The look for [style] under [appearance]; [appMode] and [appOledBlack] are the app's own theme, which the
+         * look follows while the appearance says [WidgetTheme.App] (the other themes pin one).
+         */
+        fun of(style: ShortcutStyle, appearance: WidgetAppearance, appMode: ThemeMode, appOledBlack: Boolean): ShortcutLook {
+            val (mode, oledBlack) = appearance.theme.resolve(appMode, appOledBlack)
+            val opacity = appearance.opacityFraction
+            val day = ShortcutTones.of(style, dark = false, oledBlack = false, opacity = opacity)
+            val night = ShortcutTones.of(style, dark = true, oledBlack = oledBlack, opacity = opacity)
+            return when (mode) {
+                ThemeMode.Light -> from(day, day)
+                ThemeMode.Dark -> from(night, night)
+                ThemeMode.System -> from(day, night)
+            }
+        }
+
+        /** One look from its two sides; the same side twice is a fixed colour, not a pair. */
+        private fun from(day: ShortcutTones, night: ShortcutTones): ShortcutLook {
+            fun provider(pick: (ShortcutTones) -> Color): ColorProvider =
+                if (day === night) ColorProvider(pick(day)) else ColorProvider(day = pick(day), night = pick(night))
+            fun optional(pick: (ShortcutTones) -> Color?): ColorProvider? {
+                val dayColor = pick(day) ?: return null
+                val nightColor = pick(night) ?: return null
+                return if (day === night) ColorProvider(dayColor) else ColorProvider(day = dayColor, night = nightColor)
+            }
+            return ShortcutLook(
+                fill = optional { it.fill },
+                ring = optional { it.ring },
+                glyph = provider { it.glyph },
+                text = provider { it.text },
+                disc = provider { it.disc },
+                discGlyph = provider { it.discGlyph },
+                sendDisc = provider { it.sendDisc },
+                sendGlyph = provider { it.sendGlyph },
+            )
+        }
+    }
+}
+
+/**
+ * One side of a [ShortcutLook] — its colours on a light or on a dark home screen — as plain colours, so that the
+ * settings screen's swatches paint with exactly what the widget does.
+ */
+class ShortcutTones private constructor(
+    val fill: Color?,
+    val ring: Color?,
+    val glyph: Color,
+    val text: Color,
+    val disc: Color,
+    val discGlyph: Color,
+    val sendDisc: Color,
+    val sendGlyph: Color,
+) {
+    companion object {
         private val Dark = Color(0xFF141414)
         private val Light = Color(0xFFF0F0F0)
 
-        /**
-         * The look for [style] under [appearance]; [appMode] and [appOledBlack] are the app's own theme, which the
-         * app-tinted look follows while the appearance says [WidgetTheme.App] (the other themes pin one).
-         */
-        fun of(style: ShortcutStyle, appearance: WidgetAppearance, appMode: ThemeMode, appOledBlack: Boolean): ShortcutLook {
-            val opacity = appearance.opacityFraction
-            return when (style) {
-                ShortcutStyle.White -> onSurface(surface = Color.White, ring = Dark.copy(alpha = 0.08f), base = Dark, opacity = opacity)
-                ShortcutStyle.Tinted -> when (appearance.theme) {
-                    WidgetTheme.App -> tinted(appMode, appOledBlack, opacity)
-                    WidgetTheme.System -> tinted(ThemeMode.System, oledBlack = false, opacity)
-                    WidgetTheme.Light -> tinted(ThemeMode.Light, oledBlack = false, opacity)
-                    WidgetTheme.Dark -> tinted(ThemeMode.Dark, oledBlack = false, opacity)
-                    WidgetTheme.Oled -> tinted(ThemeMode.Dark, oledBlack = true, opacity)
-                }
-                ShortcutStyle.Glass -> glass(
-                    fill = dayNight(Dark.copy(alpha = 0.12f * opacity), Light.copy(alpha = 0.20f * opacity)),
-                    ring = dayNight(Dark.copy(alpha = 0.16f * opacity), Light.copy(alpha = 0.28f * opacity)),
-                )
-                // The bar has no surface of its own here, so its discs and text take the glass tones over the wallpaper.
-                ShortcutStyle.IconOnly -> glass(fill = null, ring = null)
+        /** [style] on the [dark] side or the light one; [oledBlack] turns the dark side's surfaces black. */
+        fun of(style: ShortcutStyle, dark: Boolean, oledBlack: Boolean, opacity: Float): ShortcutTones = when (style) {
+            ShortcutStyle.Solid -> when {
+                !dark -> onSurface(surface = Color.White, ring = CursorLightColors.strokeSubtle, base = CursorLightColors.base, opacity = opacity)
+                // Black on a black wallpaper is only its ring, so the ring is the stronger fill tone.
+                oledBlack -> onSurface(surface = Color.Black, ring = CursorOledColors.fillMedium, base = CursorOledColors.base, opacity = opacity)
+                else -> onSurface(surface = CursorDarkColors.fill.over(CursorDarkColors.elevated), ring = CursorDarkColors.strokeSubtle, base = CursorDarkColors.base, opacity = opacity)
             }
+            ShortcutStyle.Tinted -> tinted(if (!dark) CursorLightColors else if (oledBlack) CursorOledColors else CursorDarkColors, opacity)
+            ShortcutStyle.Glass -> glass(dark, washed = true, opacity = opacity)
+            // The bar has no surface of its own here, so its discs and text take the glass tones over the wallpaper.
+            ShortcutStyle.IconOnly -> glass(dark, washed = false, opacity = opacity)
         }
 
         /**
          * A fixed [surface] with everything on it derived from [base] at the app's alphas (text 60 %, icon 66 / 28 %,
          * fills 8 / 6 %); the glyphs composited over the discs they sit in. The surface itself is drawn at [opacity].
          */
-        private fun onSurface(surface: Color, ring: Color, base: Color, opacity: Float): ShortcutLook {
+        private fun onSurface(surface: Color, ring: Color, base: Color, opacity: Float): ShortcutTones {
             val disc = base.copy(alpha = 0.08f).over(surface)
             val sendDisc = base.copy(alpha = 0.06f).over(surface)
-            return ShortcutLook(
-                fill = ColorProvider(surface.copy(alpha = opacity)),
-                ring = ColorProvider(ring),
-                glyph = ColorProvider(base),
-                text = ColorProvider(base.copy(alpha = 0.60f)),
-                disc = ColorProvider(disc),
-                discGlyph = ColorProvider(base.copy(alpha = 0.66f).over(disc)),
-                sendDisc = ColorProvider(sendDisc),
-                sendGlyph = ColorProvider(base.copy(alpha = 0.28f).over(sendDisc)),
+            return ShortcutTones(
+                fill = surface.copy(alpha = opacity),
+                ring = ring,
+                glyph = base,
+                text = base.copy(alpha = 0.60f),
+                disc = disc,
+                discGlyph = base.copy(alpha = 0.66f).over(disc),
+                sendDisc = sendDisc,
+                sendGlyph = base.copy(alpha = 0.28f).over(sendDisc),
             )
         }
 
         /**
-         * The wallpaper showing through: translucent washes of the system theme's foreground, and — the wallpaper
-         * being nobody's to know — glyphs in fixed opaque tones that read on either.
+         * The wallpaper showing through: a translucent wash of the side's foreground when [washed], and — the
+         * wallpaper being nobody's to know — glyphs in fixed opaque tones that read on either.
          */
-        private fun glass(fill: ColorProvider?, ring: ColorProvider?) = ShortcutLook(
-            fill = fill,
-            ring = ring,
-            glyph = dayNight(Dark, Light),
-            text = dayNight(Dark.copy(alpha = 0.66f), Light.copy(alpha = 0.72f)),
-            disc = dayNight(Dark.copy(alpha = 0.10f), Light.copy(alpha = 0.16f)),
-            discGlyph = dayNight(Color(0xFF3A3A3A), Color(0xFFE0E0E0)),
-            sendDisc = dayNight(Dark.copy(alpha = 0.08f), Light.copy(alpha = 0.12f)),
-            sendGlyph = dayNight(Color(0xFF7A7A7A), Color(0xFFA8A8A8)),
-        )
-
-        /** The composer's own surface (`--cursor-editor`, at [opacity]) and tones for [theme]; "Match system" is a day / night pair. */
-        private fun tinted(theme: ThemeMode, oledBlack: Boolean, opacity: Float): ShortcutLook {
-            val dark = if (oledBlack) CursorOledColors else CursorDarkColors
-            fun token(pick: (CursorColors) -> Color): ColorProvider = when (theme) {
-                ThemeMode.Dark -> ColorProvider(pick(dark))
-                ThemeMode.Light -> ColorProvider(pick(CursorLightColors))
-                ThemeMode.System -> ColorProvider(day = pick(CursorLightColors), night = pick(dark))
-            }
-            return ShortcutLook(
-                fill = token { it.elevated.copy(alpha = opacity) },
-                ring = token { it.strokeSubtle },
-                glyph = token { it.iconPrimary },
-                text = token { it.textTertiary },
-                disc = token { it.fill },
-                discGlyph = token { it.iconSecondary.over(it.fill.over(it.elevated)) },
-                sendDisc = token { it.fillSoft },
-                sendGlyph = token { it.iconQuaternary.over(it.fillSoft.over(it.elevated)) },
+        private fun glass(dark: Boolean, washed: Boolean, opacity: Float): ShortcutTones = if (dark) {
+            ShortcutTones(
+                fill = Light.copy(alpha = 0.20f * opacity).takeIf { washed },
+                ring = Light.copy(alpha = 0.28f * opacity).takeIf { washed },
+                glyph = Light,
+                text = Light.copy(alpha = 0.72f),
+                disc = Light.copy(alpha = 0.16f),
+                discGlyph = Color(0xFFE0E0E0),
+                sendDisc = Light.copy(alpha = 0.12f),
+                sendGlyph = Color(0xFFA8A8A8),
+            )
+        } else {
+            ShortcutTones(
+                fill = Dark.copy(alpha = 0.12f * opacity).takeIf { washed },
+                ring = Dark.copy(alpha = 0.16f * opacity).takeIf { washed },
+                glyph = Dark,
+                text = Dark.copy(alpha = 0.66f),
+                disc = Dark.copy(alpha = 0.10f),
+                discGlyph = Color(0xFF3A3A3A),
+                sendDisc = Dark.copy(alpha = 0.08f),
+                sendGlyph = Color(0xFF7A7A7A),
             )
         }
 
-        private fun dayNight(day: Color, night: Color): ColorProvider = ColorProvider(day = day, night = night)
+        /** The composer's own surface (`--cursor-editor`, at [opacity]) and tones in [colors]. */
+        private fun tinted(colors: CursorColors, opacity: Float): ShortcutTones = ShortcutTones(
+            fill = colors.elevated.copy(alpha = opacity),
+            ring = colors.strokeSubtle,
+            glyph = colors.iconPrimary,
+            text = colors.textTertiary,
+            disc = colors.fill,
+            discGlyph = colors.iconSecondary.over(colors.fill.over(colors.elevated)),
+            sendDisc = colors.fillSoft,
+            sendGlyph = colors.iconQuaternary.over(colors.fillSoft.over(colors.elevated)),
+        )
 
         /** [this] composited over an opaque [background]: the colour the token reads as on that surface. */
         private fun Color.over(background: Color): Color {

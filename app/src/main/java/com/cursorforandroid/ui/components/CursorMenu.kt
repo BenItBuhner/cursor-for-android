@@ -6,6 +6,8 @@ import androidx.compose.animation.core.MutableTransitionState
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.rememberTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -22,9 +24,12 @@ import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.relocation.BringIntoViewRequester
+import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -41,6 +46,8 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.Dp
@@ -146,8 +153,10 @@ fun CursorMenu(
  * optional dim [hint] after it (a command's argument) and a second line beneath ([subtitle]), and an optional
  * [trailing] control or mark. The press highlight is inset [CursorDimens.menuInset] from the menu's edges with a
  * corner concentric with the menu's. A [tint] other than the primary text colour (a destructive red) colours the
- * glyph as well; not [enabled], the row dims and takes no taps.
+ * glyph as well; not [enabled], the row dims and takes no taps. [highlighted] is the row a physical keyboard would
+ * pick ([PopoverSelection]): it wears the hover fill in the press highlight's place and is scrolled into view.
  */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun CursorMenuItem(
     label: String,
@@ -158,6 +167,7 @@ fun CursorMenuItem(
     tint: Color = CursorTheme.colors.textPrimary,
     enabled: Boolean = true,
     subtitleMaxLines: Int = 2,
+    highlighted: Boolean = false,
     trailing: (@Composable RowScope.() -> Unit)? = null,
     onClick: () -> Unit,
 ) {
@@ -169,10 +179,22 @@ fun CursorMenuItem(
         tint == colors.textPrimary -> colors.iconSecondary
         else -> tint
     }
+    val inView = remember { BringIntoViewRequester() }
+    LaunchedEffect(highlighted) { if (highlighted) inView.bringIntoView() }
     Row(
         modifier
             .fillMaxWidth()
             .padding(horizontal = CursorDimens.menuInset)
+            .bringIntoViewRequester(inView)
+            .then(
+                if (highlighted) {
+                    Modifier
+                        .background(colors.fill, CursorTheme.shapes.menuItem)
+                        .semantics { selected = true }
+                } else {
+                    Modifier
+                },
+            )
             .pressable(onClick, CursorTheme.shapes.menuItem, enabled = enabled, role = null)
             .heightIn(min = CursorDimens.menuRow)
             .padding(horizontal = CursorDimens.menuItemPadding, vertical = if (subtitle != null) 7.dp else 0.dp),

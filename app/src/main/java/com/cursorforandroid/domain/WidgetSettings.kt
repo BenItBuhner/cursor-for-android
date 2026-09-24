@@ -45,7 +45,10 @@ enum class WidgetLayout(val label: String) {
     Small("Small"),
     /** The header and one-line rows with trailing metadata. The 4x2 default. */
     Medium("Medium"),
-    /** The header and two-line rows — the metadata under the title — for a tall placement. */
+    /**
+     * The header and two-line chat rows — the metadata under the title — for a tall placement. A Project's row keeps
+     * its one line, the counts at its end, in every arrangement.
+     */
     Large("Large"),
 }
 
@@ -95,6 +98,25 @@ enum class RowElement(val label: String) {
 object RowElementSetSerializer : LenientEnumSetSerializer<RowElement>(RowElement.entries)
 
 /**
+ * The parts of the header row over the list that can be shown or hidden. The logo stands for the app wherever the
+ * widget draws it, so hiding it also takes it off the one-line arrangement and the Projects strip.
+ */
+@Serializable
+enum class HeaderElement(val label: String, val detail: String) {
+    /** The list's name and its chevron. */
+    Title("List name", "Opens these settings"),
+    /** The app's cube at the start of the row. */
+    Logo("Logo", "Opens the app"),
+    /** The refresh button, a spinner while the refresh it asked for runs. Not drawn while the corner button refreshes. */
+    Refresh("Refresh button", "Fetches the list now"),
+    /** The "+" that starts a chat. Not drawn while the corner button starts one. */
+    NewChat("New chat button", "Starts a chat"),
+}
+
+/** [RowElementSetSerializer] for the header's parts. */
+object HeaderElementSetSerializer : LenientEnumSetSerializer<HeaderElement>(HeaderElement.entries)
+
+/**
  * Everything one "Chats" widget instance is set to. Kept as JSON in the widget's own Glance state, per instance:
  * two widgets on two home screens can list two Projects in two themes. Unknown fields and names from a later
  * build decode to the defaults rather than failing the whole record (see [decode]).
@@ -110,16 +132,44 @@ data class ChatsWidgetSettings(
     @Serializable(with = RowElementSetSerializer::class) val elements: Set<RowElement> = DEFAULT_ELEMENTS,
     @SerialName("corner_action") val cornerAction: CornerAction = CornerAction.NewChat,
     @SerialName("corner_style") val cornerStyle: CornerStyle = CornerStyle.White,
+    @Serializable(with = HeaderElementSetSerializer::class) val header: Set<HeaderElement> = DEFAULT_HEADER,
+    /** Leaves the header row out of a widget too short to spare it, so the rows have its room. */
+    @SerialName("header_auto_hide") val headerAutoHide: Boolean = true,
 ) {
     fun shows(element: RowElement): Boolean = element in elements
 
     fun toggled(element: RowElement): ChatsWidgetSettings =
         copy(elements = if (element in elements) elements - element else elements + element)
 
+    fun shows(element: HeaderElement): Boolean = element in header
+
+    fun toggled(element: HeaderElement): ChatsWidgetSettings =
+        copy(header = if (element in header) header - element else header + element)
+
+    /** Whether the corner button already does what [element] does, so that the header leaves it out. */
+    fun cornerStandsFor(element: HeaderElement): Boolean = when (element) {
+        HeaderElement.Refresh -> cornerAction == CornerAction.Refresh
+        HeaderElement.NewChat -> cornerAction == CornerAction.NewChat
+        HeaderElement.Title, HeaderElement.Logo -> false
+    }
+
+    /**
+     * What the header row draws: the shown parts, less a button the corner button already stands for. Empty is no
+     * header row at all.
+     */
+    val headerParts: Set<HeaderElement>
+        get() = header.filterNotTo(LinkedHashSet()) { cornerStandsFor(it) }
+
     fun encode(json: Json = WidgetSettingsJson): String = json.encodeToString(serializer(), this)
 
     companion object {
         val DEFAULT_ELEMENTS: Set<RowElement> = setOf(RowElement.Status, RowElement.UnreadDot, RowElement.Repo, RowElement.Time)
+
+        /**
+         * The list's name, refresh and "+" — the parts that do something only the header does — and not the logo,
+         * which takes a slot to open the app that the rows and the corner button open already.
+         */
+        val DEFAULT_HEADER: Set<HeaderElement> = setOf(HeaderElement.Title, HeaderElement.Refresh, HeaderElement.NewChat)
 
         /** The settings a stored record stands for; the defaults for a record no build of this app wrote. */
         fun decode(raw: String?, json: Json = WidgetSettingsJson): ChatsWidgetSettings =

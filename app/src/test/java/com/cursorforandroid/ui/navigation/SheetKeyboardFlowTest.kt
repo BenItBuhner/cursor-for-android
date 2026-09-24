@@ -45,7 +45,9 @@ import org.robolectric.annotation.Config
  * panel by its button lets the composer go and puts the keyboard away with its draft kept, and the sidebar's search
  * takes the keyboard as usual once the drawer is in. On a wide window the rail comes back beside the chat rather than
  * over it, so a composer holding the keyboard keeps both; the side panel still covers the chat there, and takes them.
- * The swipes themselves, and the ones that must leave the keyboard be, are [com.cursorforandroid.ui.panel.SheetKeyboardTest]'s.
+ * Shutting the drawer, or collapsing the rail, takes the keyboard from the sidebar's search, while a composer beside
+ * the collapsing rail keeps it. The swipes themselves, and the ones that must leave the keyboard be, are
+ * [com.cursorforandroid.ui.panel.SheetKeyboardTest]'s.
  */
 @RunWith(AndroidJUnit4::class)
 @Config(sdk = [35], qualifiers = "w411dp-h914dp-night-420dpi")
@@ -159,6 +161,78 @@ class SheetKeyboardFlowTest {
         compose.onNodeWithContentDescription("Open panel").performClick()
         compose.waitUntil(10_000) { described(DISMISS_PANEL) }
         assertComposerReleased()
+    }
+
+    private val search: SemanticsNodeInteraction get() = compose.onNode(hasSetTextAction() and hasAnyAncestor(hasTestTag("sidebar-search")))
+
+    private fun searchShown() = compose.onAllNodes(hasSetTextAction() and hasAnyAncestor(hasTestTag("sidebar-search"))).fetchSemanticsNodes().isNotEmpty()
+
+    /** The sidebar's search holding focus with the keyboard up for it, opened by its button unless it is open already. */
+    private fun startSearching() {
+        if (searchShown()) search.performClick() else compose.onNodeWithContentDescription("Search chats").performClick()
+        compose.waitUntil(5_000) { runCatching { search.assertIsFocused() }.isSuccess }
+        compose.waitUntil(5_000) { softInputVisible() }
+    }
+
+    @Test
+    fun `shutting the phone's drawer takes the keyboard from the sidebar's search, by the scrim or by the sidebar's own button`() {
+        compose.onNodeWithContentDescription("Open sidebar").performClick()
+        compose.waitUntil(10_000) { described(CLOSE_DRAWER) }
+        startSearching()
+
+        compose.onNodeWithContentDescription(CLOSE_DRAWER).performSemanticsAction(SemanticsActions.OnClick)
+        compose.waitUntil(10_000) { !described(CLOSE_DRAWER) }
+        compose.waitForIdle()
+        search.assertIsNotFocused()
+        assertThat(softInputVisible()).isFalse()
+
+        compose.onNodeWithContentDescription("Open sidebar").performClick()
+        compose.waitUntil(10_000) { described(CLOSE_DRAWER) }
+        startSearching()
+
+        compose.onNodeWithContentDescription("Toggle sidebar").performClick()
+        compose.waitUntil(10_000) { !described(CLOSE_DRAWER) }
+        compose.waitForIdle()
+        search.assertIsNotFocused()
+        assertThat(softInputVisible()).isFalse()
+    }
+
+    @Test
+    @Config(qualifiers = "w1024dp-h768dp-night-mdpi")
+    fun `on a wide window collapsing the rail takes the keyboard from its search as the slide begins, and leaves a composer beside it be`() {
+        compose.runOnIdle { wide = true }
+        openChat(IDLE_CHAT)
+        startWriting(CHAT_PLACEHOLDER)
+
+        // The composer beside the rail is not the rail's to take.
+        compose.onNodeWithContentDescription("Toggle sidebar").performClick()
+        compose.waitUntil(10_000) { described("Open sidebar") }
+        compose.waitForIdle()
+        written.assertIsFocused()
+        assertThat(softInputVisible()).isTrue()
+        assertThat(fieldText(written)).isEqualTo(Draft)
+
+        compose.onNodeWithContentDescription("Open sidebar").performClick()
+        compose.waitUntil(10_000) { described("Toggle sidebar") && !described("Open sidebar") }
+        startSearching()
+
+        compose.mainClock.autoAdvance = false
+        try {
+            compose.onNodeWithContentDescription("Toggle sidebar").performClick()
+            compose.mainClock.advanceTimeByFrame()
+            compose.mainClock.advanceTimeByFrame()
+            // Still sliding out, the search still composed: it has let go already, and the keyboard is down.
+            assertThat(searchShown()).isTrue()
+            search.assertIsNotFocused()
+            assertThat(softInputVisible()).isFalse()
+        } finally {
+            compose.mainClock.autoAdvance = true
+        }
+        compose.waitUntil(10_000) { described("Open sidebar") && !searchShown() }
+        compose.waitForIdle()
+        written.assertIsNotFocused()
+        assertThat(softInputVisible()).isFalse()
+        assertThat(fieldText(written)).isEqualTo(Draft)
     }
 
     private companion object {
