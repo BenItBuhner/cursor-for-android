@@ -4,15 +4,17 @@ import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import com.cursorforandroid.domain.AgentIndicator
 import com.cursorforandroid.domain.AgentRow
+import com.cursorforandroid.domain.ChatsWidgetSettings
 import com.cursorforandroid.domain.CornerAction
 import com.cursorforandroid.domain.CornerStyle
+import com.cursorforandroid.domain.HeaderElement
 import com.cursorforandroid.domain.WidgetLayout
 import com.cursorforandroid.ui.theme.ThemeMode
 import com.cursorforandroid.domain.WidgetMode
 import com.google.common.truth.Truth.assertThat
 import org.junit.Test
 
-/** Which arrangement a cell size gets, and what the one-line arrangement says about its rows. */
+/** Which arrangement a cell size gets, whether its header is drawn, and what the one-line arrangement says about its rows. */
 class WidgetSizesTest {
 
     @Test
@@ -25,25 +27,53 @@ class WidgetSizesTest {
     }
 
     @Test
-    fun `every responsive size maps to its own arrangement`() {
+    fun `every arrangement starts at its own size`() {
         assertThat(WidgetSizes.layoutFor(WidgetSizes.SMALL)).isEqualTo(WidgetLayout.Small)
         assertThat(WidgetSizes.layoutFor(WidgetSizes.MEDIUM)).isEqualTo(WidgetLayout.Medium)
         assertThat(WidgetSizes.layoutFor(WidgetSizes.LARGE)).isEqualTo(WidgetLayout.Large)
-        WidgetSizes.SMALL_WIDE.forEach { assertThat(WidgetSizes.layoutFor(it)).isEqualTo(WidgetLayout.Small) }
-        assertThat(WidgetSizes.all).hasSize(6)
     }
 
     /** The cube, its gap and the corner button (or the line's end) come off the width first; a Project is 30dp. */
     @Test
     fun `the one-line Projects strip holds as many Projects as its width has room for`() {
         val corner = CornerButtonSpec(CornerAction.NewChat, CornerStyle.White, size = 28.dp, inset = 10.dp)
-        assertThat(projectSlots(110.dp, corner)).isEqualTo(1)
-        assertThat(projectSlots(170.dp, corner)).isEqualTo(3)
-        assertThat(projectSlots(250.dp, corner)).isEqualTo(5)
-        assertThat(projectSlots(330.dp, corner)).isEqualTo(8)
+        assertThat(projectSlots(110.dp, corner, logo = true)).isEqualTo(1)
+        assertThat(projectSlots(170.dp, corner, logo = true)).isEqualTo(3)
+        assertThat(projectSlots(250.dp, corner, logo = true)).isEqualTo(5)
+        assertThat(projectSlots(330.dp, corner, logo = true)).isEqualTo(8)
         // Without the corner button the line's end padding is all that is taken.
-        assertThat(projectSlots(110.dp, null)).isEqualTo(2)
-        assertThat(projectSlots(20.dp, null)).isEqualTo(0)
+        assertThat(projectSlots(110.dp, null, logo = true)).isEqualTo(2)
+        assertThat(projectSlots(20.dp, null, logo = true)).isEqualTo(0)
+    }
+
+    /** Without the cube the first icon starts where a row's glyph does, and the cube's room goes to Projects. */
+    @Test
+    fun `the strip without the logo has room for more Projects`() {
+        val corner = CornerButtonSpec(CornerAction.NewChat, CornerStyle.White, size = 28.dp, inset = 10.dp)
+        assertThat(projectSlots(110.dp, corner, logo = false)).isEqualTo(2)
+        assertThat(projectSlots(170.dp, corner, logo = false)).isEqualTo(4)
+        assertThat(projectSlots(250.dp, corner, logo = false)).isEqualTo(6)
+        assertThat(projectSlots(330.dp, corner, logo = false)).isEqualTo(9)
+    }
+
+    @Test
+    fun `the header hides itself under its height while it is set to, and only then`() {
+        val defaults = ChatsWidgetSettings()
+        // A 4x2 cell in portrait keeps it; the same cell in landscape gives its room to the rows.
+        assertThat(WidgetSizes.showsHeader(DpSize(320.dp, 158.dp), defaults)).isTrue()
+        assertThat(WidgetSizes.showsHeader(DpSize(560.dp, 118.dp), defaults)).isFalse()
+        assertThat(WidgetSizes.showsHeader(DpSize(320.dp, WidgetSizes.HEADER_MIN_HEIGHT), defaults)).isTrue()
+        assertThat(WidgetSizes.showsHeader(DpSize(560.dp, 118.dp), defaults.copy(headerAutoHide = false))).isTrue()
+    }
+
+    @Test
+    fun `a header with nothing to draw is no header, whatever the height`() {
+        val bare = ChatsWidgetSettings(header = emptySet(), headerAutoHide = false)
+        assertThat(WidgetSizes.showsHeader(DpSize(320.dp, 330.dp), bare)).isFalse()
+        // The only part left is the button the corner already is.
+        val onlyNewChat = ChatsWidgetSettings(header = setOf(HeaderElement.NewChat), cornerAction = CornerAction.NewChat)
+        assertThat(WidgetSizes.showsHeader(DpSize(320.dp, 330.dp), onlyNewChat)).isFalse()
+        assertThat(WidgetSizes.showsHeader(DpSize(320.dp, 330.dp), onlyNewChat.copy(cornerAction = CornerAction.Search))).isTrue()
     }
 
     @Test
