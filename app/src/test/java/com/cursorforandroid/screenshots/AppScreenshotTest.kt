@@ -227,9 +227,9 @@ class AppScreenshotTest {
         Espresso.pressBack()
         compose.waitForIdle()
 
-        // The composer's "+" menu (Multitask / Files / Skills / MCP Servers) and its Skills page.
+        // The composer's "+" menu (Files / Skills / MCP Servers) and its Skills page.
         compose.onNodeWithContentDescription("Add to prompt").performClick()
-        waitForText("Orchestrate multiple subagents in parallel")
+        waitForText("MCP Servers")
         capture("12_composer_menu")
         compose.onNodeWithText("Skills").performClick()
         waitForText("/autopilot")

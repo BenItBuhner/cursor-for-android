@@ -18,7 +18,7 @@ import com.cursorforandroid.ui.icons.ProjectIcons
  * Geometry comes from Lucide (ISC, see `app/licenses/ISC_Lucide.txt`), the open icon family closest to the thin,
  * round-capped line style of Cursor's own UI; the strokes are rendered at 1.75 instead of Lucide's 2 to match the
  * weight Cursor draws its 16px icons at. Four shapes are Cursor's own: [Cube] is the official filled brand mark,
- * [Stop] the composer's stop square, and the composer menu's [Multitask] loop and upright [Paperclip] follow the
+ * [Stop] the composer's stop square, and the Multitask pill's loop and the composer menu's upright [Paperclip] follow the
  * web glyphs Lucide has no match for.
  */
 object CursorIcons {
