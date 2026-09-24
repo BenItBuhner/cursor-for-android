@@ -54,8 +54,6 @@ fun CursorTheme(
      * would otherwise cover.
      */
     paintWindow: Boolean = true,
-    /** Settings › Haptic feedback, for everything in the window (see [ProvideHaptics]). */
-    haptics: Boolean = true,
     content: @Composable () -> Unit,
 ) {
     val colors = cursorColorsFor(mode, oledBlack, isSystemInDarkTheme())
@@ -104,7 +102,7 @@ fun CursorTheme(
                 extraLarge = shapes.sheet,
             ),
         ) {
-            ProvideHaptics(enabled = haptics, content = content)
+            ProvideHaptics(content = content)
         }
     }
 }

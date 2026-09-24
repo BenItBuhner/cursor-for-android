@@ -6,7 +6,6 @@ import com.cursorforandroid.data.api.userMessage
 import com.cursorforandroid.data.local.JsonDiskCache
 import com.cursorforandroid.data.local.PreferencesStore
 import com.cursorforandroid.domain.AppRelease
-import com.cursorforandroid.domain.AppVersion
 import com.cursorforandroid.domain.UpdatePhase
 import com.cursorforandroid.domain.UpdateState
 import com.cursorforandroid.util.AppClock
@@ -26,7 +25,6 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -48,8 +46,6 @@ data class CachedUpdateCheck(
     val etag: String?,
     val checkedAtMs: Long,
     val candidate: AppRelease?,
-    /** The channel the decision was made for; a different one needs a fresh list rather than a `304`. */
-    val includePreReleases: Boolean,
 )
 
 /**
@@ -79,10 +75,10 @@ data class PendingInstall(
 )
 
 class UpdateCache(private val cache: JsonDiskCache) {
-    suspend fun read(): CachedUpdateCheck? = cache.read(KEY, CachedUpdateCheck.serializer(), VERSION)?.value
+    suspend fun read(): CachedUpdateCheck? = cache.read(KEY, CachedUpdateCheck.serializer(), CHECK_VERSION)?.value
 
     suspend fun write(check: CachedUpdateCheck) {
-        cache.write(KEY, CachedUpdateCheck.serializer(), VERSION, check)
+        cache.write(KEY, CachedUpdateCheck.serializer(), CHECK_VERSION, check)
     }
 
     suspend fun readVerified(): VerifiedDownload? = cache.read(VERIFIED_KEY, VerifiedDownload.serializer(), VERSION)?.value
@@ -109,6 +105,12 @@ class UpdateCache(private val cache: JsonDiskCache) {
         const val VERIFIED_KEY = "verified-download"
         const val PENDING_KEY = "pending-install"
         const val VERSION = 1
+
+        /**
+         * 1 was written while pre-releases could be switched on, and its decision may be one; its ETag would answer
+         * a stable check with that decision. Reading it as a miss costs one unconditional list read.
+         */
+        const val CHECK_VERSION = 2
     }
 }
 
@@ -116,8 +118,7 @@ class UpdateCache(private val cache: JsonDiskCache) {
  * Keeps the app current from its GitHub releases.
  *
  * A check reads the repository's release list (conditionally, so a repeat costs nothing), maps every `vX.Y.Z` tag
- * to the version scheme the build uses and picks the newest release above the installed versionCode — stable ones
- * only, unless pre-releases are switched on. The APK is downloaded to the cache directory and verified against the
+ * to the version scheme the build uses and picks the newest stable release above the installed versionCode. The APK is downloaded to the cache directory and verified against the
  * SHA-256 GitHub published for it (the asset digest, or `SHA256SUMS.txt`), then parsed to confirm it is this
  * package, newer, and signed with the installed build's key. Installing hands the file to `PackageInstaller`; the
  * outcome comes back through [onInstallStatus]. On Android 12+ the update applies without a dialog once "Install
@@ -147,11 +148,6 @@ class UpdateManager(
     val state: StateFlow<UpdateState> = _state.asStateFlow()
 
     val autoUpdate: Flow<Boolean> get() = prefs.autoUpdate
-
-    /** The user's choice, or the installed build's own channel while they have not made one. */
-    val includePreReleases: Flow<Boolean> = prefs.includePreReleases.map { it ?: installedIsPreRelease }
-
-    private val installedIsPreRelease: Boolean get() = AppVersion.parse(platform.installedVersionName)?.isPreRelease == true
 
     /** One network or install operation at a time. */
     private val busy = Mutex()
@@ -201,13 +197,6 @@ class UpdateManager(
     }
 
     suspend fun setAutoUpdate(enabled: Boolean) = prefs.setAutoUpdate(enabled)
-
-    /** Switching channel invalidates the cached decision and re-checks (after whatever is in flight, if anything). */
-    suspend fun setIncludePreReleases(include: Boolean) {
-        prefs.setIncludePreReleases(include)
-        cache.clear()
-        checkNow()
-    }
 
     /**
      * From the "ready to install" notification, or an install left half-way by a previous process: shows the
@@ -294,21 +283,19 @@ class UpdateManager(
         // A committed session is in the installer's hands; its state must not be overwritten by a list refresh.
         if (state.value is UpdateState.Installing) return state.value
         val previous = cache.read()
-        val includePre = includePreReleases.first()
         _state.value = UpdateState.Checking
         try {
-            // A 304 only means "the list you saw is unchanged"; the decision made from it must be for the same channel.
-            val etag = previous?.etag?.takeIf { previous.includePreReleases == includePre }
+            val etag = previous?.etag
             // Eligibility is only knowable after mapping, so the client keeps paging while this says no.
-            val fetch = client.listReleases(etag) { seen -> newestOf(seen, includePre) != null }
+            val fetch = client.listReleases(etag) { seen -> newestOf(seen) != null }
             val checkedAt = now()
             val (candidate, newEtag) = when (fetch) {
                 GitHubReleasesClient.ReleasesFetch.Unchanged -> previous?.candidate to etag
-                is GitHubReleasesClient.ReleasesFetch.Changed -> newestOf(fetch.releases, includePre) to fetch.etag
+                is GitHubReleasesClient.ReleasesFetch.Changed -> newestOf(fetch.releases) to fetch.etag
             }
             // A candidate from a 304 was newer than the build that made the decision; it may not be newer than this one.
             val offered = candidate?.takeIf { it.versionCode > platform.installedVersionCode }
-            cache.write(CachedUpdateCheck(newEtag, checkedAt, offered, includePre))
+            cache.write(CachedUpdateCheck(newEtag, checkedAt, offered))
             prefs.setUpdateLastCheckedAt(checkedAt)
             pruneDownloads(keep = offered)
             _state.value = stateFor(offered, checkedAt)
@@ -598,13 +585,12 @@ class UpdateManager(
             runCatching { platform.abandonSessions() }
         }
         val cached = cache.read() ?: return
-        val includePre = includePreReleases.first()
-        val candidate = cached.candidate?.takeIf { it.versionCode > platform.installedVersionCode && (includePre || !it.isPreRelease) }
+        val candidate = cached.candidate?.takeIf { it.versionCode > platform.installedVersionCode && !it.isPreRelease }
         _state.value = stateFor(candidate, cached.checkedAtMs)
     }
 
-    private fun newestOf(releases: List<GitHubReleaseDto>, includePreReleases: Boolean): AppRelease? =
-        ReleaseCatalog.newest(releases.mapNotNull(ReleaseCatalog::toRelease), platform.installedVersionCode, includePreReleases)
+    private fun newestOf(releases: List<GitHubReleaseDto>): AppRelease? =
+        ReleaseCatalog.newest(releases.mapNotNull(ReleaseCatalog::toRelease), platform.installedVersionCode)
 
     private suspend fun stateFor(candidate: AppRelease?, checkedAtMs: Long): UpdateState {
         if (candidate == null) return UpdateState.UpToDate(checkedAtMs)

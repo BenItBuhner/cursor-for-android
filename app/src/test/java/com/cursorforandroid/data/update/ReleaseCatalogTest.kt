@@ -37,29 +37,25 @@ class ReleaseCatalogTest {
     }
 
     @Test
-    fun `the newest release above the installed build wins, pre-releases only when asked for`() {
+    fun `the newest stable release above the installed build wins, never a pre-release`() {
         val mapped = releases(GitHubFixtures.releasesJson)
         val installed010 = AppVersion.parse("0.1.0")!!.versionCode
-        assertThat(ReleaseCatalog.newest(mapped, installed010, includePreReleases = false)?.tagName).isEqualTo("v0.2.0")
-        assertThat(ReleaseCatalog.newest(mapped, installed010, includePreReleases = true)?.tagName).isEqualTo("v0.3.0-rc.1")
-        // Already on 0.2.0: nothing stable is newer, only the rc.
-        val installed020 = AppVersion.parse("0.2.0")!!.versionCode
-        assertThat(ReleaseCatalog.newest(mapped, installed020, includePreReleases = false)).isNull()
-        assertThat(ReleaseCatalog.newest(mapped, installed020, includePreReleases = true)?.tagName).isEqualTo("v0.3.0-rc.1")
+        assertThat(ReleaseCatalog.newest(mapped, installed010)?.tagName).isEqualTo("v0.2.0")
+        // Already on 0.2.0: nothing stable is newer, and the rc above it is not offered.
+        assertThat(ReleaseCatalog.newest(mapped, AppVersion.parse("0.2.0")!!.versionCode)).isNull()
         // A dev build of 0.2.0 sits below the 0.2.0 release and is offered it.
         val dev = AppVersion.parse("0.2.0-dev.7+gdeadbee")!!.versionCode
-        assertThat(ReleaseCatalog.newest(mapped, dev, includePreReleases = false)?.tagName).isEqualTo("v0.2.0")
-        // Beyond everything published.
-        assertThat(ReleaseCatalog.newest(mapped, AppVersion.parse("0.3.0")!!.versionCode, includePreReleases = true)).isNull()
+        assertThat(ReleaseCatalog.newest(mapped, dev)?.tagName).isEqualTo("v0.2.0")
+        // A pre-release build is offered no other pre-release either.
+        assertThat(ReleaseCatalog.newest(mapped, AppVersion.parse("0.3.0-alpha.1")!!.versionCode)).isNull()
     }
 
     @Test
-    fun `a stable tag published as a GitHub pre-release stays out of the stable channel`() {
+    fun `a stable tag published as a GitHub pre-release is never offered`() {
         val json = """[{"tag_name":"v0.9.0","prerelease":true,"assets":[{"name":"cursor-for-android-0.9.0.apk","size":1,"browser_download_url":"https://x/a.apk"}]}]"""
         val release = releases(json).single()
         assertThat(release.isPreRelease).isTrue()
-        assertThat(ReleaseCatalog.newest(listOf(release), 0, includePreReleases = false)).isNull()
-        assertThat(ReleaseCatalog.newest(listOf(release), 0, includePreReleases = true)).isEqualTo(release)
+        assertThat(ReleaseCatalog.newest(listOf(release), 0)).isNull()
     }
 
     @Test

@@ -57,8 +57,7 @@ class MainActivity : ComponentActivity() {
         setContent {
             val themeMode by graph.prefs.themeMode.collectAsStateWithLifecycle(initialValue = ThemeMode.System)
             val oledBlack by graph.prefs.oledBlack.collectAsStateWithLifecycle(initialValue = false)
-            val haptics by graph.prefs.hapticFeedback.collectAsStateWithLifecycle(initialValue = true)
-            CursorTheme(mode = themeMode, oledBlack = oledBlack, haptics = haptics) {
+            CursorTheme(mode = themeMode, oledBlack = oledBlack) {
                 CompositionLocalProvider(LocalKeyboardShortcuts provides shortcuts) {
                     CursorRoot(
                         graph = graph,

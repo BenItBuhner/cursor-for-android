@@ -6,9 +6,7 @@ import android.view.HapticFeedbackConstants
 import android.view.View
 import androidx.activity.BackEventCompat
 import androidx.activity.ComponentActivity
-import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.hapticfeedback.HapticFeedback
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.ClipboardManager
@@ -41,8 +39,8 @@ import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 
 /**
- * The app's haptics: which platform constant each moment plays on each Android version, that Settings › Haptic
- * feedback and the system's own switch both silence it, and the small decisions of when a drag, a pull, a back
+ * The app's haptics: which platform constant each moment plays on each Android version, that the system's switch
+ * silences it, and the small decisions of when a drag, a pull, a back
  * gesture, a run or a launch is felt.
  */
 @RunWith(AndroidJUnit4::class)
@@ -110,39 +108,9 @@ class HapticsTest {
     }
 
     @Test
-    fun `the setting silences every moment, and turning it back on is heard at once`() {
-        var enabled by mutableStateOf(true)
-        lateinit var view: View
-        lateinit var haptics: Haptics
-        compose.setContent {
-            ProvideHaptics(enabled = enabled) {
-                view = LocalView.current
-                haptics = rememberHaptics()
-            }
-        }
-        compose.waitForIdle()
-
-        assertThat(haptics.perform(Haptic.Confirm)).isTrue()
-        assertThat(shadowOf(view).lastHapticFeedbackPerformed()).isEqualTo(HapticFeedbackConstants.CONFIRM)
-
-        enabled = false
-        compose.waitForIdle()
-        Haptic.entries.forEach { assertThat(haptics.perform(it)).isFalse() }
-        assertThat(shadowOf(view).lastHapticFeedbackPerformed()).isEqualTo(HapticFeedbackConstants.CONFIRM)
-        // The setting's own switch still previews itself turning on.
-        assertThat(haptics.preview(Haptic.ToggleOn)).isTrue()
-        assertThat(shadowOf(view).lastHapticFeedbackPerformed()).isEqualTo(HapticFeedbackConstants.TOGGLE_ON)
-
-        enabled = true
-        compose.waitForIdle()
-        assertThat(haptics.toggle(on = false)).isTrue()
-        assertThat(shadowOf(view).lastHapticFeedbackPerformed()).isEqualTo(HapticFeedbackConstants.TOGGLE_OFF)
-    }
-
-    @Test
     fun `the system's switch has the last word, and is never asked to be ignored`() {
         val view = RecordingView(ApplicationProvider.getApplicationContext())
-        val haptics = Haptics(view) { true }
+        val haptics = Haptics(view)
         Haptic.entries.forEach { haptics.perform(it) }
         assertThat(view.played.map { it.first }).isEqualTo(Haptic.entries.map { it.constant() })
         assertThat(view.played.all { it.second and HapticFeedbackConstants.FLAG_IGNORE_GLOBAL_SETTING == 0 }).isTrue()
@@ -150,18 +118,16 @@ class HapticsTest {
         view.played.clear()
         view.isHapticFeedbackEnabled = false
         Haptic.entries.forEach { assertThat(haptics.perform(it)).isFalse() }
-        assertThat(haptics.preview(Haptic.ToggleOn)).isFalse()
         assertThat(view.played).isEmpty()
     }
 
     @Test
-    fun `Compose's own haptics and every copy follow the setting too`() {
-        var enabled by mutableStateOf(true)
+    fun `Compose's own haptics and every copy are played through the app's constants`() {
         lateinit var view: View
         lateinit var feedback: HapticFeedback
         lateinit var clipboard: ClipboardManager
         compose.setContent {
-            ProvideHaptics(enabled = enabled) {
+            ProvideHaptics {
                 view = LocalView.current
                 feedback = LocalHapticFeedback.current
                 clipboard = LocalClipboardManager.current
@@ -174,15 +140,7 @@ class HapticsTest {
         clipboard.setText(AnnotatedString("cd ~/work"))
         assertThat(shadowOf(view).lastHapticFeedbackPerformed()).isEqualTo(HapticFeedbackConstants.CONFIRM)
         assertThat(platformClip()).isEqualTo("cd ~/work")
-
-        enabled = false
-        compose.waitForIdle()
-        feedback.performHapticFeedback(HapticFeedbackType.LongPress)
-        clipboard.setText(AnnotatedString("git status"))
-        // Copied all the same, and nothing felt.
-        assertThat(platformClip()).isEqualTo("git status")
-        assertThat(shadowOf(view).lastHapticFeedbackPerformed()).isEqualTo(HapticFeedbackConstants.CONFIRM)
-        assertThat(clipboard.getText()?.text).isEqualTo("git status")
+        assertThat(clipboard.getText()?.text).isEqualTo("cd ~/work")
     }
 
     @Test
@@ -190,9 +148,9 @@ class HapticsTest {
         lateinit var outer: ClipboardManager
         lateinit var inner: ClipboardManager
         compose.setContent {
-            ProvideHaptics(enabled = true) {
+            ProvideHaptics {
                 outer = LocalClipboardManager.current
-                ProvideHaptics(enabled = true) { inner = LocalClipboardManager.current }
+                ProvideHaptics { inner = LocalClipboardManager.current }
             }
         }
         compose.waitForIdle()
@@ -230,7 +188,7 @@ class HapticsTest {
     @Test
     fun `a predictive back is felt as it commits, not when it is cancelled or never scrubbed`() = runBlocking<Unit> {
         val view = RecordingView(ApplicationProvider.getApplicationContext())
-        val haptics = Haptics(view) { true }
+        val haptics = Haptics(view)
         val gestureEnd = HapticFeedbackConstants.GESTURE_END
 
         flowOf(backEvent(0.2f), backEvent(0.8f)).feltOnCommit(haptics).toList()
@@ -251,7 +209,7 @@ class HapticsTest {
         val view = RecordingView(ApplicationProvider.getApplicationContext())
         val prefs = PreferencesStore(ApplicationProvider.getApplicationContext())
         val setting = mutableStateOf<Boolean?>(true)
-        val confirmation = RunStopConfirmation(setting, prefs, CoroutineScope(Dispatchers.Unconfined), Haptics(view) { true })
+        val confirmation = RunStopConfirmation(setting, prefs, CoroutineScope(Dispatchers.Unconfined), Haptics(view))
         var stopped = 0
 
         confirmation.ask(RunInterruption.Stop, "agent-1") { stopped++ }
