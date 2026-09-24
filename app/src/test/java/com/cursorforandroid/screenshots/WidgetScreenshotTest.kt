@@ -168,10 +168,7 @@ class WidgetScreenshotTest {
         captureScreenRoboImage(File(outDir, "326_widget_configure_projects_extended_off.png").path, RoborazziOptions())
     }
 
-    /**
-     * The header's parts one at a time off the defaults (the list's name, refresh and "+" on, the cube off), none of
-     * them, and a placement too short for it — a 4x2 in landscape — where it gives its room to the rows unless told to stay.
-     */
+    /** The header's parts one at a time off the defaults (the list's name, refresh and "+" on, the cube off), and none of them. */
     @Test
     fun headers() {
         val dark = WidgetData.sample(ThemeMode.Dark, FIXED_NOW)
@@ -179,9 +176,19 @@ class WidgetScreenshotTest {
         capture("347_widget_header_logo", dark, defaults.toggled(HeaderElement.Logo), FOUR_BY_TWO)
         capture("348_widget_header_no_title", dark, defaults.toggled(HeaderElement.Title), FOUR_BY_TWO)
         capture("349_widget_header_none", dark, defaults.copy(header = emptySet()), FOUR_BY_TWO)
-        capture("350_widget_header_auto_hidden", dark, defaults, FOUR_BY_TWO_LANDSCAPE)
-        capture("351_widget_header_kept", dark, defaults.copy(headerAutoHide = false), FOUR_BY_TWO_LANDSCAPE)
         capture("352_widget_header_light", WidgetData.sample(ThemeMode.Light, FIXED_NOW), defaults, FOUR_BY_TWO)
+    }
+
+    /**
+     * A placement too short for the header — a 4x2 with the phone turned — where it gives its room to the rows unless
+     * told to stay. On a landscape screen, so the placement's width fits it.
+     */
+    @Test
+    @Config(qualifiers = "w914dp-h411dp-land-night-420dpi")
+    fun headersLandscape() {
+        val dark = WidgetData.sample(ThemeMode.Dark, FIXED_NOW)
+        capture("350_widget_header_auto_hidden", dark, ChatsWidgetSettings(), FOUR_BY_TWO_LANDSCAPE)
+        capture("351_widget_header_kept", dark, ChatsWidgetSettings(headerAutoHide = false), FOUR_BY_TWO_LANDSCAPE)
     }
 
     /**
