@@ -58,6 +58,7 @@ import com.cursorforandroid.data.api.CursorEndpoints
 import com.cursorforandroid.data.repo.ConversationState
 import com.cursorforandroid.data.repo.TraceStatus
 import com.cursorforandroid.data.repo.RecordFallback
+import com.cursorforandroid.domain.AgentListOrganizer
 import com.cursorforandroid.domain.AssistantMessage
 import com.cursorforandroid.domain.CarriedFile
 import com.cursorforandroid.domain.FileOpenRequest
@@ -443,7 +444,7 @@ fun ConversationScreen(
                 Box {
                     FlatIconButton(CursorIcons.More, "More", onClick = { menuOpen = true }, touchHeight = touchHeight)
                     CursorMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
-                        CursorMenuItem(if (isPinned) "Unpin" else "Pin", CursorIcons.Pin) { menuOpen = false; viewModel.togglePinned() }
+                        if (agent?.let(AgentListOrganizer::canPin) != false) CursorMenuItem(if (isPinned) "Unpin" else "Pin", CursorIcons.Pin) { menuOpen = false; viewModel.togglePinned() }
                         // The public API has no rename; the demo renames its in-memory row, Extended mode the account's.
                         if (isDemo || extendedMode) CursorMenuItem("Rename", CursorIcons.Pencil) { menuOpen = false; renameOpen = true }
                         CursorMenuItem("Reload transcript", CursorIcons.Refresh) { menuOpen = false; viewModel.reloadTranscript() }

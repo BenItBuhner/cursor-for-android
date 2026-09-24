@@ -26,7 +26,9 @@ import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.longClick
+import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.onAllNodesWithContentDescription
+import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onFirst
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
@@ -97,7 +99,7 @@ import java.io.File
 /**
  * Every popup menu on the one surface, open where it opens in the app and in both themes: the composer's "+" menu
  * and its Skills and MCP Servers pages and the `/` popover, above the composer docked at the bottom as a
- * conversation has it; the sidebar's long-press menus for a chat and a draft; a Project primary's actions; Copy
+ * conversation has it; the sidebar's long-press menus for a chat, a Project and a draft; a Project primary's actions; Copy
  * message; the queue's reorder menu; an attachment tile's menu; and the Customize sheet's pickers. The chat's "More"
  * menu is [ChatHeaderScreenshotTest]'s, over the whole chat screen. Each host is drawn on its own, so a frame changes
  * only with its menu and what anchors it. Written to `screenshots/`; CI compares them pixel for pixel.
@@ -294,6 +296,37 @@ class PopupMenusScreenshotTest {
     @Test
     @Config(qualifiers = LIGHT)
     fun agentRowLight() = agentRow(ThemeMode.Light, "250_popup_agent_row_light")
+
+    /** A Project's row in the sidebar, long-pressed: Edit Project where a chat has Pin and Rename; no pin, even one the account holds. */
+    private fun projectRow(mode: ThemeMode, name: String) {
+        val projectRows = listOf(
+            row(agent("project", "Revenue Scaling Pipeline", 12, isProject = true), pinned = true),
+            row(agent("cli", "Cli exploration", 19, branch = "cursor/cli")),
+            row(agent("release", "Latest release process", 28 * 60, branch = "cursor/release")),
+        )
+        val actions = AgentRowActions({}, {}, {}, {}, { _, _ -> }, { _, _ -> }, {}, onEditProject = {})
+        compose.setContent {
+            Scene(mode) {
+                Column(Modifier.fillMaxWidth().padding(top = 24.dp)) {
+                    projectRows.forEach { row -> AgentRowItem(row, selected = false, prefs = ListPreferences(), actions = actions, nowMillis = NOW) }
+                }
+            }
+        }
+        compose.waitForIdle()
+        compose.onNodeWithText("Revenue Scaling Pipeline").performTouchInput { longClick() }
+        compose.waitForIdle()
+        compose.onNodeWithText("Edit Project").assertExists()
+        compose.onAllNodesWithText("Pin").assertCountEquals(0)
+        compose.onAllNodesWithText("Unpin").assertCountEquals(0)
+        capture(name)
+    }
+
+    @Test
+    fun projectRowDark() = projectRow(ThemeMode.Dark, "523_popup_project_row_dark")
+
+    @Test
+    @Config(qualifiers = LIGHT)
+    fun projectRowLight() = projectRow(ThemeMode.Light, "524_popup_project_row_light")
 
     private fun draftRow(mode: ThemeMode, name: String) {
         val drafts = listOf(

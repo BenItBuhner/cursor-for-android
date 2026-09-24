@@ -27,8 +27,9 @@ import org.robolectric.annotation.Config
 
 /**
  * Settings on a pane wider than a phone: its cards stop at the 640dp column, centred, where a phone's still run to
- * its 16dp gutters; and the New chat page picker's miniatures draw the page's column rather than the whole pane, at
- * the scale a phone's are drawn, so a tablet's are neither mostly empty nor full of words too small to read.
+ * its 16dp gutters; and the New chat page picker's miniatures draw the page's column rather than the whole pane, no
+ * larger than a capped size and at about a phone's scale, so a tablet's are neither oversized, mostly empty, nor full
+ * of words too small to read.
  */
 @RunWith(AndroidJUnit4::class)
 @Config(sdk = [35], qualifiers = "w1280dp-h800dp-night-mdpi")
@@ -67,35 +68,70 @@ class SettingsAdaptiveWidthTest {
     }
 
     @Test
-    fun `a phone's miniature is unchanged`() {
+    fun `a phone's miniature is nine tenths of its option, the whole page in proportion`() {
         val page = miniaturePage(DpSize(411.dp, 914.dp))
         assertThat(page).isEqualTo(DpSize(411.dp, 411.dp * 1.75f))
-        assertThat(miniatureMaxWidth(page)).isEqualTo(156.dp)
-        // A narrower phone draws its page no smaller.
-        assertThat(miniatureMaxWidth(miniaturePage(DpSize(360.dp, 780.dp)))).isEqualTo(156.dp)
+        val size = miniature(pane = 411.dp, page)
+        assertThat(size.width.value).isWithin(0.01f).of(room(411.dp).value * 0.9f)
+        assertThat(size.height.value).isWithin(0.01f).of(size.width.value * 1.75f)
+        assertThat(size.height).isLessThan(MiniatureMaxHeight)
+        // A small phone's is smaller in step, not squeezed.
+        val small = miniature(pane = 360.dp, miniaturePage(DpSize(360.dp, 780.dp)))
+        assertThat(small.width.value).isWithin(0.01f).of(room(360.dp).value * 0.9f)
+        assertThat(small.width).isLessThan(size.width)
     }
 
     @Test
-    fun `a tablet's miniature draws the page's column, at a phone's scale`() {
+    fun `a large phone's miniature is no taller than the cap`() {
+        val size = miniature(pane = 448.dp, miniaturePage(DpSize(448.dp, 998.dp)))
+        assertThat(size.height.value).isWithin(0.01f).of(MiniatureMaxHeight.value)
+        assertThat(size.width).isLessThan(room(448.dp) * 0.9f)
+    }
+
+    @Test
+    fun `a tablet's miniature draws the page's column, no wider than the cap`() {
         val page = miniaturePage(DpSize(1002.dp, 800.dp))
         // The New Chat page's 640dp column and its 16dp gutters, not the 1002dp pane's empty margins.
         assertThat(page).isEqualTo(DpSize(672.dp, 800.dp))
-        assertScale(page, miniatureMaxWidth(page))
-        // Upright, the pane is narrower than the column: the page is the pane's, as on a phone.
+        val size = miniature(pane = 1002.dp, page)
+        assertThat(size.width).isEqualTo(MiniatureMaxWidth)
+        assertThat(size.height).isLessThan(MiniatureMaxHeight)
+        assertReadable(page, size)
+        // Upright, the pane is narrower than the column: the page is the pane's, as on a phone, and as tall as the cap.
         val upright = miniaturePage(DpSize(522.dp, 1280.dp))
         assertThat(upright.width).isEqualTo(522.dp)
-        assertScale(upright, miniatureMaxWidth(upright))
+        val uprightSize = miniature(pane = 522.dp, upright)
+        assertThat(uprightSize.height.value).isWithin(0.01f).of(MiniatureMaxHeight.value)
+        assertReadable(upright, uprightSize)
     }
 
     @Test
-    fun `an unfolded foldable's miniature is drawn at a phone's scale`() {
+    fun `an unfolded foldable's miniature is no wider than the cap`() {
         val page = miniaturePage(DpSize(562.dp, 700.dp))
         assertThat(page).isEqualTo(DpSize(562.dp, 700.dp))
-        assertScale(page, miniatureMaxWidth(page))
+        val size = miniature(pane = 562.dp, page)
+        assertThat(size.width).isEqualTo(MiniatureMaxWidth)
+        assertThat(size.height).isLessThan(MiniatureMaxHeight)
+        assertReadable(page, size)
     }
 
-    private fun assertScale(page: DpSize, miniature: Dp) {
-        assertThat(miniature / page.width).isWithin(0.001f).of(156f / 411f)
+    @Test
+    fun `a miniature's corner is a screen's at its scale, between 4dp and 6dp`() {
+        assertThat(miniatureRadius(miniature(pane = 411.dp, miniaturePage(DpSize(411.dp, 914.dp))).width).value).isWithin(0.1f).of(4.5f)
+        assertThat(miniatureRadius(MiniatureMaxWidth)).isEqualTo(6.dp)
+        assertThat(miniatureRadius(40.dp)).isEqualTo(4.dp)
+    }
+
+    /** An option's room for its miniature in a pane [pane] wide: a third of the card, less its insets, gaps and ring. */
+    private fun room(pane: Dp): Dp = ((minOf(pane - 32.dp, 640.dp) - RowInset * 2 - 12.dp * 2) / 3) - 8.dp
+
+    private fun miniature(pane: Dp, page: DpSize): DpSize = miniatureSize(page, room(pane))
+
+    /** Drawn at no less than four fifths of a phone's scale, so the words in it read about as large. */
+    private fun assertReadable(page: DpSize, size: DpSize) {
+        val phonePage = miniaturePage(DpSize(411.dp, 914.dp))
+        val phone = miniature(pane = 411.dp, phonePage).width / phonePage.width
+        assertThat(size.width / page.width).isAtLeast(phone * 0.8f)
     }
 
     private companion object {
