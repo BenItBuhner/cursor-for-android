@@ -271,7 +271,7 @@ class SettingsScreenshotTest {
         compose.waitUntil(10_000) { compose.onAllNodes(isOff() and hasTestTag(ExtendedModeTags.ENGINE_TOGGLE)).fetchSemanticsNodes().isNotEmpty() }
         assertThat(runBlocking { graph.extendedMode.engine() }).isEqualTo(TranscriptEngine.STABLE)
         assertThat(runBlocking { graph.extendedMode.capabilities() }.accountTranscript).isFalse()
-        capture("470_settings_transcript_engine_off")
+        capture("477_settings_transcript_engine_off")
     }
 
     /** With the mode off the engine chooses nothing: its switch is shown dimmed and off, and a tap on it changes nothing. */
