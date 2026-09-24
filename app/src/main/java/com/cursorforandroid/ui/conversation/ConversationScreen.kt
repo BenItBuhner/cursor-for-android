@@ -102,6 +102,7 @@ import com.cursorforandroid.ui.components.rememberFilePicker
 import com.cursorforandroid.ui.components.rememberMediaPicker
 import com.cursorforandroid.ui.components.scrollEdgeFade
 import com.cursorforandroid.ui.compose.rememberComposerMenuActions
+import com.cursorforandroid.ui.compose.rememberComposerVoice
 import com.cursorforandroid.ui.files.FileOpenRequestSaver
 import com.cursorforandroid.ui.files.FullFileDialog
 import com.cursorforandroid.ui.files.FullFileResolver
@@ -256,6 +257,7 @@ fun ConversationScreen(
     )
     val pickFiles = rememberFilePicker(counts = counts, onPickedFiles = viewModel::addFiles, onError = viewModel::showMessage)
     val plusMenu = rememberComposerMenuActions(graph, onPickMedia = pickMedia, onPickFiles = if (extendedFiles) pickFiles else null)
+    val voice = rememberComposerVoice(graph)
     val share by graph.share.offer.collectAsStateWithLifecycle()
     LaunchedEffect(share?.generation, share?.target) {
         val incoming = share ?: return@LaunchedEffect
@@ -741,6 +743,8 @@ fun ConversationScreen(
                 onModePill = viewModel::setModePill,
                 extendedModes = capabilities.agentModes && !isDemo,
                 focusRequests = composerFocusRequests,
+                // An archived chat takes no follow-ups, so there is nothing to dictate into.
+                voice = voice.takeUnless { archived },
                 modifier = Modifier.widthIn(max = CursorDimens.composerMaxWidth).then(headerClearance.composerColumn).testTag("follow-up-composer"),
             )
         }

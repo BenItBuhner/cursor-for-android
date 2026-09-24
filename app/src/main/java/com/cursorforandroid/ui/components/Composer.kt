@@ -179,6 +179,11 @@ fun ComposerBox(
      * a bump does not answer it again.
      */
     focusRequests: Int = 0,
+    /**
+     * Dictation (Settings › Experimental › Voice input, which needs Extended mode); null leaves the send slot as it
+     * always was. Given, a microphone joins it — see [composerButtons] — and the words go in at the caret, unsent.
+     */
+    voice: VoiceInput? = null,
 ) {
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
@@ -332,6 +337,17 @@ fun ComposerBox(
         haptics.perform(Haptic.Select)
     }
 
+    fun dictate(words: String) {
+        val next = insertDictation(field.text.toString(), field.selection, words)
+        field.edit {
+            replace(0, length, next.text)
+            selection = TextRange(next.cursor)
+        }
+        publish(next.text)
+    }
+
+    val micTap = if (voice != null) rememberMicTap(voice, haptics, onTranscript = { dictate(it) }) else null
+
     Column(
         modifier
             .fillMaxWidth()
@@ -448,8 +464,9 @@ fun ComposerBox(
             }
             // Pills right of "+", the model chip next to send, and the leftover width between them. The children are
             // measured in order, so the pills take what their words need and the chip is left the rest: it ellipsises
-            // before a pill would, and send is never pushed out.
-            Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
+            // before a pill would, and send is never pushed out. A dictation under way has the middle to itself.
+            if (voice != null && micTap != null && voice.state != VoiceState.Idle) VoiceStatus(voice, onTap = micTap)
+            else Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
                 if (wornMode != null) {
                     ModePill(wornMode, onClear = { haptics.perform(Haptic.ToggleOff); onModePill?.invoke(null) })
                     Spacer(Modifier.width(6.dp))
@@ -475,12 +492,25 @@ fun ComposerBox(
                 }
             }
             Spacer(Modifier.width(8.dp))
-            when {
-                isSending && cancelOffered && onCancelSend != null -> ComposerRoundButton(CursorIcons.Stop, "Cancel sending", onClick = onCancelSend, prominent = true)
-                isSending -> ComposerBusyButton()
-                isRunning && onStop != null && !canSend -> ComposerRoundButton(CursorIcons.Stop, "Stop", onClick = onStop, prominent = true)
+            val buttons = composerButtons(
+                isSending = isSending,
+                cancelOffered = cancelOffered && onCancelSend != null,
+                canStop = isRunning && onStop != null,
+                canSend = canSend,
+                hasContent = field.text.isNotBlank() || shownImages.isNotEmpty() || shownFiles.isNotEmpty(),
+                voice = micTap != null,
+            )
+            if (buttons.micBeside && voice != null && micTap != null) {
+                VoiceMicButton(voice, prominent = false, onClick = micTap)
+                Spacer(Modifier.width(10.dp))
+            }
+            when (buttons.main) {
+                SendSlot.CancelSend -> ComposerRoundButton(CursorIcons.Stop, "Cancel sending", onClick = { onCancelSend?.invoke() }, prominent = true)
+                SendSlot.Busy -> ComposerBusyButton()
+                SendSlot.Stop -> ComposerRoundButton(CursorIcons.Stop, "Stop", onClick = { onStop?.invoke() }, prominent = true)
+                SendSlot.Mic -> if (voice != null && micTap != null) VoiceMicButton(voice, prominent = true, onClick = micTap)
                 // The tap is felt, not a hardware Enter: a physical keyboard's keys are their own feedback.
-                else -> ComposerRoundButton(CursorIcons.ArrowUp, "Send", onClick = { haptics.perform(Haptic.Confirm); onSend() }, prominent = canSend, enabled = sendsNow)
+                SendSlot.Send -> ComposerRoundButton(CursorIcons.ArrowUp, "Send", onClick = { haptics.perform(Haptic.Confirm); onSend() }, prominent = canSend, enabled = sendsNow)
             }
         }
     }
