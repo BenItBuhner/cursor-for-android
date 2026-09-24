@@ -6,6 +6,7 @@ import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEvent
@@ -13,6 +14,7 @@ import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.isCtrlPressed
 import androidx.compose.ui.input.key.isMetaPressed
 import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreInterceptKeyBeforeSoftKeyboard
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 
@@ -59,23 +61,29 @@ fun <T> rememberPopoverSelection(items: List<T>, vararg resetKeys: Any?): Popove
  * of the field's other key handlers ([sendOnHardwareEnter]) so they only hear what an open popover leaves.
  *
  * The on-screen keyboard is left alone, as [sendOnHardwareEnter] leaves it, and so is a key pressed while the IME
- * holds a composition: that key is the IME's, and an Enter then only accepts the composition.
+ * holds a composition: that key is the IME's, and an Enter then only accepts the composition. The keys are read
+ * before the IME is handed them as well as after, as [sendOnHardwareEnter] reads them, so an IME that handles the
+ * physical keyboard itself cannot take them from the popover.
  */
+@OptIn(ExperimentalComposeUiApi::class)
 fun <T> Modifier.popoverKeys(
     open: Boolean,
     selection: PopoverSelection<T>,
     composing: () -> Boolean,
     onPick: (T) -> Unit,
     onDismiss: () -> Unit,
-): Modifier = onPreviewKeyEvent { event ->
-    when (PopoverKeys.press(event, open = open, composing = composing())) {
-        PopoverKeys.Press.NotOurs -> false
-        PopoverKeys.Press.Nothing -> true
-        PopoverKeys.Press.Up -> { selection.move(-1); true }
-        PopoverKeys.Press.Down -> { selection.move(1); true }
-        PopoverKeys.Press.Pick -> { selection.highlightedItem?.let(onPick); true }
-        PopoverKeys.Press.Close -> { onDismiss(); true }
+): Modifier {
+    val handle = { event: KeyEvent ->
+        when (PopoverKeys.press(event, open = open, composing = composing())) {
+            PopoverKeys.Press.NotOurs -> false
+            PopoverKeys.Press.Nothing -> true
+            PopoverKeys.Press.Up -> { selection.move(-1); true }
+            PopoverKeys.Press.Down -> { selection.move(1); true }
+            PopoverKeys.Press.Pick -> { selection.highlightedItem?.let(onPick); true }
+            PopoverKeys.Press.Close -> { onDismiss(); true }
+        }
     }
+    return onPreInterceptKeyBeforeSoftKeyboard(handle).onPreviewKeyEvent(handle)
 }
 
 internal object PopoverKeys {

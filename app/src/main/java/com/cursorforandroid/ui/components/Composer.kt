@@ -61,7 +61,6 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.drawscope.clipPath
 import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
@@ -359,50 +358,58 @@ fun ComposerBox(
         Box(Modifier.stylusWriting().padding(CursorDimens.composerTextInset)) {
             // The field's layout, handed over as it is measured and read back as the command highlight draws.
             val textLayout = remember { TextLayoutHandle() }
-            BasicTextField(
-                state = field,
-                textStyle = type.input.copy(color = colors.textPrimary),
-                keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
-                cursorBrush = SolidColor(colors.textPrimary),
-                lineLimits = TextFieldLineLimits.MultiLine(minHeightInLines = minLines, maxHeightInLines = 10),
-                scrollState = textScroll,
-                onTextLayout = { textLayout.get = it },
-                inputTransformation = InputTransformation {
-                    // A `/multitask `, `/plan ` (or, in Extended mode, `/ask ` or `/debug `) the reader has just closed
-                    // with a space becomes its pill: the token leaves the text here, before the field ever shows it,
-                    // and the caret stays on its characters. The last one typed is the one that stays on; the other
-                    // mode goes off with it.
-                    val typed = ModePills.consumeTyped(asCharSequence().toString(), selection, planEnabled = onModePill != null, extended = extendedModes)
-                    val turnedOn = typed.turnedOn
-                    if (turnedOn != null) {
-                        replace(0, length, typed.text)
-                        selection = typed.selection
-                        turnOn(turnedOn, toString())
-                    } else {
-                        publish(toString())
-                    }
-                },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    // One line of `input` at the default font scale, so the box does not shrink under a small system font.
-                    .heightIn(min = 22.dp)
-                    .onPreviewKeyEvent { if (it.isFromHardwareKeyboard) physicalKeys = true; false }
-                    .popoverKeys(slashOpen, slash, composing = { field.composition != null }, onPick = { complete(it) }, onDismiss = { dismissedToken = slashToken })
-                    .sendOnHardwareEnter(field, onSend = onSend.takeIf { sendsNow }, onEdited = { publish(it) })
-                    .then(if (receiveImages != null) Modifier.contentReceiver(receiveImages) else Modifier)
-                    .focusRequester(focus)
-                    .onFocusChanged { focused = it.isFocused },
-                decorator = { inner ->
-                    Box {
-                        // The field's own text, not the owner's: a placeholder that follows a lagging owner blinks
-                        // back over the first character typed.
-                        if (field.text.isEmpty()) Text(placeholder, style = type.input, color = colors.textTertiary, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        Box(Modifier.slashCommandHighlight(layout = { textLayout.get?.invoke() }, scroll = textScroll, color = commandTint)) {
-                            inner()
+            // What the key handlers below make of a physical Enter, for the newline an IME may type in its place.
+            val physicalEnter: (() -> Unit)? = when {
+                slashOpen -> { { slash.highlightedItem?.let { complete(it) } } }
+                sendsNow -> onSend
+                else -> null
+            }
+            ImeEnterFallback(onEnter = physicalEnter, composing = { field.composition != null }) {
+                BasicTextField(
+                    state = field,
+                    textStyle = type.input.copy(color = colors.textPrimary),
+                    keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
+                    cursorBrush = SolidColor(colors.textPrimary),
+                    lineLimits = TextFieldLineLimits.MultiLine(minHeightInLines = minLines, maxHeightInLines = 10),
+                    scrollState = textScroll,
+                    onTextLayout = { textLayout.get = it },
+                    inputTransformation = InputTransformation {
+                        // A `/multitask `, `/plan ` (or, in Extended mode, `/ask ` or `/debug `) the reader has just closed
+                        // with a space becomes its pill: the token leaves the text here, before the field ever shows it,
+                        // and the caret stays on its characters. The last one typed is the one that stays on; the other
+                        // mode goes off with it.
+                        val typed = ModePills.consumeTyped(asCharSequence().toString(), selection, planEnabled = onModePill != null, extended = extendedModes)
+                        val turnedOn = typed.turnedOn
+                        if (turnedOn != null) {
+                            replace(0, length, typed.text)
+                            selection = typed.selection
+                            turnOn(turnedOn, toString())
+                        } else {
+                            publish(toString())
                         }
-                    }
-                },
-            )
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        // One line of `input` at the default font scale, so the box does not shrink under a small system font.
+                        .heightIn(min = 22.dp)
+                        .onPhysicalKey { physicalKeys = true }
+                        .popoverKeys(slashOpen, slash, composing = { field.composition != null }, onPick = { complete(it) }, onDismiss = { dismissedToken = slashToken })
+                        .sendOnHardwareEnter(field, onSend = onSend.takeIf { sendsNow }, onEdited = { publish(it) })
+                        .then(if (receiveImages != null) Modifier.contentReceiver(receiveImages) else Modifier)
+                        .focusRequester(focus)
+                        .onFocusChanged { focused = it.isFocused },
+                    decorator = { inner ->
+                        Box {
+                            // The field's own text, not the owner's: a placeholder that follows a lagging owner blinks
+                            // back over the first character typed.
+                            if (field.text.isEmpty()) Text(placeholder, style = type.input, color = colors.textTertiary, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Box(Modifier.slashCommandHighlight(layout = { textLayout.get?.invoke() }, scroll = textScroll, color = commandTint)) {
+                                inner()
+                            }
+                        }
+                    },
+                )
+            }
             SlashCommandPopover(
                 token = popoverToken,
                 suggestions = slash,
