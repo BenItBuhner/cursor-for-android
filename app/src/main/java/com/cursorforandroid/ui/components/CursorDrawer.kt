@@ -71,6 +71,9 @@ import kotlinx.coroutines.launch
  * ([BackGestureEdges]): from the start edge that is the system's back swipe, which runs the same way as the open drag,
  * and the drawer does not so much as twitch for it. The side panel leaves the same strips to back from the other side.
  *
+ * Committed to opening, the drawer takes the keyboard from a field in the content under it, the composer's draft left
+ * as it was ([CoveredFocus]).
+ *
  * Material's `ModalNavigationDrawer` answers the gesture by scaling the sheet down and nudging it toward the swipe's
  * edge, and keeps the drawer's offset to itself, so it cannot be made to simply follow the finger.
  */
@@ -93,6 +96,7 @@ fun CursorDrawer(
     val rtl = LocalLayoutDirection.current == LayoutDirection.Rtl
     val edges = rememberBackGestureEdges()
     val drag = remember(state, edges) { DrawerDrag(state, edges) }
+    val covered = rememberCoveredFocus { state.isOpen }
     SideEffect { state.widthPx = widthPx }
 
     Box(
@@ -108,7 +112,7 @@ fun CursorDrawer(
                 onDragStopped = { velocity -> if (!drag.lettingBe) state.settle(velocity / widthPx, flingThreshold) },
             ),
     ) {
-        Box { content() }
+        Box(Modifier.coveredFocus(covered)) { content() }
 
         // With the drawer open over a screen that can itself go back, back closes the drawer before it pops anything.
         // The content is expected to stand its own handler down while the drawer is open, rather than this relying on
