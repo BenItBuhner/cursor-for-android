@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
@@ -46,28 +47,22 @@ fun KeyboardShortcutsScreen(onBack: () -> Unit, modifier: Modifier = Modifier) {
                 .fadingVerticalScroll(surface = colors.canvas)
                 .padding(horizontal = 16.dp)
                 .padding(bottom = 24.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            Text(
-                ShortcutsCopy.HARDWARE_ONLY,
-                style = type.small,
-                color = colors.textTertiary,
-                modifier = Modifier.fillMaxWidth().widthIn(max = 640.dp).padding(top = 12.dp, start = 2.dp),
-            )
-            ShortcutsCopy.groups.forEach { group ->
-                Group(group.title)
-                SettingsCard {
-                    group.lines.forEachIndexed { index, line ->
-                        if (index > 0) HairlineDivider()
-                        ShortcutLineRow(line, Modifier.heightIn(min = CursorDimens.listRow).padding(horizontal = RowInset, vertical = 11.dp))
+            // A reading column, centred on a wide pane.
+            Column(Modifier.widthIn(max = 640.dp).fillMaxWidth()) {
+                Text(ShortcutsCopy.HARDWARE_ONLY, style = type.small, color = colors.textTertiary, modifier = Modifier.padding(top = 12.dp, start = 2.dp))
+                ShortcutsCopy.groups.forEach { group ->
+                    Group(group.title)
+                    SettingsCard {
+                        group.lines.forEachIndexed { index, line ->
+                            if (index > 0) HairlineDivider()
+                            ShortcutLineRow(line, Modifier.heightIn(min = CursorDimens.listRow).padding(horizontal = RowInset, vertical = 11.dp))
+                        }
                     }
                 }
+                Text(ShortcutsCopy.TEXT_EDITING, style = type.small, color = colors.textQuaternary, modifier = Modifier.padding(top = 12.dp, start = 2.dp))
             }
-            Text(
-                ShortcutsCopy.TEXT_EDITING,
-                style = type.small,
-                color = colors.textQuaternary,
-                modifier = Modifier.fillMaxWidth().widthIn(max = 640.dp).padding(top = 12.dp, start = 2.dp),
-            )
         }
     }
 }
