@@ -25,6 +25,12 @@ data class AppVersion(
 
     val isPreRelease: Boolean get() = preRelease != null
 
+    /**
+     * A build of the release that comes next rather than of a release: `0.3.49-dev` (a local build) or
+     * `0.3.49-dev.42+gabc1234` (CI's stamp). No tag of this name will ever exist.
+     */
+    val isDevBuild: Boolean get() = build != null || preRelease?.substringBefore('.')?.equals("dev", ignoreCase = true) == true
+
     val versionCode: Int get() = major * 1_000_000 + minor * 10_000 + patch * 100 + stage(preRelease)
 
     override fun compareTo(other: AppVersion): Int = versionCode.compareTo(other.versionCode)
@@ -104,6 +110,28 @@ data class AppRelease(
     val versionCode: Int get() = version.versionCode
     val versionName: String get() = version.toString()
 }
+
+/**
+ * The human-readable part of one release's notes on GitHub: what the What's new page shows for the installed
+ * version. The release notes as published carry more — a header table naming the build and its signing certificate,
+ * the install line, the v0.1.0 reinstall notice and GitHub's generated commit list — and none of it is here (see
+ * `ReleaseNotesFormat`): [markdown] is the lead line and the curated notes alone.
+ */
+@Serializable
+data class ReleaseNotes(
+    /** `v0.3.37`. */
+    val tagName: String,
+    /** `0.3.37`: the tag without its `v`, as the installed build names itself. */
+    val versionName: String,
+    /** When the release was published; 0 when GitHub did not say. */
+    val publishedAtMs: Long,
+    /** The release page on GitHub, for "View on GitHub". */
+    val htmlUrl: String,
+    /** The curated notes as markdown, headings and all. */
+    val markdown: String,
+    /** The lead line — the first paragraph of the notes, as plain text — when the notes open with one. */
+    val lead: String? = null,
+)
 
 /** Which step of an update went wrong; decides what "Retry" does. */
 enum class UpdatePhase { Check, Download, Install }

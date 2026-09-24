@@ -71,6 +71,12 @@ class JsonDiskCache(
      */
     fun token(): Int = epoch.current()
 
+    /** Whether a write taken under [token] would land behind a wipe (see [token]); for stores that write their own files here. */
+    fun isStale(token: Int): Boolean = epoch.isStale(token)
+
+    /** The directory this cache writes in, for a store that keeps files of its own under the same wipe (see `BlobDiskStore`). */
+    val root: File get() = directory
+
     suspend fun <T> write(key: String, serializer: KSerializer<T>, version: Int, value: T, token: Int = epoch.current()): Boolean = withContext(dispatcher) {
         if (epoch.isStale(token)) return@withContext false
         lockFor(key).withLock {
@@ -126,14 +132,25 @@ class JsonDiskCache(
     /** Deletes this cache's directory — every entry and every child — without the generation bump of [clear]. */
     suspend fun drop() = withContext(dispatcher) { directory.deleteRecursively(); Unit }
 
-    /** Keeps the children bounded: deletes the least recently written child caches beyond [maxChildren], whole. */
-    suspend fun pruneChildren(maxChildren: Int) = withContext(dispatcher) {
-        childDirectories().sortedByDescending { it.lastModified() }.drop(maxChildren).forEach { it.deleteRecursively() }
+    /**
+     * Marks [key]'s entry as just used, so that [prune] ranks it by that rather than by when it was written. Compared
+     * against the wall clock because that is what the other entries' timestamps come from.
+     */
+    suspend fun touch(key: String) = withContext(dispatcher) {
+        fileFor(key).takeIf { it.isFile }?.setLastModified(System.currentTimeMillis())
+        Unit
     }
 
-    /** Keeps the cache bounded: deletes the least recently written entries beyond [maxEntries]. */
-    suspend fun prune(maxEntries: Int) = withContext(dispatcher) {
-        entryFiles().sortedByDescending { it.lastModified() }.drop(maxEntries).forEach { it.delete() }
+    /**
+     * Keeps the cache bounded: deletes the least recently written (or [touch]ed) entries beyond [maxEntries], and
+     * beyond [maxBytes] of them. The newest entry is kept whatever it weighs.
+     */
+    suspend fun prune(maxEntries: Int, maxBytes: Long = Long.MAX_VALUE) = withContext(dispatcher) {
+        var used = 0L
+        entryFiles().map { it to it.lastModified() }.sortedByDescending { it.second }.forEachIndexed { i, (file, _) ->
+            used += file.length()
+            if (i >= maxEntries || (i > 0 && used > maxBytes)) file.delete()
+        }
         // A temp file a process kill left behind is named after no key, so nothing else ever deletes it. Compared
         // against the wall clock because that is what the file's own timestamp comes from.
         val staleBefore = System.currentTimeMillis() - STALE_TMP_MS

@@ -56,6 +56,7 @@ import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
@@ -66,19 +67,21 @@ import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.zIndex
 import com.cursorforandroid.data.media.MediaLoader
 import com.cursorforandroid.domain.AgentListOrganizer
 import com.cursorforandroid.domain.CursorUser
 import com.cursorforandroid.domain.MediaRef
 import com.cursorforandroid.ui.components.CursorIcons
 import com.cursorforandroid.ui.components.FlatIconButton
-import com.cursorforandroid.ui.components.GroupLabel
 import com.cursorforandroid.ui.components.pressable
 import com.cursorforandroid.ui.components.SpinnerRing
 import com.cursorforandroid.ui.components.scrollEdgeFade
+import com.cursorforandroid.ui.components.stylusWriting
 import com.cursorforandroid.ui.settings.ExtendedModeCopy
 import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
+import kotlinx.coroutines.flow.distinctUntilChanged
 
 enum class SidebarDestination { NewChat, Settings }
 
@@ -94,13 +97,36 @@ data class SidebarCallbacks(
     val onLoadMore: () -> Unit = {},
     /** Opens the Create Project sheet from the Projects group's header; null hides the plus (default mode, where Projects are the account's). */
     val onNewProject: (() -> Unit)? = null,
+    /**
+     * A group's header was tapped: fold it closed ([collapsed] true) or open. The fold is the device's to remember
+     * ([AgentListUiState.collapsedSections]); the sidebar reads it back from the state rather than keeping its own.
+     */
+    val onSectionCollapsed: (sectionKey: String, collapsed: Boolean) -> Unit = { _, _ -> },
+    /** The rows on screen, by agent id, as the list scrolls: what the pull request badges are read for (see `AgentsViewModel.rowsVisible`). */
+    val onVisibleRows: (List<String>) -> Unit = {},
+    /** The "What's new in …" card above the account footer was tapped: opens the installed version's notes. */
+    val onWhatsNew: () -> Unit = {},
+    /** The tail's Retry after a page failed: the same page, asked for again (see `AgentsViewModel.retryLoadMore`). */
+    val onRetryLoadMore: () -> Unit = {},
+    /** A draft's row was tapped: it opens in the New Chat composer. */
+    val onOpenDraft: (DraftRow) -> Unit = {},
+    /** A draft's row menu asked for it to be deleted. */
+    val onDeleteDraft: (DraftRow) -> Unit = {},
 )
+
+/** Test tags for the card slot above the account footer: one card at a time, the update's or the notes'. */
+object SidebarTags {
+    const val UPDATE_HINT = "sidebar_update_hint"
+    const val WHATS_NEW_HINT = "sidebar_whats_new_hint"
+}
 
 /**
  * The Cursor sidebar as it appears on cursor.com/agents and in the desktop Agents window: cube logo with the flat
  * new-chat ("+") + search + filter + sidebar-toggle icons in one header row (the web's separate "Chats" label is
  * folded into it), Projects / Pinned / date groups of 32dp rows, and the account footer. A chat's workers, side chats
- * and subagents sit under it as a tree, closed until its count is tapped. Surface is `--cursor-sidebar` (#181818).
+ * and subagents sit under it as a tree, closed until its count is tapped. Each group folds closed from its header
+ * (see [SidebarSectionHeader]), and stays folded across restarts; a long Projects or Pinned group lists its first
+ * five rows until "Show N more" is tapped (see [SidebarShortList]). Surface is `--cursor-sidebar` (#181818).
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -115,17 +141,28 @@ fun Sidebar(
     modifier: Modifier = Modifier,
     /** "Update available: v0.3.0" and the like; a row above the account footer that opens Settings. Null hides it. */
     updateHint: String? = null,
+    /**
+     * "What's new in 0.3.37": the same card slot, once the installed version's notes are there and unread. The update
+     * takes the slot when both are due — after it lands, the new version's notes are what is new.
+     */
+    whatsNewHint: String? = null,
     /** Extended mode is on: the account footer says so, quietly, for as long as it is. */
     extendedMode: Boolean = false,
+    /** New chats written and not sent, most recent first: listed above every group (see [DraftRow.listed]). */
+    drafts: List<DraftRow> = emptyList(),
+    /** Which long groups are listing every row; the shell's, so leaving the sidebar can cut them back (see [SidebarShortLists]). */
+    shortLists: SidebarShortLists = remember { SidebarShortLists() },
+    /** Bumped by the shell when something outside asks for the search field (the widget's search button): each bump opens it. */
+    searchRequests: Int = 0,
 ) {
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
     var searching by rememberSaveable { mutableStateOf(false) }
+    LaunchedEffect(searchRequests) { if (searchRequests > 0) searching = true }
     // The field owns what is typed. [state.query] is the organized list's copy, computed off the main thread, and
     // feeding it back here put the cursor at the start of the box on every keystroke — the next character then
     // inserted on the left, so a search could not be typed. Closing still clears both.
     var query by rememberSaveable { mutableStateOf("") }
-    var collapsedKeys by rememberSaveable { mutableStateOf(listOf<String>()) }
     // Chats whose nested chats — a Project's workers, side chats, subagents — are listed beneath them. Closed until
     // opened: a Project can have dozens of workers, and the row's count says they are there.
     var expandedParents by rememberSaveable { mutableStateOf(listOf<String>()) }
@@ -163,7 +200,14 @@ fun Sidebar(
             }
         }
 
-        AnimatedVisibility(visible = searching, enter = expandVertically(tween(160)) + fadeIn(tween(160)), exit = shrinkVertically(tween(140)) + fadeOut(tween(100))) {
+        // A pen writes into the search from its row and the slack around it, outside the reveal's clip, and before the
+        // list under it gets to call the stroke a scroll: drawn over the list, it is hit first.
+        AnimatedVisibility(
+            visible = searching,
+            enter = expandVertically(tween(160)) + fadeIn(tween(160)),
+            exit = shrinkVertically(tween(140)) + fadeOut(tween(100)),
+            modifier = Modifier.zIndex(1f).stylusWriting(enabled = searching),
+        ) {
             SearchField(
                 value = query,
                 onValueChange = ::setSearchQuery,
@@ -177,18 +221,42 @@ fun Sidebar(
             // Rows dissolve at the top and bottom of the pane while more of the list sits past that edge; there is no
             // rule above the footer, the fade is what separates the two.
             val listState = rememberLazyListState()
-            KeepAtTop(listState, sidebarTopKey(state))
+            // A search reaches the drafts too, by what was written in them.
+            val shownDrafts = if (query.isBlank()) drafts else drafts.filter { it.title.contains(query.trim(), ignoreCase = true) }
+            KeepAtTop(listState, sidebarTopKey(state, shownDrafts))
             // The list holds the newest agents; the pages behind them are fetched as the reader nears its end. In
             // the sidebar that is the last row being within a few of the bottom, whatever filter is on: with a
             // narrow filter the loaded pages may match little, and the ones behind them are where more matches are.
-            val hasMore = state.hasMore
-            val isLoadingMore = state.isLoadingMore
-            LaunchedEffect(listState, hasMore, isLoadingMore) {
-                if (!hasMore || isLoadingMore) return@LaunchedEffect
+            // Not while the trailing group is folded, though: a page fetched into a fold shows the reader nothing,
+            // and with the whole account behind it the row would spin for minutes to no visible end (Bennett's
+            // frame of 2026-09-21: "Older · 108" folded, "Loading more…" below it). The line to tap stays.
+            // And only while the tail asks for it: a page that failed is asked for again by Retry, not by a spinner.
+            val tail = state.tail
+            val lastGroupFolded = state.sections.lastOrNull()?.let { query.isBlank() && it.key in state.collapsedSections } == true
+            val autoLoad = tail == SidebarTail.More && !lastGroupFolded
+            // The rows on screen, reported as the list settles: their keys are `<section>:<agent id>`; a draft is no agent.
+            LaunchedEffect(listState) {
+                snapshotFlow { listState.layoutInfo.visibleItemsInfo.mapNotNull { (it.key as? String)?.takeIf { key -> key.contains(':') && !key.startsWith("hdr-") && !key.startsWith(DRAFT_KEY_PREFIX) }?.substringAfterLast(':') } }
+                    .distinctUntilChanged()
+                    .collect { callbacks.onVisibleRows(it) }
+            }
+            LaunchedEffect(listState, autoLoad) {
+                if (!autoLoad) return@LaunchedEffect
                 snapshotFlow { listState.layoutInfo.let { info -> (info.visibleItemsInfo.lastOrNull()?.index ?: -1) to info.totalItemsCount } }
                     .collect { (lastVisible, total) -> if (total > 0 && lastVisible >= total - MoreAgentsPrefetchRows) callbacks.onLoadMore() }
             }
             LazyColumn(Modifier.fillMaxSize().scrollEdgeFade(listState), state = listState, contentPadding = PaddingValues(top = 2.dp, bottom = 12.dp)) {
+                // The drafts lead the list, above every group, each a chat that has not been sent yet.
+                items(shownDrafts, key = { DRAFT_KEY_PREFIX + it.id }) { row ->
+                    DraftRowItem(
+                        row = row,
+                        prefs = state.prefs,
+                        onOpen = callbacks.onOpenDraft,
+                        onDelete = callbacks.onDeleteDraft,
+                        modifier = Modifier.animateItem().padding(vertical = CursorDimens.sidebarRowGap / 2),
+                        nowMillis = state.nowMillis,
+                    )
+                }
                 if (!state.hasLoaded && state.sections.isEmpty()) {
                     item("loading") { Text("Loading chats…", style = type.small, color = colors.textQuaternary, modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) }
                 }
@@ -208,32 +276,17 @@ fun Sidebar(
                     item("error") { Text(err, style = type.small, color = colors.red, modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) }
                 }
                 state.sections.forEach { section ->
-                    val expanded = section.key !in collapsedKeys
+                    // Folded groups are the device's memory, read back from the state; a search opens every group
+                    // for as long as it is typed, since its matches may sit behind a fold.
+                    val expanded = query.isNotBlank() || section.key !in state.collapsedSections
                     item("hdr-${section.key}") {
-                        val onNewProject = callbacks.onNewProject?.takeIf { section.key == AgentListOrganizer.PROJECTS_KEY }
-                        Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = if (onNewProject != null) 8.dp else 16.dp).height(CursorDimens.sidebarRow + CursorDimens.sidebarRowGap), verticalAlignment = Alignment.CenterVertically) {
-                            GroupLabel(
-                                section.title,
-                                Modifier.weight(1f),
-                                expanded = expanded,
-                                onToggle = {
-                                    collapsedKeys = if (expanded) collapsedKeys + section.key else collapsedKeys - section.key
-                                },
-                            )
-                            // The composer's plus, much smaller, right-aligned: a new Project, created the desktop's way.
-                            if (onNewProject != null) {
-                                Icon(
-                                    CursorIcons.Plus,
-                                    contentDescription = "New Project",
-                                    tint = colors.iconQuaternary,
-                                    modifier = Modifier
-                                        .size(20.dp)
-                                        .pressable(onNewProject, CircleShape)
-                                        .padding(3.dp)
-                                        .testTag("new-project"),
-                                )
-                            }
-                        }
+                        SidebarSectionHeader(
+                            section = section,
+                            expanded = expanded,
+                            onToggle = { callbacks.onSectionCollapsed(section.key, expanded) },
+                            // The composer's plus, much smaller, beside the chevron: a new Project, created the desktop's way.
+                            onNewProject = callbacks.onNewProject?.takeIf { section.key == AgentListOrganizer.PROJECTS_KEY },
+                        )
                     }
                     if (expanded && section.key == AgentListOrganizer.PROJECTS_KEY && !extendedMode && !isDemo) {
                         // Without the account service only a coordinator's own transcript says which chats are its
@@ -250,7 +303,15 @@ fun Sidebar(
                     if (expanded) {
                         // A search shows every match where it sits in the tree, so the tree is open while one is typed.
                         val expandedIds = if (query.isNotBlank()) section.rows.flatMap { listOf(it) + it.descendants() }.mapTo(HashSet()) { it.agent.id } else expandedParents.toSet()
-                        items(AgentListOrganizer.flatten(section.rows, expandedIds), key = { "${section.key}:${it.row.agent.id}" }) { (row, depth) ->
+                        // A long Projects or Pinned group lists its first rows until "Show N more"; a search lists every match.
+                        val cut = if (state.shortenLongGroups && query.isBlank() && section.key in SidebarShortList.KEYS) {
+                            SidebarShortList.cut(section.rows, selectedAgentId).takeIf { it.hidden > 0 }
+                        } else {
+                            null
+                        }
+                        val listedInFull = shortLists.isExpanded(section.key)
+                        val rows = if (cut == null || listedInFull) section.rows else cut.rows
+                        items(AgentListOrganizer.flatten(rows, expandedIds), key = { "${section.key}:${it.row.agent.id}" }) { (row, depth) ->
                             val id = row.agent.id
                             AgentRowItem(
                                 row = row,
@@ -267,18 +328,34 @@ fun Sidebar(
                                 },
                             )
                         }
+                        if (cut != null) {
+                            item("more-${section.key}") {
+                                val shownIds = cut.rows.mapTo(HashSet()) { it.agent.id }
+                                SidebarShowMoreRow(
+                                    sectionKey = section.key,
+                                    expanded = listedInFull,
+                                    hidden = cut.hidden,
+                                    hasUnread = section.rows.any { it.agent.id !in shownIds && it.isUnread },
+                                    onClick = { if (listedInFull) shortLists.collapse(section.key) else shortLists.expand(section.key) },
+                                    modifier = Modifier.animateItem().padding(vertical = CursorDimens.sidebarRowGap / 2),
+                                )
+                            }
+                        }
                     }
                 }
-                // Past the last row, while the server has older agents: the page being fetched, or a tap away.
-                if (state.hasLoaded && hasMore) {
-                    item("more") { MoreAgentsRow(isLoading = isLoadingMore, onLoad = callbacks.onLoadMore) }
+                // Past the last row, one row at most: the work in flight, the server's words with Retry, or the
+                // ask for the next page (see [SidebarTail]).
+                if (tail != SidebarTail.None) {
+                    item("tail") { SidebarTailRow(tail, onLoad = callbacks.onLoadMore, onRetry = callbacks.onRetryLoadMore) }
                 }
             }
         }
 
-        // Like the list above it, the hint sits on the fade with no rule; the accent colour sets it apart.
-        if (updateHint != null) {
-            UpdateHintRow(updateHint, onClick = callbacks.onSettings)
+        // Like the list above it, the hint sits on the fade with no rule; the accent colour sets it apart. One card
+        // at a time: an update to move to, else the notes of the version that was moved to.
+        when {
+            updateHint != null -> SidebarHintRow(CursorIcons.ArrowDown, updateHint, onClick = callbacks.onSettings, tag = SidebarTags.UPDATE_HINT)
+            whatsNewHint != null -> SidebarHintRow(CursorIcons.Sparkle, whatsNewHint, onClick = callbacks.onWhatsNew, tag = SidebarTags.WHATS_NEW_HINT)
         }
         AccountFooter(user, isDemo, extendedMode, selected = selectedDestination == SidebarDestination.Settings, onClick = callbacks.onSettings)
     }
@@ -311,12 +388,16 @@ internal fun KeepAtTop(listState: LazyListState, topKey: Any?) {
 }
 
 /** The key of the row that leads the sidebar's list as it is composed below — what [KeepAtTop] watches. */
-internal fun sidebarTopKey(state: AgentListUiState): String? = when {
+internal fun sidebarTopKey(state: AgentListUiState, drafts: List<DraftRow> = emptyList()): String? = when {
+    drafts.isNotEmpty() -> DRAFT_KEY_PREFIX + drafts.first().id
     !state.hasLoaded && state.sections.isEmpty() -> "loading"
     state.hasLoaded && state.sections.isEmpty() -> "empty"
     state.error != null -> "error"
     else -> state.sections.firstOrNull()?.let { "hdr-${it.key}" }
 }
+
+/** The lead of a draft row's key in the sidebar's list: never read as an agent's (see `onVisibleRows`). */
+private const val DRAFT_KEY_PREFIX = "draft:"
 
 /** The one line the Projects group carries without Extended mode: what the list can and cannot tell about workers. */
 const val PROJECTS_DEFAULT_MODE_NOTICE = "Project workers appear as plain chats without Extended mode"
@@ -324,19 +405,24 @@ const val PROJECTS_DEFAULT_MODE_NOTICE = "Project workers appear as plain chats 
 /** How many rows from the end of the list the reader may be before the next page of agents is asked for. */
 private const val MoreAgentsPrefetchRows = 4
 
-/** The row past the last agent while the server has older ones: "Loading more…" as a page comes, else a line that asks for one. */
+/**
+ * The row past the last agent — the sidebar's one loading row. "Loading more…" while the list has work in flight
+ * (a page, the tail of a refresh: see [SidebarTail.Loading]); the server's words and Retry when the page failed;
+ * "Load more chats" while the server has older ones and nothing fetches them. One wording for the spinner, one row
+ * at a time, and never a spinner without a request behind it.
+ */
 @Composable
-internal fun MoreAgentsRow(isLoading: Boolean, onLoad: () -> Unit, modifier: Modifier = Modifier) {
+internal fun SidebarTailRow(tail: SidebarTail, onLoad: () -> Unit, onRetry: () -> Unit, modifier: Modifier = Modifier) {
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
-    Box(modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp).testTag(if (isLoading) "loading-more-agents" else "load-more-agents")) {
-        if (isLoading) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                SpinnerRing(size = 12.dp)
-                Spacer(Modifier.width(8.dp))
-                Text("Loading more…", style = type.small, color = colors.textQuaternary)
-            }
-        } else {
+    when (tail) {
+        SidebarTail.None -> Unit
+        is SidebarTail.Loading -> Row(modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp).testTag("loading-more-agents"), verticalAlignment = Alignment.CenterVertically) {
+            SpinnerRing(size = 12.dp)
+            Spacer(Modifier.width(8.dp))
+            Text(LOADING_MORE, style = type.small, color = colors.textQuaternary)
+        }
+        SidebarTail.More -> Box(modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp).testTag("load-more-agents")) {
             Text(
                 "Load more chats",
                 style = type.small,
@@ -344,18 +430,34 @@ internal fun MoreAgentsRow(isLoading: Boolean, onLoad: () -> Unit, modifier: Mod
                 modifier = Modifier.pressable(onLoad, CursorTheme.shapes.base).padding(vertical = 4.dp),
             )
         }
+        is SidebarTail.Failed -> Row(modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp).testTag("load-more-failed"), verticalAlignment = Alignment.CenterVertically) {
+            Text(tail.message, style = type.small, color = colors.red, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+            Spacer(Modifier.width(12.dp))
+            Text(
+                "Retry",
+                style = type.small,
+                color = colors.textPrimary,
+                modifier = Modifier.pressable(onRetry, CursorTheme.shapes.base).padding(horizontal = 6.dp, vertical = 4.dp).testTag("load-more-retry"),
+            )
+        }
     }
 }
 
-/** The desktop app's "Restart to update" affordance, sized to the sidebar rows; leads to the Updates card in Settings. */
+/** The tail's one wording for work in flight. */
+internal const val LOADING_MORE = "Loading more…"
+
+/**
+ * The desktop app's "Restart to update" affordance, sized to the sidebar rows: one card in the slot above the account
+ * footer, an accent glyph and line leading somewhere — the Updates card in Settings, or the What's new page.
+ */
 @Composable
-private fun UpdateHintRow(text: String, onClick: () -> Unit) {
+private fun SidebarHintRow(icon: ImageVector, text: String, onClick: () -> Unit, tag: String) {
     val colors = CursorTheme.colors
     Row(
-        Modifier.fillMaxWidth().pressable(onClick, RectangleShape).height(CursorDimens.sidebarRow).padding(start = 16.dp, end = 14.dp),
+        Modifier.fillMaxWidth().pressable(onClick, RectangleShape).testTag(tag).height(CursorDimens.sidebarRow).padding(start = 16.dp, end = 14.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Icon(CursorIcons.ArrowDown, null, tint = colors.accent, modifier = Modifier.size(14.dp))
+        Icon(icon, null, tint = colors.accent, modifier = Modifier.size(14.dp))
         Spacer(Modifier.width(8.dp))
         Text(text, style = CursorTheme.typography.small, color = colors.accent, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
         Icon(CursorIcons.ChevronRight, null, tint = colors.iconQuaternary, modifier = Modifier.size(14.dp))
@@ -377,6 +479,7 @@ private fun SearchField(value: String, onValueChange: (String) -> Unit, onClose:
             .background(colors.fillFaint, shape)
             .border(CursorDimens.hairline, colors.strokeSubtle, shape)
             .height(CursorDimens.sidebarRow)
+            .testTag("sidebar-search")
             .padding(start = 10.dp, end = 2.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {

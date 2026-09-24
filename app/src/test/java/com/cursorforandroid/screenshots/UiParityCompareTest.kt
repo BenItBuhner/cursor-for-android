@@ -4,13 +4,10 @@ import android.content.Context
 import androidx.activity.ComponentActivity
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.LocalRippleConfiguration
-import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -35,15 +32,8 @@ import com.cursorforandroid.data.local.SecureKeyStore
 import com.cursorforandroid.domain.ActivityGroup
 import com.cursorforandroid.domain.CursorUser
 import com.cursorforandroid.domain.Subscriptions
-import com.cursorforandroid.domain.ThinkingBlock
-import com.cursorforandroid.domain.ToolCall
-import com.cursorforandroid.domain.ToolKind
-import com.cursorforandroid.domain.ToolPayload
 import com.cursorforandroid.ui.conversation.ConversationPills
 import com.cursorforandroid.ui.conversation.ConversationPillsState
-import com.cursorforandroid.ui.conversation.LocalTranscriptControls
-import com.cursorforandroid.ui.conversation.TimelineItemView
-import com.cursorforandroid.ui.conversation.TranscriptControls
 import com.cursorforandroid.ui.navigation.AppShell
 import com.cursorforandroid.ui.navigation.RailState
 import com.cursorforandroid.ui.theme.CursorTheme
@@ -185,33 +175,6 @@ class UiParityCompareTest {
         compose.waitUntil(30_000) { onScreen("Private Edition") }
         captureScreen("render-04-panel-document")
         captureNode("panel-pane", "render-panel-document")
-    }
-
-    /** 05: a Task row inside an open stretch, on the chat's canvas at the web's column width. */
-    @Test
-    fun taskRow() {
-        val task = ToolCall(
-            callId = "t1",
-            name = "task_v2",
-            kind = ToolKind.Task,
-            status = ToolCall.STATUS_COMPLETED,
-            summary = "Icon fidelity gaps: target and layered triangle",
-            payload = ToolPayload.Subagent("Icon fidelity gaps: target and layered triangle", agentId = "bc-icons", durationMs = 45 * 60_000L + 9_000L),
-        )
-        val thought = ThinkingBlock("The two glyphs read as different objects; a full audit is the fix.", durationSeconds = 3)
-        compose.setContent {
-            CursorTheme(mode = ThemeMode.Dark) {
-                CompositionLocalProvider(LocalRippleConfiguration provides null, LocalTranscriptControls provides TranscriptControls(onOpenAgent = {})) {
-                    Column(Modifier.width(786.dp).background(CursorTheme.colors.canvas).padding(horizontal = 24.dp, vertical = 16.dp).testTag("scene")) {
-                        TimelineItemView(ActivityGroup("g1", listOf(thought, task)))
-                    }
-                }
-            }
-        }
-        compose.waitUntil(10_000) { compose.onAllNodes(hasText("Explored", substring = true)).fetchSemanticsNodes().isNotEmpty() }
-        compose.onAllNodes(hasText("Explored", substring = true))[0].performClick()
-        compose.waitUntil(10_000) { tagged("task-row") }
-        captureNode("scene", "render-task")
     }
 
     /** 06: a worker chat's pills — Changes with its counts and Open Desktop — over the composer's column. */

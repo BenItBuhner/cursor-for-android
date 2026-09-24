@@ -12,7 +12,9 @@ package com.cursorforandroid.domain
  * never look across a user message (a stretch closes at one, a remark folds within its turn, a lifted goal call reads
  * its turn's start from it), so the rows of the whole are the rows of the segments in order, plus the two words that
  * belong to the whole alone — the newest stretch reads "Working" while the run writes ([TranscriptRows.markLive]) and
- * the newest small group of events opens on its own ([TranscriptRows.openNewestGroup]). A segment whose items are the
+ * the newest small group of events opens on its own ([TranscriptRows.openNewestGroup]) — and the two facts read over
+ * the whole and told to each segment: the footer the reader's next message cut short, and the message a later run's
+ * log carries again, which is drawn where it was first sent alone ([CoordinatorTranscript.repeatedMessages]). A segment whose items are the
  * instances they were last time (the repository keeps a turn's items when nothing about it moved) is answered from
  * the last presentation, the same row instances: what has not changed is neither rebuilt nor recomposed.
  *
@@ -32,6 +34,8 @@ class TranscriptPresenter {
         /** How many segments were cut afresh for this presentation, and how many were the last presentation's. */
         val segmentsBuilt: Int = 0,
         val segmentsReused: Int = 0,
+        /** What the subagent rows say about the workers across every turn (see [SubagentRows.index]). */
+        val subagents: SubagentRows.Index = SubagentRows.Index.EMPTY,
     ) {
         companion object {
             val EMPTY = Presented(emptyList(), emptyList(), coordinatorMode = false)
@@ -44,6 +48,8 @@ class TranscriptPresenter {
         val mode: Boolean,
         /** The footers of this segment the reader's next message interrupted (see [TranscriptRows.interruptedFooters]). */
         val interrupted: Set<String>,
+        /** The message calls of this segment that repeat one drawn earlier in the transcript (see [CoordinatorTranscript.repeatedMessages]). */
+        val repeats: Set<String>,
         val presented: List<TimelineItem>,
         val rows: List<TranscriptRow>,
         val hasCoordinatorContent: Boolean,
@@ -60,25 +66,32 @@ class TranscriptPresenter {
          * equal them. The equality is cheap where it matters: a group's steps and a message's text are the very
          * instances the trace or the transcript holds, so their comparison is the identity check `equals` starts with.
          */
-        fun matches(items: List<TimelineItem>, from: Int, to: Int, mode: Boolean, interrupted: Set<String>): Boolean {
+        fun matches(items: List<TimelineItem>, from: Int, to: Int, mode: Boolean, interrupted: Set<String>, repeats: Set<String>): Boolean {
             if (this.mode != mode || to - from != source.size) return false
             for (i in source.indices) {
                 val mine = source[i]
                 val theirs = items[from + i]
                 if (mine !== theirs && !(mine.javaClass === theirs.javaClass && mine == theirs)) return false
             }
-            if (this.interrupted.size != interrupted.size) return false
+            if (this.interrupted.size != interrupted.size || this.repeats.size != repeats.size) return false
             for (id in this.interrupted) if (id !in interrupted) return false
+            for (key in this.repeats) if (key !in repeats) return false
             return true
         }
     }
 
     private var segments: List<Segment> = emptyList()
+
+    /** True once this presenter has presented something: a screen reopening on it has rows to draw on its first frame. */
+    val isWarm: Boolean get() = segments.isNotEmpty()
+
     /** The last tail passes' answers, so an unchanged tail keeps its row instances. */
     private var liveInput: TranscriptRow.Stretch? = null
     private var liveOutput: TranscriptRow.Stretch? = null
     private var openedInput: TranscriptRow.Stretch? = null
     private var openedOutput: TranscriptRow.Stretch? = null
+    private var failureInput: TranscriptRow.Stretch? = null
+    private var failureOutput: List<TranscriptRow>? = null
 
     /**
      * Presents [items]. [coordinatorMode] is the word of the list or the record; the content decides too, as the
@@ -88,6 +101,10 @@ class TranscriptPresenter {
     fun present(items: List<TimelineItem>, coordinatorMode: Boolean, runActive: Boolean): Presented {
         val startedAt = System.nanoTime()
         val interruptedAll = TranscriptRows.interruptedFooters(items)
+        // The other fact that crosses a turn: a message — or the whole activity — a later turn's log carries again is
+        // the earlier turn's, and is drawn there alone (see CoordinatorTranscript.repeatedMessages, replayedActivity).
+        // Read over the whole, told per segment.
+        val repeatsAll = CoordinatorTranscript.leftOut(items)
         val previous = segments
         // Whether the chat is a coordinator's by its content, before anything is cut: the mode shapes every segment.
         val mode = coordinatorMode || contentSaysCoordinator(items, previous)
@@ -99,13 +116,14 @@ class TranscriptPresenter {
         while (start < items.size) {
             val end = segmentEnd(items, start)
             val interrupted = interruptedWithin(items, start, end, interruptedAll)
+            val repeats = repeatsWithin(items, start, end, repeatsAll)
             // The last presentation's segments are in order, as these are: the candidate is the next one not yet
             // matched, and a segment that moved (a page inserted above) is found by scanning on.
             var match: Segment? = null
             var q = p
             while (q < previous.size) {
                 val candidate = previous[q]
-                if (candidate.matches(items, start, end, mode, interrupted)) { match = candidate; p = q + 1; break }
+                if (candidate.matches(items, start, end, mode, interrupted, repeats)) { match = candidate; p = q + 1; break }
                 // The candidate starts where this segment does but differs (a turn that grew or was completed): it
                 // is this segment's earlier self, and nothing after it can be this segment either.
                 if (candidate.startsLike(items[start])) { p = q + 1; break }
@@ -117,7 +135,7 @@ class TranscriptPresenter {
             } else {
                 // The segment's source items are kept as the segment's own copy only when they were not reused, so
                 // the presentation holds no second copy of what it was given.
-                next += cut(items.subList(start, end), mode, interrupted)
+                next += cut(items.subList(start, end), mode, interrupted, repeats)
                 built++
             }
             start = end
@@ -134,9 +152,13 @@ class TranscriptPresenter {
         }
         val rows = tailPasses(rawRows, runActive)
         val goal = GoalTranscript.derive(items)
+        val index = SubagentRows.index(rows).let { if (it == subagents) subagents else it.also { fresh -> subagents = fresh } }
         TranscriptPerf.focused?.presenterRun(System.nanoTime() - startedAt, built = built, reused = reused)
-        return Presented(presentedItems, rows, mode, goal, segmentsBuilt = built, segmentsReused = reused)
+        return Presented(presentedItems, rows, mode, goal, segmentsBuilt = built, segmentsReused = reused, subagents = index)
     }
+
+    /** The last presentation's index, kept while it says the same so the rows reading it are not recomposed. */
+    private var subagents: SubagentRows.Index = SubagentRows.Index.EMPTY
 
     /**
      * The chat's content says coordinator: a segment that said so last time and is still among the items says so
@@ -176,9 +198,27 @@ class TranscriptPresenter {
         return found ?: emptySet()
     }
 
-    private fun cut(source: List<TimelineItem>, mode: Boolean, interrupted: Set<String>): Segment {
+    /** The keys of [all] (see [CoordinatorTranscript.leftOut]) that name a call or an item of `items[from, to)`. */
+    private fun repeatsWithin(items: List<TimelineItem>, from: Int, to: Int, all: Set<String>): Set<String> {
+        if (all.isEmpty()) return emptySet()
+        var found: MutableSet<String>? = null
+        for (i in from until to) {
+            val item = items[i]
+            val whole = CoordinatorTranscript.itemKey(item)
+            if (whole in all) (found ?: HashSet<String>().also { found = it }) += whole
+            if (item !is ActivityGroup) continue
+            for (step in item.steps) {
+                if (step !is ToolCall) continue
+                val key = CoordinatorTranscript.messageKey(item, step)
+                if (key in all) (found ?: HashSet<String>().also { found = it }) += key
+            }
+        }
+        return found ?: emptySet()
+    }
+
+    private fun cut(source: List<TimelineItem>, mode: Boolean, interrupted: Set<String>, repeats: Set<String>): Segment {
         val items = source.toList()
-        val presented = GoalTranscript.lift(CoordinatorTranscript.present(items, mode))
+        val presented = GoalTranscript.lift(CoordinatorTranscript.present(items, mode, repeats))
         val rows: List<TranscriptRow> = TranscriptRows.cut(presented, mode, interrupted)
         // The summaries the rows carry are computed here, off the main thread, rather than on their first composition.
         rows.forEach { row ->
@@ -188,12 +228,13 @@ class TranscriptPresenter {
                 else -> Unit
             }
         }
-        return Segment(items, mode, interrupted, presented, rows, CoordinatorTranscript.hasCoordinatorContent(items))
+        return Segment(items, mode, interrupted, repeats, presented, rows, CoordinatorTranscript.hasCoordinatorContent(items))
     }
 
     /**
-     * The two passes that read the whole: the newest stretch live while the run writes, the newest small group of
-     * events open. Each remembers its last answer, so a tail that has not changed keeps its row instances.
+     * The three passes that read the whole: the newest stretch live while the run writes, the failure of the newest
+     * run lifted out to its own row while the conversation has not moved past it, the newest small group of events
+     * open. Each remembers its last answer, so a tail that has not changed keeps its row instances.
      */
     private fun tailPasses(rows: List<TranscriptRow>, runActive: Boolean): List<TranscriptRow> {
         var out: MutableList<TranscriptRow>? = null
@@ -203,6 +244,12 @@ class TranscriptPresenter {
                 val stretch = rows[last] as TranscriptRow.Stretch
                 val live = if (liveInput === stretch) liveOutput!! else stretch.copy(live = true).also { liveInput = stretch; liveOutput = it }
                 out = rows.toMutableList().also { it[last] = live }
+            }
+        } else {
+            TranscriptRows.currentFailureStretch(rows)?.let { (index, stretch) ->
+                // The lift's answer for this stretch: the stretch without its line (or nothing, for a footer alone) and the row.
+                val lifted = if (failureInput === stretch) failureOutput!! else TranscriptRows.liftCurrentFailure(listOf(stretch), runActive = false).also { failureInput = stretch; failureOutput = it }
+                out = rows.toMutableList().also { it.removeAt(index); it.addAll(index, lifted) }
             }
         }
         val opened = TranscriptRows.newestGroupToOpen(out ?: rows) ?: return out ?: rows

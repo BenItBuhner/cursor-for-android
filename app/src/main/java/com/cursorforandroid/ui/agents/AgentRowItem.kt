@@ -7,7 +7,6 @@ import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -19,8 +18,6 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -39,7 +36,6 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
-import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.semantics.contentDescription
@@ -55,9 +51,12 @@ import com.cursorforandroid.domain.AgentRow
 import com.cursorforandroid.domain.EnvType
 import com.cursorforandroid.domain.ListPreferences
 import com.cursorforandroid.ui.components.CursorIcons
+import com.cursorforandroid.ui.components.CursorMenu
+import com.cursorforandroid.ui.components.CursorMenuItem
 import com.cursorforandroid.ui.components.ProjectGlyph
 import com.cursorforandroid.ui.components.RunningGlyph
 import com.cursorforandroid.ui.components.StateGlyph
+import com.cursorforandroid.ui.components.stylusWriting
 import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.util.AppClock
@@ -239,24 +238,24 @@ fun ChatOverflowMenu(
     val clipboard = LocalClipboardManager.current
     val uriHandler = LocalUriHandler.current
     val agent = row.agent
-    DropdownMenu(expanded = expanded, onDismissRequest = onDismiss, containerColor = CursorTheme.colors.elevated, shape = CursorTheme.shapes.lg) {
-        MenuItem(if (row.isPinned) "Unpin" else "Pin", CursorIcons.Pin) { onDismiss(); actions.onTogglePin(row) }
+    CursorMenu(expanded = expanded, onDismissRequest = onDismiss) {
+        CursorMenuItem(if (row.isPinned) "Unpin" else "Pin", CursorIcons.Pin) { onDismiss(); actions.onTogglePin(row) }
         val editProject = actions.onEditProject?.takeIf { agent.isProjectRoot }
-        if (editProject != null) MenuItem("Edit Project", CursorIcons.Pencil) { onDismiss(); editProject(row) }
-        if (actions.onRename != null && editProject == null) MenuItem("Rename", CursorIcons.Pencil) { onRename() }
-        MenuItem("Open on cursor.com", CursorIcons.ExternalLink) { onDismiss(); uriHandler.openUri(agent.url) }
-        MenuItem("Copy link", CursorIcons.Copy) { onDismiss(); clipboard.setText(AnnotatedString(agent.url)) }
+        if (editProject != null) CursorMenuItem("Edit Project", CursorIcons.Pencil) { onDismiss(); editProject(row) }
+        if (actions.onRename != null && editProject == null) CursorMenuItem("Rename", CursorIcons.Pencil) { onRename() }
+        CursorMenuItem("Open on cursor.com", CursorIcons.ExternalLink) { onDismiss(); uriHandler.openUri(agent.url) }
+        CursorMenuItem("Copy link", CursorIcons.Copy) { onDismiss(); clipboard.setText(AnnotatedString(agent.url)) }
         if (!agent.isArchived) {
             if (row.isSnoozed) {
-                MenuItem("Unsnooze", CursorIcons.Clock) { onDismiss(); actions.onUnsnooze(row) }
+                CursorMenuItem("Unsnooze", CursorIcons.Clock) { onDismiss(); actions.onUnsnooze(row) }
             } else {
-                MenuItem("Snooze", CursorIcons.Clock) { onSnooze() }
+                CursorMenuItem("Snooze", CursorIcons.Clock) { onSnooze() }
             }
         }
         if (agent.isArchived) {
-            MenuItem("Unarchive", CursorIcons.Archive) { onDismiss(); actions.onUnarchive(row) }
+            CursorMenuItem("Unarchive", CursorIcons.Archive) { onDismiss(); actions.onUnarchive(row) }
         } else {
-            MenuItem("Archive", CursorIcons.Archive) { onDismiss(); actions.onArchive(row) }
+            CursorMenuItem("Archive", CursorIcons.Archive) { onDismiss(); actions.onArchive(row) }
         }
     }
 }
@@ -293,6 +292,7 @@ fun RenameChatDialog(
             Box(
                 Modifier
                     .fillMaxWidth()
+                    .stylusWriting()
                     .background(colors.fillFaint, CursorTheme.shapes.base)
                     .padding(horizontal = 12.dp, vertical = 10.dp),
             ) {
@@ -326,15 +326,3 @@ fun RenameChatDialog(
 }
 
 private const val NAME_MAX = 100
-
-/** Context-menu row: 13sp label with a 16px glyph at 66 %, tall enough to tap without care. */
-@Composable
-internal fun MenuItem(label: String, icon: ImageVector, tint: Color = CursorTheme.colors.textPrimary, onClick: () -> Unit) {
-    DropdownMenuItem(
-        text = { Text(label, style = CursorTheme.typography.base, color = tint) },
-        leadingIcon = { Icon(icon, null, tint = if (tint == CursorTheme.colors.textPrimary) CursorTheme.colors.iconSecondary else tint, modifier = Modifier.size(16.dp)) },
-        onClick = onClick,
-        contentPadding = PaddingValues(start = 12.dp, end = 20.dp),
-        modifier = Modifier.height(40.dp),
-    )
-}

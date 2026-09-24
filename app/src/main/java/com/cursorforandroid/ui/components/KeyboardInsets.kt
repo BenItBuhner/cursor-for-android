@@ -37,9 +37,9 @@ import com.cursorforandroid.ui.theme.CursorDimens
 fun Modifier.keyboardInsetPadding(): Modifier = this.windowInsetsPadding(WindowInsets.navigationBars.union(WindowInsets.ime))
 
 /**
- * Docks the follow-up composer (with the queue and goal strips stacked over it) at the bottom of a chat:
- * [CursorDimens.composerGutter] of air at each side of the window, and under the box [CursorDimens.composerBottomGap]
- * on top of the keyboard-or-navigation-bar inset ([keyboardInsetPadding]).
+ * Docks the follow-up composer (with the queue, goal and notice cards stacked over it, each a [dockedCard]) at the
+ * bottom of a chat: [CursorDimens.composerGutter] of air at each side of the window, and under the box
+ * [CursorDimens.composerBottomGap] on top of the keyboard-or-navigation-bar inset ([keyboardInsetPadding]).
  *
  * The inset is added under the gap rather than traded against it. With `max(gutter, inset)` the box would sit
  * `gutter` above the window's edge on a device that hides its bar but flush against a three-button bar, and the gap

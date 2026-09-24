@@ -2,6 +2,7 @@ package com.cursorforandroid.data.repo
 
 import com.cursorforandroid.data.local.PreferencesStore
 import com.cursorforandroid.domain.Capabilities
+import com.cursorforandroid.domain.TranscriptEngine
 import com.cursorforandroid.util.AppClock
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -9,6 +10,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
@@ -48,10 +50,21 @@ class ExtendedMode(
 
     val noticePending: Flow<Boolean> = prefs.extendedModeNoticePending
 
-    val capabilities: Flow<Capabilities> = enabled.map(Capabilities::of).distinctUntilChanged()
+    /** The transcript engine the mode renders with (see [TranscriptEngine]); Stable unless Beta was chosen. */
+    val engine: Flow<TranscriptEngine> = prefs.transcriptEngine.distinctUntilChanged()
+
+    val capabilities: Flow<Capabilities> = combine(enabled, engine, Capabilities::of).distinctUntilChanged()
 
     /** What the private surfaces may do right now; read at the start of every call that could reach `api2`. */
-    suspend fun capabilities(): Capabilities = Capabilities.of(prefs.extendedMode.first())
+    suspend fun capabilities(): Capabilities = Capabilities.of(prefs.extendedMode.first(), prefs.transcriptEngine.first())
+
+    suspend fun engine(): TranscriptEngine = prefs.transcriptEngine.first()
+
+    /**
+     * Chooses the transcript engine. Written at once; read at the start of a chat's load, so it takes effect on the
+     * next chat open (a chat on screen keeps the engine it opened with until then). False when it could not be saved.
+     */
+    suspend fun setEngine(engine: TranscriptEngine): Boolean = prefs.setTranscriptEngine(engine)
 
     suspend fun isEnabled(): Boolean = prefs.extendedMode.first()
 

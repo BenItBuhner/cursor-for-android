@@ -9,6 +9,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.hasAnyAncestor
 import androidx.compose.ui.test.hasAnyDescendant
+import androidx.compose.ui.test.hasContentDescription
 import androidx.compose.ui.test.hasScrollToNodeAction
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
@@ -64,6 +65,10 @@ class ProjectNavigationTest {
 
     private fun waitForText(text: String, timeoutMillis: Long = 30_000) = compose.waitUntil(timeoutMillis) { onScreen(text) }
 
+    /** The open chat's name: its header's accessibility label, the header holding no title of its own. */
+    private fun waitForChat(name: String, timeoutMillis: Long = 30_000) =
+        compose.waitUntil(timeoutMillis) { compose.onAllNodes(hasTestTag("chat-header") and hasContentDescription(name)).fetchSemanticsNodes().isNotEmpty() }
+
     /** The sidebar's list, told from the recent list by the section headers only it has. */
     private val sidebarList = hasScrollToNodeAction() and hasAnyDescendant(hasText("Pinned") or hasText("Today"))
 
@@ -79,10 +84,10 @@ class ProjectNavigationTest {
         return graph
     }
 
-    /** The coordinator's chat is open: its name in the header, its follow-up composer, no Project view's coordinator row. */
+    /** The coordinator's chat is open: its name on the header, its follow-up composer, no Project view's coordinator row. */
     private fun assertCoordinatorChatOpen() {
         waitForText("Follow up")
-        assertThat(onScreen("Cesium billing launch")).isTrue()
+        waitForChat("Cesium billing launch")
         assertThat(onScreen("Plans the work and delegates it")).isFalse()
         assertThat(onScreen("Open coordinator chat")).isFalse()
     }
@@ -130,7 +135,7 @@ class ProjectNavigationTest {
         compose.onNodeWithTag("panel-sections").performScrollToNode(hasTestTag("project-primary"))
         compose.onNode(hasTestTag("project-primary") and (hasText("Stripe webhook handler", substring = true) or hasAnyDescendant(hasText("Stripe webhook handler", substring = true)))).performClick()
         compose.waitUntil(20_000) { compose.onAllNodes(hasTestTag("conversation-panel")).fetchSemanticsNodes().isEmpty() }
-        waitForText("Stripe webhook handler")
+        waitForChat("Stripe webhook handler")
         // A worker's panel opens on the Project panel too; its own sections — with the way back to the coordinator —
         // are the panel's other surface, from the header menu.
         compose.onNodeWithContentDescription("More").performClick()

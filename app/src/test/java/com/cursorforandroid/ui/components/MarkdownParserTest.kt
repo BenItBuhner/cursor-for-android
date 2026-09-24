@@ -8,6 +8,7 @@ import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.sp
+import com.cursorforandroid.domain.SlashCommands
 import com.google.common.truth.Truth.assertThat
 import org.junit.Test
 
@@ -510,5 +511,86 @@ class InlineMarkdownTest {
     @Test
     fun `brackets that are not links stay literal`() {
         assertThat(render("[ ] todo and [x] done and [ref] text").text).isEqualTo("[ ] todo and [x] done and [ref] text")
+    }
+
+    // --- `/commands` in the reader's own words -----------------------------------------------------------------
+
+    private val commandColor = Color(0xFFF1B467)
+
+    private fun renderCommands(text: String) = InlineMarkdown.render(
+        text = text,
+        base = TextStyle(fontSize = 14.sp),
+        codeColor = Color.Black,
+        codeBackground = Color.LightGray,
+        linkColor = Color.Blue,
+        boldColor = Color.Black,
+        commandColor = commandColor,
+    )
+
+    /** The stretches of [text]'s rendered form drawn in the command colour, in order. */
+    private fun commandsIn(text: String): List<String> {
+        val rendered = renderCommands(text)
+        return rendered.spanStyles.filter { it.item.color == commandColor }.map { rendered.text.substring(it.start, it.end) }
+    }
+
+    @Test
+    fun `slash commands are painted in the command colour and the rest of the text is not`() {
+        val prompt = "/goal Make me a million dollars. Make no mistakes"
+        val rendered = renderCommands(prompt)
+        assertThat(rendered.text).isEqualTo(prompt)
+        assertThat(commandsIn(prompt)).containsExactly("/goal")
+        assertThat(commandsIn("/review Ship the notes, then /subscribe to the checks")).containsExactly("/review", "/subscribe").inOrder()
+        // Nothing but the tokens: the rest of the prompt carries no style of its own.
+        assertThat(renderCommands(prompt).spanStyles).hasSize(1)
+        // Without a command colour — a reply — nothing is painted.
+        assertThat(render(prompt).spanStyles).isEmpty()
+    }
+
+    @Test
+    fun `what counts as a command is the composer's rule, on the text as the composer saw it`() {
+        for (text in listOf("/goal ship it", "fix it /review now", "a/b testing", "path/to/file", "/Goal ship", "/goal, then", "/goal", "  /goal  \n/plan x")) {
+            val expected = SlashCommands.tokenRanges(text).map { text.substring(it) }
+            assertThat(commandsIn(text)).containsExactlyElementsIn(expected).inOrder()
+        }
+    }
+
+    @Test
+    fun `markup around a slash makes no command of what the composer did not paint`() {
+        // The slash follows a star, a bracket or a tag rather than whitespace: the field showed it as text, and so does the bubble.
+        assertThat(commandsIn("*/goal* ship it")).isEmpty()
+        assertThat(commandsIn("[/goal](https://cursor.com) ship it")).isEmpty()
+        assertThat(commandsIn("<b>/goal</b> ship it")).isEmpty()
+        // And markup around a command the field did paint leaves it a command, where the markup leaves it standing.
+        assertThat(commandsIn("**fix /goal now**")).containsExactly("/goal")
+        assertThat(commandsIn("*ship it* /review please")).containsExactly("/review")
+        assertThat(commandsIn("~~not /review now~~ but /subscribe")).containsExactly("/review", "/subscribe").inOrder()
+        // A token closes on whitespace or the end, for the field as for the bubble: `/review~~` is not one in either.
+        assertThat(commandsIn("~~not /review~~ but /subscribe")).containsExactly("/subscribe")
+        assertThat(commandsIn("<a href=\"https://cursor.com\">see /goal now</a>")).containsExactly("/goal")
+        assertThat(commandsIn("<i>then /goal it</i>")).containsExactly("/goal")
+        assertThat(renderCommands("**fix /goal now**").text).isEqualTo("fix /goal now")
+    }
+
+    @Test
+    fun `a command keeps the styles of the markup it stands in`() {
+        val rendered = renderCommands("**fix /goal now**")
+        val start = rendered.text.indexOf("/goal")
+        val styles = rendered.spanStyles.filter { it.start <= start && it.end >= start + "/goal".length }.map { it.item }
+        assertThat(styles.any { it.fontWeight == FontWeight.SemiBold }).isTrue()
+        assertThat(styles.any { it.color == commandColor }).isTrue()
+    }
+
+    @Test
+    fun `code is code, not a command`() {
+        assertThat(commandsIn("run `/goal` now")).isEmpty()
+        assertThat(commandsIn("`fix /goal now`")).isEmpty()
+        assertThat(commandsIn("<code>/goal</code>")).isEmpty()
+        assertThat(isCode("run `/goal` now", "/goal")).isTrue()
+    }
+
+    @Test
+    fun `a store path is a link, never a command`() {
+        assertThat(commandsIn("see /cursor/stores/bc-1/docs/spec.md and /review it")).containsExactly("/review")
+        assertThat(urlsIn("see /cursor/stores/bc-1/docs/spec.md and /review it")).containsExactly("/cursor/stores/bc-1/docs/spec.md")
     }
 }

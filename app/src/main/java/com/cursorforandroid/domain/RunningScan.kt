@@ -15,7 +15,11 @@ data class RunningScan(
     val pagesRead: Int = 0,
     /** The pass read the list to its end: nothing beyond the pages could be running unseen. */
     val complete: Boolean = false,
-    /** The account list's running composers, when Extended mode has read it; null when it has not. */
+    /**
+     * Every composer the account's latest word calls running (see [accountWord]), when Extended mode has read the
+     * account at all; null when it has not. Merged across what the account has said — its list's pages, a discovery
+     * pass's, a record read by id — so the set does not depend on which of them landed last.
+     */
     val accountIds: Set<String>? = null,
     val accountAtMillis: Long = 0L,
     /**

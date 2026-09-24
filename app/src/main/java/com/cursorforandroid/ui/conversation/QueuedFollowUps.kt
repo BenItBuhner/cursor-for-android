@@ -5,20 +5,16 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.BasicTextField
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -47,10 +43,18 @@ import androidx.compose.ui.unit.dp
 import com.cursorforandroid.domain.PendingFollowup
 import com.cursorforandroid.domain.QueuedFollowUp
 import com.cursorforandroid.ui.components.CursorIcons
+import com.cursorforandroid.ui.components.CursorMenu
+import com.cursorforandroid.ui.components.CursorMenuItem
+import com.cursorforandroid.ui.components.SlashCommandVisualTransformation
 import com.cursorforandroid.ui.components.SpinnerRing
 import com.cursorforandroid.ui.components.TouchTarget
 import com.cursorforandroid.ui.components.cursorSurface
+import com.cursorforandroid.ui.components.dockedCard
+import com.cursorforandroid.ui.components.highlightSlashCommands
 import com.cursorforandroid.ui.components.icon
+import com.cursorforandroid.ui.components.sendOnHardwareEnter
+import com.cursorforandroid.ui.components.slashCommandTint
+import com.cursorforandroid.ui.components.stylusWriting
 import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.util.AppClock
@@ -59,11 +63,13 @@ import kotlinx.coroutines.delay
 
 /**
  * The follow-ups waiting for the agent's turn to end, stacked above the composer in the order they will go out. Each
- * is one line in the composer's own surface — the message verbatim, trailing off where the line ends, with the
- * images it carries as small tiles before it — and three small glyphs on the right: remove, edit, send now. Nothing
- * else: a queue should read as a list of what is about to be said, not as a stack of forms. A message that could not
- * be sent shows a warning where its tiles would be and the reason under the message, in red; send-now then retries
- * it. One on its way out shows a ring instead of the glyphs.
+ * is one line in the composer's own surface ([dockedCard]: stood in from the box's sides so its corners are concentric
+ * with the box's, however many are stacked) — the message verbatim, trailing off where the line ends, its
+ * `/commands` painted as the composer painted them ([slashCommandTint]), with the images it carries as small tiles
+ * before it — and three small glyphs on the right: remove, edit, send now. Nothing else: a queue should read as a
+ * list of what is about to be said, not as a stack of forms. A message that could not be sent shows a warning where
+ * its tiles would be and the reason under the message, in red; send-now then retries it. One on its way out shows a
+ * ring instead of the glyphs.
  */
 @Composable
 fun QueuedFollowUps(
@@ -104,15 +110,17 @@ private fun QueuedFollowUpRow(
     Row(
         Modifier
             .fillMaxWidth()
-            .cursorSurface(colors.elevated, colors.strokeSubtle, CursorTheme.shapes.xl)
-            .heightIn(min = RowHeight)
-            .padding(start = CursorDimens.composerPadding + CursorDimens.composerTextInset, end = CursorDimens.composerPadding - 6.dp)
+            // The card's own surface, stood in from the composer's sides so its corners are concentric with the box's.
+            // The description sits on the surface, so the row's node is the card as drawn.
+            .dockedCard()
             .semantics {
                 contentDescription = when (val note = item.warning) {
                     null -> "Queued follow-up $position of $count"
                     else -> "Queued follow-up $position of $count, not sent: $note"
                 }
-            },
+            }
+            .heightIn(min = RowHeight)
+            .padding(start = CursorDimens.composerPadding + CursorDimens.composerTextInset, end = CursorDimens.composerPadding - 6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         if (item.warning != null) {
@@ -145,10 +153,12 @@ private fun QueuedFollowUpRow(
         // the server took (see QueuedFollowUp.isHeld). The ring is for a first send only.
         val sending = item.isSending && !item.isHeld
         Column(Modifier.weight(1f).padding(vertical = 4.dp)) {
+            // The commands dim with the rest of the line while it goes out.
+            val textColor = if (sending) colors.textTertiary else colors.textPrimary
             Text(
-                item.previewText,
+                highlightSlashCommands(item.previewText, slashCommandTint().faded(textColor.alpha)),
                 style = type.input,
-                color = if (sending) colors.textTertiary else colors.textPrimary,
+                color = textColor,
                 maxLines = 1,
                 softWrap = false,
                 overflow = TextOverflow.Ellipsis,
@@ -192,12 +202,16 @@ private fun HeldNote(item: QueuedFollowUp) {
             delay(1_000L)
         }
     }
-    val waited = TimeFormat.duration((now - since).coerceAtLeast(0L))
+    // The time is the tail of the line and the part that moves, so it is never what an ellipsis takes: the separator
+    // and the time's own space are non-breaking, and a card too narrow for the whole line (a phone, the card stood in
+    // from the composer's sides) breaks before the last word and carries the time down with it.
+    val waited = TimeFormat.duration((now - since).coerceAtLeast(0L))?.replace(' ', '\u00A0')
     Text(
-        listOfNotNull(QueuedFollowUp.WAITING_FOR_AGENT, waited).joinToString(" \u00B7 "),
+        // What is waited for: the agent's turn, or — the server having asked every caller to slow down — the wait it named.
+        listOfNotNull(item.holdReason ?: QueuedFollowUp.WAITING_FOR_AGENT, waited).joinToString("\u00A0\u00B7\u00A0"),
         style = type.small.copy(fontFeatureSettings = "tnum"),
         color = colors.textQuaternary,
-        maxLines = 1,
+        maxLines = 2,
         overflow = TextOverflow.Ellipsis,
         modifier = Modifier.testTag("queued-held"),
     )
@@ -271,34 +285,45 @@ private fun AccountQueueRow(
     Row(
         Modifier
             .fillMaxWidth()
-            .cursorSurface(colors.elevated, colors.strokeSubtle, CursorTheme.shapes.xl)
+            .dockedCard()
+            .testTag("account-queue-row")
             .heightIn(min = RowHeight)
             .padding(start = CursorDimens.composerPadding + CursorDimens.composerTextInset, end = CursorDimens.composerPadding - 6.dp)
-            .semantics { contentDescription = "Queued on your account, $position of $count" }
-            .testTag("account-queue-row"),
+            .semantics { contentDescription = "Queued on your account, $position of $count" },
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Icon(CursorIcons.Cloud, null, tint = colors.iconQuaternary, modifier = Modifier.size(12.dp))
         Spacer(Modifier.width(8.dp))
         if (editing) {
+            val save = { editing = false; onUpdate(text.text) }
             BasicTextField(
                 value = text,
                 onValueChange = { text = it },
                 textStyle = type.input.copy(color = colors.textPrimary),
                 cursorBrush = SolidColor(colors.textPrimary),
-                modifier = Modifier.weight(1f).padding(vertical = 8.dp).testTag("account-queue-edit"),
+                // The commands painted as they are reworded, the way the composer paints them.
+                visualTransformation = SlashCommandVisualTransformation(slashCommandTint()),
+                modifier = Modifier
+                    .weight(1f)
+                    .stylusWriting()
+                    // A physical Enter saves, as submitting a queued message being edited does on the desktop (it goes back
+                    // into its place in the queue); a message emptied out is not saved from the keyboard.
+                    .sendOnHardwareEnter(text, onValueChange = { text = it }, onSend = save.takeIf { text.text.isNotBlank() })
+                    .padding(vertical = 8.dp)
+                    .testTag("account-queue-edit"),
             )
             Spacer(Modifier.width(8.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
                 GlyphButton(CursorIcons.Close, "Cancel editing", colors.iconTertiary) { editing = false; text = TextFieldValue(item.text, TextRange(item.text.length)); onEditing(false) }
-                GlyphButton(CursorIcons.Check, "Save queued follow-up", colors.iconPrimary) { editing = false; onUpdate(text.text) }
+                GlyphButton(CursorIcons.Check, "Save queued follow-up", colors.iconPrimary, save)
             }
         } else {
             Column(Modifier.weight(1f).padding(vertical = 4.dp)) {
+                val textColor = if (inFlight) colors.textTertiary else colors.textPrimary
                 Text(
-                    item.previewText,
+                    highlightSlashCommands(item.previewText, slashCommandTint().faded(textColor.alpha)),
                     style = type.input,
-                    color = if (inFlight) colors.textTertiary else colors.textPrimary,
+                    color = textColor,
                     maxLines = 1,
                     softWrap = false,
                     overflow = TextOverflow.Ellipsis,
@@ -313,6 +338,8 @@ private fun AccountQueueRow(
                     AttachedFileNames(item.files.map { it.name } + images)
                 }
                 if (item.isEditing) Text("Being edited on another device", style = type.small, color = colors.textQuaternary, maxLines = 1)
+                // A message put back on the card: the transcript had shown it under a run that ended without it (see QueuePlacement.returned).
+                item.note?.let { Text(it, style = type.small, color = colors.textQuaternary, maxLines = 2, modifier = Modifier.testTag("account-queue-note")) }
             }
             Spacer(Modifier.width(8.dp))
             if (inFlight) {
@@ -324,9 +351,10 @@ private fun AccountQueueRow(
                     if (onMove != null) {
                         Box {
                             GlyphButton(CursorIcons.More, "Reorder queued follow-up", colors.iconTertiary) { menuOpen = true }
-                            DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }, containerColor = colors.elevated, shape = CursorTheme.shapes.lg) {
-                                MenuItem("Move up", CursorIcons.ArrowUp, enabled = position > 1) { menuOpen = false; onMove(true) }
-                                MenuItem("Move down", CursorIcons.ArrowDown, enabled = position < count) { menuOpen = false; onMove(false) }
+                            CursorMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                                // Dimmed at the end of the queue it cannot move past.
+                                CursorMenuItem("Move up", CursorIcons.ArrowUp, enabled = position > 1) { menuOpen = false; onMove(true) }
+                                CursorMenuItem("Move down", CursorIcons.ArrowDown, enabled = position < count) { menuOpen = false; onMove(false) }
                             }
                         }
                     }
@@ -351,21 +379,6 @@ private fun AttachedFileNames(names: List<String>) {
         softWrap = false,
         overflow = TextOverflow.Ellipsis,
         modifier = Modifier.testTag("queued-attachments"),
-    )
-}
-
-/** One line of the reorder menu: the direction's glyph and word, dimmed at the end of the queue it cannot move past. */
-@Composable
-private fun MenuItem(label: String, icon: ImageVector, enabled: Boolean, onClick: () -> Unit) {
-    val colors = CursorTheme.colors
-    val tint = if (enabled) colors.textPrimary else colors.textQuaternary
-    DropdownMenuItem(
-        text = { Text(label, style = CursorTheme.typography.base, color = tint) },
-        leadingIcon = { Icon(icon, null, tint = if (enabled) colors.iconSecondary else colors.iconQuaternary, modifier = Modifier.size(16.dp)) },
-        onClick = onClick,
-        enabled = enabled,
-        contentPadding = PaddingValues(start = 12.dp, end = 20.dp),
-        modifier = Modifier.height(40.dp),
     )
 }
 

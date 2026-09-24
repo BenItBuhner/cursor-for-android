@@ -8,7 +8,6 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -40,10 +39,12 @@ import com.cursorforandroid.data.repo.AttachmentUploads
 import com.cursorforandroid.domain.PromptFile
 import com.cursorforandroid.domain.PromptFileKind
 import com.cursorforandroid.domain.PromptImage
+import com.cursorforandroid.ui.media.ThumbnailSlot
+import com.cursorforandroid.ui.media.rememberThumbnailSlot
+import com.cursorforandroid.ui.media.thumbnailSlot
 import com.cursorforandroid.ui.theme.CursorTheme
-import kotlinx.coroutines.Dispatchers
+import com.cursorforandroid.util.ioThenMain
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -51,20 +52,32 @@ import java.util.UUID
 
 /**
  * A file of any type the user attached to the composer (Extended mode): a document from the Files picker, or a
- * picture or video from the gallery, as it is. The id follows it to disk and back; an image carries a small
- * [thumbnail] for its chip.
+ * picture or video from the gallery, as it is. The id follows it to disk and back; a picture carries a small
+ * [thumbnail] for its chip, a recording its poster frame and [durationMs] when the provider gave them up.
  */
-class PendingFile(val id: String, val file: PromptFile, val thumbnail: ImageBitmap? = null) {
+class PendingFile(val id: String, val file: PromptFile, val thumbnail: ImageBitmap? = null, val durationMs: Long? = null) {
     /**
      * Whether the prompt will name it as an image (`selected_images[]`, one of the documented image types) and it
      * counts against the image slots; everything else — a video, a HEIC, a PDF — is a document and counts against the file slots.
      */
     val isImage: Boolean get() = PromptImage.isSupported(file.mimeType)
 
+    /** A recording: a document to the prompt, media to the composer, which shows it as a tile that plays. */
+    val isVideo: Boolean get() = file.kind == PromptFileKind.Video
+
+    /**
+     * A picture or a recording — by what the file is, including a picture the API takes as a document (a HEIC, an SVG):
+     * shown as its own tile ([MediaChip]) that opens in the viewer, not as a file chip with a name and a size.
+     */
+    val isMedia: Boolean get() = file.kind == PromptFileKind.Image || isVideo
+
+    /** The same file with a poster and length found for it after the fact (a restored draft's recording). */
+    fun withPreview(thumbnail: ImageBitmap?, durationMs: Long?): PendingFile = PendingFile(id, file, thumbnail ?: this.thumbnail, durationMs ?: this.durationMs)
+
     companion object {
-        /** Decodes the thumbnail of an image file, so not for the main thread; a file of any other kind has none. */
+        /** Decodes the thumbnail of a picture, so not for the main thread; a file of any other kind has none here (a recording's is read at import). */
         fun of(file: PromptFile, id: String = "file@" + UUID.randomUUID()): PendingFile =
-            PendingFile(id, file, thumbnail = if (PromptImage.isSupported(file.mimeType)) runCatching { thumbnailOf(PromptImage(file.bytes, file.mimeType)) }.getOrNull() else null)
+            PendingFile(id, file, thumbnail = if (file.kind == PromptFileKind.Image) runCatching { thumbnailOf(PromptImage(file.bytes, file.mimeType)) }.getOrNull() else null)
     }
 }
 
@@ -134,7 +147,8 @@ fun rememberMediaPicker(
     val deliver: (List<Uri>) -> Unit = { uris ->
         if (uris.isNotEmpty()) {
             scope.launch {
-                val imported = withContext(Dispatchers.IO) { importMedia(context, uris, extended, counts) }
+                // The import off the main thread, the callbacks below back on it (see ioThenMain).
+                val imported = ioThenMain { importMedia(context, uris, extended, counts) }
                 if (imported.images.isNotEmpty()) onPickedImages(imported.images)
                 if (imported.files.isNotEmpty()) onPickedFiles(imported.files)
                 imported.error?.let(onError)
@@ -174,7 +188,7 @@ fun rememberFilePicker(
     val launcher = rememberLauncherForActivityResult(contract) { uris ->
         if (uris.isNotEmpty()) {
             scope.launch {
-                val imported = withContext(Dispatchers.IO) { importFiles(context, uris, counts) }
+                val imported = ioThenMain { importFiles(context, uris, counts) }
                 if (imported.files.isNotEmpty()) onPickedFiles(imported.files)
                 imported.error?.let(onError)
             }
@@ -219,7 +233,7 @@ internal fun importFiles(context: Context, uris: List<Uri>, counts: AttachmentCo
     var fileSlots = (PromptFile.MAX_COUNT - counts.files).coerceAtLeast(0)
     var imageSlots = (PromptImage.MAX_COUNT - counts.images).coerceAtLeast(0)
     for (uri in uris) {
-        val loaded = loadFile(resolver, uri).getOrElse { t ->
+        val loaded = loadFile(resolver, uri).map { it.withVideoPreview(context, uri) }.getOrElse { t ->
             if (error == null) error = t.message ?: "Couldn't read the file."
             continue
         }
@@ -253,6 +267,17 @@ internal fun loadFile(resolver: ContentResolver, uri: Uri): Result<PendingFile> 
     // The bytes have the last word on an image's type, as they do for a paste: a gallery export declared as `image/*`.
     val mime = sniffImageMime(bytes) ?: PromptFile.resolveMimeType(declared, name)
     PendingFile.of(PromptFile(bytes, name, mime), id = uri.toString() + "@" + System.nanoTime())
+}
+
+/**
+ * A recording's poster frame and length, read from the provider's copy while it is still ours to read (a picker's
+ * grant does not last), so its tile has a picture and a duration from the first frame; anything else, or a provider
+ * that will not say, leaves the tile with its play glyph alone. Not for the main thread.
+ */
+internal fun PendingFile.withVideoPreview(context: Context, uri: Uri): PendingFile {
+    if (!isVideo) return this
+    val preview = runCatching { VideoPreview.of(context, uri) }.getOrNull() ?: return this
+    return withPreview(preview.first, preview.second)
 }
 
 /** The provider's display name, else the URI's last segment; null when neither names the file. */
@@ -300,31 +325,26 @@ fun PromptFileKind.icon(): ImageVector = when (this) {
 }
 
 /**
- * The composer's chips for attached files, one per file: its kind's glyph — an image's own thumbnail — its name and
- * its size, and a remove cross — as the desktop's `context-pill` names a document, with the size the desktop's guard
- * checks made visible. From the moment a file is attached its glyph is a ring filling with the upload, the cross
- * cancelling it; up, the chip is the file at rest; a file that did not get up shows a warning and a retry of the upload.
+ * The composer's chip for an attached file of any kind but a picture or a recording (those are [MediaChip]s), one per
+ * file in the attachment row ([ComposerAttachments]): its kind's glyph, its name and its size, and a remove cross —
+ * as the desktop's `context-pill` names a document, with the size the desktop's guard checks made visible. From the
+ * moment a file is attached its glyph is a ring filling with the upload, the cross cancelling it; up, the chip is the
+ * file at rest; a file that did not get up shows a warning and a retry of the upload.
  */
 @Composable
-fun FileChips(
-    files: List<PendingFile>,
-    onRemove: (PendingFile) -> Unit,
-    modifier: Modifier = Modifier,
-    uploads: Map<String, FileUploadState> = emptyMap(),
-    onRetry: ((PendingFile) -> Unit)? = null,
+internal fun FileChip(
+    file: PendingFile,
+    upload: FileUploadState?,
+    onRemove: () -> Unit,
+    onRetry: (() -> Unit)?,
+    /** A sound: a tap on the chip opens the media viewer on it, out of the chip; [openSrc] is the reference it opens under. */
+    onOpen: ((ThumbnailSlot) -> Unit)? = null,
+    openSrc: String? = null,
 ) {
-    Column(modifier, verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        files.forEach { file ->
-            FileChip(file, upload = uploads[file.id], onRemove = { onRemove(file) }, onRetry = onRetry?.let { retry -> { retry(file) } })
-        }
-    }
-}
-
-@Composable
-private fun FileChip(file: PendingFile, upload: FileUploadState?, onRemove: () -> Unit, onRetry: (() -> Unit)?) {
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
     val kind = file.file.kind
+    val slot = openSrc?.let { rememberThumbnailSlot(it, CursorTheme.shapes.lg, crop = true) }
     val size = PromptFile.formatSize(file.file.sizeBytes.toLong())
     // At rest — nothing known of an upload, or one that is done — the chip is the file: glyph or thumbnail, kind, size.
     val atRest = upload == null || upload.done
@@ -336,8 +356,10 @@ private fun FileChip(file: PendingFile, upload: FileUploadState?, onRemove: () -
     }
     Row(
         Modifier
+            .then(if (slot != null) Modifier.thumbnailSlot(slot) else Modifier)
             .widthIn(max = ChipMaxWidth)
             .cursorSurface(colors.fill, colors.stroke, CursorTheme.shapes.lg)
+            .then(if (onOpen != null && slot != null) Modifier.pressable({ onOpen(slot) }, CursorTheme.shapes.lg) else Modifier)
             .heightIn(min = ChipHeight)
             .padding(start = 8.dp, end = 4.dp)
             .testTag("file-chip")

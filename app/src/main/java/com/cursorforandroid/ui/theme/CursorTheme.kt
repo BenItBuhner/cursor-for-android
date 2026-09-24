@@ -47,6 +47,12 @@ object CursorTheme {
 fun CursorTheme(
     mode: ThemeMode = ThemeMode.System,
     oledBlack: Boolean = false,
+    /**
+     * Whether the window behind the content is painted in the theme's canvas. Off for a window that is meant to
+     * show what is behind it — the quick composer over the launcher — whose translucent background the repaint
+     * would otherwise cover.
+     */
+    paintWindow: Boolean = true,
     content: @Composable () -> Unit,
 ) {
     val colors = cursorColorsFor(mode, oledBlack, isSystemInDarkTheme())
@@ -62,7 +68,7 @@ fun CursorTheme(
             // The window background is a resource, so it can only follow the system's night mode; someone running
             // Cursor Light on a dark phone would keep a dark frame behind every transition and under the recents
             // thumbnail. Repaint it with the theme actually in force.
-            window.setBackgroundDrawable(colors.canvas.toArgb().toDrawable())
+            if (paintWindow) window.setBackgroundDrawable(colors.canvas.toArgb().toDrawable())
             val controller = WindowCompat.getInsetsController(window, view)
             controller.isAppearanceLightStatusBars = !dark
             controller.isAppearanceLightNavigationBars = !dark

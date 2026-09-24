@@ -22,7 +22,8 @@ data class TranscriptContent(
 ) {
     val isEmpty: Boolean get() = touched.isEmpty() && changes.isEmpty() && media.isEmpty() && subagents.isEmpty() && pendingQuestion == null
 
-    data class TouchedFile(val path: String, val kinds: Set<Touch>) {
+    /** [carried] is the picture a read of it carried (its kept `src`), which opens before anything is asked of the VM. */
+    data class TouchedFile(val path: String, val kinds: Set<Touch>, val carried: String? = null) {
         val name: String get() = ToolNames.basename(path)
         val wasChanged: Boolean get() = Touch.Edited in kinds || Touch.Created in kinds || Touch.Deleted in kinds
     }
@@ -62,6 +63,7 @@ data class TranscriptContent(
             val changes = LinkedHashMap<String, MutableList<ToolPayload.FileDiff>>()
             val changeTouch = LinkedHashMap<String, Touch>()
             val contentAfter = HashMap<String, ToolPayload.FileContent>()
+            val carried = HashMap<String, String>()
             val media = ArrayList<MediaItem>()
             val subagents = ArrayList<ToolPayload.Subagent>()
             var pending: ToolPayload.Question? = null
@@ -99,10 +101,13 @@ data class TranscriptContent(
                     }
                     // A coordinator's workers are the Project view's business, not the Changes or Files lists'; the goal is the strip's.
                     is ToolPayload.WorkerAction, is ToolPayload.CoordinatorMessage, is ToolPayload.GoalChange, null -> Unit
+                    is ToolPayload.ReadMedia -> payload.src?.let { carried[payload.path.ifBlank { path.orEmpty() }] = it }
+                    // A search's hits are opened from their rows; the panel lists the paths by touch.
+                    is ToolPayload.FileHits -> Unit
                 }
             }
             return TranscriptContent(
-                touched = touched.map { (path, kinds) -> TouchedFile(path, kinds) },
+                touched = touched.map { (path, kinds) -> TouchedFile(path, kinds, carried[path]) },
                 changes = changes.map { (path, diffs) -> FileChange(path, diffs, changeTouch[path] ?: Touch.Edited, contentAfter[path]) },
                 media = media,
                 subagents = subagents,

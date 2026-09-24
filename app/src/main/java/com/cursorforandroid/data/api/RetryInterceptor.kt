@@ -25,9 +25,17 @@ class RetryInterceptor(
     private val random: () -> Double = { ThreadLocalRandom.current().nextDouble() },
 ) : Interceptor {
 
+    /**
+     * Until when the host asked every call to wait: a `429` on one call pauses the others before they go out, rather
+     * than each of them meeting the same refusal and backing off on its own. Shared by every call through this client.
+     */
+    @Volatile private var pausedUntilMs = 0L
+
     override fun intercept(chain: Interceptor.Chain): Response {
         val request = chain.request()
-        if (!request.isIdempotent() || request.header("Accept") == "text/event-stream") return chain.proceed(request)
+        if (request.header("Accept") == "text/event-stream") return chain.proceed(request)
+        holdForPause(chain)
+        if (!request.isIdempotent()) return chain.proceed(request)
         var attempt = 1
         while (true) {
             val response = try {
@@ -38,12 +46,25 @@ class RetryInterceptor(
                 attempt++
                 continue
             }
+            // A refusal pauses the other calls of this client for what the server asked; this call's own backoff
+            // below covers the same wait, so it does not hold twice.
+            if (response.code == 429) pauseAll(response.retryAfterMs() ?: baseDelayMs)
             if (attempt >= maxAttempts || !response.isTransientFailure() || chain.call().isCanceled()) return response
             val retryAfter = response.retryAfterMs()
             response.close()
             wait(chain, backoff(attempt, retryAfter))
             attempt++
         }
+    }
+
+    private fun pauseAll(ms: Long) {
+        val until = now() + ms.coerceIn(0L, MAX_RETRY_AFTER_MS)
+        if (until > pausedUntilMs) pausedUntilMs = until
+    }
+
+    private fun holdForPause(chain: Interceptor.Chain) {
+        val wait = pausedUntilMs - now()
+        if (wait > 0) sleeper(wait) { chain.call().isCanceled() }
     }
 
     private fun wait(chain: Interceptor.Chain, delayMs: Long) = sleeper(delayMs) { chain.call().isCanceled() }

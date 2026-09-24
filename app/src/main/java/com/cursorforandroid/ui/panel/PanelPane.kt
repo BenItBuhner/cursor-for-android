@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.remember
@@ -29,6 +30,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
+import com.cursorforandroid.ui.components.LocalScrollFadeSurface
 import com.cursorforandroid.ui.navigation.WindowPosture
 import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
@@ -85,7 +87,10 @@ fun PanelPane(
         // On the canvas colour, as the web's panel is: the hairline in the grip is what marks the boundary. The surface
         // runs edge to edge; the panel's root consumes the window's insets (panelInsetPadding), the one consumption.
         Surface(color = colors.canvas, contentColor = colors.textPrimary, shape = RectangleShape, modifier = Modifier.fillMaxHeight().width(with(density) { shownPx.toDp() } - GripWidth)) {
-            Box(Modifier.fillMaxSize()) { content() }
+            // The lists inside fade into the pane's own surface, as they do into the sheet's.
+            CompositionLocalProvider(LocalScrollFadeSurface provides colors.canvas) {
+                Box(Modifier.fillMaxSize()) { content() }
+            }
         }
     }
 }

@@ -5,41 +5,30 @@ import android.content.ClipDescription
 import android.content.ContentResolver
 import android.content.Context
 import android.content.res.AssetFileDescriptor
+import android.content.res.Resources
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
 import android.provider.OpenableColumns
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.Image
-import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.offset
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import com.cursorforandroid.domain.PromptImage
-import com.cursorforandroid.ui.theme.CursorTheme
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
 import java.io.InputStream
 import java.util.UUID
+import kotlin.math.roundToInt
 
 /** An image the user attached to the composer, kept with a small decoded thumbnail for the strip. */
 class PendingAttachment(
@@ -73,13 +62,44 @@ internal fun PromptImage.encoded(): PromptImage {
     return this
 }
 
-/** A small (≈160px) bitmap of [image] for a strip or a card. Decodes, so not for the main thread. */
+/**
+ * The bitmap of [image] a composer's tile draws, fitted to [chipPreviewBox]: the tile shows it at 48dp, but the
+ * viewer's open grows this same picture toward the screen until the screen-sized decode takes over, so it is decoded
+ * for that rather than for the tile. Mipmapped, so the tile's much smaller draw of it stays smooth. Decodes, so not
+ * for the main thread.
+ */
 fun thumbnailOf(image: PromptImage): ImageBitmap? {
     val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
     BitmapFactory.decodeByteArray(image.bytes, 0, image.sizeBytes, bounds)
-    val sample = maxOf(1, maxOf(bounds.outWidth, bounds.outHeight) / 160)
-    return BitmapFactory.decodeByteArray(image.bytes, 0, image.sizeBytes, BitmapFactory.Options().apply { inSampleSize = sample })?.asImageBitmap()
+    if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+    val box = chipPreviewBox(bounds.outWidth, bounds.outHeight)
+    val fit = minOf(1f, box.width / bounds.outWidth.toFloat(), box.height / bounds.outHeight.toFloat())
+    val width = (bounds.outWidth * fit).roundToInt().coerceAtLeast(1)
+    val height = (bounds.outHeight * fit).roundToInt().coerceAtLeast(1)
+    // The largest power-of-two step that still leaves the decode at least the fitted size; the rest is a filtered scale.
+    var sample = 1
+    while (bounds.outWidth / (sample * 2) >= width && bounds.outHeight / (sample * 2) >= height) sample *= 2
+    val decoded = BitmapFactory.decodeByteArray(image.bytes, 0, image.sizeBytes, BitmapFactory.Options().apply { inSampleSize = sample }) ?: return null
+    val fitted = if (decoded.width > width || decoded.height > height) Bitmap.createScaledBitmap(decoded, width, height, true) else decoded
+    if (fitted !== decoded) decoded.recycle()
+    return fitted.apply { setHasMipMap(true); prepareToDraw() }.asImageBitmap()
 }
+
+/**
+ * The box a tile's picture or poster is decoded to fit, half the screen along each of the picture's own axes. The
+ * open's transform has the picture at about half the page's size within three frames (its curve decelerates from
+ * the start), so a thumbnail this size is drawn at no more than its own pixels while the viewer's screen-sized
+ * decode is still on its way, and it is the 48dp tile's all the same.
+ */
+internal fun chipPreviewBox(width: Int, height: Int): IntSize {
+    val metrics = Resources.getSystem().displayMetrics
+    val short = maxOf(minOf(metrics.widthPixels, metrics.heightPixels) / 2, ChipPreviewFloorPx)
+    val long = maxOf(maxOf(metrics.widthPixels, metrics.heightPixels) / 2, ChipPreviewFloorPx)
+    return if (width > height) IntSize(long, short) else IntSize(short, long)
+}
+
+/** What a tile's picture is decoded to at the least, whatever the screen says: the size it always was. */
+private const val ChipPreviewFloorPx = 160
 
 /**
  * Launches the system photo picker for images alone and converts the selection into [PendingAttachment]s, enforcing
@@ -251,36 +271,3 @@ internal fun readBoundedBytes(
     return out.toByteArray()
 }
 
-/** 40px thumbnails with a remove control, shown above the composer text once something is attached. */
-@Composable
-fun AttachmentStrip(attachments: List<PendingAttachment>, onRemove: (PendingAttachment) -> Unit, modifier: Modifier = Modifier) {
-    val colors = CursorTheme.colors
-    Row(modifier.padding(bottom = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        attachments.forEach { attachment ->
-            Box(Modifier.size(44.dp)) {
-                Box(
-                    Modifier
-                        .size(40.dp)
-                        .align(Alignment.BottomStart)
-                        .cursorSurface(colors.fill, colors.stroke, CursorTheme.shapes.base),
-                ) {
-                    if (attachment.thumbnail != null) {
-                        Image(attachment.thumbnail, contentDescription = "Attached image", contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
-                    } else {
-                        Icon(CursorIcons.File, null, tint = colors.iconTertiary, modifier = Modifier.size(14.dp).align(Alignment.Center))
-                    }
-                }
-                Box(
-                    Modifier
-                        .align(Alignment.TopEnd)
-                        .size(16.dp)
-                        .background(colors.textPrimary, CircleShape)
-                        .pressable({ onRemove(attachment) }, CircleShape),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Icon(CursorIcons.Close, "Remove attachment", tint = colors.canvas, modifier = Modifier.size(9.dp).offset(0.dp, 0.dp))
-                }
-            }
-        }
-    }
-}

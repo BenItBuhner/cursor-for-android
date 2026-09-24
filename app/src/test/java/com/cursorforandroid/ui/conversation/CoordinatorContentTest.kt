@@ -19,6 +19,7 @@ import com.cursorforandroid.domain.AgentLifecycle
 import com.cursorforandroid.domain.EnvType
 import com.cursorforandroid.domain.NoticeTone
 import com.cursorforandroid.domain.RunStatus
+import com.cursorforandroid.domain.SubagentRows
 import com.cursorforandroid.domain.SystemNotification
 import com.cursorforandroid.domain.ThinkingBlock
 import com.cursorforandroid.domain.TimelineItem
@@ -36,8 +37,8 @@ import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 
 /**
- * A Project coordinator's transcript as first-class items: a card per worker created — the list's live name and
- * state, a way to its chat — status rows per worker checked on, compact rows for a message or a stop, the
+ * A Project coordinator's transcript as first-class items: the desktop's subagent row for each worker created,
+ * messaged or stopped — the list's live state, a way to its chat — status rows per worker checked on, the
  * coordinator's own words to the user as a plain reply, and a worker's completion notice opening the worker's chat.
  */
 @RunWith(AndroidJUnit4::class)
@@ -76,31 +77,36 @@ class CoordinatorContentTest {
     )
 
     @Test
-    fun `a worker created is a card with the list's live name and state that opens the worker`() {
+    fun `a worker created is the desktop's subagent row, the list's live state under the call's title, and it opens the worker`() {
         show(ActivityGroup("g", listOf(ThinkingBlock("Start the independent tracks.", durationSeconds = 2), created("k1", "Usage events aggregation", "bc-w1"))))
-        // The list's row supersedes the coordinator's word on the name; its state is the pill.
-        compose.onNodeWithText("Usage events aggregation (renamed)").assertIsDisplayed()
-        compose.onNodeWithText("Working").assertIsDisplayed()
-        compose.onNodeWithText("Do the thing.").assertIsDisplayed()
-        // Not folded behind an "Explored" header: the card is the point.
+        // The desktop titles the row with the name the coordinator gave; the list says the worker runs, with no step announced yet.
+        compose.onNodeWithText("Usage events aggregation").assertIsDisplayed()
+        compose.onNodeWithText(SubagentRows.PLANNING).assertIsDisplayed()
+        compose.onNodeWithTag("subagent-placement", useUnmergedTree = true).assertExists()
+        // The prompt is not on the row, and no "Explored" header folds it: the row is the point.
+        assertThat(compose.onAllNodesWithText("Do the thing.").fetchSemanticsNodes()).isEmpty()
         assertThat(compose.onAllNodesWithText("Explored", substring = true).fetchSemanticsNodes()).isEmpty()
-        compose.onNodeWithTag("worker-card").performClick()
+        compose.onNodeWithTag("subagent-row").performClick()
         assertThat(opened).containsExactly("bc-w1")
     }
 
     @Test
-    fun `a worker the list has not loaded shows the coordinator's word, and one still being created says so`() {
+    fun `a worker the list has not loaded reads as its call left it, and one still being created is starting up`() {
         show(ActivityGroup("g", listOf(created("k1", "Stripe webhook handler", "bc-w2"), created("k2", "Rollout plan", null, status = "running"))))
         compose.onNodeWithText("Stripe webhook handler").assertIsDisplayed()
-        compose.onNodeWithText("Creating Rollout plan").assertIsDisplayed()
-        // No state known for either: no pill; the loaded worker still opens.
-        assertThat(compose.onAllNodesWithText("Working").fetchSemanticsNodes()).isEmpty()
+        compose.onNodeWithText(SubagentRows.COMPLETED).assertIsDisplayed()
+        compose.onNodeWithText("Rollout plan").assertIsDisplayed()
+        compose.onNodeWithText(SubagentRows.STARTING).assertIsDisplayed()
         compose.onNodeWithText("Stripe webhook handler").performClick()
+        assertThat(opened).containsExactly("bc-w2")
+        // No worker yet to open: the row opens onto what the coordinator asked of it.
+        compose.onNodeWithText("Rollout plan").performClick()
+        compose.onNodeWithText("Do the thing.").assertIsDisplayed()
         assertThat(opened).containsExactly("bc-w2")
     }
 
     @Test
-    fun `a status check is one row per worker, a message a compact row that opens onto its text`() {
+    fun `a status check is one row per worker, a message the worker's subagent row that opens the worker`() {
         val status = ToolCall(
             "k3", "get_agent_status", ToolKind.Coordinator, "completed", "2 agents",
             payload = ToolPayload.WorkerAction(
@@ -128,13 +134,11 @@ class CoordinatorContentTest {
         compose.onNodeWithText("Finished").assertIsDisplayed()
         compose.onNodeWithText("Unknown worker").performClick()
         assertThat(opened).containsExactly("bc-w9")
-        // The message: verb, worker, delivery; its text and the way to the worker behind it.
-        compose.onNodeWithText("Messaged").assertIsDisplayed()
-        compose.onNodeWithText("· Delivered as followup").assertIsDisplayed()
+        // The message: the row the desktop draws for it, titled with the message's title, the worker's live state under it.
+        compose.onNodeWithText("Rebase").assertIsDisplayed()
+        compose.onNodeWithText(SubagentRows.PLANNING).assertIsDisplayed()
         assertThat(compose.onAllNodesWithText("Rebase onto main.").fetchSemanticsNodes()).isEmpty()
-        compose.onNodeWithText("Messaged").performClick()
-        compose.onNodeWithText("Rebase onto main.").assertIsDisplayed()
-        compose.onNodeWithText("Open agent").performClick()
+        compose.onNodeWithText("Rebase").performClick()
         assertThat(opened).containsExactly("bc-w9", "bc-w1").inOrder()
     }
 
@@ -209,32 +213,57 @@ class CoordinatorContentTest {
     }
 
     @Test
-    fun `without a way to navigate the cards are read-only, and a stale trace still reads as a line`() {
+    fun `without a way to navigate a worker's row opens onto its prompt instead`() {
         show(ActivityGroup("g", listOf(created("k1", "Usage events aggregation", "bc-w1"))), TranscriptControls())
         compose.onNodeWithText("Usage events aggregation").assertIsDisplayed()
-        compose.onNodeWithTag("worker-card").performClick()
+        assertThat(compose.onAllNodesWithText("Do the thing.").fetchSemanticsNodes()).isEmpty()
+        compose.onNodeWithTag("subagent-row").performClick()
+        compose.onNodeWithText("Do the thing.").assertIsDisplayed()
         assertThat(opened).isEmpty()
         assertThat(compose.onAllNodesWithText("Open agent").fetchSemanticsNodes()).isEmpty()
     }
 
     @Test
-    fun `a trace kept before the coordinator's tools had payloads still reads as its plain line`() {
+    fun `a trace kept before the coordinator's tools had payloads still draws the worker's row, off its name and link`() {
         show(ActivityGroup("g", listOf(ToolCall("k0", "create_agent", ToolKind.Other, "completed", "Webhooks", linkedAgentIds = listOf("bc-w1")))))
-        // Folded behind the step header as any lone tool call of no special kind is; the line reads with its verb.
+        // Folded behind the step header as any lone tool call of no special kind is; inside, the row, never a bare line.
         compose.onNodeWithText("Explored").performClick()
-        compose.onNode(hasText("Created agent")).assertIsDisplayed()
         compose.onNode(hasText("Webhooks")).assertIsDisplayed()
-        assertThat(compose.onAllNodes(hasTestTag("worker-card")).fetchSemanticsNodes()).isEmpty()
+        assertThat(compose.onAllNodes(hasText("Created agent")).fetchSemanticsNodes()).isEmpty()
+        compose.onNodeWithTag("subagent-row").performClick()
+        assertThat(opened).containsExactly("bc-w1")
     }
 
     @Test
-    fun `a coordinator's message whose body did not reach the device says so, dimmed, in the reply's place`() {
+    fun `a coordinator's message whose body did not reach the device says so in the reply's place, with Reload beside it`() {
+        var reloads = 0
         val missing = ToolCall("k6", "SendMessage", ToolKind.Coordinator, "completed", "", payload = ToolPayload.CoordinatorMessage("", missing = true))
-        show(ActivityGroup("g", listOf(missing)))
+        show(ActivityGroup("g", listOf(missing)), TranscriptControls(onOpenAgent = { opened += it }, agentById = { live[it] }, onReloadTranscript = { reloads++ }))
         compose.onNodeWithTag("coordinator-message-missing", useUnmergedTree = true).assertIsDisplayed()
         compose.onNodeWithText(MISSING_MESSAGE).assertIsDisplayed()
+        compose.onNodeWithText(MISSING_MESSAGE_DETAIL).assertIsDisplayed()
+        // Never a bare word that a message was sent: no "Sent message" line, no success marker.
         assertThat(compose.onAllNodesWithText("Coordinator").fetchSemanticsNodes()).isEmpty()
         assertThat(compose.onAllNodesWithText("Sent message", substring = true).fetchSemanticsNodes()).isEmpty()
+        compose.onNodeWithTag("coordinator-message-reload", useUnmergedTree = true).performClick()
+        assertThat(reloads).isEqualTo(1)
+    }
+
+    @Test
+    fun `a coordinator's message still being written waits as an empty reply, and one without a reload to offer says what it is alone`() {
+        val running = ToolCall("k7", "sendMessage", ToolKind.Coordinator, "running", "", payload = ToolPayload.CoordinatorMessage("", missing = true))
+        show(ActivityGroup("g", listOf(running)))
+        compose.onNodeWithTag("coordinator-message-pending", useUnmergedTree = true).assertExists()
+        assertThat(compose.onAllNodesWithText(MISSING_MESSAGE).fetchSemanticsNodes()).isEmpty()
+        assertThat(compose.onAllNodes(hasTestTag("coordinator-message-reload")).fetchSemanticsNodes()).isEmpty()
+    }
+
+    @Test
+    fun `a coordinator's message whose text is unavailable and no reload at hand still says so`() {
+        val missing = ToolCall("k8", "SendMessage", ToolKind.Coordinator, "completed", "", payload = ToolPayload.CoordinatorMessage("", missing = true))
+        show(ActivityGroup("g", listOf(missing)), TranscriptControls())
+        compose.onNodeWithText(MISSING_MESSAGE).assertIsDisplayed()
+        assertThat(compose.onAllNodes(hasTestTag("coordinator-message-reload")).fetchSemanticsNodes()).isEmpty()
     }
 
     @Test

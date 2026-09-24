@@ -5,6 +5,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.cursorforandroid.data.FakeCursorApi
 import com.cursorforandroid.data.FakeRunStreamer
 import com.cursorforandroid.data.api.ConnectJsonClient
+import com.cursorforandroid.data.api.ConnectStreamFixtures
 import com.cursorforandroid.data.api.ConversationRecordApi
 import com.cursorforandroid.data.api.HeadlessConversationApi
 import com.cursorforandroid.data.api.HeadlessPage
@@ -24,6 +25,7 @@ import com.cursorforandroid.data.local.TraceCache
 import com.cursorforandroid.domain.ActivityGroup
 import com.cursorforandroid.domain.Capabilities
 import com.cursorforandroid.domain.CoordinatorTranscript
+import com.cursorforandroid.domain.NoticeCard
 import com.cursorforandroid.domain.RunStatus
 import com.cursorforandroid.domain.ToolCall
 import com.cursorforandroid.domain.ToolPayload
@@ -125,12 +127,12 @@ class RecordCoordinatorTest {
                         val page = served.drop(start).take(limit)
                         MockResponse().setBody(buildJsonObject { put("responses", JsonArray(page)); put("totalResponses", served.size) }.toString())
                     }
-                    path.endsWith("/GetLatestAgentConversationState") -> {
+                    path.endsWith("/StreamConversation") -> {
                         // One turn per prompt, each twelve seconds long, an hour apart: the footers of the turns the run list does not reach.
                         val turns = served.count { it.containsKey("humanMessage") || it.containsKey("userMessage") }
                         val timings = (0 until turns).joinToString(",") { t -> """{"durationMs":"12000","timestampMs":"${now - (turns - t) * 3_600_000L + 12_000L}"}""" }
                         val ids = (0 until turns).joinToString(",") { "\"turn-$it\"" }
-                        MockResponse().setBody("""{"latestConversationState":{"conversationState":{"turns":[$ids],"turnTimings":[$timings],"isRootProjectConversation":true}}}""")
+                        ConnectStreamFixtures.prewarmResponse("""{"turns":[$ids],"turnTimings":[$timings],"isRootProjectConversation":true}""")
                     }
                     else -> MockResponse().setResponseCode(404)
                 }
@@ -139,7 +141,10 @@ class RecordCoordinatorTest {
         server.start()
         val client = OkHttpClient()
         val base = server.url("/").toString()
-        record = HeadlessConversationApi(ConnectJsonClient(client, base), SessionTokenProvider(client, apiKeyProvider = { "key_abc" }, apiUrl = base, now = { now }))
+        // The step-indexed wire (`FetchBackgroundComposer`), whose captured shapes these fixtures are — the shapes the
+        // record carried a turn's error and a streamed call's pieces in. The blob-backed read, which the server
+        // answers today, is covered by BlobRecordTest and the fault tests (see BlobFixtures).
+        record = HeadlessConversationApi(ConnectJsonClient(client, base), SessionTokenProvider(client, apiKeyProvider = { "key_abc" }, apiUrl = base, now = { now }), readsTurns = false)
     }
 
     @After
@@ -223,6 +228,208 @@ class RecordCoordinatorTest {
         assertThat(group.group.count).isEqualTo(148)
         assertThat(group.group.startsOpen).isFalse()
         assertThat(rows.map { it.key }).containsNoDuplicates()
+    }
+
+    /**
+     * Bennett's v0.3.35 chat (internal/reference/coordinator-notified-but-no-message.png): the record carries the
+     * coordinator's narration of every turn — "Bennett is told what comes next" — but not its `SendMessage`, which
+     * only the run's log has; and between two of his messages the Project injects dozens of turns (a subscribed pull
+     * request's change, a subagent's report), each a run of its own. The run list's first page reaches twenty runs;
+     * a user's turn behind more injected turns than that had no run paired, so its log was never replayed and its
+     * reply never shown — the note that he was told stood alone. The run list is paged until the window's turns
+     * have their runs, and every reply the logs still have is on screen, each turn with its footer.
+     */
+    @Test
+    fun `a user's turn behind more injected turns than the run list's first page still gets its reply from the run's log`() = runBlocking<Unit> {
+        val wall = CoordinatorFixtures.json("event_wall.json").getValue("turns").jsonArray.map { it.jsonObject.getValue("text").jsonPrimitive.content }
+        val userTurns = listOf(
+            "So where we at rn" to "The phones pass is at shot 12 and the realism coordinator is re-rendering the hands; next results in an hour.",
+            "All right, the limit is now reset. You can continue." to "Resumed all six paused workers where they stopped; the week-1 posting batches are next.",
+            "Please keep on pushing on all fronts." to "Pushing on every front: three new workers on the drop-shipping strategies, the rest continue.",
+            "Fable 5.1 temporarily hit limits, but it is back so you can keep on working now. Thank you." to "All six paused workers are resumed where they stopped; next results due: the week-1 posting batches for the three winners and the ten pitch packages.",
+        )
+        val injectedPerGap = 30
+        // The record: each of the user's turns as narration alone (the SendMessage lives in the run's log, not here),
+        // then the injected turns, each answered with a remark.
+        val record = ArrayList<JsonObject>()
+        val runIds = ArrayList<String>()
+        var t = now - 6 * 3_600_000L
+        userTurns.forEachIndexed { u, (prompt, _) ->
+            record += buildJsonObject { put("humanMessage", buildJsonObject { put("text", prompt); put("agentMode", "AGENT_MODE_PROJECT"); put("createdAt", t.toString()) }) }
+            record += buildJsonObject { put("text", "All paused workers are resumed on Fable, Bennett is told what comes next, and the blocker entry is cleared from notes.") }
+            record += buildJsonObject { put("text", ""); put("isMessageDone", true) }
+            runIds += "run-user-$u"
+            t += 60_000L
+            repeat(injectedPerGap) { j ->
+                record += buildJsonObject { put("humanMessage", buildJsonObject { put("text", wall[(u * injectedPerGap + j) % wall.size]); put("agentMode", "AGENT_MODE_PROJECT"); put("createdAt", t.toString()) }) }
+                record += buildJsonObject { put("text", "Noted; nothing for Bennett in this one.") }
+                record += buildJsonObject { put("text", ""); put("isMessageDone", true) }
+                runIds += "run-inj-$u-$j"
+                t += 60_000L
+            }
+        }
+        served = record
+        // One run per turn, finished, a minute apart, in the same order as the record's turns.
+        var at = now - 6 * 3_600_000L
+        val prompts = runIds.map { id -> Triple(id, if (id.startsWith("run-user")) userTurns[id.removePrefix("run-user-").toInt()].first else "<system_notification>…</system_notification>", "") }
+        api.addFinishedAgent(agentId, "Revenue Scaling Pipeline", *prompts.toTypedArray(), firstRunAt = Instant.ofEpochMilli(at).toString())
+        // addFinishedAgent spaces the runs an hour apart; the order is what pairs them, and it is the record's.
+        agents.refresh()
+        // The logs: the user's runs still have the coordinator's SendMessage whole; the injected turns' logs are gone.
+        userTurns.forEachIndexed { u, (_, reply) ->
+            val runId = "run-user-$u"
+            streamer.emit(runId, RunStreamEvent.Status(runId, RunStatus.RUNNING))
+            streamer.emit(runId, RunStreamEvent.Assistant("Resuming the workers."))
+            streamer.emit(runId, RunStreamEvent.ToolCall(SseToolCallDto("send-$u", "sendMessage", ToolCall.STATUS_COMPLETED, buildJsonObject { put("text", buildJsonObject { put("content", reply) }) }, buildJsonObject { put("success", buildJsonObject { put("messageId", "msg-$u") }) })))
+            streamer.emit(runId, RunStreamEvent.Assistant("All paused workers are resumed on Fable, Bennett is told what comes next, and the blocker entry is cleared from notes."))
+            streamer.emit(runId, RunStreamEvent.Result(runId, RunStatus.FINISHED, "", 253_000, null))
+            streamer.emit(runId, RunStreamEvent.Done)
+        }
+        // The injected turns' logs, of the same day, are there too: the remark and the end — nothing to the user.
+        runIds.filter { it.startsWith("run-inj") }.forEach { id ->
+            streamer.emit(id, RunStreamEvent.Status(id, RunStatus.RUNNING))
+            streamer.emit(id, RunStreamEvent.Assistant("Noted; nothing for Bennett in this one."))
+            streamer.emit(id, RunStreamEvent.Result(id, RunStatus.FINISHED, "", 9_000, null))
+            streamer.emit(id, RunStreamEvent.Done)
+        }
+
+        val conversations = repository()
+        conversations.attach(agentId)
+        awaitUntil { !conversations.state(agentId).value.isLoading && conversations.state(agentId).value.items.isNotEmpty() }
+        // The reader scrolls up to the first message: the window widens over every turn.
+        var pages = 0
+        while (conversations.state(agentId).value.hasOlder && pages++ < 40) {
+            awaitUntil { !conversations.state(agentId).value.isLoadingOlder }
+            val before = conversations.state(agentId).value.items.size
+            conversations.loadOlder(agentId)
+            awaitUntil(10_000) { val s = conversations.state(agentId).value; (s.items.size > before && !s.isLoadingOlder) || !s.hasOlder }
+        }
+        awaitUntil { conversations.state(agentId).value.items.count { it is com.cursorforandroid.domain.UserMessage } >= userTurns.size }
+        // Every reply, from the logs, in order — the turns behind more than a page of injected runs included.
+        awaitUntil(30_000) { conversations.state(agentId).value.messages().size >= userTurns.size }
+        val state = conversations.state(agentId).value
+        assertThat(state.messages()).containsExactlyElementsIn(userTurns.map { it.second }).inOrder()
+        // The run list was paged until it covered the window: every turn paired with its run, a footer per turn.
+        val diagnostics = conversations.loadDiagnostics(agentId)!!
+        assertThat(diagnostics.runsLoaded).isEqualTo(runIds.size)
+        assertThat(diagnostics.runsComplete).isTrue()
+        val footers = state.items.filterIsInstance<com.cursorforandroid.domain.RunFooter>()
+        assertThat(footers.size).isEqualTo(runIds.size)
+        assertThat(footers.all { it.status == RunStatus.FINISHED }).isTrue()
+        // On screen as messages, not as notes: the narration stays a note in the stretch beside them.
+        val rows = state.rows()
+        assertThat(rows.filterIsInstance<TranscriptRow.Message>().map { (it.call.payload as ToolPayload.CoordinatorMessage).message }).containsExactlyElementsIn(userTurns.map { it.second }).inOrder()
+        // The diagnostics say, turn by turn, where the message stands: the record has none, the log's copy is what is shown.
+        val userLines = diagnostics.runs.filter { it.idTail.contains("user-") }
+        assertThat(userLines).hasSize(userTurns.size)
+        userLines.forEach { line ->
+            assertThat(line.trace).isEqualTo("shown(log)")
+            assertThat(line.message).isEqualTo("record=none rendered=yes via=log")
+        }
+        val injectedLine = diagnostics.runs.first { it.idTail.contains("nj-") }
+        assertThat(injectedLine.message).isEqualTo("record=none rendered=none via=log")
+    }
+
+    /**
+     * Bennett's v0.3.39 coordinator (`record_error_continued.json`): an infrastructure error ("Tool result not
+     * found") logged mid-tool-call. In turn A the run went on and the server says it finished: nothing says failed.
+     * In turn B the run ended on it and the server says it failed: the failure is the footer's, with the record's
+     * error as the reason — and since the conversation went on (turn C), it is a line inside B's stretch, the summary
+     * ending "· failed", not a banner and not a row; the chat stands as its newest run does. The diagnostics' status
+     * line says which run failed, by whose word, with what reason, and that the chat moved past it.
+     */
+    @Test
+    fun `a run that logged an error and finished is no failure, one the server says failed is a line inside its stretch once the chat moved on`() = runBlocking<Unit> {
+        val fixture = CoordinatorFixtures.json("record_error_continued.json")
+        served = fixture.getValue("responses").jsonArray.map { it.jsonObject }
+        val prompts = served.mapNotNull { it["humanMessage"]?.jsonObject?.get("text")?.jsonPrimitive?.content }
+        api.addFinishedAgent(agentId, "Revenue Scaling Pipeline", *prompts.mapIndexed { i, p -> Triple("run-${'A' + i}", p, "") }.toTypedArray(), firstRunAt = Instant.ofEpochMilli(now - 4 * 3_600_000L).toString())
+        // The server's word on each run: A finished (the error was on the way), B failed on it, C finished.
+        api.runs["run-A"] = api.runs.getValue("run-A").copy(durationMs = 253_000, result = null)
+        api.runs["run-B"] = api.runs.getValue("run-B").copy(status = "ERROR", durationMs = 41_000, result = null)
+        api.runs["run-C"] = api.runs.getValue("run-C").copy(durationMs = 30_000, result = null)
+        agents.refresh()
+        // The logs are gone: the record is what there is (B, without the coordinator's word, is asked for its log).
+        listOf("run-A", "run-B", "run-C").forEach { id ->
+            streamer.emit(id, RunStreamEvent.Error(RunStreamEvent.Error.STREAM_EXPIRED, "This run's live stream has expired."))
+            streamer.emit(id, RunStreamEvent.Done)
+        }
+
+        val conversations = repository()
+        conversations.attach(agentId)
+        awaitUntil { !conversations.state(agentId).value.isLoading && conversations.state(agentId).value.items.filterIsInstance<com.cursorforandroid.domain.RunFooter>().size == 3 }
+        awaitUntil { !conversations.state(agentId).value.traceStatus.let { it.pending > 0 } }
+        val state = conversations.state(agentId).value
+        // No banner anywhere; the chat stands as its newest run does.
+        assertThat(state.items.filterIsInstance<NoticeCard>()).isEmpty()
+        assertThat(state.runStatus).isEqualTo(RunStatus.FINISHED)
+        assertThat(state.messages()).hasSize(2)
+        val footers = state.items.filterIsInstance<com.cursorforandroid.domain.RunFooter>()
+        assertThat(footers.map { it.status }).containsExactly(RunStatus.FINISHED, RunStatus.ERROR, RunStatus.FINISHED).inOrder()
+        // Turn A: the error was logged and the run went on — no failure, no reason.
+        assertThat(footers[0].reason).isNull()
+        // Turn B: the server says it failed; the record's error is the reason; its end is the record's time.
+        assertThat(footers[1].reason).isEqualTo("Tool result not found for toolu_status_01")
+        assertThat(footers[1].endedAtMillis).isNotNull()
+
+        val rows = state.rows()
+        assertThat(rows.none { it is TranscriptRow.Failure }).isTrue()
+        val stretches = rows.filterIsInstance<TranscriptRow.Stretch>().filter { it.single == null }
+        // Turn A's stretches say what was done and nothing of a failure (its two workers are rows of their own);
+        // turn B's ends on the word, its line inside.
+        assertThat(rows.filterIsInstance<TranscriptRow.Subagent>()).hasSize(2)
+        assertThat(stretches.map { it.summary.text }).containsExactly(
+            "1 note",
+            "Worked 4m 13s · 1 note",
+            "Worked 41s · 1 agent · 1 note · failed",
+            "1 note",
+        ).inOrder()
+        val failed = stretches[2]
+        assertThat(failed.failures.single().footer.reason).isEqualTo("Tool result not found for toolu_status_01")
+        assertThat(failed.listed.last()).isInstanceOf(TranscriptRow.Entry.Failure::class.java)
+        assertThat(stretches.filterIndexed { i, _ -> i != 2 }.none { it.failures.isNotEmpty() }).isTrue()
+
+        val status = conversations.loadDiagnostics(agentId)!!.status!!
+        assertThat(status.shown).isEqualTo("FINISHED")
+        assertThat(status.failure!!.text).isEqualTo("run=run-B source=run-record+account-record current=false reason=\"Tool result not found for toolu_status_01\"")
+    }
+
+    /**
+     * The same chat before turn C: the failed run is the newest and the chat idle, so the failure is the chat's
+     * state — a compact row of its own after the stretch, with the reason and the time — and the diagnostics say so.
+     */
+    @Test
+    fun `the newest run's failure, the chat idle, is a row of its own with the server's reason and the chat's state`() = runBlocking<Unit> {
+        val fixture = CoordinatorFixtures.json("record_error_continued.json")
+        val all = fixture.getValue("responses").jsonArray.map { it.jsonObject }
+        val starts = fixture.getValue("turnStarts").jsonArray.map { it.jsonPrimitive.int }
+        served = all.take(starts[2])
+        val prompts = served.mapNotNull { it["humanMessage"]?.jsonObject?.get("text")?.jsonPrimitive?.content }
+        api.addFinishedAgent(agentId, "Revenue Scaling Pipeline", *prompts.mapIndexed { i, p -> Triple("run-${'A' + i}", p, "") }.toTypedArray(), firstRunAt = Instant.ofEpochMilli(now - 4 * 3_600_000L).toString())
+        api.runs["run-A"] = api.runs.getValue("run-A").copy(durationMs = 253_000, result = null)
+        api.runs["run-B"] = api.runs.getValue("run-B").copy(status = "ERROR", durationMs = 41_000, result = null)
+        agents.refresh()
+        listOf("run-A", "run-B").forEach { id ->
+            streamer.emit(id, RunStreamEvent.Error(RunStreamEvent.Error.STREAM_EXPIRED, "This run's live stream has expired."))
+            streamer.emit(id, RunStreamEvent.Done)
+        }
+
+        val conversations = repository()
+        conversations.attach(agentId)
+        awaitUntil { !conversations.state(agentId).value.isLoading && conversations.state(agentId).value.items.filterIsInstance<com.cursorforandroid.domain.RunFooter>().size == 2 }
+        awaitUntil { !conversations.state(agentId).value.traceStatus.let { it.pending > 0 } }
+        val state = conversations.state(agentId).value
+        assertThat(state.items.filterIsInstance<NoticeCard>()).isEmpty()
+        // The server's status for the newest run, nothing newer, nothing running: the chat reads as failed.
+        assertThat(state.runStatus).isEqualTo(RunStatus.ERROR)
+        val rows = state.rows()
+        val failure = rows.last() as TranscriptRow.Failure
+        assertThat(failure.footer.reason).isEqualTo("Tool result not found for toolu_status_01")
+        assertThat(failure.footer.endedAtMillis).isNotNull()
+        assertThat((rows[rows.lastIndex - 1] as TranscriptRow.Stretch).summary.text).isEqualTo("Worked 41s · 1 agent · 1 note")
+        val status = conversations.loadDiagnostics(agentId)!!.status!!
+        assertThat(status.shown).isEqualTo("ERROR")
+        assertThat(status.failure!!.text).isEqualTo("run=run-B source=run-record+account-record current=true reason=\"Tool result not found for toolu_status_01\"")
     }
 
     @Test

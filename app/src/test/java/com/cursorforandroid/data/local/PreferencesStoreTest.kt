@@ -4,18 +4,24 @@ import android.content.Context
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.datastore.preferences.core.Preferences
+import androidx.datastore.preferences.core.booleanPreferencesKey
+import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.preferencesDataStoreFile
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.cursorforandroid.domain.CredentialInfo
 import com.cursorforandroid.domain.CursorUser
+import com.cursorforandroid.domain.NewChatHome
 import com.cursorforandroid.domain.SignInMethod
 import com.cursorforandroid.ui.theme.ThemeMode
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
@@ -190,6 +196,41 @@ class PreferencesStoreTest {
     }
 
     @Test
+    fun `confirm before stopping is on for a fresh install`() = runBlocking<Unit> {
+        assertThat(PreferencesStore(ApplicationProvider.getApplicationContext()).confirmStop.first()).isTrue()
+    }
+
+    @Test
+    fun `an install upgraded from a build without Confirm before stopping reads it as on, and keeps what the user sets through a sign-out`() = runBlocking<Unit> {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        // The file an earlier build left: its own settings written, this one never. Written through a DataStore of its
+        // own, closed before the app's opens the file, as a process that has since been replaced would have.
+        val earlierBuild = Job()
+        val earlier = PreferenceDataStoreFactory.create(
+            scope = CoroutineScope(Dispatchers.IO + earlierBuild),
+            produceFile = { context.preferencesDataStoreFile("cursor_settings") },
+        )
+        earlier.edit { p ->
+            p[stringPreferencesKey("theme_mode")] = ThemeMode.Light.name
+            p[booleanPreferencesKey("live_notifications")] = false
+        }
+        earlierBuild.cancelAndJoin()
+
+        val prefs = PreferencesStore(context)
+        assertThat(prefs.themeMode.first()).isEqualTo(ThemeMode.Light)
+        assertThat(prefs.liveNotifications.first()).isFalse()
+        assertThat(prefs.confirmStop.first()).isTrue()
+
+        prefs.setConfirmStop(false)
+        assertThat(prefs.confirmStop.first()).isFalse()
+        // The device's preference, not the account's.
+        prefs.clearSession()
+        assertThat(prefs.confirmStop.first()).isFalse()
+        prefs.setConfirmStop(true)
+        assertThat(prefs.confirmStop.first()).isTrue()
+    }
+
+    @Test
     fun `crash reports are off until asked for, and the answer belongs to the device, not the account`() = runBlocking<Unit> {
         val prefs = PreferencesStore(ApplicationProvider.getApplicationContext())
         assertThat(prefs.crashReports.first()).isFalse()
@@ -200,6 +241,25 @@ class PreferencesStoreTest {
         assertThat(prefs.crashReports.first()).isTrue()
         prefs.setCrashReports(false)
         assertThat(prefs.crashReports.first()).isFalse()
+    }
+
+    @Test
+    fun `the new chat page lists recent chats until Projects is chosen, and the choice is the device's`() = runBlocking<Unit> {
+        val prefs = PreferencesStore(ApplicationProvider.getApplicationContext())
+        assertThat(prefs.newChatHome.first()).isEqualTo(NewChatHome.RECENT)
+        prefs.setNewChatHome(NewChatHome.PROJECTS)
+        assertThat(prefs.newChatHome.first()).isEqualTo(NewChatHome.PROJECTS)
+        prefs.clearSession()
+        assertThat(prefs.newChatHome.first()).isEqualTo(NewChatHome.PROJECTS)
+        prefs.setNewChatHome(NewChatHome.RECENT)
+        assertThat(prefs.newChatHome.first()).isEqualTo(NewChatHome.RECENT)
+    }
+
+    @Test
+    fun `a new chat page value this build does not know reads as Recent`() {
+        assertThat(NewChatHome.parse("pinned")).isEqualTo(NewChatHome.RECENT)
+        assertThat(NewChatHome.parse(null)).isEqualTo(NewChatHome.RECENT)
+        assertThat(NewChatHome.parse(NewChatHome.PROJECTS.key)).isEqualTo(NewChatHome.PROJECTS)
     }
 
     @Test
@@ -257,6 +317,40 @@ class PreferencesStoreTest {
         assertThat(defaults.repoUrl).isEqualTo("https://github.com/acme/app")
         assertThat(defaults.ref).isEqualTo("main")
         assertThat(defaults.autoCreatePr).isTrue()
+    }
+
+    /**
+     * A notice closed over a chat's composer is remembered by chat and by its identity, forgotten on request, and
+     * bounded: eight per chat, the oldest dropped, and two hundred chats, the ones least recently written dropped.
+     * The account's: a sign-out takes them.
+     */
+    @Test
+    fun `closed notices persist per chat, are forgotten on request, stay bounded and go with the account`() = runBlocking<Unit> {
+        val prefs = PreferencesStore(ApplicationProvider.getApplicationContext())
+        assertThat(prefs.dismissedNotices.first()).isEmpty()
+        prefs.setNoticeDismissed("bc-1", "aaaa", dismissed = true)
+        prefs.setNoticeDismissed("bc-1", "bbbb", dismissed = true)
+        prefs.setNoticeDismissed("bc-2", "aaaa", dismissed = true)
+        assertThat(prefs.dismissedNotices.first()).containsExactly("bc-1", setOf("aaaa", "bbbb"), "bc-2", setOf("aaaa"))
+        // Closing the same notice twice is one entry; forgetting it leaves the chat's other one.
+        prefs.setNoticeDismissed("bc-1", "aaaa", dismissed = true)
+        prefs.setNoticeDismissed("bc-1", "aaaa", dismissed = false)
+        assertThat(prefs.dismissedNotices.first()["bc-1"]).containsExactly("bbbb")
+        // A chat with nothing closed any more leaves the record.
+        prefs.setNoticeDismissed("bc-2", "aaaa", dismissed = false)
+        assertThat(prefs.dismissedNotices.first().keys).containsExactly("bc-1")
+        // A notice whose words change on every read cannot grow the file: the newest eight stay.
+        (1..10).forEach { prefs.setNoticeDismissed("bc-1", "n$it", dismissed = true) }
+        assertThat(prefs.dismissedNotices.first()["bc-1"]).containsExactly("n3", "n4", "n5", "n6", "n7", "n8", "n9", "n10")
+        // Nor can the chats: the two hundred most recently written keep theirs.
+        (1..205).forEach { prefs.setNoticeDismissed("chat-$it", "x", dismissed = true) }
+        val chats = prefs.dismissedNotices.first().keys
+        assertThat(chats).hasSize(200)
+        assertThat(chats).doesNotContain("bc-1")
+        assertThat(chats).containsAtLeast("chat-6", "chat-205")
+        assertThat(chats).doesNotContain("chat-5")
+        prefs.clearSession()
+        assertThat(prefs.dismissedNotices.first()).isEmpty()
     }
 
     @Test

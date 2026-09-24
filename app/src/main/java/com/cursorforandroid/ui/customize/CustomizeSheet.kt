@@ -25,11 +25,8 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.items
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
@@ -57,7 +54,10 @@ import com.cursorforandroid.domain.SourceFilter
 import com.cursorforandroid.domain.StatusFilter
 import com.cursorforandroid.ui.agents.AgentsViewModel
 import com.cursorforandroid.ui.components.CursorIcons
+import com.cursorforandroid.ui.components.CursorMenu
+import com.cursorforandroid.ui.components.CursorMenuItem
 import com.cursorforandroid.ui.components.CursorSheet
+import com.cursorforandroid.ui.components.FadingLazyColumn
 import com.cursorforandroid.ui.components.CursorToggle
 import com.cursorforandroid.ui.components.FlatIconButton
 import com.cursorforandroid.ui.components.HairlineDivider
@@ -141,7 +141,7 @@ fun CustomizeSheet(viewModel: AgentsViewModel, onDismiss: () -> Unit) {
                     pages using SizeTransform { _, _ -> tween(PageTransitionMillis, easing = LinearOutSlowInEasing) }
                 },
             ) { current ->
-                LazyColumn(Modifier.fillMaxWidth(), contentPadding = PaddingValues(bottom = 12.dp)) {
+                FadingLazyColumn(Modifier.fillMaxWidth(), contentPadding = PaddingValues(bottom = 12.dp)) {
                     when (current) {
                         null -> rows { RootPage(state.prefs, state.unreadCount, viewModel, onOpen = { page = it }) }
                         FilterKind.Repo -> repoPage(state.repoSlugs, state.prefs.repos, onSelectAll = { viewModel.setRepos(null) }) { slug ->
@@ -251,15 +251,13 @@ private fun PickerRow(icon: ImageVector, label: String, options: List<String>, s
                 Spacer(Modifier.width(3.dp))
                 Icon(CursorIcons.ChevronDown, null, tint = colors.iconQuaternary, modifier = Modifier.size(15.dp))
             }
-            DropdownMenu(expanded = open, onDismissRequest = { open = false }, containerColor = colors.elevated, shape = CursorTheme.shapes.lg) {
+            CursorMenu(expanded = open, onDismissRequest = { open = false }) {
                 options.forEachIndexed { i, option ->
-                    DropdownMenuItem(
-                        text = { Text(option, style = CursorTheme.typography.base, color = colors.textPrimary) },
-                        trailingIcon = { if (i == selectedIndex) Icon(CursorIcons.Check, null, tint = colors.accent, modifier = Modifier.size(16.dp)) },
-                        onClick = { open = false; onSelect(i) },
-                        contentPadding = PaddingValues(start = 12.dp, end = 12.dp),
-                        modifier = Modifier.height(40.dp),
-                    )
+                    CursorMenuItem(
+                        option,
+                        icon = null,
+                        trailing = { Box(Modifier.size(CursorDimens.menuIcon)) { if (i == selectedIndex) Icon(CursorIcons.Check, null, tint = colors.accent, modifier = Modifier.size(CursorDimens.menuIcon)) } },
+                    ) { open = false; onSelect(i) }
                 }
             }
         }

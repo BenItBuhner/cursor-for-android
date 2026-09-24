@@ -5,9 +5,6 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.cursorforandroid.AppGraph
-import com.cursorforandroid.data.api.AccountFollowup
-import com.cursorforandroid.data.api.UploadedFile
-import com.cursorforandroid.data.api.toCursorError
 import com.cursorforandroid.data.api.userMessage
 import com.cursorforandroid.data.repo.AgentRepository
 import com.cursorforandroid.data.repo.AttachmentUploads
@@ -23,6 +20,7 @@ import com.cursorforandroid.domain.Capabilities
 import com.cursorforandroid.domain.ConversationControls
 import com.cursorforandroid.domain.DraftFile
 import com.cursorforandroid.domain.DraftImage
+import com.cursorforandroid.domain.DraftModel
 import com.cursorforandroid.domain.FollowUpDraft
 import com.cursorforandroid.domain.Goal
 import com.cursorforandroid.domain.GoalStatus
@@ -30,15 +28,18 @@ import com.cursorforandroid.domain.GoalTranscript
 import com.cursorforandroid.domain.ModelChoice
 import com.cursorforandroid.domain.ModelOption
 import com.cursorforandroid.domain.ModelResolution
+import com.cursorforandroid.domain.ModelSlugs
 import com.cursorforandroid.domain.ModelVariant
 import com.cursorforandroid.domain.PromptFile
 import com.cursorforandroid.domain.PromptImage
 import com.cursorforandroid.domain.QueuedFollowUp
 import com.cursorforandroid.domain.attachmentOnlyText
+import com.cursorforandroid.domain.choiceFor
 import com.cursorforandroid.domain.SlashCatalog
 import com.cursorforandroid.domain.SlashCommand
 import com.cursorforandroid.domain.SlashCommands
 import com.cursorforandroid.domain.SnoozeDuration
+import com.cursorforandroid.domain.SubagentRows
 import com.cursorforandroid.domain.ToolPayload
 import com.cursorforandroid.domain.TranscriptPresenter
 import com.cursorforandroid.domain.TranscriptRow
@@ -101,6 +102,8 @@ data class FollowUpModelState(
     val current: ModelChoice? = null,
     /** Nothing reports the chat's model: [currentLabel] is Auto by assumption, and the picker says so. */
     val currentAssumed: Boolean = false,
+    /** For a model the catalog cannot place: the parameters its id spells and the id the chat keeps running on. */
+    val currentDetail: String? = null,
     val override: ModelChoice? = null,
     /**
      * The mode the next follow-up asks for; null keeps the conversation's mode. Agent and plan travel on the documented
@@ -133,6 +136,7 @@ class PresentedTranscript(val state: ConversationState, val presented: Transcrip
     val rows: List<TranscriptRow> get() = presented.rows
     val items get() = presented.items
     val coordinatorMode: Boolean get() = presented.coordinatorMode
+    val subagents: SubagentRows.Index get() = presented.subagents
 }
 
 /** Where every screen's transcript is presented: one thread at a time, off the main one, in the order the states came. */
@@ -149,14 +153,30 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
     private val draft = MutableStateFlow("")
     private val attachments = MutableStateFlow<List<PendingAttachment>>(emptyList())
     /**
-     * Files of any type (Extended mode). Each goes up the moment it is attached (see [AttachmentUploads]) and stays
-     * in the strip, its chip filling, until the send is through; a file that is up carries its reference.
+     * Files of any type (Extended mode). Each goes up the moment it is attached (see [AttachmentUploads]) and its chip
+     * fills in the composer until send is tapped; from the tap the file is the message's, its upload finishing on
+     * the message's bubble (see [outgoing]). A file that is up carries its reference.
      */
     private val files = MutableStateFlow<List<PendingFile>>(emptyList())
-    private val sending = MutableStateFlow(false)
     private val toast = MutableStateFlow<String?>(null)
-    /** The picker's own state; the catalog and the chat's current model are folded in by [modelPicker]. */
-    private val picker = MutableStateFlow(FollowUpModelState())
+    /**
+     * The messages sent from this chat's composer and not yet filed by the server — their bubbles' statuses
+     * (uploading, sending, failed with a retry and an edit) and the sends themselves, in the order tapped. The
+     * graph's, not this view model's: a send outlives the screen, and this composer only listens while it is open.
+     */
+    private val outgoing = graph.outgoing.forAgent(agentId)
+    private val outgoingListener = object : OutgoingMessages.Listener {
+        override fun onSent(message: OutgoingMessages.Outgoing) = this@ConversationViewModel.onSent(message)
+        override fun onReturned(draft: OutgoingMessages.Draft) = this@ConversationViewModel.onReturned(draft)
+    }
+    /**
+     * The picker's own state; the catalog and the chat's current model are folded in by [modelPicker]. The mode pill
+     * and the model picked are the draft's too (see [setPickedMode], [setOverride]): a chat whose draft is in memory
+     * opens on them from its first frame, and one read from disk takes them once it has been.
+     */
+    private val picker = MutableStateFlow(
+        FollowUpModelState().let { initial -> graph.followUps.state(agentId).value.takeIf { it.restored }?.let { initial.adopting(it.draft) } ?: initial },
+    )
     /** Decoded previews of the images the queue cards and a restored draft show, by [DraftImage.id]. */
     private val thumbnails = MutableStateFlow<Map<String, ImageBitmap>>(emptyMap())
 
@@ -173,12 +193,24 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
      * unpresented, as the screen would only ever have shown the latest anyway. The state it was presented from
      * travels with it, so what the screen reads of the chat (loading, running, older turns) agrees with its rows.
      */
-    private val presenter = TranscriptPresenter()
+    private val presenter = graph.presenters.forAgent(agentId)
 
     val presented: StateFlow<PresentedTranscript> = combine(conversation, agent.map { it?.looksLikeProject == true }.distinctUntilChanged()) { c, project -> c to project }
         .conflate()
         .map { (c, project) -> withContext(presenting) { presentNow(c, project) } }
-        .stateIn(viewModelScope, SharingStarted.Eagerly, PresentedTranscript(conversation.value, TranscriptPresenter.Presented.EMPTY))
+        .stateIn(viewModelScope, SharingStarted.Eagerly, initialPresentation())
+
+    /**
+     * What the first frame draws: a chat whose presenter is warm — a screen showed it before and its rows are kept
+     * (see [TranscriptPresenters]) — is presented here and now, from those rows, which for an unchanged transcript is
+     * a walk over its turns and no cutting; a chat opened for the first time waits for the presentation off the main
+     * thread, as it did before, with nothing to show meanwhile anyway.
+     */
+    private fun initialPresentation(): PresentedTranscript {
+        val state = conversation.value
+        if (!presenter.isWarm || state.items.isEmpty()) return PresentedTranscript(state, TranscriptPresenter.Presented.EMPTY)
+        return presentNow(state, graph.agents.agent(agentId)?.looksLikeProject == true)
+    }
 
     private fun presentNow(state: ConversationState, listSaysProject: Boolean): PresentedTranscript {
         val presented = presenter.present(state.items, coordinatorMode = listSaysProject || state.isProjectConversation, runActive = state.runStatus?.isActive == true || state.isStreaming)
@@ -205,12 +237,15 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
         fs.mapNotNull { f -> states[f.id]?.let { f.id to FileUploadState.of(it) } }.toMap()
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyMap())
     /**
-     * Why send is held: "Uploading 2 of 3…" while an attached file is still going up, null otherwise. The send
-     * button follows it; once every file carries its reference the prompt goes out with no upload in the way.
+     * "Uploading 2 of 3…" while an attached file is still going up, null otherwise — the composer's footer says so.
+     * Send is not held by it: a message sent while its files are going up finishes them on its bubble.
      */
     val uploadHint: StateFlow<String?> = combine(files, graph.attachmentUploads.states) { fs, states -> AttachmentUploads.hint(states, fs.map { it.id }) }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
-    val isSending: StateFlow<Boolean> = sending.asStateFlow()
+    /** A message is going up or out. Not what the composer reads — it is free the moment send is tapped — but what a caller waiting for the send does. */
+    val isSending: StateFlow<Boolean> = outgoing.statuses.map { outgoing.inFlight(it) }.stateIn(viewModelScope, SharingStarted.Eagerly, false)
+    /** Where each message sent from here and not yet filed stands, by its bubble's id — the transcript draws it on the bubble. */
+    val outgoingStatuses: StateFlow<Map<String, OutgoingStatus>> = outgoing.statuses
     val toastMessage: StateFlow<String?> = toast.asStateFlow()
     /**
      * Follow-ups sent while the agent was busy, oldest first; they go out by themselves once it is free. A steered
@@ -226,6 +261,21 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
     val modelPicker: StateFlow<FollowUpModelState> = combine(agent, graph.catalog.models, picker, graph.prefs.pinnedModelIds) { a, models, local, pinned ->
         pickerState(a, models, local).copy(pinnedModelIds = pinned)
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), pickerState(graph.agents.agent(agentId), graph.catalog.models.value, picker.value))
+
+    /** The notices about the load the reader has closed over this chat's composer, and when a closed one comes back (see [NoticeDismissals]). */
+    private val dismissals = NoticeDismissals(agentId, graph.prefs, conversation, viewModelScope)
+
+    /**
+     * The identities of the closed notices ([LoadNotice.identity]) the dock leaves out; null until the device's record
+     * of them has been read, when it shows none (see [LoadNotices.shown]).
+     */
+    val hiddenNotices: StateFlow<Set<String>?> = dismissals.hidden
+
+    /** The reader's X on a notice's card: hidden for this chat until its words change or its condition clears and recurs. */
+    fun dismissNotice(notice: LoadNotice) = dismissals.dismiss(notice)
+
+    /** The reader closed a notice among the rows (`NoticeCard.dismissKey`): every such notice in this chat goes, and stays gone. */
+    fun dismissInlineNotice(key: String) = dismissals.dismissInline(key)
 
     /** Which private surfaces the screen may offer: the answer chips, the account's queue, steering, Ask and Debug. */
     val capabilities: StateFlow<Capabilities> = graph.extendedMode.capabilities
@@ -253,14 +303,17 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), graph.slashCommands.current(commandScope(graph.agents.agent(agentId))))
 
     init {
+        outgoing.listener = outgoingListener
         graph.conversations.attach(agentId)
         graph.steering.attach(agentId)
+        viewModelScope.launch { graph.prefs.markTouchedHere(agentId) }
         viewModelScope.launch { loadModels() }
         viewModelScope.launch {
             // Ask and Debug travel on the account's follow-up alone: with the mode turned off under a worn pill, the
-            // pill comes off (to "not asked", as if never picked) rather than stay on to refuse the next send.
-            capabilities.collect { caps ->
-                if (!caps.agentModes) picker.update { if (it.mode?.needsAccountService == true) it.copy(mode = null) else it }
+            // pill comes off (to "not asked", as if never picked) rather than stay on to refuse the next send. Read
+            // from the setting itself, not [capabilities]' placeholder, which would take a restored pill off unasked.
+            graph.extendedMode.capabilities.collect { caps ->
+                if (!caps.agentModes && picker.value.mode?.needsAccountService == true) setPickedMode(null)
             }
         }
         viewModelScope.launch {
@@ -275,8 +328,17 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
         }
         viewModelScope.launch {
             // The draft left here last time comes back once the disk has been read — unless something was typed first.
-            val restored = graph.followUps.state(agentId).first { it.restored }
-            if (draft.value.isEmpty() && attachments.value.isEmpty() && files.value.isEmpty()) adoptDraft(restored.draft)
+            // Its mode pill and model come back with it: the repository has already kept any picked since the screen
+            // opened over the saved ones. Nothing kept means nothing to put back: no trip off the main thread, during
+            // which a file attached just now would have been written over by an empty draft.
+            graph.followUps.state(agentId).first { it.restored }
+            val allowed = graph.extendedMode.capabilities.first().agentModes
+            // Read now, not when the disk was: anything picked while the setting was read is in it too.
+            if (!allowed && graph.followUps.state(agentId).value.draft.mode?.needsAccountService == true) graph.followUps.setDraftMode(agentId, null)
+            val restored = graph.followUps.state(agentId).value.draft
+            picker.update { it.adopting(restored) }
+            if (restored.isBlank) return@launch
+            if (composerIsEmpty()) adoptDraft(restored, unlessWrittenInto = true)
         }
         viewModelScope.launch {
             graph.followUps.state(agentId).map { s -> s.queue.flatMap { it.images } + s.draft.images }.collect(::decodeThumbnails)
@@ -312,6 +374,8 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
     }
 
     override fun onCleared() {
+        // The sends go on in the graph's scope; only this composer stops hearing of them.
+        if (outgoing.listener === outgoingListener) outgoing.listener = null
         graph.conversations.detach(agentId)
         graph.steering.detach(agentId)
         graph.followUps.flush(agentId)
@@ -334,15 +398,59 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
      */
     private fun pickerState(agent: Agent?, models: List<ModelOption>, local: FollowUpModelState): FollowUpModelState {
         val resolved = ModelResolution.forChat(agent, models)
-        return local.copy(models = models, currentLabel = resolved.label, current = resolved.choice, currentAssumed = resolved.isAssumed)
+        // A pick restored before the catalogue answered is a stand-in named from the draft: the catalogue's entry takes
+        // its place by id, its variant the one nearest the saved parameters.
+        val override = local.override?.let { o -> models.choiceFor(o.model.id, o.params) ?: o }
+        return local.copy(
+            models = models,
+            currentLabel = resolved.label,
+            current = resolved.choice,
+            currentAssumed = resolved.isAssumed,
+            currentDetail = resolved.detail,
+            override = override,
+        )
     }
 
-    /** The catalog is shared with the home composer and fetched once per session; a saved copy shows meanwhile. */
+    /** The picker with [saved]'s mode pill and model, as the draft left them. */
+    private fun FollowUpModelState.adopting(saved: FollowUpDraft): FollowUpModelState =
+        copy(mode = saved.mode, override = saved.model?.let(::choiceOf))
+
+    /**
+     * The picker entry a saved model names: the catalogue's own when it places the model, else a stand-in carrying the
+     * id as it was saved, the parameters and the name, which is all a request needs and all the chip shows.
+     */
+    private fun choiceOf(model: DraftModel): ModelChoice {
+        val models = graph.catalog.models.value
+        models.choiceFor(model.id, model.params)?.let { return it }
+        val name = model.label?.takeIf { it.isNotBlank() && it != model.id } ?: ModelSlugs.readableName(models, model.id)
+        val variant = model.params.takeIf { it.isNotEmpty() }?.let { ModelVariant(name, it, isDefault = true) }
+        return ModelChoice(ModelOption(model.id, name, variants = listOfNotNull(variant)), variant)
+    }
+
+    /** The pick for the next follow-up, filed with the draft so it comes back with it; null keeps the chat's model. */
+    private fun setOverride(choice: ModelChoice?) {
+        picker.update { it.copy(override = choice) }
+        graph.followUps.setDraftModel(agentId, choice?.let { DraftModel(it.model.id, it.params, it.label) })
+    }
+
+    /** The composer's mode pill, filed with the draft. */
+    private fun setPickedMode(mode: AgentMode?) {
+        picker.update { it.copy(mode = mode) }
+        graph.followUps.setDraftMode(agentId, mode)
+    }
+
+    /**
+     * The catalog is shared with the home composer and kept fresh by its refresh policy (see `CatalogRepository`); a
+     * saved copy shows meanwhile, and a list fetched later reaches the picker through [modelPicker].
+     */
     private suspend fun loadModels(force: Boolean = false) {
         picker.update { it.copy(isLoading = true) }
         graph.catalog.loadModels(force)
             .onSuccess { picker.update { it.copy(isLoading = false, unavailable = false) } }
-            .onFailure { picker.update { it.copy(isLoading = false, unavailable = graph.catalog.models.value.isEmpty()) } }
+            .onFailure { t ->
+                picker.update { it.copy(isLoading = false, unavailable = graph.catalog.models.value.isEmpty()) }
+                if (force) toast.value = t.userMessage()
+            }
     }
 
     fun refreshModels() = viewModelScope.launch { loadModels(force = true) }
@@ -350,7 +458,7 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
     /** A model picks the next follow-up's model (its default variant unless one is given); null keeps the chat's current one. */
     fun selectModel(model: ModelOption?, variant: ModelVariant?) {
         val choice = model?.let { m -> ModelChoice(m, variant ?: m.defaultVariant) }
-        picker.update { it.copy(override = choice) }
+        setOverride(choice)
         // An explicit pick is the new-chat composer's next default — opening the app must not fall back to Auto.
         if (choice != null) {
             viewModelScope.launch {
@@ -367,7 +475,7 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
 
     /** The modes and `/multitask` are one slot: asking for one takes the command out of the draft. */
     fun setMode(mode: AgentMode?) {
-        picker.update { it.copy(mode = mode) }
+        setPickedMode(mode)
         if (mode != null && mode != AgentMode.AGENT && SlashCommands.has(draft.value, SlashCommands.MULTITASK)) {
             setDraft(SlashCommands.remove(draft.value, SlashCommands.MULTITASK))
         }
@@ -382,12 +490,26 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
     }
 
     /**
+     * A picture a tool call read is outside the agent's workspace and no source this chat carries has it (see
+     * `MediaProblem.OutsideWorkspace`): fill the composer with a follow-up asking the agent to copy the file under
+     * the workspace, where a read can reach it, and leave it unsent for the reader to send. Appended to whatever is
+     * already typed, on its own line, so nothing drafted is lost.
+     */
+    fun askToCopyFileIntoWorkspace(path: String) {
+        val clean = path.trim()
+        val ask = "Please copy $clean into the workspace (for example `cp \"$clean\" ./` ) so I can view it here, then tell me the path."
+        val current = draft.value
+        setDraft(if (current.isBlank()) ask else current.trimEnd() + "\n\n" + ask)
+    }
+
+    /**
      * The one-slot rule the other way round: a draft that carries `/multitask` — typed, picked, shared in, restored or
      * taken back from the queue — puts a mode that was asked for off (to agent mode, as the pill's cross does). A
      * mode never asked for stays not asked for.
      */
     private fun keepModesExclusive(text: String) {
-        if (SlashCommands.has(text, SlashCommands.MULTITASK)) picker.update { if (it.mode != null && it.mode != AgentMode.AGENT) it.copy(mode = AgentMode.AGENT) else it }
+        val mode = picker.value.mode
+        if (SlashCommands.has(text, SlashCommands.MULTITASK) && mode != null && mode != AgentMode.AGENT) setPickedMode(AgentMode.AGENT)
     }
 
     fun addAttachments(items: List<PendingAttachment>) {
@@ -432,13 +554,20 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
         graph.attachmentUploads.retry(item.id)
     }
 
-    /** Puts the repository's draft in the composer: a restored one, or a queued message taken back for editing. */
-    private suspend fun adoptDraft(saved: FollowUpDraft) {
+    private fun composerIsEmpty(): Boolean = draft.value.isEmpty() && attachments.value.isEmpty() && files.value.isEmpty()
+
+    /**
+     * Puts the repository's draft in the composer: a restored one, or a queued message taken back for editing. The
+     * previews are decoded off the main thread first; with [unlessWrittenInto], a composer written into meanwhile —
+     * a word typed, a file attached — keeps what it has, and the restored draft stays on disk for the next time.
+     */
+    private suspend fun adoptDraft(saved: FollowUpDraft, unlessWrittenInto: Boolean = false) {
         val restored = withContext(Dispatchers.Default) {
             saved.images.map { PendingAttachment.of(it.image, it.id, thumbnails.value[it.id]) }
         }
         // An image file's chip thumbnail is decoded on the way back too, off the main thread.
         val restoredFiles = withContext(Dispatchers.Default) { saved.files.map { PendingFile.of(it.file, it.id) } }
+        if (unlessWrittenInto && !composerIsEmpty()) return
         thumbnails.update { cache -> cache + restored.mapNotNull { a -> a.thumbnail?.let { a.id to it } } }
         draft.value = saved.text
         attachments.value = restored
@@ -474,7 +603,7 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
         val text = draft.value.trim()
         val images = attachments.value
         val attached = files.value
-        if ((text.isEmpty() && images.isEmpty() && attached.isEmpty()) || sending.value) return
+        if (text.isEmpty() && images.isEmpty() && attached.isEmpty()) return
         val options = picker.value
         // One reading, one source at a time — the freshest that has spoken — shared with the queue's dispatcher, so
         // what the composer decides and what the queue does never disagree (see SendGate; the `send:` diagnostics).
@@ -499,136 +628,76 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
         }
         val accountQueue = caps.accountQueue && !graph.session.isDemo
         val waiting = graph.followUps.state(agentId).value.queue.isNotEmpty()
+        val message = OutgoingMessages.Draft(
+            // The account's follow-up refuses a message with no text; an attachment-only one says what it carries.
+            text = text.ifEmpty { if (withFiles) attachmentOnlyText(images.size, attached.size) else QueuedFollowUp.IMAGE_ONLY_TEXT },
+            typed = text,
+            images = images,
+            files = attached,
+            mode = options.mode,
+            planMode = options.planMode,
+            override = options.override,
+        )
         when {
-            busy && accountQueue -> queueOnAccount(text, images, attached, options)
+            // Mid-turn in Extended mode: into the account's queue, behind the turn under way. The account answers with
+            // no run, the bubble comes down and the card above the composer shows the message until it is delivered.
+            busy && accountQueue -> dispatch(message, graph.outgoing.accountRoute(agentId, message))
             // This device's queue sends the documented run request, which cannot carry Ask or Debug: a message in
             // either mode is not put behind the ones waiting there to go out as an agent turn without a word.
             accountMode && (busy || waiting) -> toast.value = "${options.mode?.label} mode follow-ups cannot wait in this device's queue. Let the queued messages go first, or take the pill off."
             busy || waiting -> enqueue(text, images, attached, options)
-            accountMode || withFiles -> sendViaAccount(text, images, attached, options)
-            else -> sendDocumented(text, images, options)
+            // A mode, or files: only the account's follow-up carries them.
+            accountMode || withFiles -> dispatch(message, graph.outgoing.accountRoute(agentId, message))
+            else -> dispatch(message, graph.outgoing.documentedRoute())
         }
     }
 
     /**
-     * A follow-up only the account service carries — a mode, or files — on a free agent: filed there, shown and
-     * streamed like any other. The files went up when they were attached, so the message goes out at once by their
-     * references; a file that did not get up is tried again first, its chip filling. They leave the strip once the
-     * account has the message, and stay, marked, when an upload failed, so the same send can be tried again.
+     * The tap: the composer is empty — text, images and every chip — before anything else happens, and the message
+     * is the transcript's from here on (see [OutgoingMessages]): its bubble carries the attachments and where the
+     * send stands, and a failure shows on it with a retry and an edit rather than coming back here with a toast.
+     * The draft on disk goes with the composer's; a new draft begun meanwhile is its own. The sent files' uploads
+     * stay tracked for the message, which is why the chips' crosses are gone with the chips: one of them used to
+     * abort an upload the message in flight referenced.
      */
-    private fun sendViaAccount(text: String, images: List<PendingAttachment>, attached: List<PendingFile>, options: FollowUpModelState) {
-        viewModelScope.launch {
-            sending.value = true
-            draft.value = ""
-            attachments.value = emptyList()
-            graph.conversations.sendFollowUpVia(
-                agentId,
-                text.ifEmpty { attachmentOnlyText(images.size, attached.size) },
-                images.map { it.image },
-                attached.map { it.file },
-                modelId = options.override?.model?.id,
-                modelParams = options.override?.params.orEmpty(),
-                modelDisplayName = options.override?.label,
-            ) {
-                val uploaded = uploadFiles(attached)
-                graph.steering.sendFollowup(agentId, accountFollowup(text, images, attached.size, uploaded, options)).getOrThrow()
-            }.onSuccess {
-                clearFiles(attached)
-                graph.followUps.clearDraft(agentId)
-                picker.update { if (it.override == options.override) it.copy(override = null) else it }
-            }.onFailure { restoreDraft(text, images, it) }
-            sending.value = false
-        }
+    private fun dispatch(message: OutgoingMessages.Draft, route: OutgoingMessages.Route) {
+        clearComposer()
+        outgoing.send(message, route)
     }
 
-    /** A follow-up sent mid-turn in Extended mode: into the account's queue, behind the turn under way. */
-    private fun queueOnAccount(text: String, images: List<PendingAttachment>, attached: List<PendingFile>, options: FollowUpModelState) {
-        viewModelScope.launch {
-            sending.value = true
-            draft.value = ""
-            attachments.value = emptyList()
-            runCatching {
-                val uploaded = uploadFiles(attached)
-                graph.steering.sendFollowup(agentId, accountFollowup(text, images, attached.size, uploaded, options)).getOrThrow()
-            }.onSuccess {
-                clearFiles(attached)
-                graph.followUps.clearDraft(agentId)
-            }.onFailure { restoreDraft(text, images, it) }
-            sending.value = false
-        }
+    private fun clearComposer() {
+        draft.value = ""
+        attachments.value = emptyList()
+        files.value = emptyList()
+        graph.followUps.clearDraft(agentId)
+    }
+
+    /** The server has the message: the model override it went out with is spent — unless another was picked meanwhile. */
+    private fun onSent(sent: OutgoingMessages.Outgoing) {
+        val override = sent.draft.override ?: return
+        if (picker.value.override == override) setOverride(null)
     }
 
     /**
-     * What the prompt names [attached] as: the references their uploads settled on when they were attached — at
-     * once, the case a send meets — or, for a file that did not get up, the upload tried again now, its chip filling.
+     * A failed message taken back for editing: its draft is the composer's again — text, images and chips, the chips
+     * where their uploads left them, a completed one already up. A draft already in the composer is queued in its
+     * place, as when a queued message is taken back ([editQueued]), so nothing is lost.
      */
-    private suspend fun uploadFiles(attached: List<PendingFile>): List<UploadedFile> {
-        if (attached.isEmpty()) return emptyList()
-        return graph.attachmentUploads.awaitAll(attached.map { it.id to it.file })
+    private fun onReturned(message: OutgoingMessages.Draft) {
+        val displaced = !draft.value.isBlank() || attachments.value.isNotEmpty() || files.value.isNotEmpty()
+        if (displaced) enqueue(draft.value.trim(), attachments.value, files.value, picker.value)
+        setDraft(message.typed)
+        setAttachments(message.images)
+        message.files.forEach { graph.attachmentUploads.start(it.id, it.file) }
+        setFiles(message.files)
+        if (displaced) toast.value = "Your draft was queued in its place."
     }
 
-    /** The files went out with the message: the chips go, unless something else was attached meanwhile. */
-    private fun clearFiles(sent: List<PendingFile>) {
-        val sentIds = sent.mapTo(HashSet()) { it.id }
-        setFiles(files.value.filterNot { it.id in sentIds })
-        graph.attachmentUploads.forget(sentIds)
-    }
+    /** Sends a failed message again, in its bubble. */
+    fun retryOutgoing(id: String) = outgoing.retry(id)
 
-    private fun accountFollowup(text: String, images: List<PendingAttachment>, fileCount: Int, uploaded: List<UploadedFile>, options: FollowUpModelState) = AccountFollowup(
-        text = text.ifEmpty { attachmentOnlyText(images.size, fileCount) },
-        images = images.map { it.image },
-        files = uploaded,
-        mode = options.mode,
-        modelId = options.override?.model?.id,
-    )
-
-    /**
-     * A send that did not go out: what was typed since wins; the prompt only comes back to an empty composer. The files
-     * never left the strip, and a failed upload's chip says so and offers a retry.
-     */
-    private fun restoreDraft(text: String, images: List<PendingAttachment>, cause: Throwable) {
-        if (draft.value.isBlank()) {
-            draft.value = text
-            graph.followUps.setDraftText(agentId, text)
-        }
-        if (attachments.value.isEmpty()) setAttachments(images)
-        toast.value = cause.userMessage()
-    }
-
-    private fun sendDocumented(text: String, images: List<PendingAttachment>, options: FollowUpModelState) {
-        viewModelScope.launch {
-            sending.value = true
-            draft.value = ""
-            attachments.value = emptyList()
-            graph.conversations.sendFollowUp(
-                agentId,
-                text.ifEmpty { QueuedFollowUp.IMAGE_ONLY_TEXT },
-                images.map { it.image },
-                mcpServers = graph.mcpServers.enabled(),
-                planMode = options.planMode,
-                modelId = options.override?.model?.id,
-                modelParams = options.override?.params.orEmpty(),
-                modelDisplayName = options.override?.label,
-            ).onSuccess {
-                graph.followUps.clearDraft(agentId)
-                // The row now records the switch and the server keeps it for the runs after, so the pick is the
-                // chat's model rather than a pending override — unless another one was made while this was in flight.
-                picker.update { if (it.override == options.override) it.copy(override = null) else it }
-            }.onFailure {
-                // The composer stays editable while a follow-up is in flight, so what was typed since wins; the
-                // prompt that did not go out only comes back to an empty one. Refused as busy against every word
-                // here — the server still winding down the last turn — the message goes where the composer would
-                // have put it had it known: the account's queue in Extended mode, which sends it when the agent is
-                // free; this device's otherwise, which waits with a growing pause and says so on the card.
-                if (it.toCursorError()?.code == "agent_busy") {
-                    if (capabilities.value.accountQueue && !graph.session.isDemo) queueOnAccount(text, images, emptyList(), options) else enqueue(text, images, emptyList(), options, refusedAsBusy = true)
-                } else {
-                    restoreDraft(text, images, it)
-                }
-            }
-            sending.value = false
-        }
-    }
+    /** Takes a failed message back into the composer. */
+    fun editOutgoing(id: String) = outgoing.edit(id)
 
     private fun enqueue(text: String, images: List<PendingAttachment>, attached: List<PendingFile>, options: FollowUpModelState, refusedAsBusy: Boolean = false) {
         graph.followUps.enqueue(

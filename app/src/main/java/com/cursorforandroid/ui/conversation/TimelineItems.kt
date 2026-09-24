@@ -24,7 +24,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.material3.ripple
@@ -81,15 +80,21 @@ import com.cursorforandroid.domain.ToolKind
 import com.cursorforandroid.domain.ToolOutput
 import com.cursorforandroid.domain.ToolPayload
 import com.cursorforandroid.domain.UserMessage
-import com.cursorforandroid.ui.agents.MenuItem
 import com.cursorforandroid.ui.components.CursorCard
 import com.cursorforandroid.ui.components.CursorIcons
+import com.cursorforandroid.ui.components.CursorMenu
+import com.cursorforandroid.ui.components.CursorMenuItem
 import com.cursorforandroid.ui.components.HairlineDivider
 import com.cursorforandroid.ui.components.LocalMarkdownMedia
 import com.cursorforandroid.ui.components.MarkdownText
+import com.cursorforandroid.ui.components.ProgressRing
 import com.cursorforandroid.ui.components.ShimmerText
 import com.cursorforandroid.ui.components.cursorSurface
 import com.cursorforandroid.ui.components.pressable
+import com.cursorforandroid.ui.components.slashCommandTint
+import com.cursorforandroid.ui.files.fileLink
+import com.cursorforandroid.ui.files.openablePath
+import com.cursorforandroid.ui.files.rememberFileOpener
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.util.TimeFormat
 
@@ -110,12 +115,15 @@ fun TimelineItemView(item: TimelineItem, modifier: Modifier = Modifier) {
  * `.composer-human-message` from the desktop build: `align-self: flex-end`, `width: fit-content`,
  * `min-width: 150px`, `background: input.background` (4 %), `border: 1px solid stroke-secondary` (12 %),
  * radius xl, padding 8px 10px, inset 32px from the opposite edge, 14/22 text. Attached images sit above the text,
- * as they do on the web. Press and hold the bubble for its actions; an image-only prompt has no text to copy.
+ * as they do on the web. A `/command` in the text is painted as the composer painted it ([slashCommandTint]), so
+ * the message reads in the bubble as it did in the field. Press and hold the bubble for its actions; an image-only
+ * prompt has no text to copy.
  */
 @Composable
 private fun HumanMessage(item: UserMessage, modifier: Modifier) {
     val colors = CursorTheme.colors
     val hasText = item.text.isNotBlank()
+    val commandTint = slashCommandTint()
     // A prompt the server has not acknowledged yet is drawn faded — through its colours, the way the rest of the app
     // fades things — and comes up to full strength once its run is filed.
     val alpha by animateFloatAsState(if (item.isPending) PendingMessageAlpha else 1f, tween(240), label = "pending")
@@ -130,7 +138,47 @@ private fun HumanMessage(item: UserMessage, modifier: Modifier) {
                     MessageAttachments(item.attachments, Modifier.padding(bottom = if (hasText) 8.dp else 0.dp), alpha = alpha)
                 }
                 if (hasText || item.attachments.isEmpty()) {
-                    MarkdownText(item.text, style = CursorTheme.typography.message, color = colors.textPrimary.faded(alpha))
+                    MarkdownText(item.text, style = CursorTheme.typography.message, color = colors.textPrimary.faded(alpha), commandColor = commandTint.faded(alpha))
+                }
+                // Sent from here and not yet filed: where the send stands, on the bubble — never back in the composer.
+                val controls = LocalTranscriptControls.current
+                val outgoing = if (item.isPending) controls.outgoing[item.id] else null
+                if (outgoing != null) OutgoingStatusRow(outgoing, onRetry = controls.onRetryOutgoing?.let { retry -> { retry(item.id) } }, onEdit = controls.onEditOutgoing?.let { edit -> { edit(item.id) } })
+            }
+        }
+    }
+}
+
+/**
+ * What a message sent from the composer says of its send while the server has not filed it (see [OutgoingStatus]):
+ * its files still going up, with a ring and a count; nothing while the request itself is on its way (the bubble's
+ * fade says as much); or that it did not get through — the reason, and beside it Retry, which sends it again, and
+ * Edit, which hands the draft back to the composer. The message is never lost without a word.
+ */
+@Composable
+private fun OutgoingStatusRow(status: OutgoingStatus, onRetry: (() -> Unit)?, onEdit: (() -> Unit)?) {
+    val colors = CursorTheme.colors
+    val type = CursorTheme.typography
+    when (status) {
+        is OutgoingStatus.Uploading -> Row(Modifier.padding(top = 6.dp).testTag("outgoing-uploading"), verticalAlignment = Alignment.CenterVertically) {
+            ProgressRing(progress = status.progress, size = 12.dp, color = colors.accent)
+            Spacer(Modifier.width(6.dp))
+            Text(
+                if (status.total == 1) "Uploading…" else "Uploading ${(status.done + 1).coerceAtMost(status.total)} of ${status.total}…",
+                style = type.small,
+                color = colors.textTertiary,
+            )
+        }
+        OutgoingStatus.Sending -> Unit
+        is OutgoingStatus.Failed -> Column(Modifier.padding(top = 6.dp).testTag("outgoing-failed")) {
+            Text(status.message, style = type.small, color = colors.red)
+            Row(Modifier.padding(top = 2.dp), verticalAlignment = Alignment.CenterVertically) {
+                if (onRetry != null) {
+                    Text("Retry", style = type.small, color = colors.link, modifier = Modifier.pressable(onRetry, CursorTheme.shapes.base).padding(horizontal = 6.dp, vertical = 4.dp).testTag("outgoing-retry"))
+                }
+                if (onEdit != null) {
+                    Spacer(Modifier.width(4.dp))
+                    Text("Edit", style = type.small, color = colors.link, modifier = Modifier.pressable(onEdit, CursorTheme.shapes.base).padding(horizontal = 6.dp, vertical = 4.dp).testTag("outgoing-edit"))
                 }
             }
         }
@@ -275,8 +323,8 @@ internal fun MessageActions(
         content()
         // A zero-size anchor at the press point, so the menu opens under the finger rather than below a tall reply.
         Box(Modifier.offset { pressedAt }) {
-            DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }, containerColor = colors.elevated, shape = CursorTheme.shapes.lg) {
-                MenuItem("Copy message", CursorIcons.Copy) {
+            CursorMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                CursorMenuItem("Copy message", CursorIcons.Copy) {
                     menuOpen = false
                     clipboard.setText(AnnotatedString(text))
                     // Android 13+ confirms clipboard writes with its own overlay; earlier versions show nothing.
@@ -327,10 +375,11 @@ internal fun DisclosureRow(
 ) {
     val colors = CursorTheme.colors
     val chevron by animateFloatAsState(if (expanded) 90f else 0f, tween(180), label = "chevron")
+    val taps = LocalDisclosureTaps.current
     Row(
         Modifier
             .offset(x = (-6).dp)
-            .pressable(onToggle, CursorTheme.shapes.base, enabled = expandable)
+            .pressable({ taps.toggling(opening = !expanded); onToggle() }, CursorTheme.shapes.base, enabled = expandable)
             .heightIn(min = 28.dp)
             .padding(horizontal = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -476,11 +525,6 @@ internal fun ThoughtText(text: String, modifier: Modifier = Modifier) {
 internal fun ToolCallLine(call: ToolCall, modifier: Modifier = Modifier) {
     // A Project coordinator's call is a card or a row of its own (see CoordinatorContent.kt), never a bare line.
     if (CoordinatorStep(call, modifier)) return
-    // A task handed to a subagent is the web's Task card (see TaskRow), not a line that opens onto one.
-    if (call.kind == ToolKind.Task) {
-        TaskRow(call, modifier)
-        return
-    }
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
     val output = remember(call) { ToolOutput.of(call) }
@@ -491,11 +535,12 @@ internal fun ToolCallLine(call: ToolCall, modifier: Modifier = Modifier) {
     val showOutput = !output.isEmpty && !(output.output == null && (call.payload is ToolPayload.FileDiff || call.payload is ToolPayload.FileContent))
     val expandable = showOutput || payload || truncated
     var expanded by rememberSaveable(key = call.callId) { mutableStateOf(false) }
+    val taps = LocalDisclosureTaps.current
     Column(modifier.fillMaxWidth()) {
         Row(
             Modifier
                 .offset(x = (-6).dp)
-                .pressable({ expanded = !expanded }, CursorTheme.shapes.base, enabled = expandable)
+                .pressable({ taps.toggling(opening = !expanded); expanded = !expanded }, CursorTheme.shapes.base, enabled = expandable)
                 .heightIn(min = 24.dp)
                 .padding(horizontal = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
@@ -508,13 +553,15 @@ internal fun ToolCallLine(call: ToolCall, modifier: Modifier = Modifier) {
             val details = detailsText(call)
             if (details.isNotEmpty()) {
                 Spacer(Modifier.width(4.dp))
+                // The file's name is a tap target of its own: it opens the file, where the rest of the row opens the call.
+                val opener = call.openablePath?.let { rememberFileOpener(it, call) }
                 Text(
                     details,
                     style = type.base.copy(fontFeatureSettings = "tnum"),
                     color = colors.textTertiary,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f, fill = false),
+                    modifier = Modifier.weight(1f, fill = false).then(if (opener != null) Modifier.fileLink(opener) else Modifier),
                 )
             }
             call.lineStats?.let { stats ->
@@ -582,7 +629,9 @@ private fun ToolOutputView(call: ToolCall, output: ToolOutput, modifier: Modifie
         Column(Modifier.padding(horizontal = 10.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             output.input?.let { input ->
                 val text = if (call.kind == ToolKind.Shell) input.trim().lines().joinToString("\n") { "\$ $it" } else input.trim()
-                Text(text, style = type.code, color = colors.textPrimary)
+                // A read's, an edit's or a write's path, shown whole here, opens the file like the row's name does.
+                val opener = call.openablePath?.takeIf { it == text }?.let { rememberFileOpener(it, call) }
+                Text(text, style = type.code, color = colors.textPrimary, modifier = if (opener != null) Modifier.fileLink(opener) else Modifier)
             }
             output.output?.let { text ->
                 if (output.input != null) HairlineDivider()
@@ -604,17 +653,31 @@ private fun NoticeView(item: NoticeCard, modifier: Modifier) {
         NoticeTone.Warning -> CursorIcons.Warning to colors.orange
         NoticeTone.Error -> CursorIcons.Warning to colors.red
     }
+    // A notice the reader may put away is informational, and says so quietly: tertiary words, and an X at its end
+    // that closes it and every notice like it in the chat (see NoticeCard.dismissKey).
+    val dismiss = item.dismissKey?.let { key -> LocalTranscriptControls.current.onDismissNotice?.let { on -> { on(key) } } }
+    val calm = item.dismissKey != null
     CursorCard(modifier.fillMaxWidth(), fill = colors.fillFaint, border = Color.Transparent) {
-        Row(Modifier.padding(horizontal = 10.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-            Icon(icon, null, tint = tint, modifier = Modifier.size(16.dp))
+        Row(Modifier.padding(start = 10.dp, end = if (dismiss != null) 4.dp else 10.dp, top = 8.dp, bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+            Icon(icon, null, tint = if (calm) colors.iconQuaternary else tint, modifier = Modifier.size(16.dp))
             Spacer(Modifier.width(8.dp))
-            Column {
-                Text(item.title, style = CursorTheme.typography.base, color = colors.textSecondary)
+            Column(Modifier.weight(1f)) {
+                Text(item.title, style = CursorTheme.typography.base, color = if (calm) colors.textTertiary else colors.textSecondary)
                 item.subtitle?.let { Text(it, style = CursorTheme.typography.small, color = colors.textQuaternary, maxLines = 3, overflow = TextOverflow.Ellipsis) }
+            }
+            if (dismiss != null) {
+                Spacer(Modifier.width(4.dp))
+                Box(
+                    Modifier.size(28.dp).pressable(dismiss, CursorTheme.shapes.base).testTag("notice-dismiss-${item.dismissKey}").semantics { contentDescription = NOTICE_DISMISS },
+                    contentAlignment = Alignment.Center,
+                ) { Icon(CursorIcons.Close, null, tint = colors.iconTertiary, modifier = Modifier.size(14.dp)) }
             }
         }
     }
 }
+
+/** What the X on a notice the reader may put away reads as. */
+internal const val NOTICE_DISMISS = "Hide these notices"
 
 @Composable
 internal fun RunFooterView(item: RunFooter, modifier: Modifier = Modifier, interrupted: Boolean = false) {

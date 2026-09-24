@@ -41,10 +41,43 @@ sealed interface ToolPayload {
         val totalLines: Int? = null,
         val fileSize: Long? = null,
         val truncated: Boolean = false,
+        /** A read of a range (`offset` / `start_line_one_indexed`): the file's line [content] starts at; null for a read from the top. */
+        val startLine: Int? = null,
     ) : ToolPayload {
         enum class Kind { Read, Written }
 
         val lineCount: Int get() = totalLines ?: content.lineSequence().count()
+
+        /** The whole file as it was: a write, or a read from the top that reached the end and was not cut. */
+        val isWhole: Boolean get() = !truncated && (kind == Kind.Written || (startLine ?: 1) <= 1 && (totalLines == null || totalLines <= contentLines))
+
+        private val contentLines: Int get() = content.replace("\r\n", "\n").trimEnd('\n').lineSequence().count()
+    }
+
+    /**
+     * A picture the agent read (`read.result.data`, the image bytes the read tool hands the model instead of text):
+     * [src] is where the device kept them, a `file://` URI, or the `data:` URI when small; null when nothing was kept.
+     */
+    @Serializable
+    @SerialName("read_media")
+    data class ReadMedia(
+        override val path: String,
+        val src: String? = null,
+        val mimeType: String? = null,
+    ) : ToolPayload
+
+    /**
+     * The files a search or a listing found (`grep`'s `workspaceResults`, `glob`'s `files`, `ls`'s tree): each by its
+     * path, with the first matching line for a content search. Clipped to [ToolPayloadLimits.MAX_HITS].
+     */
+    @Serializable
+    @SerialName("file_hits")
+    data class FileHits(
+        val hits: List<Hit>,
+        val truncated: Boolean = false,
+    ) : ToolPayload {
+        @Serializable
+        data class Hit(val path: String, val line: Int? = null, val text: String? = null)
     }
 
     /**
@@ -78,6 +111,10 @@ sealed interface ToolPayload {
         val durationMs: Long? = null,
         val isBackground: Boolean = false,
         val subagentType: String? = null,
+        /** The model the call asked the subagent to run on (`TaskArgs.model`), as the call spelt it. */
+        val model: String? = null,
+        /** Where the call asked the subagent to run (`TaskArgs.environment`: `SUBAGENT_ENVIRONMENT_CLOUD`, `local`…). */
+        val environment: String? = null,
     ) : ToolPayload {
         override val path: String? get() = transcriptPath
 
@@ -147,8 +184,16 @@ sealed interface ToolPayload {
          * listed as the coordinator's — rather than from its arguments: the coordinator's own word that they are its.
          */
         val reported: Boolean = false,
+        /** The model a created worker was asked to run on (`CreateAgentArgs.model`). */
+        val model: String? = null,
+        /** How a message was to reach its worker (`SendToAgentArgs.delivery`): steering the turn under way, or queued behind it. */
+        val delivery: Delivery? = null,
+        /** The self-hosted machine a created worker was sent to (`CreateAgentArgs.worker_id`), when it was sent to one. */
+        val workerId: String? = null,
     ) : ToolPayload {
         enum class Kind { Created, Messaged, Status, Stopped, ReadTranscript }
+
+        enum class Delivery { Followup, Queue }
 
         /** The worker the call was about, for the calls about one. */
         val worker: WorkerStatus? get() = workers.firstOrNull()
@@ -164,11 +209,13 @@ sealed interface ToolPayload {
      * the arguments with the rest (see `CoordinatorTranscript.reinterpret`). The row then says so rather than
      * standing bare, and the turn is asked for again where it can be. [recovered] marks a body read leniently out of
      * arguments that did not parse — the pieces of a streamed call the record never completed (see
-     * `MessageRecovery`) — which the row shows with a word that it may not be the whole message.
+     * `MessageRecovery`) — which the row shows with a word that it may not be the whole message. [messageId] is the
+     * server's id for the message once it was delivered (`SendMessageResult.success.messageId`): the one name two
+     * copies of the same message share whatever call carried them (see `CoordinatorTranscript.repeatedMessages`).
      */
     @Serializable
     @SerialName("coordinator_message")
-    data class CoordinatorMessage(val message: String, val missing: Boolean = false, val recovered: Boolean = false) : ToolPayload
+    data class CoordinatorMessage(val message: String, val missing: Boolean = false, val recovered: Boolean = false, val messageId: String? = null) : ToolPayload
 
     /**
      * The agent filing or moving the chat's goal (`agent.v1.CreateGoalToolCall` / `UpdateGoalToolCall`; see [Goal]).
@@ -233,6 +280,9 @@ data class WorkerStatus(
 /** How much of a payload's text is kept: enough for any edit or file a screen can scroll, bounded for the trace file. */
 object ToolPayloadLimits {
     const val MAX_TEXT_CHARS = 40_000
+
+    /** The files a search or a listing keeps: a screen's worth and more, bounded for the trace file. */
+    const val MAX_HITS = 200
 
     /** An image larger than this as base64 is not kept inline in a trace; a store on the device keeps the bytes instead. */
     const val MAX_INLINE_IMAGE_CHARS = 256 * 1024

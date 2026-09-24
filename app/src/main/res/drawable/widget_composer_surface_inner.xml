@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The compose bar's fill, one dp inside its stroke (widget_composer_surface): a 23dp radius keeps the two concentric. -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <solid android:color="#FFFFFFFF" />
+    <corners android:radius="23dp" />
+</shape>

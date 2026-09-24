@@ -15,7 +15,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.selection.SelectionContainer
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
@@ -30,14 +29,20 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.cursorforandroid.data.api.userMessage
+import com.cursorforandroid.data.media.MediaLoader
 import com.cursorforandroid.data.repo.StoreFileRepository
+import com.cursorforandroid.domain.FileFormat
+import com.cursorforandroid.domain.MediaKind
 import com.cursorforandroid.domain.MediaRef
+import com.cursorforandroid.domain.PromptFile
 import com.cursorforandroid.domain.StorePath
+import com.cursorforandroid.ui.components.AudioChip
 import com.cursorforandroid.ui.components.CursorButton
 import com.cursorforandroid.ui.components.CursorIcons
 import com.cursorforandroid.ui.components.CursorSheet
@@ -48,9 +53,12 @@ import com.cursorforandroid.ui.components.MarkdownText
 import com.cursorforandroid.ui.components.SheetHeader
 import com.cursorforandroid.ui.components.SpinnerRing
 import com.cursorforandroid.ui.components.VideoBlock
+import com.cursorforandroid.ui.components.fadingVerticalScroll
 import com.cursorforandroid.ui.components.pressable
+import com.cursorforandroid.ui.media.FileHandoff
 import com.cursorforandroid.ui.theme.CursorTheme
 import kotlinx.coroutines.CancellationException
+import java.io.File
 
 /** What the sheet has of the document. */
 internal sealed interface StoreDocument {
@@ -97,6 +105,12 @@ fun StoreDocumentSheet(ref: MediaRef.Store, files: StoreFileRepository, onDismis
             path.isVideo -> CompositionLocalProvider(LocalMarkdownMedia provides steppingAside) {
                 Box(Modifier.fillMaxWidth().padding(horizontal = 20.dp).padding(bottom = 20.dp)) { VideoBlock(path.text, poster = null) }
             }
+            FileFormat.ofName(path.fileName)?.isAudio == true -> CompositionLocalProvider(LocalMarkdownMedia provides steppingAside) {
+                Box(Modifier.fillMaxWidth().padding(horizontal = 20.dp).padding(bottom = 20.dp)) {
+                    AudioChip(path.text, path.fileName, subtitle = FileFormat.ofName(path.fileName)?.label, modifier = Modifier.fillMaxWidth())
+                }
+            }
+            FileFormat.ofName(path.fileName)?.kind == MediaKind.Other -> StoreBinaryDocument(ref, files)
             else -> StoreTextDocument(ref, files)
         }
     }
@@ -145,7 +159,7 @@ private fun ColumnScope.StoreTextDocument(ref: MediaRef.Store, files: StoreFileR
                 Modifier
                     .fillMaxWidth()
                     .weight(1f, fill = false)
-                    .verticalScroll(rememberScrollState())
+                    .fadingVerticalScroll()
                     .padding(horizontal = 20.dp)
                     .padding(bottom = 20.dp)
                     .testTag("store-document-preview"),
@@ -161,12 +175,52 @@ private fun ColumnScope.StoreTextDocument(ref: MediaRef.Store, files: StoreFileR
                     modifier = Modifier
                         .fillMaxWidth()
                         .weight(1f, fill = false)
-                        .verticalScroll(rememberScrollState())
+                        .fadingVerticalScroll()
                         .horizontalScroll(rememberScrollState())
                         .padding(horizontal = 20.dp)
                         .padding(bottom = 20.dp)
                         .testTag("store-document-source"),
                 )
+            }
+        }
+    }
+}
+
+/**
+ * A document of the store that is not text — a PDF, an archive — read as bytes through the presigned read (never the
+ * text read, which carries a string), kept on the device and handed to another app, or shared.
+ */
+@Composable
+private fun StoreBinaryDocument(ref: MediaRef.Store, files: StoreFileRepository) {
+    val colors = CursorTheme.colors
+    val type = CursorTheme.typography
+    val context = LocalContext.current
+    val loader = LocalMarkdownMedia.current?.loader
+    val format = FileFormat.ofName(ref.path.fileName)
+    var attempt by remember(ref) { mutableIntStateOf(0) }
+    var kept by remember(ref) { mutableStateOf<String?>(null) }
+    var notice by remember(ref) { mutableStateOf<String?>(null) }
+    LaunchedEffect(ref, attempt, loader) {
+        if (loader == null) return@LaunchedEffect
+        notice = null
+        try {
+            kept = loader.keep(files.readBytes(ref), ref.path.fileName).removePrefix("file://")
+        } catch (t: Throwable) {
+            if (t is CancellationException) throw t
+            notice = MediaLoader.problemOf(t).title
+        }
+    }
+    Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp).padding(bottom = 20.dp).testTag("store-binary"), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Text(format?.label ?: "Binary file", style = type.base, color = colors.textSecondary)
+        Text(notice ?: if (kept == null) "Reading\u2026" else "This app shows no page for it; open it in another app.", style = type.small, color = colors.textQuaternary)
+        val file = kept
+        Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+            if (file != null) {
+                val mime = format?.mimeType ?: PromptFile.OCTET_STREAM
+                Text("Open with\u2026", style = type.small, color = colors.link, modifier = Modifier.pressable({ FileHandoff.open(context, File(file), ref.path.fileName, mime).onFailure { notice = it.message } }, CursorTheme.shapes.base).padding(vertical = 3.dp))
+                Text("Share", style = type.small, color = colors.link, modifier = Modifier.pressable({ FileHandoff.share(context, File(file), ref.path.fileName, mime).onFailure { notice = it.message } }, CursorTheme.shapes.base).padding(vertical = 3.dp))
+            } else if (notice != null) {
+                Text("Retry", style = type.small, color = colors.link, modifier = Modifier.pressable({ attempt++ }, CursorTheme.shapes.base).padding(vertical = 3.dp))
             }
         }
     }

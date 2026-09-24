@@ -4,18 +4,22 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.cursorforandroid.AppGraph
+import com.cursorforandroid.data.api.AccountBranch
 import com.cursorforandroid.data.api.userMessage
 import com.cursorforandroid.data.local.DraftStore
 import com.cursorforandroid.data.local.PreferencesStore.ComposerDefaults
 import com.cursorforandroid.data.repo.AgentRepository
 import com.cursorforandroid.data.repo.AttachmentUploads
-import com.cursorforandroid.data.repo.FailedLaunch
+import com.cursorforandroid.data.repo.LaunchCancelledException
 import com.cursorforandroid.data.repo.LaunchIdempotency
 import com.cursorforandroid.data.repo.LaunchRequest
+import com.cursorforandroid.data.repo.MachineStartRefusedException
+import com.cursorforandroid.data.repo.NewChatDrafts
 import com.cursorforandroid.data.repo.SlashScope
 import com.cursorforandroid.domain.AccountModel
 import com.cursorforandroid.domain.Agent
 import com.cursorforandroid.domain.BranchOption
+import com.cursorforandroid.domain.RepoRemote
 import com.cursorforandroid.domain.DeviceOption
 import com.cursorforandroid.domain.DeviceTarget
 import com.cursorforandroid.domain.EnvType
@@ -24,6 +28,7 @@ import com.cursorforandroid.domain.KnownDevices
 import com.cursorforandroid.domain.ModelOption
 import com.cursorforandroid.domain.ModelParam
 import com.cursorforandroid.domain.ModelResolution
+import com.cursorforandroid.domain.ModelSlugs
 import com.cursorforandroid.domain.ModelVariant
 import com.cursorforandroid.domain.PromptFile
 import com.cursorforandroid.domain.PromptImage
@@ -40,8 +45,10 @@ import com.cursorforandroid.ui.components.PendingAttachment
 import com.cursorforandroid.ui.components.PendingFile
 import com.cursorforandroid.ui.components.withinSlots
 import com.cursorforandroid.util.AppClock
+import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -49,6 +56,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.channelFlow
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
@@ -85,8 +93,18 @@ data class NewAgentUiState(
      * branch is called — `GET /v1/repositories` returns bare URLs — so it is never guessed at.
      */
     val ref: String = "",
-    /** What the branch picker lists for [selectedRepo]: the branches its agents started from or pushed, most recent first. */
+    /**
+     * What the branch picker lists for [selectedRepo]: the branches its agents started from or pushed, most recent
+     * first, then — in Extended mode — the rest of what the account lists for it (`GetRepositoryBranches`).
+     */
     val branches: List<BranchOption> = emptyList(),
+    /** Some of [branches] came from the account's list of the repository's branches. */
+    val branchesListedByAccount: Boolean = false,
+    /**
+     * Extended mode's machine start is on (`Capabilities.machineStart`): a chat on a machine goes out the desktop's way,
+     * from the machine's checkout as it is unless a branch is picked.
+     */
+    val machineStartEnabled: Boolean = false,
     val models: List<ModelOption> = emptyList(),
     val selectedModel: ModelOption? = null,
     val selectedVariant: ModelVariant? = null,
@@ -116,6 +134,8 @@ data class NewAgentUiState(
     val isLoadingRepos: Boolean = false,
     val isLoadingModels: Boolean = false,
     val error: String? = null,
+    /** With [error], the call the account refused and what it answered: the composer then shows it as a compact notice with an `Asked:` line. */
+    val errorAsked: String? = null,
     val reposUnavailable: Boolean = false,
     /** `GET /v1/models` failed and nothing is cached; the picker offers a retry. */
     val modelsUnavailable: Boolean = false,
@@ -133,6 +153,10 @@ data class NewAgentUiState(
      */
     val modelLabel: String get() = selectedModel?.displayName ?: AccountModel.AUTO_LABEL
     val deviceLabel: String get() = selectedDevice.label
+    /** The machine's own checkout decides where an unpicked branch starts: what the desktop sends for a machine (no ref). */
+    val startsFromCheckout: Boolean get() = machineStartEnabled && selectedDevice.type == EnvType.MACHINE && selectedRepo != null && !noRepo
+    /** The branch chip's text: the ref picked, else what leaving it unpicked means here. */
+    val branchLabel: String get() = ref.trim().ifEmpty { if (startsFromCheckout) CURRENT_BRANCH else DEFAULT_BRANCH }
     /**
      * The source chip's text: the repository's short name, or — with none chosen — what the web composer calls the
      * same choice, "Start from scratch"; "Repository" only while there is neither yet.
@@ -146,23 +170,45 @@ data class NewAgentUiState(
         }
     /** The device's repository as a picker entry — the catalogue's own row for it when the catalogue lists it. */
     val deviceRepository: Repository? get() = deviceRepoUrl?.let { url -> repositories.firstOrNull { it.isAt(url) } ?: Repository(url) }
+    /** Something written or attached: what makes the composer's contents a draft worth keeping. */
+    val hasContent: Boolean get() = prompt.isNotBlank() || attachments.isNotEmpty() || files.isNotEmpty()
     /** Nothing written, nothing attached and nothing on its way out: a draft that comes back may take the composer. */
-    val isFree: Boolean get() = prompt.isBlank() && attachments.isEmpty() && files.isEmpty() && !isLaunching
+    val isFree: Boolean get() = !hasContent && !isLaunching
 
     companion object {
         /** The web composer's name for a chat with no repository: the source the Agents Window offers beside the repositories. */
         const val START_FROM_SCRATCH = "Start from scratch"
+        const val DEFAULT_BRANCH = "default"
+        const val CURRENT_BRANCH = "current"
     }
 }
 
+/**
+ * The New Chat composer. What it holds is a draft ([DraftStore.Record], kept by [NewChatDrafts]): written as it
+ * changes, listed in the sidebar once the composer is left, opened again from there with everything it was written
+ * with — text, attachments, repository and branch, device, the model with every parameter, the switches. One draft is
+ * open at a time ([draftId]); opening another, or starting afresh, leaves the one before as it was.
+ */
 class NewAgentViewModel(
     private val graph: AppGraph,
     /** How long typing settles before the draft is written to disk; shortened in tests. */
     private val draftSaveDelayMs: Long = DRAFT_SAVE_DELAY_MS,
+    /**
+     * The draft this composer had open when its process was ended, as the screen saved it: opened again rather than a
+     * fresh one. Null — a first open, or the app started afresh — begins a new draft, the others waiting in the sidebar.
+     */
+    private val resume: String? = null,
+    /** Which composer writes the drafts ([DraftStore.ORIGIN_COMPOSER] here; the quick composer names itself). */
+    private val origin: String = DraftStore.ORIGIN_COMPOSER,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(NewAgentUiState())
     val state: StateFlow<NewAgentUiState> = _state.asStateFlow()
+
+    private val _draftId = MutableStateFlow(resume ?: newDraftId())
+
+    /** The draft this composer has open; the screen keeps it across a process death (see [resume]). */
+    val draftId: StateFlow<String> = _draftId.asStateFlow()
 
     /**
      * What `/` offers for the selected repository and branch. The catalog follows the selection: the saved (or
@@ -198,29 +244,44 @@ class NewAgentViewModel(
     private data class RepoChoice(val repoUrl: String?, val noRepo: Boolean, val ref: String)
 
     /**
-     * Rotated once a draft has been handed over, so an identical prompt sent again on purpose gets its own agent. A
-     * draft that comes back from a failed launch brings the nonce it went out under (see [takeBack]).
+     * The draft's own, kept with it: rotated when a new draft begins, so an identical prompt sent again on purpose gets
+     * its own agent, and brought back with a draft that is opened again — a failed launch's included (see [adopt]).
      */
     private var launchNonce: String = LaunchIdempotency.newNonce()
 
-    /**
-     * Drafts whose launch failed while something else was being written here, oldest first. Each comes back the
-     * moment the composer is free — sent, or cleared — rather than over what the user is writing.
-     */
-    private val waiting = ArrayDeque<ReturnedDraft>()
+    /** When the open draft was first written; null until it has been. */
+    private var createdAtMillis: Long? = null
 
     /** The agent list as last published; the branch picker's contents are derived from it (see [KnownBranches]). */
     private var agents: List<Agent> = emptyList()
     /** Live workers and pools from the fleet endpoints; merged with [agents] for the device picker. */
     private var liveDevices: List<DeviceOption> = emptyList()
+    /** The account's branches for each repository asked about this session (see [AppGraph.accountBranches]). */
+    private val accountBranches = ConcurrentHashMap<String, List<AccountBranch>>()
 
-    /** Where each attachment's bytes already are on disk, by attachment id, so a save rewrites none of them. */
+    /** Where each attachment's bytes already are in the open draft's directory, by attachment id, so a save rewrites none of them. */
     @Volatile private var savedImages: Map<String, DraftStore.Image> = emptyMap()
     @Volatile private var savedFiles: Map<String, DraftStore.StoredFile> = emptyMap()
-    /** One writer at a time, so a save that was already under way cannot land on top of a clear. */
+    /** One writer at a time, so a save that was already under way cannot land on top of a clear or a switch of draft. */
     private val draftMutex = Mutex()
+    private val drafts: NewChatDrafts get() = graph.newChatDrafts
+    private val draftSave: suspend () -> Unit = { save() }
+    /**
+     * The New Chat pane's composer is the one the sidebar talks to: it opens the sidebar's drafts and hears what becomes
+     * of them. Another composer — the quick composer over the launcher — files its drafts beside the pane's and keeps to
+     * its own.
+     */
+    private val ownsPane = origin == DraftStore.ORIGIN_COMPOSER
+    /** True once the drafts on disk have been read and the one to open is open: only then does what is on screen stand for it. */
+    @Volatile private var draftRestored = false
+    /** The chat a launch waited out ([launch] with `awaitServer`) is in flight under, for [cancelLaunch]; null otherwise. */
+    private var awaitedAgentId: String? = null
 
     init {
+        if (ownsPane) {
+            drafts.setOpen(_draftId.value)
+            drafts.composerSave = draftSave
+        }
         viewModelScope.launch {
             // The list is already on screen (restored from disk, then refreshed) by the time the composer shows, and
             // every later page, launch or finished run may teach the picker a branch.
@@ -231,12 +292,9 @@ class NewAgentViewModel(
                 _state.update { it.withPickerLists().withModelSelection() }
             }
         }
-        // Whichever composer is showing takes a failed launch's draft back: the one that sent it may be long gone.
-        viewModelScope.launch { graph.launcher.failures.collect { takeBack(it) } }
         viewModelScope.launch {
-            // What was left unsent takes precedence over the last launch's choices: the repository and model it was
-            // written against are resolved by the loaders below, exactly as remembered ones are.
-            val loaded = restore() ?: graph.prefs.composerDefaults.first()
+            drafts.load()
+            val loaded = graph.prefs.composerDefaults.first()
             defaults = loaded
             // Cloud comes back to the repository last launched there; before any launch on Cloud, to the last launch's.
             cloudRepo = RepoChoice(loaded.cloudRepoUrl ?: loaded.repoUrl, noRepo = false, ref = if (loaded.cloudRepoUrl == null || loaded.cloudRepoUrl == loaded.repoUrl) loaded.ref.orEmpty() else "")
@@ -245,12 +303,34 @@ class NewAgentViewModel(
             _state.update {
                 it.copy(autoCreatePr = loaded.autoCreatePr, ref = loaded.ref.orEmpty(), selectedDevice = loaded.env, repoFollowsDevice = !loaded.env.isCloud, isLoadingDevices = true).withPickerLists()
             }
+            // The draft this composer had open when its process was ended — or one the sidebar asked for before this
+            // composer existed — stands over the last launch's choices: the repository and model it was written
+            // against are resolved by the loaders below, as remembered ones are. One sent meanwhile is the chat's
+            // now, and the composer starts a draft of its own.
+            // The sidebar's asks — open a draft, start afresh, a draft deleted or back from a failed launch — in order,
+            // from here: one heard earlier would have been undone by the defaults just applied.
+            launch { drafts.requests.collect { handle(it) } }
+            val asked = if (ownsPane) (drafts.takePending() as? NewChatDrafts.Request.Open)?.id else null
+            val resumed = (asked ?: resume)?.let(drafts::record) ?: if (ownsPane) null else lastLeft()
+            when {
+                resumed == null -> Unit
+                resumed.launchedAs != null -> draftMutex.withLock { switchTo(newDraftId()) }
+                else -> draftMutex.withLock { adopt(resumed) }
+            }
+            draftRestored = true
             // Both catalogs were saved by the previous session: they are adopted below before either network call
             // is made, and the fetches only revalidate them.
             graph.catalog.restoreFromCache()
             // Independent endpoints, and /v1/repositories alone can take tens of seconds: never queue one behind the other.
-            launch { loadRepositories(loaded.repoUrl) }
-            launch { loadModels() }
+            // Then whatever list comes next — the background refresh's, another screen's — is followed too.
+            launch {
+                loadRepositories(loaded.repoUrl)
+                followRepositories()
+            }
+            launch {
+                loadModels()
+                followModels()
+            }
             launch { loadDevices() }
             // Only once the draft is back does what is on screen start standing for it.
             launch(Dispatchers.Default) {
@@ -265,12 +345,20 @@ class NewAgentViewModel(
             graph.prefs.pinnedModelIds.collect { ids -> _state.update { it.copy(pinnedModelIds = ids) } }
         }
         viewModelScope.launch {
+            // Extended mode: the branch picker lists the repository's real refs as the account has them, beside the agents' own.
+            graph.extendedMode.capabilities
+                .combine(_state.map { s -> s.selectedRepo?.takeIf { !s.noRepo }?.url }.distinctUntilChanged()) { caps, url -> url.takeIf { caps.accountSession } }
+                .distinctUntilChanged()
+                .collectLatest { url -> if (url != null) loadAccountBranches(url) }
+        }
+        viewModelScope.launch {
             // Files of any type ride the account's start alone: with the mode turned off under attached files, the
             // files come off rather than stay to refuse the launch.
             graph.extendedMode.capabilities.collect { caps ->
                 val allowed = caps.promptFiles && !graph.session.isDemo
                 if (!allowed) _state.value.files.forEach { graph.attachmentUploads.cancel(it.id) }
-                _state.update { s -> if (allowed) s.copy(canAttachFiles = true) else s.copy(canAttachFiles = false, files = emptyList()) }
+                val machineStart = caps.machineStart && !graph.session.isDemo
+                _state.update { s -> (if (allowed) s.copy(canAttachFiles = true) else s.copy(canAttachFiles = false, files = emptyList())).copy(machineStartEnabled = machineStart) }
             }
         }
         viewModelScope.launch {
@@ -293,86 +381,192 @@ class NewAgentViewModel(
     }
 
     /**
-     * The draft left over from a process that was killed, as the defaults to open on. Its images come back with it;
-     * so does the nonce it was going to go out under, so sending it now still adopts anything the interrupted attempt
-     * managed to create.
+     * Puts [record] in the composer: its text, its images and files (read back from its directory; a file whose upload
+     * had completed comes back with its reference and is not uploaded again), the repository and branch, the device,
+     * the model with the parameters it was written with, the switches, and the nonce it would have gone out under — so
+     * sending it now still adopts anything an interrupted attempt created. Called with [draftMutex] held.
      */
-    private suspend fun restore(): ComposerDefaults? {
-        val draft = graph.drafts.read() ?: return null
-        val images = draft.images.mapNotNull { stored -> graph.drafts.readImage(stored)?.let { stored to it } }
+    private suspend fun adopt(record: DraftStore.Record) {
+        val images = record.images.mapNotNull { stored -> graph.drafts.readImage(record.id, stored)?.let { stored to it } }
         // Decodes a bitmap per image, so not on the main thread.
         val attachments = withContext(Dispatchers.IO) { images.map { (stored, image) -> stored to PendingAttachment.of(image) } }
-        savedImages = attachments.associate { (stored, attachment) -> attachment.id to stored }
         // An image file's chip thumbnail is decoded on the way back, off the main thread like the strip's.
-        val files = withContext(Dispatchers.IO) { draft.files.mapNotNull { stored -> graph.drafts.readFile(stored)?.let { stored to PendingFile.of(it) } } }
+        val files = withContext(Dispatchers.IO) { record.files.mapNotNull { stored -> graph.drafts.readFile(record.id, stored)?.let { stored to PendingFile.of(it) } } }
+        switchTo(record.id)
+        savedImages = attachments.associate { (stored, attachment) -> attachment.id to stored }
         savedFiles = files.associate { (stored, file) -> file.id to stored }
-        // A file that came back with its reference is up already; one without goes up now.
+        createdAtMillis = record.createdAtMillis
+        launchNonce = record.nonce.ifBlank { LaunchIdempotency.newNonce() }
         files.forEach { (_, file) -> graph.attachmentUploads.start(file.id, file.file) }
-        if (draft.nonce.isNotBlank()) launchNonce = draft.nonce
-        _state.update {
-            it.copy(
-                prompt = draft.prompt,
+        // A model picked for the draft is the draft's, re-resolved by id once the list is here; a default is derived afresh.
+        modelPicked = record.modelChosen
+        _state.update { s ->
+            val repo = s.withRepoChoice(RepoChoice(record.repoUrl.takeUnless { record.noRepo }, record.noRepo, record.ref))
+            repo.copy(
+                prompt = record.prompt,
                 attachments = attachments.map { (_, attachment) -> attachment },
                 files = files.map { (_, file) -> file },
-                noRepo = draft.noRepo,
-                planMode = draft.planMode,
-            ).withExclusiveModes()
+                autoCreatePr = record.autoCreatePr,
+                planMode = record.planMode,
+                // A draft 0.3.61 kept never said where it would run: it opens on the last launch's device, as it did.
+                selectedDevice = record.device ?: s.selectedDevice,
+                // A machine's repository is the checkout it reports now, not the one saved with the draft; a pick made
+                // over it stays the draft's.
+                repoFollowsDevice = when {
+                    record.device == null -> s.repoFollowsDevice
+                    record.device.isCloud -> false
+                    else -> !record.repoPicked
+                },
+                error = record.error,
+                errorAsked = record.errorAsked,
+            ).withDraftModel(record).withExclusiveModes().withPickerLists().withModelSelection(settleOnAuto = false)
         }
-        val saved = graph.prefs.composerDefaults.first()
-        return ComposerDefaults(
-            repoUrl = draft.repoUrl,
-            ref = draft.ref,
-            modelId = draft.modelId,
-            modelParams = draft.modelParams,
-            autoCreatePr = draft.autoCreatePr,
-            modelChosen = draft.modelChosen,
-            // The draft records what was typed, not where it would run: the device stays the last launch's.
-            env = saved.env,
-            cloudRepoUrl = saved.cloudRepoUrl,
-            // A draft being restored is as fresh as now: its model stands over the account's newest chat's.
-            modelChosenAtMillis = if (draft.modelChosen) AppClock.now() else 0L,
-        )
     }
 
-    /** What is on screen, as the draft it would be restored from; an empty composer has no draft to keep. */
-    private suspend fun save() = draftMutex.withLock {
-        val s = _state.value
-        if (s.prompt.isBlank() && s.attachments.isEmpty() && s.files.isEmpty()) {
-            if (savedImages.isNotEmpty() || savedFiles.isNotEmpty() || graph.drafts.read() != null) {
-                savedImages = emptyMap()
-                savedFiles = emptyMap()
-                graph.drafts.clear()
-            }
-            return@withLock
-        }
-        val stored = s.attachments.mapNotNull { a -> (savedImages[a.id] ?: graph.drafts.writeImage(a.image))?.let { a.id to it } }
-        savedImages = stored.toMap()
-        // A file already on disk is not written again; its record takes the reference its upload has settled on since.
-        val storedFiles = s.files.mapNotNull { f -> (savedFiles[f.id]?.withRef(f.file.upload) ?: graph.drafts.writeFile(f.file))?.let { f.id to it } }
-        savedFiles = storedFiles.toMap()
-        graph.drafts.write(
-            DraftStore.Draft(
-                prompt = s.prompt,
-                images = stored.map { it.second },
-                files = storedFiles.map { it.second },
-                repoUrl = if (s.noRepo) null else s.selectedRepo?.url,
-                noRepo = s.noRepo,
-                ref = s.ref,
-                modelId = s.selectedModel?.id,
-                modelParams = s.selectedVariant?.params?.associate { it.id to it.value } ?: emptyMap(),
-                // A model picked here comes back as the draft's; a default does not, and is derived afresh.
-                modelChosen = modelPicked,
-                autoCreatePr = s.autoCreatePr,
-                planMode = s.planMode,
-                nonce = launchNonce,
-            ),
-        )
+    /**
+     * The draft's model as the selection, until the list says more: the list's own entry when it places the model
+     * (any spelling of it, see [ModelSlugs.resolve]), else a stand-in with the id as saved, a readable name and the
+     * parameters, which [withModelSelection] resolves when the list comes.
+     */
+    private fun NewAgentUiState.withDraftModel(record: DraftStore.Record): NewAgentUiState {
+        if (!record.modelChosen) return this
+        val id = record.modelId ?: return copy(selectedModel = models.autoOption() ?: models.firstOrNull(), selectedVariant = (models.autoOption() ?: models.firstOrNull())?.defaultVariant)
+        models.named(id)?.let { listed -> return copy(selectedModel = listed, selectedVariant = listed.variantNearest(record.modelParams)) }
+        ModelSlugs.resolve(models, id, record.modelParams)?.let { placed -> return copy(selectedModel = placed.model, selectedVariant = placed.variant) }
+        val name = record.modelLabel?.takeIf { it.isNotBlank() && it != id } ?: ModelSlugs.readableName(models, id)
+        return copy(selectedModel = ModelOption(id, name), selectedVariant = ModelVariant(name, record.modelParams, isDefault = false))
     }
 
-    private suspend fun forgetDraft() = draftMutex.withLock {
+    /**
+     * The newest draft this kind of composer was left with and has not sent — what a quick composer, left without a
+     * word, opens on next time — unless the New Chat pane has it open.
+     */
+    private fun lastLeft(): DraftStore.Record? =
+        drafts.state.value.drafts.firstOrNull { it.origin == origin && it.launchedAs == null && it.id != drafts.open.value }
+
+    /** The composer's open draft is [id] from now: what is on disk for it is its own, nothing of the previous one's. */
+    private fun switchTo(id: String) {
+        _draftId.value = id
+        if (ownsPane) drafts.setOpen(id)
         savedImages = emptyMap()
         savedFiles = emptyMap()
-        graph.drafts.clear()
+        createdAtMillis = null
+    }
+
+    /**
+     * What is on screen, as the draft it would be opened from. An emptied composer has no draft to keep: the user has
+     * cleared it. A draft that has not changed is not written again, so opening one does not make it the newest.
+     */
+    private suspend fun save() = draftMutex.withLock {
+        val s = _state.value
+        val id = _draftId.value
+        val existing = drafts.record(id)
+        if (!s.hasContent) {
+            savedImages = emptyMap()
+            savedFiles = emptyMap()
+            if (existing != null && existing.launchedAs == null) drafts.remove(id, byComposer = true)
+            return@withLock
+        }
+        val stored = s.attachments.mapNotNull { a -> (savedImages[a.id] ?: graph.drafts.writeImage(id, a.image))?.let { a.id to it } }
+        savedImages = stored.toMap()
+        // A file already on disk is not written again; its record takes the reference its upload has settled on since.
+        val storedFiles = s.files.mapNotNull { f -> (savedFiles[f.id]?.withRef(f.file.upload) ?: graph.drafts.writeFile(id, f.file))?.let { f.id to it } }
+        savedFiles = storedFiles.toMap()
+        val now = AppClock.now()
+        val record = DraftStore.Record(
+            id = id,
+            createdAtMillis = createdAtMillis ?: existing?.createdAtMillis ?: now,
+            updatedAtMillis = now,
+            origin = existing?.origin ?: origin,
+            prompt = s.prompt,
+            images = stored.map { it.second },
+            files = storedFiles.map { it.second },
+            repoUrl = if (s.noRepo) null else s.selectedRepo?.url,
+            noRepo = s.noRepo,
+            ref = s.ref,
+            device = s.selectedDevice,
+            repoPicked = !s.repoFollowsDevice && !s.selectedDevice.isCloud,
+            modelId = s.selectedModel?.id,
+            modelParams = s.selectedVariant?.params.orEmpty(),
+            modelLabel = s.selectedModel?.displayName,
+            // A model picked here comes back as the draft's; a default does not, and is derived afresh.
+            modelChosen = modelPicked,
+            autoCreatePr = s.autoCreatePr,
+            planMode = s.planMode,
+            nonce = launchNonce,
+            launchedAs = existing?.launchedAs,
+        )
+        // Written into since its launch came back: the reason goes with the change; unchanged, it stays.
+        if (record.sameContentAs(existing?.copy(error = null, errorAsked = null))) return@withLock
+        createdAtMillis = record.createdAtMillis
+        drafts.save(record)
+    }
+
+    /** What the sidebar asks: see [NewChatDrafts.Request]. */
+    private suspend fun handle(request: NewChatDrafts.Request) {
+        // Another composer hears only that its own draft was deleted from the sidebar.
+        if (!ownsPane && request !is NewChatDrafts.Request.Deleted) return
+        if (request is NewChatDrafts.Request.Open || request is NewChatDrafts.Request.Fresh) drafts.takePending()
+        when (request) {
+            is NewChatDrafts.Request.Open -> {
+                if (request.id == _draftId.value) return
+                val record = drafts.record(request.id)?.takeIf { it.launchedAs == null } ?: return
+                save()
+                draftMutex.withLock { adopt(record) }
+            }
+            NewChatDrafts.Request.Fresh -> if (_state.value.hasContent) startFresh()
+            is NewChatDrafts.Request.Deleted -> if (request.id == _draftId.value) letGo()
+            // A launch that came back is taken up by a composer with nothing in it; otherwise it waits in the sidebar.
+            is NewChatDrafts.Request.Returned -> {
+                if (!_state.value.isFree) return
+                val record = drafts.record(request.id) ?: return
+                draftMutex.withLock { adopt(record) }
+            }
+        }
+    }
+
+    /**
+     * A fresh composer, on the last launch's choices, as a cold start opens one; what it held stays a draft of its own
+     * in the sidebar.
+     */
+    private suspend fun startFresh() {
+        save()
+        val saved = graph.prefs.composerDefaults.first()
+        draftMutex.withLock {
+            switchTo(newDraftId())
+            launchNonce = LaunchIdempotency.newNonce()
+            modelPicked = false
+            defaults = saved
+            _state.update { s ->
+                val base = s.copy(
+                    prompt = "",
+                    attachments = emptyList(),
+                    files = emptyList(),
+                    error = null,
+                    errorAsked = null,
+                    planMode = false,
+                    autoCreatePr = saved.autoCreatePr,
+                    selectedDevice = saved.env,
+                    repoFollowsDevice = !saved.env.isCloud,
+                )
+                val repo = saved.repoUrl?.let { base.withRepoChoice(RepoChoice(it, noRepo = false, ref = saved.ref.orEmpty())) } ?: base
+                repo.withPickerLists().withModelSelection()
+            }
+        }
+    }
+
+    /** The open draft was deleted from the sidebar: the composer is emptied onto a new draft, its choices kept. */
+    private suspend fun letGo() = draftMutex.withLock {
+        _state.value.files.forEach { graph.attachmentUploads.cancel(it.id) }
+        switchTo(newDraftId())
+        launchNonce = LaunchIdempotency.newNonce()
+        _state.update { it.copy(prompt = "", attachments = emptyList(), files = emptyList(), error = null, errorAsked = null) }
+    }
+
+    override fun onCleared() {
+        if (drafts.composerSave === draftSave) drafts.composerSave = null
+        if (ownsPane && drafts.open.value == _draftId.value) drafts.setOpen(null)
+        super.onCleared()
     }
 
     /** Everything the draft is written from: what is on screen changes constantly, this only when the draft does. */
@@ -384,6 +578,8 @@ class NewAgentViewModel(
         selectedRepo?.url,
         noRepo,
         ref,
+        selectedDevice,
+        repoFollowsDevice,
         selectedModel?.id,
         selectedVariant?.params?.map { it.id to it.value },
         autoCreatePr,
@@ -399,6 +595,13 @@ class NewAgentViewModel(
             _state.update { s -> s.copy(reposUnavailable = s.repositories.isEmpty()) }
         }
         _state.update { it.copy(isLoadingRepos = false) }
+    }
+
+    /** A list the catalog comes by later — its background refresh, the picker of another screen — is the picker's too. */
+    private suspend fun followRepositories() {
+        graph.catalog.repositories.collect { repos ->
+            if (repos.isNotEmpty() && repos != _state.value.repositories) applyRepos(repos, _state.value.selectedRepo?.url)
+        }
     }
 
     private fun applyRepos(repos: List<Repository>, preferredUrl: String?) {
@@ -417,8 +620,18 @@ class NewAgentViewModel(
     private fun NewAgentUiState.withPickerLists(): NewAgentUiState = withDevices().withBranches().withRecentRepos()
 
     private fun NewAgentUiState.withBranches(): NewAgentUiState {
-        val repo = selectedRepo?.takeIf { !noRepo } ?: return copy(branches = emptyList())
-        return copy(branches = KnownBranches.forRepository(agents, repo.url))
+        val repo = selectedRepo?.takeIf { !noRepo } ?: return copy(branches = emptyList(), branchesListedByAccount = false)
+        val listed = accountBranches[repo.url].orEmpty()
+        return copy(branches = BranchOption.merged(KnownBranches.forRepository(agents, repo.url), listed.map { it.name to it.isDefault }), branchesListedByAccount = listed.isNotEmpty())
+    }
+
+    /** Asks the account for [repoUrl]'s branches, once a session, and puts them in the picker when they come. */
+    private suspend fun loadAccountBranches(repoUrl: String) {
+        if (accountBranches.containsKey(repoUrl)) return
+        val listed = graph.accountBranches(repoUrl)
+        if (listed.isEmpty()) return
+        accountBranches[repoUrl] = listed
+        _state.update { s -> if (s.selectedRepo?.url == repoUrl) s.withBranches() else s }
     }
 
     /**
@@ -435,21 +648,43 @@ class NewAgentViewModel(
 
     /**
      * Puts the device's repository [url] in the selection, as a pick of it would (see [withRepo]), and marks the
-     * selection the device's. The catalogue's own row stands for it when the catalogue lists it.
+     * selection the device's. The account's own copy of it stands for it when the account has one (see
+     * [accountRepositoryFor]): a worker registers its checkout only as `owner/name`, and [url] may be a guess.
      */
     private fun NewAgentUiState.following(url: String): NewAgentUiState {
-        val repo = repositories.firstOrNull { it.isAt(url) } ?: Repository(url)
+        val repo = accountRepositoryFor(url) ?: repositories.firstOrNull { it.isAt(url) } ?: Repository(url)
         val already = !noRepo && selectedRepo?.isAt(url) == true
-        return (if (already) this else withRepo(repo)).copy(repoFollowsDevice = true, deviceRepoUrl = url)
+        // A branch chosen for the repository this replaces says nothing about the machine's checkout.
+        val replaced = noRepo || (selectedRepo != null && !already)
+        val next = when {
+            // The same repository, perhaps known as the account's own copy only now: the branch picked for it stays.
+            already -> if (selectedRepo?.url == repo.url) this else copy(selectedRepo = repo)
+            replaced -> withRepo(repo).copy(ref = "")
+            else -> withRepo(repo)
+        }
+        return next.copy(repoFollowsDevice = true, deviceRepoUrl = url)
+    }
+
+    /**
+     * The desktop's `nZS` for a machine's repository [url]: the project the account already has for the same host-less
+     * `owner/name` (`T1t`, any case) — the catalogue's row, else the repository the account's chats ran on — rather
+     * than the URL the worker's listing gave, which is `https://github.com/{owner}/{name}` when it gave none.
+     */
+    private fun NewAgentUiState.accountRepositoryFor(url: String): Repository? {
+        val label = RepoRemote.label(url)?.lowercase() ?: return null
+        repositories.firstOrNull { RepoRemote.label(it.url)?.lowercase() == label }?.let { return it }
+        val ran = agents.firstNotNullOfOrNull { agent -> agent.repoUrl?.takeIf { RepoRemote.label(it)?.lowercase() == label } } ?: return null
+        return Repository(RepoRemote.canonical(ran) ?: ran)
     }
 
     /**
      * Where the next chat runs. A machine or pool brings its repository with it: the repository the worker is
      * checked out at (see [DeviceOption.repoUrl]) becomes the selection and the branch list refreshes for it, since
      * Cursor runs a machine only in a checkout of the requested repository (a request for another is refused, never
-     * run on the wrong checkout). Coming back to Cloud restores what was chosen there. A device that pins no
-     * repository — an any-repo pool, a machine nothing has described — keeps a pick made here, while a repository
-     * that was the previous device's goes back to the Cloud one.
+     * run on the wrong checkout). The branch goes blank with it, as the desktop's pick of a worker leaves it: no
+     * `startingRef` goes out until one is picked on the machine. Coming back to Cloud restores what was chosen there. A
+     * device that pins no repository — an any-repo pool, a machine nothing has described — keeps a pick made here,
+     * while a repository that was the previous device's goes back to the Cloud one.
      */
     fun selectDevice(device: DeviceTarget) {
         val before = _state.value
@@ -463,7 +698,7 @@ class NewAgentViewModel(
             when {
                 device.isCloud -> cloudChoice?.let { next.withRepoChoice(it) } ?: next
                 // The device pins a repository: [withDevices] has already moved the selection onto it.
-                next.deviceRepoUrl != null -> next
+                next.deviceRepoUrl != null -> next.copy(ref = "")
                 // The repository was the previous device's; it does not come along to one that pins none.
                 s.repoFollowsDevice -> cloudRepo?.let { next.withRepoChoice(it) } ?: next
                 else -> next
@@ -511,7 +746,25 @@ class NewAgentViewModel(
         _state.update { it.copy(isLoadingModels = true) }
         graph.catalog.loadModels(force)
             .onSuccess { models -> _state.update { it.withModels(models, fallbackIfMissing = true) } }
-            .onFailure { _state.update { it.copy(isLoadingModels = false, modelsUnavailable = it.models.isEmpty()) } }
+            .onFailure { t ->
+                _state.update {
+                    val failed = it.copy(isLoadingModels = false, modelsUnavailable = it.models.isEmpty())
+                    // A refresh asked for is answered, as the repository picker's is; the first load's failure is the picker's to show.
+                    if (force) failed.copy(error = t.userMessage(), errorAsked = null) else failed
+                }
+            }
+    }
+
+    /**
+     * Each model list the catalog fetches after the first — the background refresh's, another screen's — replaces
+     * this one, and the selection is settled on it again: a model Cursor has just announced turns up in the picker,
+     * and a slug restored from a draft is placed against it (see [withModelSelection]). The first emission is the list
+     * [loadModels] has just adopted, so it is skipped by value.
+     */
+    private suspend fun followModels() {
+        graph.catalog.models.collect { models ->
+            if (models.isNotEmpty() && models != _state.value.models) _state.update { it.withModels(models, fallbackIfMissing = true) }
+        }
     }
 
     /**
@@ -535,6 +788,12 @@ class NewAgentViewModel(
         if (models.isEmpty()) return this
         val wanted = selectedModel?.takeIf { modelPicked }
         if (wanted != null) {
+            // A stand-in restored from a draft in another spelling (a slug) is placed the way a chat's record is.
+            if (models.named(wanted.id) == null) {
+                ModelSlugs.resolve(models, wanted.id, selectedVariant?.params.orEmpty())?.let { placed ->
+                    return copy(selectedModel = placed.model, selectedVariant = placed.variant)
+                }
+            }
             val model = models.named(wanted.id) ?: if (settleOnAuto) models.autoOption() ?: models.firstOrNull() ?: return this else return this
             val params = selectedVariant?.params?.associate { it.id to it.value }
             val variant = params?.takeIf { model.id == wanted.id }?.let(model::variantWithParams) ?: model.defaultVariant
@@ -548,11 +807,8 @@ class NewAgentViewModel(
         return copy(selectedModel = resolved.choice.model, selectedVariant = resolved.choice.variant)
     }
 
-    fun setPrompt(value: String) {
-        _state.update { it.copy(prompt = value, error = null).withExclusiveModes() }
-        restoreWaitingIfFree()
-    }
-    fun addAttachments(items: List<PendingAttachment>) = _state.update { it.copy(attachments = (it.attachments + items).take(PromptImage.MAX_COUNT), error = null) }
+    fun setPrompt(value: String) = _state.update { it.copy(prompt = value, error = null, errorAsked = null).withExclusiveModes() }
+    fun addAttachments(items: List<PendingAttachment>) = _state.update { it.copy(attachments = (it.attachments + items).take(PromptImage.MAX_COUNT), error = null, errorAsked = null) }
     /**
      * Drops a share into this composer: the incoming text is appended under whatever is already written, images
      * fill the remaining attachment slots, and a warning from the share (an unsupported file, too many images)
@@ -563,12 +819,10 @@ class NewAgentViewModel(
             prompt = ShareDraft.mergeText(s.prompt, text),
             attachments = (s.attachments + items).take(PromptImage.MAX_COUNT),
             error = warning,
+            errorAsked = null,
         ).withExclusiveModes()
     }
-    fun removeAttachment(item: PendingAttachment) {
-        _state.update { s -> s.copy(attachments = s.attachments.filterNot { it.id == item.id }) }
-        restoreWaitingIfFree()
-    }
+    fun removeAttachment(item: PendingAttachment) = _state.update { s -> s.copy(attachments = s.attachments.filterNot { it.id == item.id }) }
     /** Files of any type from the document picker (Extended mode); refused with a word when the mode is off. */
     fun addFiles(items: List<PendingFile>) {
         if (items.isEmpty()) return
@@ -577,7 +831,7 @@ class NewAgentViewModel(
             return
         }
         var kept: List<PendingFile> = emptyList()
-        _state.update { s -> s.copy(files = (s.files + items).withinSlots(imagesElsewhere = s.attachments.size).also { kept = it }, error = null) }
+        _state.update { s -> s.copy(files = (s.files + items).withinSlots(imagesElsewhere = s.attachments.size).also { kept = it }, error = null, errorAsked = null) }
         // Up they go, the moment they are attached; the launch waits on nothing once they are.
         kept.filter { f -> items.any { it.id == f.id } }.forEach { graph.attachmentUploads.start(it.id, it.file) }
     }
@@ -585,14 +839,14 @@ class NewAgentViewModel(
     fun removeFile(item: PendingFile) {
         _state.update { s -> s.copy(files = s.files.filterNot { it.id == item.id }) }
         graph.attachmentUploads.cancel(item.id)
-        restoreWaitingIfFree()
     }
     /** A file whose upload failed: the upload alone is tried again, in its chip. */
     fun retryFile(item: PendingFile) {
         if (_state.value.files.none { it.id == item.id }) return
         graph.attachmentUploads.retry(item.id)
     }
-    fun reportError(message: String) = _state.update { it.copy(error = message) }
+    fun reportError(message: String) = _state.update { it.copy(error = message, errorAsked = null) }
+    fun dismissError() = _state.update { it.copy(error = null, errorAsked = null) }
     /**
      * A repository picked here (see [NewAgentUiState.withRepo] for the branch). On a machine or pool it is a pick
      * over the device's own repository — allowed, since a worker may serve more roots than the one it reports
@@ -648,7 +902,7 @@ class NewAgentViewModel(
         _state.update { it.copy(isLoadingRepos = true) }
         graph.catalog.loadRepositories(force = true)
             .onSuccess { applyRepos(it, _state.value.selectedRepo?.url) }
-            .onFailure { t -> _state.update { it.copy(error = t.userMessage()) } }
+            .onFailure { t -> _state.update { it.copy(error = t.userMessage(), errorAsked = null) } }
         _state.update { it.copy(isLoadingRepos = false) }
     }
 
@@ -669,9 +923,16 @@ class NewAgentViewModel(
      * answered — and the composer is clear from that moment on: the request completes in the launcher
      * ([com.cursorforandroid.data.repo.ChatLauncher]), on its own, so coming back here, or starting another chat,
      * meets an empty composer whatever the server has yet to say. Should the launch fail, or be stopped from the chat,
-     * the draft comes back here (see [takeBack]).
+     * the draft comes back: into this composer if nothing has been written in it since, else to the sidebar, with the
+     * reason and the nonce it went out under, so an unchanged retry keeps the chat's id (see [handle]).
+     *
+     * With [awaitServer] the chat is opened only once the server has created it: the composer stays busy meanwhile —
+     * its send slot the ring, then Stop ([cancelLaunch]) — and a refusal leaves the draft where it is, with the reason
+     * under it, without [onOpen] ever running. For a composer with nothing of the app behind it to show the chat in
+     * (the quick composer over the launcher), where an optimistic open would be an app opened on a chat that may
+     * never exist.
      */
-    fun launch(onOpen: (agentId: String) -> Unit) {
+    fun launch(onOpen: (agentId: String) -> Unit, awaitServer: Boolean = false) {
         val s = _state.value
         if (!s.canLaunch) return
         // A file rides the account's start, which this composer can only ask of Cursor's cloud (see AgentRepository.startWithFiles).
@@ -687,7 +948,7 @@ class NewAgentViewModel(
         }
         val nonce = launchNonce
         // Held only for as long as the draft takes to pack and put on screen, so a second tap cannot send it twice.
-        _state.update { it.copy(isLaunching = true, error = null) }
+        _state.update { it.copy(isLaunching = true, error = null, errorAsked = null) }
         viewModelScope.launch {
             val remembered = defaults?.takeIf { it.modelChosen }
             val draft = LaunchRequest(
@@ -709,125 +970,136 @@ class NewAgentViewModel(
                 planMode = s.planMode,
                 mcpServers = graph.mcpServers.enabled(),
                 env = s.selectedDevice,
+                // A machine that has dropped off the listing is still asked for by the worker it was last listed as.
+                worker = s.selectedDevice.takeIf { it.type == EnvType.MACHINE }?.let { device ->
+                    s.devices.firstOrNull { it.key == DeviceOption.keyOf(device) }?.worker ?: graph.catalog.lastSeenWorker(device)
+                },
             )
             // Same draft, same id: retrying after a timeout or a cancel adopts the agent the first attempt may have
             // created instead of launching a duplicate. It is also what the chat is shown under before the server answers.
             val agentId = withContext(Dispatchers.Default) { LaunchIdempotency.agentId(draft, nonce) }
             val request = draft.copy(agentId = agentId)
-            graph.launcher.launch(request, s.modelLabel, nonce)
+            if (awaitServer) {
+                // The draft stays this composer's until the server has it: on disk as it goes out, and on a refusal
+                // where it is — under the nonce it went out with, so an unchanged retry keeps the chat's id and adopts
+                // anything the attempt created — with the server's words under it; a stop on purpose says nothing.
+                save()
+                awaitedAgentId = agentId
+                val outcome = try {
+                    graph.launcher.launchAndAwait(request, s.modelLabel, nonce)
+                } finally {
+                    awaitedAgentId = null
+                }
+                outcome.exceptionOrNull()?.let { t ->
+                    val reason = if (t is LaunchCancelledException) null else t.userMessage()
+                    _state.update { it.copy(isLaunching = false, error = reason, errorAsked = (t as? MachineStartRefusedException)?.asked?.takeIf { reason != null }) }
+                    return@launch
+                }
+                // Created: the draft is the chat's now. Not cancellable, as opening the chat finishes the screen this
+                // composer belongs to, and a draft cleared on screen but left on disk would come back as new.
+                withContext(NonCancellable) {
+                    val sent = _draftId.value
+                    draftMutex.withLock {
+                        switchTo(newDraftId())
+                        _state.update { it.copy(prompt = "", attachments = emptyList(), files = emptyList()) }
+                    }
+                    drafts.remove(sent, byComposer = true)
+                }
+            } else {
+                // The draft is filed as it goes out and is the chat's from here: out of the sidebar before the chat's
+                // row is listed, deleted once the server has it, back — with the reason — if the launch does not go
+                // through. The composer moves on to a draft of its own in the same step as it empties, so nothing of
+                // this one's can be saved again under the next.
+                save()
+                drafts.markLaunched(_draftId.value, agentId)
+                draftMutex.withLock {
+                    switchTo(newDraftId())
+                    _state.update { it.copy(prompt = "", attachments = emptyList(), files = emptyList()) }
+                }
+                graph.launcher.launch(request, s.modelLabel, nonce)
+            }
             onOpen(agentId)
-            // The draft is on its way, whatever becomes of it: the next one gets its own id, and the choices this one
-            // was made with are what the composer restores next time. Only once they are saved does it report itself free.
-            launchNonce = LaunchIdempotency.newNonce()
-            val now = AppClock.now()
-            val params = request.modelParams.associate { p: ModelParam -> p.id to p.value }
-            graph.prefs.setComposerDefaults(
-                repoUrl = request.repoUrl,
-                // Blank is a choice too (the repository's default branch), saved as such rather than removed.
-                ref = request.ref ?: "",
-                modelId = request.modelId,
-                params = params,
-                autoCreatePr = request.autoCreatePr,
-                env = request.env,
-                nowMillis = now,
-            )
-            // What this composer remembers is what the disk now says, so the next default is derived from the launch.
-            defaults = (defaults ?: emptyDefaults()).copy(
-                repoUrl = request.repoUrl,
-                ref = request.ref ?: "",
-                modelId = request.modelId,
-                modelParams = params,
-                autoCreatePr = request.autoCreatePr,
-                modelChosen = true,
-                env = request.env,
-                cloudRepoUrl = if (request.env.isCloud) request.repoUrl else defaults?.cloudRepoUrl,
-                modelChosenAtMillis = now,
-            )
-            _state.update { it.copy(isLaunching = false, prompt = "", attachments = emptyList(), files = emptyList()) }
-            // The files are the launch's now, by their references; a launch that fails brings them back with those.
-            graph.attachmentUploads.forget(s.files.map { it.id })
-            // The draft is the launcher's now; what is kept on disk is whatever is written next.
-            forgetDraft()
-            restoreWaitingIfFree()
+            // The next draft gets its own id, and the choices this one was made with are what the composer restores
+            // next time. Only once they are saved does it report itself free. Not cancellable: opening the chat may
+            // finish the screen this composer belongs to (the quick composer over the launcher).
+            withContext(NonCancellable) {
+                launchNonce = LaunchIdempotency.newNonce()
+                val now = AppClock.now()
+                val params = request.modelParams.associate { p: ModelParam -> p.id to p.value }
+                graph.prefs.setComposerDefaults(
+                    repoUrl = request.repoUrl,
+                    // Blank is a choice too (the repository's default branch), saved as such rather than removed.
+                    ref = request.ref ?: "",
+                    modelId = request.modelId,
+                    params = params,
+                    autoCreatePr = request.autoCreatePr,
+                    env = request.env,
+                    nowMillis = now,
+                )
+                // What this composer remembers is what the disk now says, so the next default is derived from the launch.
+                defaults = (defaults ?: emptyDefaults()).copy(
+                    repoUrl = request.repoUrl,
+                    ref = request.ref ?: "",
+                    modelId = request.modelId,
+                    modelParams = params,
+                    autoCreatePr = request.autoCreatePr,
+                    modelChosen = true,
+                    env = request.env,
+                    cloudRepoUrl = if (request.env.isCloud) request.repoUrl else defaults?.cloudRepoUrl,
+                    modelChosenAtMillis = now,
+                )
+                _state.update { it.copy(isLaunching = false) }
+                // The files are the launch's now, by their references; a launch that fails brings them back with those.
+                graph.attachmentUploads.forget(s.files.map { it.id })
+            }
         }
     }
 
     /**
-     * A launch did not go through: its draft comes back here to be sent again — with the reason, unless the chat was
-     * stopped on purpose — and, under the nonce it went out with, an unchanged retry keeps the chat's id. A composer
-     * already being written into is not overwritten: the draft waits, and comes back the moment the composer is free.
+     * Stops a launch being waited out ([launch] with `awaitServer`) before the server has answered: the request is
+     * abandoned and the draft stays without a word, as a chat stopped on purpose does. Nothing to stop is nothing.
      */
-    private suspend fun takeBack(failed: FailedLaunch) {
-        val images = failed.request.images
-        // The strip's thumbnails are decoded off the main thread, as they were when the images were picked.
-        val attachments = if (images.isEmpty()) emptyList() else withContext(Dispatchers.IO) { images.map(PendingAttachment::of) }
-        val files = if (failed.request.files.isEmpty()) emptyList() else withContext(Dispatchers.IO) { failed.request.files.map { PendingFile.of(it) } }
-        waiting += ReturnedDraft(failed, attachments, files)
-        restoreWaitingIfFree()
-    }
-
-    private fun restoreWaitingIfFree() {
-        if (waiting.isEmpty() || !_state.value.isFree) return
-        val draft = waiting.removeFirst()
-        launchNonce = draft.failed.nonce
-        // A model the list has, or a launch that sent none: the pick is settled, and a list arriving later
-        // re-resolves it rather than the remembered one.
-        if (_state.value.resolvesModelOf(draft.failed.request)) modelPicked = true
-        _state.update { it.restored(draft) }
-        // The files come back with the references they went out under, so they are up from the start; one that
-        // went out inline, or whose upload the account has since let go, goes up again.
-        draft.files.forEach { graph.attachmentUploads.start(it.id, it.file) }
+    fun cancelLaunch() {
+        awaitedAgentId?.let { graph.conversations.cancelLaunch(it) }
     }
 
     /**
-     * The composer as it was when [draft] went out — its text, its images, the choices it was made with — and why it
-     * is back. A repository or model the lists no longer offer leaves the current pick; the saved defaults, recorded
-     * when the draft was sent, restore it when the list next arrives.
+     * Writes the draft now rather than once typing settles: for a composer about to leave the screen for good — the
+     * quick composer dismissed over the launcher — whose last keystrokes the debounce would otherwise lose with the
+     * view model. Not cancellable: the write outlives the scope that asked for it. Nothing is written before the
+     * draft on disk has been read, so an early leave cannot clear what it never showed.
      */
-    private fun NewAgentUiState.restored(draft: ReturnedDraft): NewAgentUiState {
-        val request = draft.failed.request
-        val repo = request.repoUrl?.let { url -> repositories.firstOrNull { it.url == url } }
-        val model = modelFor(request)
-        val modelResolved = resolvesModelOf(request)
-        // A launch that sent no model was going to run on Auto; that is what comes back checked.
-        val auto = models.autoOption() ?: models.firstOrNull()
-        return copy(
-            // A prompt the launch wrote for an attachment-only draft comes back as the empty field it was typed as.
-            prompt = if (draft.files.isNotEmpty() && request.prompt == attachmentOnlyText(request.images.size, request.files.size)) "" else request.prompt,
-            attachments = draft.attachments,
-            files = draft.files,
-            error = draft.failed.reason,
-            noRepo = request.repoUrl == null,
-            selectedRepo = repo ?: selectedRepo,
-            ref = request.ref ?: "",
-            selectedModel = if (modelResolved) model ?: auto else selectedModel,
-            selectedVariant = when {
-                !modelResolved -> selectedVariant
-                model != null -> model.variantWithParams(request.modelParams.associate { it.id to it.value }) ?: model.defaultVariant
-                else -> auto?.defaultVariant
-            },
-            autoCreatePr = request.autoCreatePr,
-            planMode = request.planMode,
-            selectedDevice = request.env,
-            // The draft's repository and device went out together: the repository is the draft's, whatever the device pins.
-            repoFollowsDevice = false,
-        ).withExclusiveModes().withPickerLists()
+    fun keepDraft() {
+        if (!draftRestored) return
+        viewModelScope.launch { withContext(NonCancellable) { save() } }
     }
 
-    private fun NewAgentUiState.modelFor(request: LaunchRequest): ModelOption? = request.modelId?.let { id -> models.firstOrNull { it.id == id } }
+    /**
+     * Throws the draft away — the text, the images, the files and their uploads, the copy on disk — as the quick
+     * composer's Cancel does. The choices around it (repository, model, device) stay: they are the next chat's too.
+     */
+    fun discardDraft() {
+        // A send still being waited out goes with it: a chat created after Cancel would open an app nobody asked for.
+        cancelLaunch()
+        val s = _state.value
+        s.files.forEach { graph.attachmentUploads.cancel(it.id) }
+        _state.update { it.copy(prompt = "", attachments = emptyList(), files = emptyList(), error = null, errorAsked = null) }
+        // An emptied composer's save deletes the draft it had open, on disk too.
+        viewModelScope.launch { withContext(NonCancellable) { save() } }
+    }
 
-    /** True when [request]'s model is one the current list has, or the launch sent none, so the composer can show it as picked. */
-    private fun NewAgentUiState.resolvesModelOf(request: LaunchRequest): Boolean = request.modelId == null || modelFor(request) != null
-
-    /** A failed launch's draft with its images and files ready for the strip again. */
-    private class ReturnedDraft(val failed: FailedLaunch, val attachments: List<PendingAttachment>, val files: List<PendingFile> = emptyList())
-
-    class Factory(private val graph: AppGraph) : ViewModelProvider.Factory {
+    class Factory(
+        private val graph: AppGraph,
+        private val resume: String? = null,
+        private val origin: String = DraftStore.ORIGIN_COMPOSER,
+    ) : ViewModelProvider.Factory {
         @Suppress("UNCHECKED_CAST")
-        override fun <T : ViewModel> create(modelClass: Class<T>): T = NewAgentViewModel(graph) as T
+        override fun <T : ViewModel> create(modelClass: Class<T>): T = NewAgentViewModel(graph, resume = resume, origin = origin) as T
     }
 
     private companion object {
         const val DRAFT_SAVE_DELAY_MS = 400L
+
+        fun newDraftId(): String = "draft-" + java.util.UUID.randomUUID()
     }
 }

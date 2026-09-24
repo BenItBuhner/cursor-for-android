@@ -9,44 +9,57 @@ import com.cursorforandroid.data.api.AccountApi
 import com.cursorforandroid.data.api.AccountFollowup
 import com.cursorforandroid.data.api.AccountList
 import com.cursorforandroid.data.api.AgentFilesApi
+import com.cursorforandroid.data.api.AgentStoreApi
 import com.cursorforandroid.data.api.BackgroundComposerApi
+import com.cursorforandroid.data.api.BlobCache
 import com.cursorforandroid.data.api.ComposerLifecycleApi
 import com.cursorforandroid.data.api.ComposerSnapshot
+import com.cursorforandroid.data.api.AccountBranch
+import com.cursorforandroid.data.api.AgentStartApi
+import com.cursorforandroid.data.api.ConnectRepositoryBranchesApi
+import com.cursorforandroid.data.api.RepositoryBranchesApi
 import com.cursorforandroid.data.api.ConnectAgentStartApi
-import com.cursorforandroid.data.api.ConnectPromptUploadApi
-import com.cursorforandroid.data.api.RootScan
 import com.cursorforandroid.data.api.ConnectJsonClient
-import com.cursorforandroid.data.api.HeadlessPage
-import com.cursorforandroid.data.api.RecordState
-import com.cursorforandroid.data.api.HeadlessConversationApi
+import com.cursorforandroid.data.api.ConnectProjectCreationApi
+import com.cursorforandroid.data.api.ConnectPromptUploadApi
 import com.cursorforandroid.data.api.ConversationRecordApi
 import com.cursorforandroid.data.api.CreatedPullRequest
 import com.cursorforandroid.data.api.CursorApiFactory
+import com.cursorforandroid.data.api.CursorServerApi
 import com.cursorforandroid.data.api.DashboardSlashCommandApi
 import com.cursorforandroid.data.api.DesktopProbe
 import com.cursorforandroid.data.api.DiffDetailsApi
 import com.cursorforandroid.data.api.FollowupQueueApi
-import com.cursorforandroid.data.api.GoalStateApi
 import com.cursorforandroid.data.api.GitHubApi
 import com.cursorforandroid.data.api.GitHubSlashCommandApi
-import com.cursorforandroid.data.api.AgentStoreApi
+import com.cursorforandroid.data.api.GoalStateApi
+import com.cursorforandroid.data.api.HeadlessConversationApi
+import com.cursorforandroid.data.api.HeadlessPage
+import com.cursorforandroid.data.api.HeadlessTurn
+import com.cursorforandroid.data.api.HeadlessTurnPage
+import com.cursorforandroid.data.api.LivePoint
+import com.cursorforandroid.data.api.LiveWatch
+import com.cursorforandroid.data.api.InteractionApi
 import com.cursorforandroid.data.api.MachineApi
 import com.cursorforandroid.data.api.MachineLookupApi
-import com.cursorforandroid.data.api.InteractionApi
 import com.cursorforandroid.data.api.OriginApi
 import com.cursorforandroid.data.api.PinsApi
 import com.cursorforandroid.data.api.PresignedStoreRead
-import com.cursorforandroid.data.api.StoreReadTarget
+import com.cursorforandroid.data.api.PresignedStoreWrite
 import com.cursorforandroid.data.api.ProjectActionsApi
-import com.cursorforandroid.data.api.ConnectProjectCreationApi
 import com.cursorforandroid.data.api.ProjectApi
 import com.cursorforandroid.data.api.ProjectLineageApi
+import com.cursorforandroid.data.api.PromptUploadApi
 import com.cursorforandroid.data.api.PullRequestApi
 import com.cursorforandroid.data.api.PullRequestCreationApi
+import com.cursorforandroid.data.api.RecordState
+import com.cursorforandroid.data.api.RootScan
 import com.cursorforandroid.data.api.RunControlApi
 import com.cursorforandroid.data.api.SlashCommandApi
 import com.cursorforandroid.data.api.SseRunStreamer
 import com.cursorforandroid.data.api.SteeringApi
+import com.cursorforandroid.data.api.StoreReadTarget
+import com.cursorforandroid.data.api.TurnPlan
 import com.cursorforandroid.data.api.WorkerLaunch
 import com.cursorforandroid.data.api.WorkspaceFilesApi
 import com.cursorforandroid.data.auth.CursorLogin
@@ -58,20 +71,24 @@ import com.cursorforandroid.data.demo.DemoPullRequests
 import com.cursorforandroid.data.demo.DemoReview
 import com.cursorforandroid.data.demo.DemoStores
 import com.cursorforandroid.data.local.AppCaches
-import com.cursorforandroid.data.local.JsonDiskCache
 import com.cursorforandroid.data.local.AttachmentStore
+import com.cursorforandroid.data.local.DiskSweep
+import com.cursorforandroid.data.local.DraftFiles
 import com.cursorforandroid.data.local.DraftStore
 import com.cursorforandroid.data.local.FollowUpStore
 import com.cursorforandroid.data.local.GeneratedMediaStore
+import com.cursorforandroid.data.local.JsonDiskCache
 import com.cursorforandroid.data.local.McpServerStore
 import com.cursorforandroid.data.local.PreferencesStore
 import com.cursorforandroid.data.local.SecureKeyStore
 import com.cursorforandroid.data.media.MediaLoader
+import com.cursorforandroid.data.repo.AgentFileRepository
 import com.cursorforandroid.data.repo.AgentRepository
+import com.cursorforandroid.data.repo.SubagentActivity
 import com.cursorforandroid.data.repo.ArtifactRepository
 import com.cursorforandroid.data.repo.AttachmentUploads
-import com.cursorforandroid.data.repo.CatalogRepository
 import com.cursorforandroid.data.repo.CapabilityGatedPullRequestSource
+import com.cursorforandroid.data.repo.CatalogRepository
 import com.cursorforandroid.data.repo.ChatLauncher
 import com.cursorforandroid.data.repo.ConversationRepository
 import com.cursorforandroid.data.repo.CursorBackend
@@ -81,54 +98,68 @@ import com.cursorforandroid.data.repo.FollowUpRepository
 import com.cursorforandroid.data.repo.GeneratedImageStore
 import com.cursorforandroid.data.repo.GitHubPullRequestSource
 import com.cursorforandroid.data.repo.LiveRunHub
+import com.cursorforandroid.data.repo.NewChatDrafts
 import com.cursorforandroid.data.repo.Onboarding
 import com.cursorforandroid.data.repo.PinRepository
 import com.cursorforandroid.data.repo.ProjectEditor
-import com.cursorforandroid.data.repo.ProjectRepository
 import com.cursorforandroid.data.repo.AgentStoreRepository
+import com.cursorforandroid.data.repo.ProjectRepository
 import com.cursorforandroid.data.repo.PromptUploader
 import com.cursorforandroid.data.repo.PullRequestRepository
 import com.cursorforandroid.data.repo.PullRequestSource
+import com.cursorforandroid.data.repo.RefreshDepth
 import com.cursorforandroid.data.repo.RemoteRepository
 import com.cursorforandroid.data.repo.ReviewRepository
 import com.cursorforandroid.data.repo.RunMonitor
 import com.cursorforandroid.data.repo.SessionManager
+import com.cursorforandroid.data.repo.SessionState
 import com.cursorforandroid.data.repo.SlashCommandRepository
-import com.cursorforandroid.data.repo.WorkspaceRepository
-import com.cursorforandroid.domain.AgentDiff
 import com.cursorforandroid.data.repo.SteeringRepository
 import com.cursorforandroid.data.repo.StoreFileRepository
+import com.cursorforandroid.data.repo.WorkspaceRepository
+import com.cursorforandroid.data.update.GitHubReleasesClient
+import com.cursorforandroid.data.update.UpdateCache
+import com.cursorforandroid.data.update.UpdateManager
+import com.cursorforandroid.data.update.WhatsNewRepository
+import com.cursorforandroid.domain.AgentStoreRef
+import com.cursorforandroid.domain.AgentDiff
 import com.cursorforandroid.domain.AgentMode
 import com.cursorforandroid.domain.AgentScope
 import com.cursorforandroid.domain.Capabilities
-import com.cursorforandroid.domain.ProjectDiagnostics
-import com.cursorforandroid.domain.AgentStoreRef
 import com.cursorforandroid.domain.ContextEntry
 import com.cursorforandroid.domain.DesktopPage
+import com.cursorforandroid.domain.DiagnosticsInbox
 import com.cursorforandroid.domain.InteractionResolution
 import com.cursorforandroid.domain.PendingFollowup
+import com.cursorforandroid.domain.PendingWork
 import com.cursorforandroid.domain.ProjectAppearance
+import com.cursorforandroid.domain.ProjectDiagnostics
+import com.cursorforandroid.domain.RefreshStats
+import com.cursorforandroid.domain.SendDiagnostics
 import com.cursorforandroid.domain.SlashCatalog
 import com.cursorforandroid.domain.SlashCommand
 import com.cursorforandroid.domain.SteerOutcome
 import com.cursorforandroid.domain.ToolPayload
 import com.cursorforandroid.domain.TranscriptDiagnostics
+import com.cursorforandroid.domain.TranscriptPresenters
 import com.cursorforandroid.domain.WorkerMembership
 import com.cursorforandroid.domain.WorkerSpawnKind
 import com.cursorforandroid.domain.WorkspaceTree
-import com.cursorforandroid.share.ShareInbox
-import com.cursorforandroid.data.update.GitHubReleasesClient
-import com.cursorforandroid.data.update.UpdateCache
-import com.cursorforandroid.data.update.UpdateManager
 import com.cursorforandroid.notifications.LiveNotifications
+import com.cursorforandroid.share.ShareInbox
+import com.cursorforandroid.ui.components.ComposerMediaPreviews
 import com.cursorforandroid.ui.conversation.AttachmentImages
+import com.cursorforandroid.ui.conversation.OutgoingSends
+import com.cursorforandroid.ui.settings.DIAGNOSTICS_DIR
 import com.cursorforandroid.update.AndroidUpdatePlatform
 import com.cursorforandroid.update.allocatableBytes
-import kotlinx.coroutines.Dispatchers
 import com.cursorforandroid.util.AppClock
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Hand-rolled dependency graph. Small enough that a DI framework would only add build time.
@@ -154,6 +185,27 @@ class AppGraph(
      * end — the sign-in screen, the first-run flow behind it — against a scripted `/v1/me` rather than the real host.
      */
     real: CursorBackend? = null,
+    /**
+     * Injectable for tests only: the installed version's release notes as a test has them — any version, notes
+     * already on disk — so the What's new surfaces can be driven without GitHub.
+     */
+    private val releaseNotes: WhatsNewRepository? = null,
+    /**
+     * The version this build reports - in Settings, the User-Agent, the diagnostics and to the What's new lookup.
+     * Injectable for tests only: the screenshot tests render a fixed version, so cutting a release re-records nothing.
+     */
+    val appVersion: String = BuildConfig.VERSION_NAME,
+    /**
+     * Injectable for tests only: the account's follow-up queue and prompt-upload services, so a send that carries
+     * files can be driven end to end — the composer, the bubble, the retry — against a scripted account (latency,
+     * refusals, rate limits, slow uploads) with none of api2's real network.
+     */
+    followupQueue: FollowupQueueApi? = null,
+    promptUploadApi: PromptUploadApi? = null,
+    /** Injectable for tests only: the account's start, so a chat started on one of the user's machines can be driven from the composer against a scripted account. */
+    agentStartApi: AgentStartApi? = null,
+    /** Injectable for tests only: the account's branch lists, for the composer's branch picker against a scripted account. */
+    repositoryBranchesApi: RepositoryBranchesApi? = null,
 ) {
     private val app = context.applicationContext
 
@@ -179,9 +231,46 @@ class AppGraph(
     private val lazyAttachments = lazy { AttachmentStore(app) }
     val attachments: AttachmentStore get() = lazyAttachments.value
 
-    /** The New Chat composer's unsent draft, so a process death does not lose what was typed. */
+    /** The New Chat composer's unsent drafts on disk, so a process death does not lose what was typed. */
     private val lazyDrafts = lazy { DraftStore(app) }
     val drafts: DraftStore get() = lazyDrafts.value
+
+    /** The directories unsent drafts are kept in, as a sign-out parks them (see [DraftFiles.park]). */
+    private val draftRoots = listOf(
+        DraftFiles.Root(FollowUpStore.ROOT, entryWise = true),
+        DraftFiles.Root(DraftStore.ROOT, entryWise = true),
+        // 0.3.61's single New Chat draft, until a listing has brought it in.
+        DraftFiles.Root(DraftStore.LEGACY_ROOT, entryWise = false),
+    )
+
+    /**
+     * Who the drafts on disk belong to, as a sign-out parks them: the account signed in, else the one last cached; an
+     * account nothing can name (a session restored offline with nothing cached) is [DraftFiles.UNATTRIBUTED]. Null for
+     * the demo, whose drafts are nobody's.
+     */
+    private suspend fun draftOwner(): String? {
+        val signedIn = session.state.value as? SessionState.SignedIn
+        if (signedIn?.isDemo == true || session.isDemo) return null
+        return DraftFiles.ownerKey(signedIn?.user) ?: DraftFiles.ownerKey(prefs.cachedUser.first()) ?: DraftFiles.UNATTRIBUTED
+    }
+
+    /**
+     * The account signing in gets back what it left unsent on this device, and so do drafts no account could be
+     * named for, which can only have been typed by whoever holds this device.
+     */
+    private suspend fun handBackDrafts() {
+        val owner = DraftFiles.ownerKey(prefs.cachedUser.first())
+        withContext(Dispatchers.IO) {
+            if (owner != null) DraftFiles.unpark(app.filesDir, owner, draftRoots)
+            DraftFiles.unpark(app.filesDir, DraftFiles.UNATTRIBUTED, draftRoots)
+        }
+    }
+
+    /** The app has left the screen: every draft still waiting for its debounce is written now. */
+    fun flushDrafts() {
+        if (lazyFollowUps.isInitialized()) followUps.flushAll()
+        if (lazyNewChatDrafts.isInitialized()) newChatDrafts.flush()
+    }
 
     /** The account's API: one client, with the SSE stream sharing its dispatcher and connection pool. */
     private val realParts = lazy {
@@ -237,14 +326,30 @@ class AppGraph(
     private val lazyProjectApi = lazy { ProjectApi(lazyAccountRpc.value, lazySessionTokens.value) }
     /** The agent's live VM: its workspace files and its branch diff (the panel's Files › Workspace and Changes). */
     private val lazyAgentFiles = lazy { AgentFilesApi(lazyAccountRpc.value, lazySessionTokens.value) }
+    /** The machine's cursor-server, for a picture a tool call read outside the workspace (see [CursorServerApi]). */
+    private val lazyCursorServer = lazy { CursorServerApi(lazyAccountRpc.value, lazySessionTokens.value, CursorApiFactory.cursorServerClient()) }
     /** The account's view of a pull request on any host it connects, and opening one from here. */
     private val lazyPullRequestApi = lazy { PullRequestApi(lazyAccountRpc.value, lazySessionTokens.value) }
     /** Where the agent's machine is, for its desktop. */
     private val lazyMachineApi = lazy { MachineApi(lazyAccountRpc.value, lazySessionTokens.value) }
     /** A chat's controls on the account: answering its question, its queue, steering and holding its run. */
-    private val lazySteeringApi = lazy { SteeringApi(lazyAccountRpc.value, lazySessionTokens.value) }
-    /** The account's own transcript of a chat, for the turns whose documented log has expired (`FetchBackgroundComposer`). */
-    private val lazyHeadlessTranscript = lazy { HeadlessConversationApi(lazyAccountRpc.value, lazySessionTokens.value) }
+    /** The account records' blobs, shared by the transcript's record reader and the goal strip's state read (see BlobCache). */
+    private val lazyBlobCache = lazy { BlobCache(BlobCache.MEMORY_BLOBS_WITH_DISK, BlobCache.MEMORY_BYTES_WITH_DISK, disk = caches.blobs) }
+    private val lazySteeringApi = lazy { SteeringApi(lazyAccountRpc.value, lazySessionTokens.value, blobs = lazyBlobCache.value) }
+    /**
+     * The account's own transcript of a chat (`FetchBackgroundComposer`), on the account client with the transcript's
+     * call timeout: a page of a coordinator's record is hundreds of kilobytes to megabytes of payloads, and the
+     * account client's forty-five seconds — right for its small RPCs — cut such a page off on a slow connection,
+     * which read as the record refusing and left the chat to the documented endpoints. The throttle is shared, so
+     * the pause a refusal asks for holds here too.
+     */
+    private val lazyHeadlessTranscript = lazy {
+        val client = lazyAccountClient.value.newBuilder().callTimeout(RECORD_CALL_TIMEOUT_MINUTES, java.util.concurrent.TimeUnit.MINUTES).build()
+        // The blob-backed record is read a few blobs at a time (see HeadlessConversationApi.BLOB_PARALLELISM); the
+        // dispatcher's five-per-host would queue them behind each other.
+        client.dispatcher.maxRequestsPerHost = maxOf(client.dispatcher.maxRequestsPerHost, HeadlessConversationApi.BLOB_PARALLELISM + 2)
+        HeadlessConversationApi(ConnectJsonClient(client, CursorLoginEndpoints.API_URL, throttle = lazyAccountRpc.value.throttle), lazySessionTokens.value, blobs = lazyBlobCache.value)
+    }
 
     /**
      * GitHub's REST API, anonymous: what stands in for the account service while Extended mode is off, for the
@@ -283,6 +388,18 @@ class AppGraph(
     private val lazyWorkspace = lazy { WorkspaceRepository(files = agentFiles, diffs = agentFiles, capabilities = capabilities, isDemo = { session.isDemo }) }
     val workspace: WorkspaceRepository get() = lazyWorkspace.value
 
+    /** A file by the path the agent names it with: its workspace (Extended), else its repository at its branch. */
+    private val lazyAgentFileReads = lazy {
+        AgentFileRepository(
+            workspace = workspace,
+            repository = { repoUrl, ref, path -> reviews.contents(repoUrl, ref, path) },
+            agent = { id -> agents.agent(id) },
+            wakeMachine = { id -> steering.wake(id).getOrDefault(false) },
+            cursorServer = lazyCursorServer.value,
+        )
+    }
+    val agentFileReads: AgentFileRepository get() = lazyAgentFileReads.value
+
     /**
      * The panel's Remote section: a Remote Control chat's machine from the documented fleet endpoint in either mode,
      * and the agent's VM desktop behind the `remoteDesktop` capability.
@@ -294,7 +411,7 @@ class AppGraph(
             probe = DesktopProbe(client = { lazyAccountClient.value }, origin = DesktopPage.ORIGIN),
             capabilities = capabilities,
             isDemo = { session.isDemo },
-            appVersion = BuildConfig.VERSION_NAME,
+            appVersion = appVersion,
         )
     }
     val remote: RemoteRepository get() = lazyRemote.value
@@ -317,6 +434,7 @@ class AppGraph(
         override suspend fun children(parentId: String): List<ComposerSnapshot> = lazyProjectApi.value.children(parentId)
         override suspend fun record(id: String): ComposerSnapshot? = lazyAccountAgents.value.record(id)
         override suspend fun scanRoots(maxPages: Int): RootScan = lazyAccountAgents.value.scanRoots(maxPages)
+        override suspend fun scanRoots(maxPages: Int, stopBelowActivityMillis: Long?): RootScan = lazyAccountAgents.value.scanRoots(maxPages, stopBelowActivityMillis)
         override suspend fun createWorker(managerId: String, launch: WorkerLaunch): ComposerSnapshot = lazyProjectApi.value.createWorker(managerId, launch)
         override suspend fun setWorkerManager(workerId: String, managerId: String, spawnKind: WorkerSpawnKind) = lazyProjectApi.value.setWorkerManager(workerId, managerId, spawnKind)
         override suspend fun clearWorkerManager(workerId: String) = lazyProjectApi.value.clearWorkerManager(workerId)
@@ -331,6 +449,7 @@ class AppGraph(
         override suspend fun entries(storeId: String, relativePath: String): List<ContextEntry> = lazyProjectApi.value.entries(storeId, relativePath)
         override suspend fun readFile(storeId: String, relativePath: String): String = lazyProjectApi.value.readFile(storeId, relativePath)
         override suspend fun presignRead(target: StoreReadTarget, relativePath: String): PresignedStoreRead? = lazyProjectApi.value.presignRead(target, relativePath)
+        override suspend fun presignWrite(storeId: String, relativePath: String, sizeBytes: Long, sha256Hex: String): PresignedStoreWrite? = lazyProjectApi.value.presignWrite(storeId, relativePath, sizeBytes, sha256Hex)
     }
     private val agentFiles = object : WorkspaceFilesApi, DiffDetailsApi {
         override suspend fun listFiles(agentId: String): WorkspaceTree = lazyAgentFiles.value.listFiles(agentId)
@@ -387,7 +506,7 @@ class AppGraph(
      * A prompt's files of any type, staged the way the desktop stages them (`PresignPromptUpload`, the parts `PUT`,
      * `CompletePromptUpload`) and referenced from the account's follow-up or start (Extended mode, `promptFiles`).
      */
-    private val lazyPromptUploadApi = lazy { ConnectPromptUploadApi(lazyAccountRpc.value, lazySessionTokens.value) }
+    private val lazyPromptUploadApi = lazy { promptUploadApi ?: ConnectPromptUploadApi(lazyAccountRpc.value, lazySessionTokens.value) }
     private val lazyPromptUploads = lazy { PromptUploader(lazyPromptUploadApi.value, lazyAccountClient.value) }
     val promptUploads: PromptUploader get() = lazyPromptUploads.value
 
@@ -396,9 +515,29 @@ class AppGraph(
     val attachmentUploads: AttachmentUploads get() = lazyAttachmentUploads.value
 
     /** A new chat started on the account service, for the first prompt that carries files (see [ConnectAgentStartApi]). */
-    private val lazyAgentStart = lazy {
-        ConnectAgentStartApi(lazyAccountRpc.value, lazySessionTokens.value, noRepoEnvironment = { lazyProjectCreation.value.noRepoEnvironmentPublicId() })
+    private val lazyAgentStart: Lazy<AgentStartApi> = lazy {
+        agentStartApi ?: ConnectAgentStartApi(lazyAccountRpc.value, lazySessionTokens.value, noRepoEnvironment = { lazyProjectCreation.value.noRepoEnvironmentPublicId() })
     }
+
+    private val lazyRepositoryBranches: Lazy<RepositoryBranchesApi> = lazy { repositoryBranchesApi ?: ConnectRepositoryBranchesApi(lazyAccountRpc.value, lazySessionTokens.value) }
+
+    /**
+     * [repoUrl]'s branches as the account lists them (`GetRepositoryBranches`, Extended mode) for the composer's branch
+     * picker; nothing in the default mode, the demo, or when the account cannot say.
+     */
+    suspend fun accountBranches(repoUrl: String): List<AccountBranch> {
+        if (session.isDemo || !capabilities().accountSession) return emptyList()
+        return runCatching { lazyRepositoryBranches.value.branches(repoUrl) }.getOrDefault(emptyList())
+    }
+
+    /** What the last refresh cost, stage by stage, across the list, the account round, the Projects and the badges (see [RefreshStats]). */
+    val refreshStats = RefreshStats()
+
+    /**
+     * The list's work in flight — its pages, its passes by id, the account's list read — shared by the list and the
+     * account layer (see [PendingWork]): what the sidebar's one loading row stands for, and what the diagnostics name.
+     */
+    val pendingWork = PendingWork()
 
     private val lazyAgents = lazy {
         AgentRepository(
@@ -410,6 +549,8 @@ class AppGraph(
             demoComposers = DemoData.composers,
             account = accountAgents,
             capabilities = capabilities,
+            stats = refreshStats,
+            pending = pendingWork,
             // A pinned chat the public API will not give (Extended mode): stood in from its account record.
             recordOf = { id -> if (!session.isDemo && capabilities().accountSession) lazyAccountAgents.value.record(id) else null },
             start = { lazyAgentStart.value },
@@ -425,6 +566,8 @@ class AppGraph(
             // so building the list does not build the pins; the read itself asks the capabilities, and with
             // Extended mode off it returns at once.
             repo.accountPrime = { pins.primeForFetch() }
+            // The account's list paged alongside the public one, once per page the reader asks for (see loadMore).
+            repo.accountPage = { pins.loadMore() }
         }
     }
     val agents: AgentRepository get() = lazyAgents.value
@@ -439,6 +582,7 @@ class AppGraph(
             demo = DemoPullRequests,
             isDemo = { session.isDemo },
             cache = caches.pullRequests,
+            stats = refreshStats,
         )
     }
     val pullRequests: PullRequestRepository get() = lazyPullRequests.value
@@ -458,11 +602,14 @@ class AppGraph(
                 pullRequests.seed(list.pullRequests)
                 // Each Project's memberships follow the list read, the way the Agents Window polls them; off the
                 // round, so the pins do not wait on a Project with many workers.
-                // The root registry is filled from the whole account list (a few times an hour), the memberships
-                // read after; the Projects group is drawn from the registry, not from the pages the sidebar holds.
-                projects.scheduleRootDiscovery(list.composers.filter { it.scope == AgentScope.PROJECT_ROOT }.map { it.id })
+                // The root registry is filled from the account list — to the page older than every Project it
+                // knows, or the whole list on a deep refresh and a few times an hour — the memberships read after;
+                // the Projects group is drawn from the registry, not from the pages the sidebar holds.
+                projects.scheduleRootDiscovery(list.composers.filter { it.scope == AgentScope.PROJECT_ROOT }.map { it.id }, deep = agents.lastRefreshDepth == RefreshDepth.Deep)
             },
             capabilities = capabilities,
+            stats = refreshStats,
+            pending = pendingWork,
         )
     }
     val pins: PinRepository get() = lazyPins.value
@@ -472,22 +619,24 @@ class AppGraph(
      * out of the chat list — from the account in Extended mode, from the public record of a parent the list names but
      * lacks in either — and, in Extended mode, what a Project's view shows and does.
      */
-    private val lazyProjects = lazy { ProjectRepository(session, agents, projectAccount, actions = projectAccount, store = projectAccount, capabilities = capabilities, demoStore = DemoStores) }
+    private val lazyProjects = lazy { ProjectRepository(session, agents, projectAccount, actions = projectAccount, store = projectAccount, capabilities = capabilities, stats = refreshStats, demoStore = DemoStores) }
     val projects: ProjectRepository get() = lazyProjects.value
-
-    /**
-     * The panel's Context tabs: the Project's Agent Store (its notes, its files) and the user's own, read through the
-     * same account endpoints as the Project section, behind the `projects` capability; the demo's stores stand in.
-     */
-    private val lazyStores = lazy { AgentStoreRepository(api = projectAccount, capabilities = capabilities, isDemo = { session.isDemo }, demo = DemoStores) }
-    val stores: AgentStoreRepository get() = lazyStores.value
 
     /** Creating a Project and editing its name and look, from the sidebar, the panel and the Project's own view (Extended mode). */
     private val lazyProjectCreation = lazy { ConnectProjectCreationApi(lazyAccountRpc.value, lazySessionTokens.value) }
     private val lazyProjectEditor = lazy { ProjectEditor(session, agents, projects, creation = { lazyProjectCreation.value }, capabilities = capabilities) }
     val projectEditor: ProjectEditor get() = lazyProjectEditor.value
 
-    private val lazyCatalog = lazy { CatalogRepository(session, caches.catalog) }
+    /**
+     * The panel's Context tabs: the Project's Agent Store (its notes, its files) and the user's own, read through the
+     * same account endpoints as the Project section, behind the `projects` capability; the demo's stores stand in.
+     */
+    private val lazyAgentStores = lazy { AgentStoreRepository(api = projectAccount, capabilities = capabilities, isDemo = { session.isDemo }, demo = DemoStores) }
+    val agentStores: AgentStoreRepository get() = lazyAgentStores.value
+
+    private val lazyCatalog = lazy {
+        CatalogRepository(session, caches.catalog, throttlePausedUntil = { if (lazyAccountRpc.isInitialized()) lazyAccountRpc.value.throttle.pausedUntil() else null })
+    }
     val catalog: CatalogRepository get() = lazyCatalog.value
 
     /**
@@ -509,6 +658,10 @@ class AppGraph(
     }
     val liveRuns: LiveRunHub get() = lazyLiveRuns.value
 
+    /** Where each cloud subagent a transcript's rows stand for is, live, off the list and the hub's shared streams. */
+    private val lazySubagentActivity = lazy { SubagentActivity(agents, liveRuns, catalog.models) }
+    val subagentActivity: SubagentActivity get() = lazySubagentActivity.value
+
     private val lazyConversations = lazy {
         ConversationRepository(
             session = session,
@@ -525,18 +678,46 @@ class AppGraph(
             images = GeneratedImageStore { agentId, callId, bytes, mimeType -> generatedMedia.save(agentId, callId, bytes, mimeType) },
             // A Remote Control chat's machine says which chat it is busy with (`GET /v0/private-workers`, `activeBcId`).
             machineBusy = { agent -> remote.machineStatus(agent)?.getOrNull()?.let { it.activeAgentId == agent.id } },
+            composerStatus = { id -> lazyAccountAgents.value.status(id) },
         )
     }
 
     private val accountTranscript = object : ConversationRecordApi {
         override suspend fun fetch(agentId: String, startIndex: Int, limit: Int): HeadlessPage = lazyHeadlessTranscript.value.fetch(agentId, startIndex, limit)
         override suspend fun state(agentId: String): RecordState = lazyHeadlessTranscript.value.state(agentId)
+        override suspend fun turns(agentId: String, from: Int, limit: Int, state: RecordState?): HeadlessTurnPage? = lazyHeadlessTranscript.value.turns(agentId, from, limit, state)
+        override suspend fun readTurns(agentId: String, from: Int, limit: Int, state: RecordState?, plan: TurnPlan, held: Map<Int, String>, patient: Boolean): HeadlessTurnPage? = lazyHeadlessTranscript.value.readTurns(agentId, from, limit, state, plan, held, patient)
+        override fun blobCounts(agentId: String) = if (lazyHeadlessTranscript.isInitialized()) lazyHeadlessTranscript.value.blobCounts(agentId) else null
+        override suspend fun watch(agentId: String, since: LivePoint?, resume: Boolean): LiveWatch = lazyHeadlessTranscript.value.watch(agentId, since, resume)
+        override suspend fun heldTurns(agentId: String, turns: Map<Int, String>): List<HeadlessTurn> = lazyHeadlessTranscript.value.heldTurns(agentId, turns)
+        override val readsTurns: Boolean get() = true
     }
     val conversations: ConversationRepository get() = lazyConversations.value
 
     /** Sees new chats' launches through once the composer has handed them over, so no screen has to stay for the answer. */
     private val lazyLauncher = lazy { ChatLauncher(conversations) }
     val launcher: ChatLauncher get() = lazyLauncher.value
+
+    /** The new chats written and not sent: the sidebar's drafts, and the one the New Chat composer has open. */
+    private val lazyNewChatDrafts = lazy { NewChatDrafts(drafts, agents, launcher) }
+    val newChatDrafts: NewChatDrafts get() = lazyNewChatDrafts.value
+
+    /**
+     * The messages on their way out of each chat's composer, in a scope no screen owns: a send tapped just before the
+     * chat was left finishes all the same, and its bubble keeps its status for the next visit (see [OutgoingSends]).
+     */
+    private val lazyOutgoing = lazy {
+        OutgoingSends(
+            conversations = conversations,
+            uploads = attachmentUploads,
+            steering = steering,
+            followUps = followUps,
+            mcpServers = { mcpServers.enabled() },
+            capabilities = capabilities,
+            isDemo = { session.isDemo },
+        )
+    }
+    val outgoing: OutgoingSends get() = lazyOutgoing.value
 
     /**
      * Each chat's unsent follow-ups: the composer's draft, and the queue of messages sent while the agent was still on
@@ -560,6 +741,7 @@ class AppGraph(
                     files = uploaded,
                     mode = AgentMode.ofPlanMode(item.planMode),
                     modelId = item.modelId,
+                    modelParams = item.modelParams,
                 )
                 steering.sendFollowup(agentId, followup).getOrThrow()
             },
@@ -572,8 +754,9 @@ class AppGraph(
                     files = emptyList(),
                     mode = AgentMode.ofPlanMode(item.planMode),
                     modelId = item.modelId,
+                    modelParams = item.modelParams,
                 )
-                steering.sendFollowup(agentId, followup).getOrThrow()
+                FollowUpRepository.AccountHandoff(steering.sendFollowup(agentId, followup).getOrThrow(), followup.followupId)
             },
             accountQueueAvailable = { capabilities().accountQueue && !session.isDemo },
             store = followUpStore,
@@ -581,6 +764,9 @@ class AppGraph(
         )
     }
     val followUps: FollowUpRepository get() = lazyFollowUps.value
+
+    /** The presented rows of the chats a reader flips between, kept across their screens (see [TranscriptPresenters]). */
+    val presenters = TranscriptPresenters()
 
     /**
      * A chat's controls on the account (Extended mode): the question it is waiting on, the account's queue in place
@@ -591,10 +777,15 @@ class AppGraph(
             session = session,
             agents = agents,
             interactions = steeringAccount,
-            queueApi = steeringAccount,
+            queueApi = followupQueue ?: steeringAccount,
             runs = steeringAccount,
             goals = accountGoals,
             afterAction = { agentId -> conversations.revalidate(agentId) },
+            // Every queue read goes to the transcript, and a message the transcript files under its run has the queue read again (see QueuePlacement).
+            onQueueRead = { agentId, pending, readAt -> conversations.noteAccountQueue(agentId, pending, readAt) },
+            onQueuedDeleted = { agentId, followupId -> conversations.queuedDeleted(agentId, followupId) },
+            onQueuedEdited = { agentId, followupId, text -> conversations.queuedEdited(agentId, followupId, text) },
+            placement = { agentId -> conversations.queuePlacement(agentId) },
             capabilities = capabilities,
         )
     }
@@ -617,7 +808,7 @@ class AppGraph(
     }
     val storeFiles: StoreFileRepository get() = lazyStoreFiles.value
 
-    private val lazyMedia = lazy { MediaLoader(app, lazyMediaClient.value, artifacts) { storeFiles } }
+    private val lazyMedia = lazy { MediaLoader(app, lazyMediaClient.value, artifacts, stores = { storeFiles }, files = { agentFileReads }) }
     val media: MediaLoader get() = lazyMedia.value
 
     private val lazyRunMonitor = lazy {
@@ -631,20 +822,28 @@ class AppGraph(
     val runMonitor: RunMonitor get() = lazyRunMonitor.value
 
     /**
+     * The GitHub releases of [BuildConfig.GITHUB_REPO], read anonymously: one client for the updater and the What's
+     * new notes, so the rate limit GitHub answers one of them with is remembered for both.
+     */
+    private val lazyReleases = lazy {
+        GitHubReleasesClient(
+            CursorApiFactory.updateClient(),
+            BuildConfig.GITHUB_REPO,
+            apiBaseUrl = BuildConfig.UPDATE_API_BASE_URL,
+            freeSpace = { allocatableBytes(app, it) },
+        )
+    }
+
+    /**
      * In-app updates from the GitHub releases of [BuildConfig.GITHUB_REPO]. Device-level, not account-level: its
      * cache and downloads sit next to (not inside) [caches], so signing out leaves them alone.
      */
     private val lazyUpdates = lazy {
         UpdateManager(
-            client = GitHubReleasesClient(
-                CursorApiFactory.updateClient(),
-                BuildConfig.GITHUB_REPO,
-                apiBaseUrl = BuildConfig.UPDATE_API_BASE_URL,
-                freeSpace = { allocatableBytes(app, it) },
-            ),
+            client = lazyReleases.value,
             prefs = prefs,
             cache = UpdateCache(JsonDiskCache(File(app.cacheDir, "update-check"))),
-            platform = AndroidUpdatePlatform(app),
+            platform = AndroidUpdatePlatform(app, installedVersionName = appVersion),
             downloadDir = File(app.cacheDir, "updates"),
             // The background service streaming a run is the one thing a silent self-update would cut off; a monitor
             // this process never built is holding no stream, and asking is not worth building one.
@@ -653,11 +852,53 @@ class AppGraph(
     }
     val updates: UpdateManager get() = lazyUpdates.value
 
+    /**
+     * The installed version's release notes — the What's new page, its row in Settings and its card in the sidebar.
+     * Device-level like the updater, with a cache of its own beside the updater's; signing out leaves it alone.
+     */
+    private val lazyWhatsNew = lazy {
+        releaseNotes ?: WhatsNewRepository(
+            client = lazyReleases.value,
+            prefs = prefs,
+            cache = JsonDiskCache(File(app.cacheDir, "whats-new")),
+            installedVersionName = appVersion,
+        )
+    }
+    val whatsNew: WhatsNewRepository get() = lazyWhatsNew.value
+
+    private val swept = AtomicBoolean(false)
+
+    /**
+     * Deletes what an earlier process left in the cache directory and nothing will ever read again: media copies past
+     * their budget, composer previews and staged prompts of sends that never finished, old diagnostics exports. Once
+     * per process; each sweep stands alone, so one directory that cannot be listed leaves the others to theirs.
+     */
+    suspend fun sweepLeftovers() {
+        if (!swept.compareAndSet(false, true)) return
+        withContext(Dispatchers.IO) {
+            val now = System.currentTimeMillis()
+            runCatching { MediaLoader.sweepCopies(app.cacheDir, now) }
+            runCatching { ComposerMediaPreviews.sweep(File(app.cacheDir, ComposerMediaPreviews.DIR), now) }
+            runCatching { attachments.sweepStaging(now) }
+            runCatching { DiskSweep.deleteOlderThan(File(app.cacheDir, DIAGNOSTICS_DIR), now - TimeUnit.DAYS.toMillis(1)) }
+        }
+    }
+
     init {
-        // A sign-in through the sign-in screen owes the first-run choice; a restored session never does.
-        session.onSignedIn = { onboarding.signedIn() }
-        // Whether the user signs out or the key is rejected, nothing of the account stays on disk.
+        session.onSignedIn = {
+            // A sign-in through the sign-in screen owes the first-run choice; a restored session never does.
+            onboarding.signedIn()
+            // What this account left unsent here when it last signed out is its own again, before any screen reads it.
+            handBackDrafts()
+        }
+        // Whether the user signs out or the key is rejected, nothing of the account stays readable: what it had
+        // cached is wiped, and what it had typed and not sent is parked where only the same account's sign-in finds it.
         session.onSignedOut = {
+            // Read before anything is reset: the account the drafts belong to — and what it typed a moment ago,
+            // written before the saves are stopped.
+            val owner = draftOwner()
+            if (owner != null && lazyFollowUps.isInitialized()) followUps.saveAll()
+            if (owner != null && lazyNewChatDrafts.isInitialized()) newChatDrafts.saveOpen()
             // The choice the account owed goes with it (its stored flag is among the session keys cleared below).
             onboarding.signedOut()
             // Cancelling a write does not stop it: the caches are closed first so nothing this account still has in
@@ -672,6 +913,10 @@ class AppGraph(
             if (lazyLiveRuns.isInitialized()) liveRuns.resetAll()
             if (lazyConversations.isInitialized()) conversations.resetAll()
             if (lazyFollowUps.isInitialized()) followUps.resetAll()
+            if (lazyNewChatDrafts.isInitialized()) newChatDrafts.reset()
+            // Sends and uploads on their way out for this account stop here, before the composer's stores are wiped.
+            if (lazyOutgoing.isInitialized()) outgoing.resetAll()
+            if (lazyAttachmentUploads.isInitialized()) attachmentUploads.resetAll()
             if (lazyPins.isInitialized()) pins.reset()
             if (lazyProjects.isInitialized()) projects.reset()
             if (lazySteering.isInitialized()) steering.reset()
@@ -685,15 +930,20 @@ class AppGraph(
             if (lazyPullRequests.isInitialized()) pullRequests.reset()
             if (lazyReviews.isInitialized()) reviews.reset()
             if (lazyWorkspace.isInitialized()) workspace.reset()
-            if (lazyStores.isInitialized()) stores.reset()
+            if (lazyAgentStores.isInitialized()) agentStores.reset()
             if (lazyRemote.isInitialized()) remote.reset()
             if (lazyArtifacts.isInitialized()) artifacts.resetAll()
             if (lazyStoreFiles.isInitialized()) storeFiles.resetAll()
             media.clearCaches()
             attachments.clear()
             generatedMedia.clear()
-            drafts.clear()
-            followUpStore.clear()
+            if (owner == null) {
+                // The demo's drafts are the demo's: nothing real was typed against an account.
+                drafts.clear()
+                followUpStore.clear()
+            } else {
+                drafts.whileStopped { withContext(Dispatchers.IO) { DraftFiles.park(app.filesDir, owner, draftRoots) } }
+            }
             caches.clear()
         }
 
@@ -710,12 +960,14 @@ class AppGraph(
             if (lazyAccountPullRequests.isInitialized()) lazyAccountPullRequests.value.reset()
             if (lazyPullRequests.isInitialized()) pullRequests.reset()
             caches.pullRequests.removeAll()
+            // The account records' blobs are the account's too.
+            caches.blobs.clear()
             if (lazySlashCommands.isInitialized()) slashCommands.reset()
             caches.slashCommands.removeAll()
             // The panel's account reads — a pull request the SCM service answered, a workspace listing, a diff — go too.
             if (lazyReviews.isInitialized()) reviews.reset()
             if (lazyWorkspace.isInitialized()) workspace.reset()
-            if (lazyStores.isInitialized()) stores.reset()
+            if (lazyAgentStores.isInitialized()) agentStores.reset()
             if (lazyRemote.isInitialized()) remote.reset()
             if (lazyAgents.isInitialized()) agents.forgetAccountSources(prefs.localAgentState.first().launchedHereIds)
             session.forgetAccountProfile()
@@ -744,6 +996,7 @@ class AppGraph(
         get() = mapOf(
             "attachments" to lazyAttachments,
             "drafts" to lazyDrafts,
+            "newChatDrafts" to lazyNewChatDrafts,
             "realBackend" to realParts,
             "demoBackend" to demoParts,
             "accountClient" to lazyAccountClient,
@@ -761,7 +1014,7 @@ class AppGraph(
             "pullRequestApi" to lazyPullRequestApi,
             "machineApi" to lazyMachineApi,
             "workspace" to lazyWorkspace,
-            "stores" to lazyStores,
+            "agentStores" to lazyAgentStores,
             "remote" to lazyRemote,
             "agents" to lazyAgents,
             "pullRequests" to lazyPullRequests,
@@ -774,14 +1027,19 @@ class AppGraph(
             "slashCommands" to lazySlashCommands,
             "generatedMedia" to lazyGeneratedMedia,
             "liveRuns" to lazyLiveRuns,
+            "subagentActivity" to lazySubagentActivity,
             "conversations" to lazyConversations,
             "launcher" to lazyLauncher,
+            "outgoing" to lazyOutgoing,
+            "attachmentUploads" to lazyAttachmentUploads,
             "followUps" to lazyFollowUps,
             "artifacts" to lazyArtifacts,
             "storeFiles" to lazyStoreFiles,
             "media" to lazyMedia,
             "runMonitor" to lazyRunMonitor,
+            "releases" to lazyReleases,
             "updates" to lazyUpdates,
+            "whatsNew" to lazyWhatsNew,
         )
 
     /** Which of [deferredParts] this process has actually built. */
@@ -798,7 +1056,7 @@ class AppGraph(
         val syncs = if (lazyProjects.isInitialized()) projects.syncRecords() else emptyMap()
         return ProjectDiagnostics.render(
             ProjectDiagnostics.Input(
-                appVersion = BuildConfig.VERSION_NAME,
+                appVersion = appVersion,
                 nowIso = java.time.Instant.ofEpochMilli(AppClock.now()).toString(),
                 extendedMode = extendedMode.enabled.first(),
                 projectsCapability = allowed.projects,
@@ -826,6 +1084,17 @@ class AppGraph(
                 rootFailures = agents.rootFailures(),
                 notificationPrefs = prefs.projectNotifications.first(),
                 managerCandidates = list.agents.mapNotNullTo(LinkedHashSet()) { row -> row.parent?.takeIf { it.kind == com.cursorforandroid.domain.AgentParentKind.PROJECT_WORKER }?.id },
+                refresh = refreshStats.snapshot.value,
+                loading = ProjectDiagnostics.LoadingSummary(
+                    shown = pendingWork.state.value.shown,
+                    work = pendingWork.describe(),
+                    isRefreshing = list.isRefreshing,
+                    isLoadingMore = list.isLoadingMore,
+                    hasMore = list.hasMore,
+                    loadMoreError = list.loadMoreError,
+                    pagesLoaded = agents.pagesLoadedCount(),
+                    hasNextCursor = agents.hasNextCursor(),
+                ),
             ),
         )
     }
@@ -840,9 +1109,10 @@ class AppGraph(
         val state = agentId?.let { conversations.state(it).value }
         return TranscriptDiagnostics.render(
             TranscriptDiagnostics.Input(
-                appVersion = BuildConfig.VERSION_NAME,
+                appVersion = appVersion,
                 nowIso = java.time.Instant.ofEpochMilli(AppClock.now()).toString(),
                 extendedMode = extendedMode.enabled.first(),
+                engine = extendedMode.engine(),
                 agentId = agentId,
                 agent = agentId?.let { agents.agent(it) },
                 state = state?.let {
@@ -860,11 +1130,44 @@ class AppGraph(
                 },
                 placement = agentId?.let { agents.placementOf(it) },
                 load = agentId?.let { conversations.loadDiagnostics(it) },
+                fileReads = agentId?.takeIf { lazyAgentFileReads.isInitialized() }?.let { id -> agentFileReads.attempts(id).map { it.text } }.orEmpty(),
                 perf = agentId?.let { com.cursorforandroid.domain.TranscriptPerf.sessionOrNull(it)?.snapshot() },
-                send = agentId?.let { if (lazyFollowUps.isInitialized()) followUps.sendDiagnostics(it) else null },
+                send = agentId?.let { sendDiagnostics(it) },
             ),
         )
     }
 
+    /**
+     * The `send:` block's input for one chat: the follow-up path's account of it (the send-or-queue decision, the
+     * queue, the attempts) with the launch that started the chat from here, when this process did — so a chat whose
+     * launch failed, or never reached the API, has a block even though nothing was ever queued for it.
+     */
+    private fun sendDiagnostics(agentId: String): SendDiagnostics? {
+        val sends = if (lazyFollowUps.isInitialized()) followUps.sendDiagnostics(agentId) else null
+        val launch = if (lazyAgents.isInitialized()) agents.launchDiagnostics(agentId) else null
+        return when {
+            sends != null -> sends.copy(launch = launch)
+            launch != null -> SendDiagnostics(decision = null, decidedAtIso = null, queue = emptyList(), attempts = emptyList(), accepted = emptyList(), launch = launch)
+            else -> null
+        }
+    }
+
+    /**
+     * Both exports above, written as one file into the Cursor for Android Project's context store
+     * (`inbox/diagnostics/<timestamp>.txt`, see [DiagnosticsInbox]) through the account's store writes, so the
+     * Project's workers read them from the store rather than from a paste. Extended mode: the store is found and
+     * written through the same client the Context browser reads with. Returns the path written; throws with the
+     * reason when it could not be — the mode off, no store listed, the account refusing, the storage refusing.
+     */
+    suspend fun sendDiagnosticsToProject(): String {
+        if (session.isDemo) throw java.io.IOException(DiagnosticsInbox.DEMO_HAS_NO_ACCOUNT)
+        val now = AppClock.now()
+        val text = DiagnosticsInbox.compose(appVersion, now, projectDiagnosticsReport(), transcriptDiagnosticsReport())
+        return storeFiles.writeText(DiagnosticsInbox.PROJECT_ID, DiagnosticsInbox.path(now), text)
+    }
+
     suspend fun signOut() = session.signOut()
 }
+
+/** How long one read of the account's record may take, headers to the last byte: the pages are large and the connection may be slow. */
+private const val RECORD_CALL_TIMEOUT_MINUTES = 5L

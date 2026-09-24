@@ -7,6 +7,8 @@ import android.content.Intent
 import android.graphics.BitmapFactory
 import android.util.LruCache
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -14,15 +16,19 @@ import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
@@ -31,6 +37,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -40,11 +47,14 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.core.content.FileProvider
 import com.cursorforandroid.domain.MessageAttachment
 import com.cursorforandroid.domain.PromptFile
 import com.cursorforandroid.domain.PromptFileKind
+import com.cursorforandroid.ui.components.AttachmentCarousel
 import com.cursorforandroid.ui.components.CursorIcons
+import com.cursorforandroid.domain.MediaRef
 import com.cursorforandroid.ui.components.LocalMarkdownMedia
 import com.cursorforandroid.ui.components.cursorSurface
 import com.cursorforandroid.ui.components.icon
@@ -55,30 +65,51 @@ import com.cursorforandroid.ui.media.ThumbnailSlot
 import com.cursorforandroid.ui.media.rememberThumbnailSlot
 import com.cursorforandroid.ui.media.thumbnailSlot
 import com.cursorforandroid.ui.theme.CursorTheme
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
+import com.cursorforandroid.util.TimeFormat
+import com.cursorforandroid.util.ioThenMain
 import java.io.File
 
 /**
- * The images of a prompt, shown inside its bubble: 88dp-tall thumbnails at their own aspect ratio (clamped so a
- * phone screenshot still reads as a tall strip and a panorama cannot swallow the bubble), wrapping onto further
- * lines when they do not fit. Tapping one opens it full screen.
+ * The attachments of a prompt, shown inside its bubble, by what they are — the composer's rule ([ComposerAttachments]):
+ * 88dp-tall thumbnails at their own aspect ratio for the pictures (clamped so a phone screenshot still reads as a
+ * tall strip and a panorama cannot swallow the bubble), a recording as its poster under a play glyph with its
+ * length, and a card per file of any other kind. Up to two of them lay out as they always have — media wrapping
+ * onto further lines, cards one under another; more than two go into one row that scrolls sideways with its ends
+ * fading ([AttachmentCarousel], the composer's row), rather than a block of cards as tall as the bubble. Tapping a
+ * picture or a recording opens it full screen, out of its thumbnail.
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun MessageAttachments(attachments: List<MessageAttachment>, modifier: Modifier = Modifier, alpha: Float = 1f) {
-    val images = attachments.filterNot { it.isFile }
-    val files = attachments.filter { it.isFile }
+    val media = attachments.filter { !it.isFile || it.kind == PromptFileKind.Video }
+    val files = attachments.filter { it.isFile && it.kind != PromptFileKind.Video }
+    if (attachments.size > CAROUSEL_FROM) {
+        // The pictures set the row's height, a card beside them fills it; among files alone a card keeps its own.
+        // The fade dissolves offscreen: the bubble's fill is translucent, so there is no flat colour to paint it in.
+        val withMedia = media.isNotEmpty()
+        AttachmentCarousel(if (withMedia) modifier.height(THUMB_HEIGHT) else modifier, verticalAlignment = Alignment.CenterVertically, spacing = 6.dp) {
+            items(media, key = { it.path }) { attachment -> AttachmentMedia(attachment, alpha = alpha) }
+            items(files, key = { it.path }) { attachment -> AttachmentFileCard(attachment, alpha = alpha, modifier = if (withMedia) Modifier.fillMaxHeight() else Modifier) }
+        }
+        return
+    }
     Column(modifier, verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        if (images.isNotEmpty()) {
+        if (media.isNotEmpty()) {
             FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                images.forEach { attachment -> AttachmentThumbnail(attachment, alpha = alpha) }
+                media.forEach { attachment -> AttachmentMedia(attachment, alpha = alpha) }
             }
         }
-        // Files of any type, one card each — the desktop's `context-pill` for a document, with its size and a real
-        // open: a picture or a recording into the media viewer, anything else to whatever app handles its type.
+        // Files of any type but a picture or a recording, one card each — the desktop's `context-pill` for a document,
+        // with its size and a real open: a picture the API took as a document into the media viewer, anything else to
+        // whatever app handles its type.
         files.forEach { attachment -> AttachmentFileCard(attachment, alpha = alpha) }
     }
+}
+
+/** A picture as its thumbnail, a recording as its poster tile. */
+@Composable
+private fun AttachmentMedia(attachment: MessageAttachment, alpha: Float) {
+    if (attachment.kind == PromptFileKind.Video && attachment.isFile) AttachmentVideoThumbnail(attachment, alpha) else AttachmentThumbnail(attachment, alpha)
 }
 
 /** The `file://` reference the transcript's media list knows the attachment by (see [com.cursorforandroid.ui.media.ConversationMedia]). */
@@ -96,10 +127,14 @@ private fun rememberOpenInViewer(attachment: MessageAttachment, slot: ThumbnailS
         if (viewer == null) {
             false
         } else {
-            val kind = if (attachment.kind == PromptFileKind.Video) MediaEntry.Kind.Video else MediaEntry.Kind.Image
+            val kind = when (attachment.kind) {
+                PromptFileKind.Video -> MediaEntry.Kind.Video
+                PromptFileKind.Audio -> MediaEntry.Kind.Audio
+                else -> MediaEntry.Kind.Image
+            }
             val fallback = MediaEntry(attachment.src, kind, fileName = attachment.name ?: attachment.path.substringAfterLast('/'), mimeType = attachment.mimeType)
             media?.onBeforeOpen?.invoke()
-            viewer.open(media?.agentId, media?.entries?.invoke().orEmpty(), attachment.src, slot, seen = seen(), fallback = fallback, autoplay = kind == MediaEntry.Kind.Video)
+            viewer.open(media?.agentId, media?.entries?.invoke().orEmpty(), attachment.src, slot, seen = seen(), fallback = fallback, autoplay = kind != MediaEntry.Kind.Image)
             true
         }
     }
@@ -119,8 +154,8 @@ internal fun AttachmentFileCard(attachment: MessageAttachment, alpha: Float = 1f
     val name = attachment.name ?: "Document"
     val kind = attachment.kind
     var missing by remember(attachment.path) { mutableStateOf(false) }
-    // A picture or a recording opens in the viewer, out of this card; the viewer says so itself when the copy is gone.
-    val viewable = kind == PromptFileKind.Image || kind == PromptFileKind.Video
+    // A picture, a recording or a sound opens in the viewer, out of this card; the viewer says so itself when the copy is gone.
+    val viewable = kind == PromptFileKind.Image || kind == PromptFileKind.Video || kind == PromptFileKind.Audio
     val slot = rememberThumbnailSlot(attachment.src, shape, crop = true)
     val openInViewer = rememberOpenInViewer(attachment, slot) { null }
     Row(
@@ -203,6 +238,58 @@ private fun AttachmentThumbnail(attachment: MessageAttachment, alpha: Float) {
     }
 }
 
+/**
+ * One recording of the prompt, as the composer showed it: its poster frame (read off the copy through the app's
+ * loader, the way a reply's recording gets its poster — see `VideoBlock`), a play glyph, its length in the corner. A
+ * tap opens the viewer on it, playing, grown out of this tile; a copy that is gone says so when the viewer opens.
+ */
+@Composable
+private fun AttachmentVideoThumbnail(attachment: MessageAttachment, alpha: Float) {
+    val colors = CursorTheme.colors
+    val shape = CursorTheme.shapes.lg
+    val loader = LocalMarkdownMedia.current?.loader
+    var frame by remember(attachment.path) { mutableStateOf<ImageBitmap?>(null) }
+    var durationMs by remember(attachment.path) { mutableStateOf<Long?>(null) }
+    val posterPx = with(LocalDensity.current) { THUMB_MAX_WIDTH.roundToPx() * 2 }
+    LaunchedEffect(attachment.path, loader) {
+        val probe = loader?.let { runCatching { it.videoPoster(MediaRef.Local(attachment.path), posterPx) }.getOrNull() } ?: return@LaunchedEffect
+        frame = probe.frame?.asImageBitmap()
+        durationMs = probe.durationMs
+    }
+    val aspect = frame?.let { it.width.toFloat() / it.height } ?: VIDEO_THUMB_ASPECT
+    val width = (THUMB_HEIGHT * aspect).coerceIn(THUMB_MIN_WIDTH, THUMB_MAX_WIDTH)
+    val slot = rememberThumbnailSlot(attachment.src, shape, crop = true)
+    val open = rememberOpenInViewer(attachment, slot) { frame }
+    val name = attachment.name ?: "Recording"
+    Box(
+        Modifier
+            .thumbnailSlot(slot)
+            .size(width, THUMB_HEIGHT)
+            .cursorSurface(Color.Black.faded(alpha), colors.stroke.faded(alpha), shape)
+            .pressable({ open() }, shape)
+            .testTag("attachment-video")
+            .semantics { contentDescription = listOfNotNull("Attached video $name", durationMs?.let(TimeFormat::clock)).joinToString(", ") },
+        contentAlignment = Alignment.Center,
+    ) {
+        frame?.let { Image(it, contentDescription = null, contentScale = ContentScale.Crop, alpha = alpha, modifier = Modifier.fillMaxSize()) }
+        Box(Modifier.size(28.dp).background(Color.White.copy(alpha = 0.92f * alpha), CircleShape), contentAlignment = Alignment.Center) {
+            Icon(CursorIcons.Play, null, tint = Color(0xFF141414).faded(alpha), modifier = Modifier.size(15.dp).padding(start = 1.dp))
+        }
+        durationMs?.let { ms ->
+            Text(
+                TimeFormat.clock(ms),
+                style = CursorTheme.typography.tiny.copy(lineHeight = 12.sp),
+                color = Color.White.faded(alpha),
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(6.dp)
+                    .background(Color.Black.copy(alpha = 0.6f * alpha), CursorTheme.shapes.sm)
+                    .padding(horizontal = 5.dp, vertical = 2.dp),
+            )
+        }
+    }
+}
+
 private sealed interface LoadedImage {
     data object Loading : LoadedImage
     data object Missing : LoadedImage
@@ -219,7 +306,9 @@ private fun rememberAttachmentImage(path: String, targetEdgePx: Int, cache: Bool
     val key = "$path@$targetEdgePx"
     return produceState<LoadedImage>(initialValue = AttachmentImages.get(key)?.let { LoadedImage.Ready(it) } ?: LoadedImage.Loading, key) {
         if (value is LoadedImage.Loading) {
-            val decoded = withContext(Dispatchers.IO) { decodeSampled(path, targetEdgePx) }
+            // Back on the main thread once decoded: the write below is a snapshot state's, and this effect must not
+            // resume on the decoder's thread (see ioThenMain).
+            val decoded = ioThenMain { decodeSampled(path, targetEdgePx) }
             value = if (decoded == null) LoadedImage.Missing else LoadedImage.Ready(decoded.also { if (cache) AttachmentImages.put(key, it) })
         }
     }.value
@@ -271,3 +360,7 @@ private const val MAX_DECODE_BYTES = 32L * 1024 * 1024
 private val THUMB_HEIGHT = 88.dp
 private val THUMB_MIN_WIDTH = 44.dp
 private val THUMB_MAX_WIDTH = 160.dp
+/** A recording's tile before its poster says otherwise: 16:9, as most are. */
+private const val VIDEO_THUMB_ASPECT = 16f / 9f
+/** Attachments beyond this many go into the scrolling row. */
+private const val CAROUSEL_FROM = 2

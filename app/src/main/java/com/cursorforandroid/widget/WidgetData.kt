@@ -12,8 +12,10 @@ import com.cursorforandroid.data.repo.SessionState
 import com.cursorforandroid.domain.Agent
 import com.cursorforandroid.domain.AgentLifecycle
 import com.cursorforandroid.domain.AgentRow
+import com.cursorforandroid.domain.ChatsWidgetSettings
 import com.cursorforandroid.domain.EnvType
 import com.cursorforandroid.domain.GitBranch
+import com.cursorforandroid.domain.KnownRoot
 import com.cursorforandroid.domain.ListPreferences
 import com.cursorforandroid.domain.LocalAgentState
 import com.cursorforandroid.domain.PullRequestState
@@ -45,10 +47,29 @@ data class WidgetSnapshot(
     val local: LocalAgentState,
     val theme: ThemeMode,
     val oledBlack: Boolean = false,
+    /** The registry's Project roots, restored with the list: the Projects list's stand-ins, as in the sidebar. */
+    val knownRoots: List<KnownRoot> = emptyList(),
+    /** The account's member count per Project, as far as this process has read them: the sidebar's counts. */
+    val memberCounts: Map<String, Int> = emptyMap(),
+    /** Extended mode is on: the only way the account says which chats are Projects (see `Capabilities.projects`). */
+    val extendedMode: Boolean = false,
 ) {
     val isSignedOut: Boolean get() = session is SessionState.SignedOut
 
-    fun rows(mode: WidgetMode, nowMillis: Long = AppClock.now()): List<AgentRow> = WidgetList.rows(mode, agents, prefs, local, nowMillis)
+    /** Projects can be listed at all: Extended mode is on, or this is the demo, which stands in for the account. */
+    val projectsAvailable: Boolean get() = extendedMode || (session as? SessionState.SignedIn)?.isDemo == true
+
+    fun rows(mode: WidgetMode, nowMillis: Long = AppClock.now(), projectId: String? = null): List<AgentRow> =
+        WidgetList.rows(mode, agents, prefs, local, nowMillis, projectId = projectId, knownRoots = knownRoots, memberCounts = memberCounts)
+
+    /** The header's title for [settings]: the list's name, or the chosen Project's. */
+    fun title(settings: ChatsWidgetSettings): String = when (settings.mode) {
+        WidgetMode.Project -> settings.projectId?.let { id -> agents.firstOrNull { it.id == id }?.name } ?: WidgetMode.Project.title
+        else -> settings.mode.title
+    }
+
+    /** The Projects a widget can be set to list. */
+    val projects: List<Agent> get() = WidgetList.projects(agents)
 }
 
 /**
@@ -69,18 +90,21 @@ object WidgetData {
     /** How long a first render waits for a first page when nothing is on disk (a fresh install, or the demo). */
     private const val FIRST_PAGE_WAIT_MS = 4_000L
 
+    /** How long a refresh pass of its own ([refresh]) is given before the widgets are rendered with what there is. */
+    const val FORCED_REFRESH_TIMEOUT_MS = 20_000L
+
     /** Refreshes are joined here so they outlive the render that asked for them. */
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     fun snapshots(graph: AppGraph): Flow<WidgetSnapshot> = combine(
         graph.session.state,
-        graph.agents.state,
-        graph.prefs.listPreferences,
+        combine(graph.agents.state, graph.agents.knownRoots, graph.projects.memberCounts, ::Triple),
+        combine(graph.prefs.listPreferences, graph.extendedMode.enabled, ::Pair),
         // The Git filter goes by the pull request states the app last read; the widget itself never asks GitHub.
         combine(graph.prefs.localAgentState, graph.pullRequests.states) { local, states -> local.copy(pullRequests = states) },
         combine(graph.prefs.themeMode, graph.prefs.oledBlack, ::Pair),
-    ) { session, list, prefs, local, appearance ->
-        WidgetSnapshot(session, list.hasLoaded, list.agents, prefs, local, appearance.first, appearance.second)
+    ) { session, (list, roots, counts), (prefs, extended), local, appearance ->
+        WidgetSnapshot(session, list.hasLoaded, list.agents, prefs, local, appearance.first, appearance.second, knownRoots = roots, memberCounts = counts, extendedMode = extended)
     }.distinctUntilChanged()
 
     suspend fun snapshot(graph: AppGraph): WidgetSnapshot = snapshots(graph).first()
@@ -107,6 +131,25 @@ object WidgetData {
             // "Loading…" until the battery is charged.
             withTimeoutOrNull(FIRST_PAGE_WAIT_MS) { graph.agents.refresh(silent = true, depth = RefreshDepth.Quick) }
         }
+    }
+
+    /**
+     * A refresh pass of its own, for [WidgetRefreshWork]: the list readied as [prepare] readies it, then the newest
+     * page — whatever the list's age when [forced] (the header button: a person asking, whose low battery is theirs
+     * to spend), only when it is stale otherwise (the timer's pass, which keeps to the budget a tick keeps to). Waits
+     * for the page, up to [FORCED_REFRESH_TIMEOUT_MS], so the caller can render what it brought; true when one landed.
+     */
+    suspend fun refresh(graph: AppGraph, budget: WidgetRefreshBudget, forced: Boolean): Boolean {
+        graph.session.restoreIfNeeded()
+        if (graph.session.state.value !is SessionState.SignedIn) return false
+        graph.agents.restoreFromCache()
+        graph.pullRequests.restoreFromCache()
+        if (!budget.connected || (!forced && !budget.allowsRefresh)) return false
+        val before = graph.agents.refreshCompleted.value
+        withTimeoutOrNull(FORCED_REFRESH_TIMEOUT_MS) {
+            if (forced) graph.agents.refresh(silent = true, depth = RefreshDepth.Quick) else graph.agents.refreshIfStale(STALE_AFTER_MS, RefreshDepth.Quick)
+        }
+        return graph.agents.refreshCompleted.value != before
     }
 
     /**

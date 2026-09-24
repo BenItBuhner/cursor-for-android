@@ -9,7 +9,8 @@ import androidx.compose.ui.unit.dp
  * Cursor's radius scale (`--cursor-radius-*` in the desktop build): xs 2, sm 4, base 6, lg 8, xl 12, 2xl 14, full.
  * Human messages use xl (`--conversation-surface-border-radius`), cards and selected sidebar rows use lg, chips and
  * buttons use base, badges use sm. The composer is the one surface off this scale: its corners follow the round
- * buttons in its footer ([CursorDimens.composerRadius]).
+ * buttons in its footer ([CursorDimens.composerRadius]). Popup menus take their corner from the composer's
+ * ([CursorDimens.menuRadius]).
  */
 @Immutable
 data class CursorShapes(
@@ -21,6 +22,10 @@ data class CursorShapes(
     val xxl: RoundedCornerShape = RoundedCornerShape(14.dp),
     val sheet: RoundedCornerShape = RoundedCornerShape(topStart = 12.dp, topEnd = 12.dp),
     val full: RoundedCornerShape = RoundedCornerShape(50),
+    /** Every popup menu's surface. */
+    val menu: RoundedCornerShape = RoundedCornerShape(CursorDimens.menuRadius),
+    /** A menu row's press highlight: concentric with [menu] across the [CursorDimens.menuInset] between them. */
+    val menuItem: RoundedCornerShape = RoundedCornerShape(CursorDimens.menuRadius - CursorDimens.menuInset),
 )
 
 /**
@@ -46,6 +51,14 @@ object CursorDimens {
     /** Visual box of a flat icon button; the touch target is [touchTarget]. */
     val iconButton = 32.dp
     val touchTarget = 44.dp
+    /** Android's minimum touch target (`ViewConfiguration.minimumTouchTargetSize`). */
+    val minTouchTarget = 48.dp
+    /**
+     * A chat's header row, which holds its controls and no title: as short as a [minTouchTarget] target centred on
+     * each [iconButton] allows without reaching above the row into the status bar, so the buttons stand
+     * `(minTouchTarget - iconButton) / 2` below the row's top and the row ends at their bottom edge.
+     */
+    val chatHeaderHeight = minTouchTarget / 2 + iconButton / 2
     val chevron = 16.dp
     /** Sidebar rows. */
     val sidebarRow = 36.dp
@@ -80,7 +93,8 @@ object CursorDimens {
     val composerPadding = 12.dp
     /**
      * Air around the follow-up composer where it docks at the bottom of a chat: this much between the box and each
-     * side of the window (and the queue and goal strips above it share the same edges)…
+     * side of the window (the cards stacked above it — queue, goal, load notices — stand a further
+     * `composerRadius - their radius` in, so their corners are concentric with the box's; see `Modifier.dockedCard`)…
      */
     val composerGutter = 12.dp
     /**
@@ -108,6 +122,37 @@ object CursorDimens {
      * tight corner fighting the circle. The web's 12px radius reads as a pinched corner against a 24px disc.
      */
     val composerRadius = roundButton / 2 + composerPadding
+    /**
+     * Popup menus. The corner is the composer's less the [composerPadding] the "+" disc stands in from its side:
+     * the "+" menu's start edge drops from that disc, so its corners bend on the same verticals as the composer's,
+     * as the cards docked over the box do (`composerDockInset`). It is the docked cards' radius, and every other
+     * menu wears it too.
+     */
+    val menuRadius = composerRadius - composerPadding
+    /** Between a menu's edge and its rows' press highlights: above the first row, below the last, beside each. */
+    val menuInset = 4.dp
+    /** A menu row with one line; a second line grows it. */
+    val menuRow = 40.dp
+    /** A menu row's glyph box. */
+    val menuIcon = 16.dp
+    /** A menu row's text and glyph stand this far in from its press highlight, [menuInset] + this from the menu's edge. */
+    val menuItemPadding = 8.dp
+    /** Where a menu row's glyph (or text) starts, for notes laid out in a menu to line up with the rows. */
+    val menuTextInset = menuInset + menuItemPadding
+    /** Between a menu and what opened it. */
+    val menuGap = 4.dp
+    /** The least a menu stands in from the window's edges, bars and keyboard: the composer's own gutter. */
+    val menuEdgeMargin = composerGutter
+    val menuMinWidth = 180.dp
+    val menuMaxWidth = 320.dp
+    /**
+     * A menu's shadow: a wide blur dropped a little, soft enough to lift the surface off the page without the edge
+     * a Material elevation draws. The popup is this much larger than the surface on every side to hold it, so it
+     * stays within [menuEdgeMargin].
+     */
+    val menuShadowBlur = 7.dp
+    val menuShadowDrop = 2.dp
+    val menuShadowRoom = 12.dp
     /** Recent-chat preview card, radius 8. */
     val previewCardWidth = 124.dp
     val previewCardHeight = 80.dp

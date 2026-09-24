@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  A disc for the shortcut widget: the button itself, and the "+" and send buttons of the compose bar. Drawn white
+  and tinted at render time — the widget's looks (white, the app's surface, glass) are decided per instance, so the
+  colour is not the resource system's to know. Its ring is a second, larger disc behind it.
+-->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="oval">
+    <solid android:color="#FFFFFFFF" />
+</shape>

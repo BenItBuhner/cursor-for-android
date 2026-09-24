@@ -7,9 +7,9 @@ import androidx.compose.runtime.saveable.listSaver
 import java.util.UUID
 
 /**
- * The three destinations of the app. `route` is the string form the stack is saved as. A Cursor Project has no
- * screen of its own: its row opens its coordinator's chat, and the Project's primaries, context and actions are
- * the Project section of that chat's right-side panel.
+ * The destinations of the app. `route` is the string form the stack is saved as. A Cursor Project has no screen of
+ * its own: its row opens its coordinator's chat, and the Project's primaries, context and actions are the Project
+ * section of that chat's right-side panel.
  */
 sealed interface Screen {
     val route: String
@@ -20,6 +20,11 @@ sealed interface Screen {
 
     data object Settings : Screen {
         override val route: String get() = "settings"
+    }
+
+    /** The installed version's release notes; pushed over Settings' row or the sidebar's card, never a root. */
+    data object WhatsNew : Screen {
+        override val route: String get() = "whats-new"
     }
 
     data class Agent(val id: String) : Screen {
@@ -33,6 +38,7 @@ sealed interface Screen {
         fun fromRoute(route: String): Screen? = when {
             route == Home.route -> Home
             route == Settings.route -> Settings
+            route == WhatsNew.route -> WhatsNew
             route.startsWith("agent/") -> route.removePrefix("agent/").takeIf { it.isNotBlank() }?.let(::Agent)
             route.startsWith(LEGACY_PROJECT_PREFIX) -> route.removePrefix(LEGACY_PROJECT_PREFIX).takeIf { it.isNotBlank() }?.let(::Agent)
             else -> null

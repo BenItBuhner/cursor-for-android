@@ -4,7 +4,9 @@ import com.cursorforandroid.data.api.AgentStartApi
 import com.cursorforandroid.data.api.ComposerLifecycleApi
 import com.cursorforandroid.data.api.ComposerSnapshot
 import com.cursorforandroid.data.api.StartRequest
+import com.cursorforandroid.data.api.MachineStart
 import com.cursorforandroid.data.api.RecordFields
+import com.cursorforandroid.data.api.ConnectRpcException
 import com.cursorforandroid.data.api.CursorApiException
 import com.cursorforandroid.data.api.CursorApi
 import com.cursorforandroid.data.api.dto.AgentDto
@@ -38,12 +40,18 @@ import com.cursorforandroid.domain.DeviceTarget
 import com.cursorforandroid.domain.EnvType
 import com.cursorforandroid.domain.KnownRoot
 import com.cursorforandroid.domain.LineageSignal
+import com.cursorforandroid.domain.MachineWorker
 import com.cursorforandroid.domain.McpServer
 import com.cursorforandroid.domain.ModelParam
+import com.cursorforandroid.domain.ProjectDiagnostics
 import com.cursorforandroid.domain.PromptFile
 import com.cursorforandroid.domain.PromptImage
+import com.cursorforandroid.domain.PendingWork
+import com.cursorforandroid.domain.RefreshStats
+import com.cursorforandroid.domain.RepoRemote
 import com.cursorforandroid.domain.RunStatus
 import com.cursorforandroid.domain.RunningScan
+import com.cursorforandroid.domain.SendDiagnostics
 import com.cursorforandroid.domain.SlashCommands
 import com.cursorforandroid.util.AppClock
 import kotlinx.coroutines.CancellationException
@@ -61,6 +69,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.conflate
+import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.filter
@@ -70,6 +79,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import java.io.IOException
 import java.time.Instant
@@ -86,7 +96,14 @@ data class AgentListState(
     val error: String? = null,
     /** The server has agents older than the ones loaded: the next page is a scroll to the end of the list away (see [AgentRepository.loadMore]). */
     val hasMore: Boolean = false,
+    /** The next page is being fetched (see [AgentRepository.loadMore]): from the ask to the page's landing or its failure, never longer. */
     val isLoadingMore: Boolean = false,
+    /**
+     * The last page could not be fetched: the server's words (or the connection's). The sidebar's tail shows them
+     * with Retry, and asks for no page on its own until the user does or a refresh has gone through — an ask that
+     * failed is not made again behind a spinner (see `AgentsViewModel.SidebarTail.Failed`).
+     */
+    val loadMoreError: String? = null,
 )
 
 /**
@@ -128,6 +145,8 @@ data class LaunchRequest(
     val mcpServers: List<McpServer> = emptyList(),
     /** Where the agent runs: Cursor cloud (the default), a team pool, or a connected machine. */
     val env: DeviceTarget = DeviceTarget.Cloud,
+    /** [env]'s worker as the fleet endpoint last listed it, when [env] is a machine (see [MachineWorker]). */
+    val worker: MachineWorker? = null,
 ) {
     /** `autoCreatePR` as it goes out: a pull request wants a repository, so the switch only counts with one. */
     val opensPullRequest: Boolean get() = autoCreatePr && repoUrl != null
@@ -172,12 +191,17 @@ fun DeviceTarget.toEnvDto(): AgentEnvDto? = when (type) {
  *    default repository" as the alternative to `repos[0].url`), and this app has no such default to fall back on;
  *  - a named cloud environment sends `env` alone: the environment carries its repositories, and `repos` beside it
  *    is refused;
- *  - a pool or a machine sends `env` alone: the worker runs in its own checkout. The reference allows this for a
- *    pool; for a machine the server has been seen to answer `400 repository_required`, which is then shown as it is.
- * `autoCreatePR` stays out of every repository-less request (see [LaunchRequest.opensPullRequest]).
+ *  - a pool or a machine without a repository sends `env` alone. The reference allows this for a pool; for a machine
+ *    the server answers `400 repository_required`, which is then shown as it is.
+ * A machine or pool with a repository names it by URL, as `https://host/owner/name` ([RepoRemote]): Cursor matches it
+ * against the worker's `repo=owner/name` label and checks it through its GitHub app before routing, so a checkout that
+ * app cannot reach is refused, in the server's words. A blank branch sends no `startingRef`, as the desktop sends none
+ * for a machine unless one is picked. `autoCreatePR` stays out of every repository-less request (see
+ * [LaunchRequest.opensPullRequest]).
  */
 fun LaunchRequest.toCreateAgentDto(): CreateAgentRequestDto {
     val envDto = env.toEnvDto()
+    val onWorker = env.type == EnvType.MACHINE || env.type == EnvType.POOL
     return CreateAgentRequestDto(
         prompt = PromptEncoding.toPromptDto(prompt, images),
         agentId = agentId,
@@ -185,7 +209,12 @@ fun LaunchRequest.toCreateAgentDto(): CreateAgentRequestDto {
         name = name,
         env = envDto,
         repos = when {
-            repoUrl != null -> listOf(RepoConfigDto(url = repoUrl, startingRef = ref?.ifBlank { null }))
+            repoUrl != null -> listOf(
+                RepoConfigDto(
+                    url = if (onWorker) RepoRemote.canonical(repoUrl) ?: repoUrl else repoUrl,
+                    startingRef = ref?.ifBlank { null },
+                ),
+            )
             envDto == null -> emptyList()
             else -> null
         },
@@ -193,6 +222,27 @@ fun LaunchRequest.toCreateAgentDto(): CreateAgentRequestDto {
         mcpServers = mcpServers.toInlineServers(),
         mode = if (planMode) "plan" else null,
     )
+}
+
+/**
+ * What the launch names as the place to run, for the diagnostics (see [SendDiagnostics.LaunchLine]) — the decision
+ * [toCreateAgentDto] encodes, in words: a repository at a branch, the explicit no-repo form, a named cloud environment,
+ * a pool or a machine; on the account's start ([via] `account`) a repository, a named environment, or the account's
+ * personal no-repo environment. No URL or name: the export carries none.
+ */
+fun LaunchRequest.launchTarget(via: String): String {
+    val where = when {
+        env.type == EnvType.POOL -> "pool"
+        env.type == EnvType.MACHINE -> "machine"
+        env.apiName != null -> "named cloud"
+        else -> null
+    }
+    return when {
+        repoUrl != null -> "repo(" + (ref?.takeIf { it.isNotBlank() }?.let { "ref" } ?: "default branch") + ")" + (where?.let { " on $it" } ?: "")
+        where != null -> "env($where)"
+        via == "account" -> "no-repo(personal environment)"
+        else -> "no-repo(repos:[])"
+    }
 }
 
 /**
@@ -205,6 +255,24 @@ class LaunchUnansweredException(cause: Throwable) : IOException(
         "Send it again to retry: a chat Cursor did create after all is picked up rather than started twice.",
     cause,
 )
+
+/**
+ * The account refused a start on one of the user's machines (see [AgentRepository.launch], Extended mode): [message]
+ * is its words, [asked] the one line naming the call and its answer, as the app's compact notices print it —
+ * `POST /aiserver.v1.BackgroundComposerService/StartBackgroundComposerFromSnapshot → HTTP 400 failed_precondition`.
+ */
+class MachineStartRefusedException(cause: ConnectRpcException) : IOException(
+    cause.message?.trim()?.takeIf { it.isNotEmpty() } ?: "Cursor refused to start this chat on the machine.",
+    cause,
+) {
+    val asked: String = "POST ${cause.path ?: "(no request)"} → HTTP ${cause.httpCode}" + (cause.code?.let { " $it" } ?: "")
+}
+
+/**
+ * The documented create refused a machine's repository — the Cloud Agents API checks it through Cursor's GitHub app —
+ * in Cursor's words, with the line that says what does start it (see [AgentRepository.MACHINE_NEEDS_EXTENDED]).
+ */
+class MachineRepositoryRefusedException(val error: CursorApiException) : IOException("${error.message.trim()}\n${AgentRepository.MACHINE_NEEDS_EXTENDED}", error)
 
 /** The request's `model` field: the id with the variant's parameters, or null so the field is omitted. */
 private fun modelRef(modelId: String?, params: List<ModelParam>): ModelRefDto? = modelId?.let { id ->
@@ -222,6 +290,7 @@ data class Launched(val agent: Agent, val run: RunDto?)
  * shown. The server's `updatedAt` is the row's activity time; a stamp made here survives a refresh only while the
  * server is about to confirm it (see `reconcileUpdatedAt`).
  */
+@OptIn(kotlinx.coroutines.FlowPreview::class)
 class AgentRepository(
     private val session: SessionManager,
     private val prefs: PreferencesStore,
@@ -253,13 +322,22 @@ class AgentRepository(
     private val runningScanPages: Int = RUNNING_SCAN_PAGES,
     /** How many agents the running scan named that no page holds are fetched by id per pass. */
     private val maxMaterializedRunning: Int = MAX_MATERIALIZED_RUNNING,
+    /** What each refresh cost, for the diagnostics (see [RefreshStats]); the graph shares one recorder across the layers. */
+    private val stats: RefreshStats = RefreshStats(),
+    /**
+     * The list's work in flight (see [PendingWork]): every page, every pass fetching rows by id, registered for as
+     * long as it runs. The sidebar's one loading row is drawn from it; the graph shares one registry with the
+     * account layer, so the account's list read shows in the same row.
+     */
+    val pending: PendingWork = PendingWork(),
     /** How a launch whose reply was lost looks for its chat (see [launch]): reads of `GET /v1/agents/{id}`, and the wait between them. */
     private val lostReplyProbes: Int = LOST_REPLY_PROBES,
     private val lostReplyProbeDelayMs: Long = LOST_REPLY_PROBE_DELAY_MS,
     /**
      * The account's start (`StartBackgroundComposerFromSnapshot`) and its prompt uploads, for a launch whose prompt
-     * carries files of any type — which the documented create request cannot (Extended mode, `promptFiles`). Null
-     * when there is no account to start on; such a launch then fails before anything is sent.
+     * carries files of any type — which the documented create request cannot (Extended mode, `promptFiles`) — and for
+     * one on the user's machine (`machineStart`, see [startsOnMachine]). Null when there is no account to start on;
+     * a launch with files then fails before anything is sent, and one on a machine takes the documented request.
      */
     private val start: (suspend () -> AgentStartApi)? = null,
     private val uploads: (suspend () -> PromptUploader)? = null,
@@ -314,6 +392,44 @@ class AgentRepository(
      * a row that may still fail to be created is never written to disk.
      */
     private val pendingLaunches: MutableSet<String> = ConcurrentHashMap.newKeySet()
+    /**
+     * The run of each chat this device last knew to end, by chat id, and how: the run it stopped (the server agreed
+     * to the [cancelRun]), or the run whose own stream or record the hub followed to its end ([noteRunEnded]). A run
+     * record that still calls that run active is a read the end had not reached — the detail read a chat's load
+     * launched before the Stop or the finish, the refresh's verification of the row a second after, a settle of the
+     * queue's read while the server is still winding the turn down. Folded into the row as it stood, such a record
+     * put the row back to running for the very run this device had seen end, after the end had settled it: the
+     * spinner back on a stopped or finished chat until the next refresh, and a queued or steered message waiting its
+     * whole busy recheck (`IDLE_SETTLE_MS`, and again for as long as the record lagged) on a row nothing else would
+     * settle — the hub reports a run's end once. The same hole `ConversationRepository.Entry.known` closed for the
+     * chat's own run page after a Stop (#179). The run's terminal word, from anywhere, still stands; so does any
+     * newer run the server names. An older one it names active is over too (see [endedBefore]): an agent runs one
+     * turn at a time, so a run begun before the one this device saw end had ended before it began. Cleared with
+     * the list.
+     */
+    private val endedRuns = ConcurrentHashMap<String, EndedRun>()
+
+    /** [startedAtMillis] is the run's `createdAt` when the list has read its record ([runStarts]); null when it never has. */
+    private class EndedRun(val runId: String, val status: RunStatus, val startedAtMillis: Long?)
+
+    /**
+     * When each agent's last few runs began, by run id: every run record the list reads passes [known], which
+     * remembers it here, so a run stopped or seen finished later can be placed in time against the records a
+     * chat's stale load still holds (see [endedBefore]), and an older run's end told late (its replay finishing)
+     * against the newer run's (see [noteRunEnded]). Server clock throughout — a run's `createdAt` compared with
+     * another's — never this device's. The [RUN_STARTS_KEPT] newest per agent; cleared with the list.
+     */
+    private val runStarts = ConcurrentHashMap<String, RunStarts>()
+
+    /** The starts of one agent's newest runs, by id; its own monitor, as [known] is called under and outside [publishLock]. */
+    private class RunStarts {
+        private val byRun = HashMap<String, Long>()
+        @Synchronized fun note(runId: String, startedAtMillis: Long) {
+            byRun[runId] = startedAtMillis
+            while (byRun.size > RUN_STARTS_KEPT) byRun.remove(byRun.minByOrNull { it.value }!!.key)
+        }
+        @Synchronized fun of(runId: String): Long? = byRun[runId]
+    }
     /**
      * The parent links stamped onto chats beside their records, the way the desktop stamps them (see
      * [AgentsWindowList]): a root's `ListWorkersForManager` answer naming a worker (the desktop's seeded
@@ -393,10 +509,13 @@ class AgentRepository(
         }
         scope.launch {
             // A row without its account record — brought by a page, the running scan, a pin, a fetch by id — is
-            // asked for it (see [materializeRecords]) as soon as it shows, so it is placed the way the desktop
-            // would place it and not the way the public API's bare row reads.
+            // asked for it (see [materializeRecords]), so it is placed the way the desktop would place it and not
+            // the way the public API's bare row reads. After a pause: the account's pages, read for the roots in
+            // the same moments (see `ProjectRepository.discoverRoots`), carry most of these records two hundred at
+            // a time, and a row asked for one by one before they land is a call spent for nothing.
             _state.filter { it.hasLoaded && !it.isFromCache }.map { st -> st.agents.filter { it.record == null }.mapTo(HashSet()) { it.id } }
                 .distinctUntilChanged()
+                .debounce(RECORD_DEBOUNCE_MS)
                 .collect { bare -> if (bare.isNotEmpty()) materializeRecords() }
         }
     }
@@ -405,6 +524,7 @@ class AgentRepository(
 
     /** Forgets the list on sign-out, so the next account never sees the previous one's agents, not even from a fetch still in flight. */
     fun reset() {
+        registryCompleteAtMillis = null
         synchronized(publishLock) {
             generation.incrementAndGet()
             clear()
@@ -430,6 +550,83 @@ class AgentRepository(
         rootUnresolved.clear()
         _runningScan.value = RunningScan()
         pinnedUnresolved.clear()
+        endedRuns.clear()
+        runStarts.clear()
+        synchronized(launchTraces) { launchTraces.clear() }
+    }
+
+    /**
+     * [run]'s record as this device knows it: an active status for a run it saw end reads as it ended (see
+     * [endedRuns]). Applied to every run record before it reaches a row, here and through [recordRun] — which makes
+     * this the one place every run record the list reads passes, so each is remembered by its start here too (see
+     * [runStarts]).
+     */
+    private fun known(agentId: String, run: RunDto): RunDto {
+        noteRunStart(agentId, run)
+        if (!run.statusEnum().isActive) return run
+        val ended = endedRuns[agentId]?.takeIf { it.runId == run.id } ?: return run
+        return run.copy(status = ended.status.name)
+    }
+
+    /** Remembers when [run] began (see [runStarts]); a record whose start cannot be read is not placed. */
+    private fun noteRunStart(agentId: String, run: RunDto) {
+        val startedAt = parseIsoMillis(run.createdAt).takeIf { it > 0 } ?: return
+        runStarts.getOrPut(agentId) { RunStarts() }.note(run.id, startedAt)
+    }
+
+    /** When the list has read [runId]'s record: its start, for the memory of its end (see [EndedRun.startedAtMillis]). */
+    private fun startOf(agentId: String, runId: String): Long? = runStarts[agentId]?.of(runId)
+
+    /**
+     * The hub followed [runId] to its end, on its own stream or its record: remembered so a record read that predates
+     * the end cannot put the row back to running for it (see [endedRuns]). Called before the row is patched with the end.
+     * The end of a run that began before the one remembered — an older turn's replay, followed for its trace after
+     * the newer turn was stopped or finished here — is not the agent's last end, and leaves the memory of the newer
+     * one standing: its stale records are the ones still on their way.
+     */
+    fun noteRunEnded(agentId: String, runId: String, status: RunStatus) {
+        synchronized(publishLock) {
+            val startedAt = startOf(agentId, runId)
+            val held = endedRuns[agentId]
+            if (held != null && held.runId != runId && held.startedAtMillis != null && startedAt != null && startedAt < held.startedAtMillis) return
+            endedRuns[agentId] = EndedRun(runId, status, startedAt)
+        }
+    }
+
+    /**
+     * How [runId] ended, when it is the run of [agentId] this device last saw end — stopped here, or finished on the
+     * stream the hub followed — and null for any other run: what a chat reads its own run records against, so a
+     * record that predates the end (a run page, a detail, the record the chat's next-run look reads) never calls
+     * that run active in the chat either (see `ConversationRepository.Entry.statusOf`).
+     */
+    fun endedStatus(agentId: String, runId: String?): RunStatus? = runId?.let { id -> endedRuns[agentId]?.takeIf { it.runId == id }?.status }
+
+    /**
+     * True when [run] began before the run of [agentId] this device last saw end (see [endedRuns]) — and so is over
+     * itself, whatever its record says, an agent running one turn at a time: a chat's load that read its run page
+     * before a Stop or a finish that moved the agent past that page must not follow, as the turn under way, a run
+     * that ended before the one it saw end (the spinner back on an old turn, and a steered message waiting on it).
+     * Decided on the server's clock alone (`createdAt` against `createdAt`), and never when the ended run's start is
+     * not known here (see [runStarts]) or the record's cannot be read.
+     */
+    fun endedBefore(agentId: String, run: RunDto): Boolean {
+        val ended = endedRuns[agentId] ?: return false
+        if (ended.runId == run.id) return false
+        val endedStart = ended.startedAtMillis ?: return false
+        val start = parseIsoMillis(run.createdAt).takeIf { it > 0 } ?: return false
+        return start < endedStart
+    }
+
+    /**
+     * Folds a run record a caller read into the row, when it is the row's latest run (see [Agent.withLatestRun]) —
+     * or, with [adopt], as the row's latest run from here on — as this device knows the run (see [known]), under
+     * the lock a cancel or a finish patches under, so a record read before either does not undo it. The one way a
+     * run record read outside this repository reaches a row.
+     */
+    fun recordRun(agentId: String, run: RunDto, adopt: Boolean = false, startedIn: Int = token()) {
+        synchronized(publishLock) {
+            patch(agentId, startedIn) { row -> (if (adopt) row.copy(latestRunId = run.id) else row).withLatestRun(known(agentId, run)) }
+        }
     }
 
     /**
@@ -501,19 +698,19 @@ class AgentRepository(
      * a stand-in: a few per pass, each tried again after a while when it failed. A root the server says is gone
      * (404) leaves the registry: that is the record's own word, the one thing that drops a root.
      */
-    suspend fun materializeRoots(startedIn: Int = token(), budget: Int = MAX_MATERIALIZED_ROOTS) {
-        if (session.isDemo || !_state.value.hasLoaded || _state.value.isFromCache) return
-        rootMutex.withLock {
+    suspend fun materializeRoots(startedIn: Int = token(), budget: Int = MAX_MATERIALIZED_ROOTS): Int {
+        if (session.isDemo || !_state.value.hasLoaded || _state.value.isFromCache) return 0
+        return rootMutex.withLock {
             val held = _state.value.agents.mapTo(HashSet()) { it.id }
             val now = AppClock.now()
             val due = rootRecords.keys.filter { it !in held && (rootUnresolved[it]?.let { until -> now >= until } ?: true) }.take(budget)
-            for (id in due) {
-                if (generation.get() != startedIn) return
+            if (due.isEmpty()) return@withLock 0
+            pending.track("Project roots by id (${due.size})") { byId(due, startedIn) { id ->
                 val fetched = loadDetail(id)
                 if (fetched.isSuccess) {
                     rootUnresolved.remove(id)
                     rootFailures.remove(id)
-                    continue
+                    return@byId
                 }
                 val failure = fetched.exceptionOrNull()
                 val gone = (failure as? CursorApiException)?.httpCode == 404
@@ -525,7 +722,7 @@ class AgentRepository(
                 when {
                     record != null && generation.get() == startedIn -> {
                         upsert(record.toStandIn(), startedIn)
-                        rootUnresolved[id] = now + PINNED_RETRY_MS
+                        rootUnresolved[id] = now + retryDelayFor(failure)
                         rootFailures[id] = "stood in from the account record; public API: ${failure?.describe() ?: "-"}"
                     }
                     gone && accountAnswered -> {
@@ -540,15 +737,30 @@ class AgentRepository(
                         }
                     }
                     else -> {
-                        rootUnresolved[id] = now + if (gone) PINNED_GONE_RETRY_MS else PINNED_RETRY_MS
+                        rootUnresolved[id] = now + if (gone) PINNED_GONE_RETRY_MS else retryDelayFor(failure)
                         rootFailures[id] = failure?.describe() ?: "failed"
                     }
                 }
-            }
+            } }
         }
     }
 
     private fun Throwable.describe(): String = "${javaClass.simpleName}: ${message ?: "-"}"
+
+    /**
+     * How long a row that could not be fetched waits before it is asked for again: the wait the server named on a
+     * refusal (429), a short while for a passing failure (a dropped connection, a 5xx, a refusal that named none),
+     * and [PINNED_RETRY_MS] for a definite answer — a 4xx about the row itself — that asking again soon would not change.
+     */
+    private fun retryDelayFor(failure: Throwable?): Long = when {
+        failure == null -> PINNED_RETRY_MS
+        failure is CursorApiException && failure.isRateLimited -> TRANSIENT_RETRY_MS
+        failure is ConnectRpcException && failure.isRateLimited -> failure.retryAfterMillis?.coerceIn(TRANSIENT_RETRY_MS / 6, PINNED_RETRY_MS) ?: TRANSIENT_RETRY_MS
+        failure is CursorApiException && failure.httpCode in 400..499 -> PINNED_RETRY_MS
+        failure is ConnectRpcException && failure.httpCode in 400..499 -> PINNED_RETRY_MS
+        failure is java.io.IOException -> TRANSIENT_RETRY_MS
+        else -> PINNED_RETRY_MS
+    }
 
     /** The roots the registry knows and the list does not hold and could not fetch, for the diagnostics. */
     fun unresolvedRoots(): Set<String> = rootUnresolved.keys.toSet()
@@ -596,10 +808,23 @@ class AgentRepository(
         if (agents.isEmpty()) return this
         var changed = false
         val next = agents.map { agent ->
-            val placed = agent.placed()
+            val placed = agent.placed().settled()
             if (placed == agent) agent else placed.also { changed = true }
         }
         return if (changed) copy(agents = next) else this
+    }
+
+    /**
+     * The row as this device knows its latest run: a row still calling active a run this device saw end reads as
+     * that run ended (see [endedRuns]). Applied to every row on every publication, so no source that reaches the
+     * list — a run record read before the end (`known` covers the ones read here), a legacy `/v0` status filling in
+     * a status this build could not read, a patch from a chat's own look for its next run — can put the row back to
+     * running for a turn that is over. A row that has moved on to another run is left alone.
+     */
+    private fun Agent.settled(): Agent {
+        if (!isRunning) return this
+        val ended = endedRuns[id]?.takeIf { it.runId == latestRunId } ?: return this
+        return copy(runStatus = ended.status)
     }
 
     private fun Agent.placed(): Agent {
@@ -685,7 +910,9 @@ class AgentRepository(
             val startedIn = token()
             restoredFor = backend
             dropForeignList(backend)
-            val entry = cache.read() ?: return
+            // One read of the file: the rows and the registry's words come together (a second parse of a list of a
+            // thousand rows with its records is a second or more on a phone).
+            val (entry, lineage) = cache.readWithLineage() ?: return
             // Sources the account list gave the rows were written to disk with them; with Extended mode off (no
             // account session, so no list read) they are not this install's to show, whichever earlier launch or
             // build learned them.
@@ -703,8 +930,6 @@ class AgentRepository(
                 }
             }
             val rows = if (accountSession) kept else kept.withoutAccountSources(prefs.localAgentState.first().launchedHereIds)
-            // The words kept with the list about chats no row carries (see [persist]).
-            val lineage = cache.readLineage()
             val landed = publish(backend, startedIn) { s ->
                 // A fetch that finished in the meantime wins over the disk.
                 if (s.agents.isNotEmpty() || s.hasLoaded) s else {
@@ -725,6 +950,8 @@ class AgentRepository(
                     // Only entries whose record's flag was read with its fields come back: what an older build
                     // admitted on a bare flag, a membership, a transcript or a source is re-learned from the account.
                     lineage?.roots?.filter { it.isEvidencedStrictly }?.forEach { noteRoot(it) }
+                    // The disk's word that a pass once read the whole account: only then may the next pass stop short.
+                    registryCompleteAtMillis = lineage?.registryCompleteAtMillis
                     // The refresh re-reads about as deep as the disk copy reaches, so what it shows is what it refreshes.
                     pagesLoaded = ((rows.size + PAGE_SIZE - 1) / PAGE_SIZE).coerceIn(1, MAX_PAGES)
                     s.copy(agents = rows, hasLoaded = true, isFromCache = true)
@@ -745,28 +972,74 @@ class AgentRepository(
     suspend fun refresh(silent: Boolean = false, depth: RefreshDepth = RefreshDepth.Full) {
         val startedIn = token()
         restoreFromCache()
+        if (!silent) stats.begin()
         val (job, joined) = startOrJoin(silent, depth)
-        if (joined && !silent) publish(null, startedIn) { it.copy(isRefreshing = true) }
+        if (joined && !silent) {
+            // A pull that joins a fetch already past its first page and status scan (the cold start's own silent
+            // fetch, most often) has nothing to hold the indicator for: the rest settles under the tail's row, as its
+            // own would. One still before its first page shows the indicator until that page lands.
+            if (firstPageLanded) pending.show() else publish(null, startedIn) { it.copy(isRefreshing = true) }
+            job.join()
+            // The fetch may have ended between the join and the word above: an indicator raised on a fetch that is
+            // over is let go here, unless a newer fetch is showing its own.
+            publish(null, startedIn) { s -> if (s.isRefreshing && !synchronized(this) { inFlight?.job?.let { it !== job && it.isActive } == true }) s.copy(isRefreshing = false) else s }
+            return
+        }
         job.join()
     }
 
+    /** The fetch in flight has published its first page and the status scan (see [fetch]); false between fetches' starts. */
+    @Volatile private var firstPageLanded = false
+
+    /**
+     * The account's list paged alongside the public one (Extended mode): set by the graph to the pin repository's
+     * page read, so the rows a page brings are published placed and named. Called by [loadMore] ahead of each public
+     * page, once per page — the ask is the list's, so a second ask while one is on its way is a no-op rather than a
+     * second account page. Best effort: a failure of the account's page fails nothing of the public one.
+     */
+    @Volatile var accountPage: (suspend () -> Unit)? = null
+
     /**
      * Fetches the page after the window's last one, on both endpoints, and adds its rows to the list: for the reader
-     * reaching the end of the sidebar. One at a time; a refresh in flight is waited for first, since it lands the
-     * cursors this reads from. [RefreshOutcome.Skipped] when there is no page to fetch or one is already being fetched.
+     * reaching the end of the sidebar. One at a time — the ask is marked at once ([AgentListState.isLoadingMore]), so
+     * the row spins from the ask and a second ask meanwhile is a no-op — and a refresh in flight is waited for first,
+     * since it lands the cursors this reads from; the account's page ([accountPage]) is read ahead of the public one.
+     * [RefreshOutcome.Skipped] when there is no page to fetch or one is already being fetched; a page that fails
+     * leaves its words in [AgentListState.loadMoreError] and is not asked for again until [loadMore] is called again.
      */
     suspend fun loadMore(): RefreshOutcome {
         val backend = session.current
         val startedIn = token()
-        synchronized(this) { inFlight?.job?.takeIf { it.isActive } }?.join()
         val job = synchronized(publishLock) {
             if (generation.get() != startedIn || owner !== backend) return RefreshOutcome.Skipped
             loadingMore?.takeIf { it.isActive }?.let { return RefreshOutcome.Skipped }
-            val cursor = nextCursor ?: return RefreshOutcome.Skipped
-            scope.launch { fetchMore(backend, startedIn, cursor, legacyCursor) }.also { loadingMore = it }
+            if (nextCursor == null && synchronized(this) { inFlight?.job?.isActive } != true) {
+                // Nothing to page to, whatever the flag said: the end was reached, or the cursors were never learned.
+                if (_state.value.hasMore) publish(backend, startedIn) { it.copy(hasMore = false) }
+                return RefreshOutcome.Skipped
+            }
+            val work = pending.begin("older page")
+            pending.show()
+            publish(backend, startedIn) { it.copy(isLoadingMore = true, loadMoreError = null) }
+            scope.launch {
+                try {
+                    // A refresh in flight lands the cursors this page reads from; the account's page places the rows.
+                    synchronized(this@AgentRepository) { inFlight?.job?.takeIf { it.isActive } }?.join()
+                    val cursor = synchronized(publishLock) { if (generation.get() == startedIn) nextCursor else null }
+                    if (cursor == null) {
+                        publish(backend, startedIn) { it.copy(isLoadingMore = false, hasMore = false) }
+                        return@launch
+                    }
+                    accountPage?.takeIf { !backend.isDemo }?.let { hook -> pending.track("account page") { runCatching { hook() }.exceptionOrNull()?.let { if (it is CancellationException) throw it } } }
+                    fetchMore(backend, startedIn, cursor, synchronized(publishLock) { legacyCursor })
+                } finally {
+                    pending.end(work)
+                    publish(backend, startedIn) { s -> if (s.isLoadingMore) s.copy(isLoadingMore = false) else s }
+                }
+            }.also { loadingMore = it }
         }
         job.join()
-        return if (synchronized(publishLock) { generation.get() == startedIn && !_state.value.isLoadingMore && _state.value.error == null }) RefreshOutcome.Refreshed else RefreshOutcome.Failed
+        return if (synchronized(publishLock) { generation.get() == startedIn && !_state.value.isLoadingMore && _state.value.loadMoreError == null }) RefreshOutcome.Refreshed else RefreshOutcome.Failed
     }
 
     private suspend fun fetchMore(backend: CursorBackend, startedIn: Int, cursor: String, legacy: String?) {
@@ -777,12 +1050,11 @@ class AgentRepository(
         val before = _state.value.agents
         val knownBefore = before.mapTo(HashSet()) { it.id }
         val ceiling = synchronized(publishLock) { pagedFloor }
-        publish { it.copy(isLoadingMore = true) }
         try {
             coroutineScope {
                 // The legacy list enriches the rows and never gates them: its page is read alongside, best effort.
                 val legacyPage = async { legacy?.let { runCatching { api.listAgentsV0(limit = PAGE_SIZE, cursor = it) }.getOrNull() } }
-                val page = api.listAgents(limit = PAGE_SIZE, cursor = cursor, includeArchived = true)
+                val page = pending.track("list page (older)") { api.listAgents(limit = PAGE_SIZE, cursor = cursor, includeArchived = true) }
                 val enrichment = legacyPage.await()
                 val more = page.nextCursor?.isNotBlank() == true
                 val pinned = prefs.localAgentState.first().pinnedIds
@@ -797,7 +1069,7 @@ class AgentRepository(
                         .let { s2 ->
                             s2.copy(agents = s2.agents.filter { it.id in seen || it.id !in knownBefore || it.createdAtMillis >= ceiling || it.createdAtMillis < pageFloor || it.createdAtMillis > startedAt - RECENT_WINDOW_MS || it.id in pinned })
                         }
-                        .copy(isLoadingMore = false, hasMore = more, error = null)
+                        .copy(isLoadingMore = false, hasMore = more, loadMoreError = null)
                 }
                 if (landed) synchronized(publishLock) {
                     if (generation.get() == startedIn) {
@@ -808,10 +1080,11 @@ class AgentRepository(
                     }
                 }
             }
-            materializeRecords(startedIn)
+            pending.track("account records by id") { materializeRecords(startedIn) }
         } catch (t: Throwable) {
             if (t is CancellationException) throw t
-            publish { it.copy(isLoadingMore = false, error = t.userMessage()) }
+            // The page's failure is the tail's to show, in the server's words, with Retry: the list above it stands.
+            publish { it.copy(isLoadingMore = false, loadMoreError = t.userMessage()) }
         }
     }
 
@@ -856,7 +1129,12 @@ class AgentRepository(
         // Everything published by this fetch belongs to the backend and session it started against; a demo / real
         // switch or a sign-out half-way through must not leak the old list into the new one.
         fun publish(transform: (AgentListState) -> AgentListState): Boolean = publish(backend, startedIn, transform)
+        firstPageLanded = false
         publish { it.copy(isRefreshing = it.isRefreshing || !silent, error = null) }
+        // The whole fetch is one item of work in flight — its pages, its passes and the moments between them — so the
+        // tail's row does not blink off between one call's end and the next one's start; the parts name themselves
+        // inside it for the diagnostics. Ended in `finally`: a fetch cut short leaves nothing registered.
+        val work = pending.begin("list refresh (${depth.name.lowercase()}${if (silent) ", silent" else ""})")
         try {
             var truncated = false
             var lastCursor: String? = null
@@ -866,29 +1144,60 @@ class AgentRepository(
             val seen = HashSet<String>()
             val pages = pagesToFetch(depth)
             var legacyRead = LegacyRead()
+            val pagesStartedAt = AppClock.now()
             coroutineScope {
                 // The legacy list is read further than the window: its pages carry the one execution status per agent
                 // the documented API has, so the pass over them is also the running scan (see [RunningScan]).
-                val legacy = async { fetchLegacy(api, windowPages = pages, scanPages = maxOf(pages, runningScanPages)) }
+                val legacy = async { pending.track("status scan (v0 pages)") { stats.timed("status scan (v0 pages)", calls = { r: LegacyRead -> r.pagesRead }, note = { r -> "${r.running.size} running" + if (r.complete) ", end reached" else "" }) { fetchLegacy(api, windowPages = pages, scanPages = maxOf(pages, runningScanPages)) } } }
                 var cursor: String? = null
                 do {
-                    val page = api.listAgents(limit = PAGE_SIZE, cursor = cursor, includeArchived = true)
+                    val page = pending.track("list page ${pagesRead + 1}") { api.listAgents(limit = PAGE_SIZE, cursor = cursor, includeArchived = true) }
                     pagesRead++
                     seen += page.items.map { it.id }
                     page.items.minOfOrNull { parseIsoMillis(it.createdAt) }?.let { windowFloor = minOf(windowFloor, it) }
                     if (page.items.isNotEmpty()) {
                         if (pagesRead == 1) prime?.let { withTimeoutOrNull(ACCOUNT_WORD_WAIT_MS) { it.join() } }
-                        publish { it.withPage(page.items) }
+                        // Rows the earlier legacy read knew are enriched as their page lands, not only at the end;
+                        // the demo's account word — which chats are Projects, which hang off which — is local and
+                        // free, so its rows are published placed from the first page, as the account's are.
+                        val enrichment = legacyRead.rows
+                        publish { s ->
+                            s.withPage(page.items)
+                                .let { withRows -> if (enrichment.isNotEmpty()) withRows.withLegacy(enrichment) else withRows }
+                                .let { if (backend.isDemo) it.withSources(demoSources).withAccountSnapshots(demoComposers) else it }
+                        }
+                    }
+                    if (pagesRead == 1) {
+                        // The first page is on screen and the status scan is about to land: the pull-to-refresh indicator
+                        // is let go here, and the rest of the pass — the older pages, the run records, the rows fetched
+                        // by id — settles underneath the tail's one row (see [PendingWork.show]).
+                        legacyRead = legacy.await()
+                        if (legacyRead.rows.isNotEmpty()) publish { it.withLegacy(legacyRead.rows) }
+                        if (legacyRead.pagesRead > 0) {
+                            _runningScan.update { it.copy(ids = legacyRead.running, scannedAtMillis = AppClock.now(), pagesRead = legacyRead.pagesRead, complete = legacyRead.complete) }
+                        }
+                        val more = page.nextCursor?.isNotBlank() == true && pagesRead < pages
+                        // Whether this fetch showed the indicator or a pull joined it and did: it is let go here, and
+                        // the tail's row stands for the rest of the work. A silent fetch nobody pulled on shows neither.
+                        firstPageLanded = true
+                        if (_state.value.isRefreshing) {
+                            // The row is raised before the indicator is let go, so no frame shows neither: the tail
+                            // takes over from the indicator in the same breath.
+                            pending.show()
+                            publish { it.copy(isRefreshing = false, hasMore = if (more) true else it.hasMore) }
+                            stats.spinnerReleased()
+                        }
                     }
                     cursor = page.nextCursor?.takeIf { it.isNotBlank() }
                 } while (cursor != null && pagesRead < pages)
                 truncated = cursor != null
                 lastCursor = cursor
                 legacyRead = legacy.await()
-                if (legacyRead.rows.isNotEmpty()) publish { it.withLegacy(legacyRead.rows) }
+                if (pagesRead > 1 && legacyRead.rows.isNotEmpty()) publish { it.withLegacy(legacyRead.rows) }
                 synchronized(publishLock) { if (generation.get() == startedIn) legacyCursor = legacyRead.windowCursor }
             }
-            verifyRunStatuses(api, before, startedAt) { transform -> publish(transform) }
+            stats.stage("v1 pages", pagesRead, pagesStartedAt, note = "${seen.size} rows" + if (truncated) ", more behind" else "")
+            pending.track("run records (verify)") { stats.timed("run records (verify)", calls = { n: Int -> n }) { verifyRunStatuses(api, before, startedAt) { transform -> publish(transform) } } }
             if (legacyRead.pagesRead > 0) {
                 _runningScan.update { it.copy(ids = legacyRead.running, scannedAtMillis = AppClock.now(), pagesRead = legacyRead.pagesRead, complete = legacyRead.complete) }
             }
@@ -903,13 +1212,16 @@ class AgentRepository(
             val landed = publish { s ->
                 s.withoutUnseen(seen, knownBefore, startedAt, pinned, floor)
                     .let { if (backend.isDemo) it.withSources(demoSources).withAccountSnapshots(demoComposers) else it }
-                    .copy(isRefreshing = false, hasLoaded = true, isFromCache = false, error = null, hasMore = truncated)
+                    // A page that failed before this refresh is moot: the window and its cursors are re-read here.
+                    .copy(isRefreshing = false, hasLoaded = true, isFromCache = false, error = null, hasMore = truncated, loadMoreError = null)
             }
+            if (!silent) stats.spinnerReleased()
             // Under the same lock as the publication: a completed fetch is the cue the account's pins are synced
             // on, and the previous account's must not give it.
             if (landed) synchronized(publishLock) {
                 if (generation.get() == startedIn) {
                     lastRefreshedAt = AppClock.now()
+                    lastRefreshDepth = depth
                     pagesLoaded = pagesRead.coerceAtLeast(1)
                     nextCursor = lastCursor
                     pagedFloor = if (complete) Long.MIN_VALUE else windowFloor
@@ -917,14 +1229,17 @@ class AgentRepository(
                 }
             }
             // The pass ends by reconciling the pages with what stands apart from them: the agents the running scan
-            // named that no page holds, and the pinned chats no page holds, are fetched by id.
+            // named that no page holds, the pinned chats no page holds and the roots the registry knows are fetched
+            // by id — the three passes side by side, each a few at a time (see [byId]), none waiting on another —
+            // and then every row still without its account record is asked for it, so the desktop's predicates
+            // place the rows the public endpoints brought bare.
             if (landed) {
-                materializeRunning(startedIn)
-                resolvePinned(startedIn)
-                materializeRoots(startedIn)
-                // Then every row still without its account record is asked for it, so the desktop's predicates
-                // place the rows the public endpoints brought bare.
-                materializeRecords(startedIn)
+                coroutineScope {
+                    launch { stats.timed("running scan: rows fetched by id", calls = { n: Int -> n }) { materializeRunning(startedIn) } }
+                    launch { stats.timed("pinned rows fetched by id", calls = { n: Int -> n }) { resolvePinned(startedIn) } }
+                    launch { stats.timed("registry roots fetched by id", calls = { n: Int -> n }) { materializeRoots(startedIn) } }
+                }
+                stats.timed("account records by id", calls = { n: Int -> n }) { materializeRecords(startedIn) }
             }
         } catch (t: Throwable) {
             if (t is CancellationException) throw t
@@ -932,6 +1247,11 @@ class AgentRepository(
                 val keepQuiet = silent && s.agents.isNotEmpty()
                 s.copy(isRefreshing = false, hasLoaded = true, error = if (keepQuiet) s.error else t.userMessage())
             }
+        } finally {
+            pending.end(work)
+            // A fetch that ends any other way — cut short with the indicator up — lets the indicator go with it: an
+            // indicator is a fetch in flight, never a flag left behind by one that is not.
+            publish { s -> if (s.isRefreshing) s.copy(isRefreshing = false) else s }
         }
     }
 
@@ -985,15 +1305,53 @@ class AgentRepository(
      * follow-up, a chat beyond the window — so the live tracking and the running count see it. A few per pass; the
      * next pass takes the rest.
      */
-    private suspend fun materializeRunning(startedIn: Int) {
+    private suspend fun materializeRunning(startedIn: Int): Int {
         val scan = _runningScan.value
         val held = _state.value.agents.mapTo(HashSet()) { it.id }
         val missing = scan.all.filter { it !in held }.take(maxMaterializedRunning)
-        for (id in missing) {
-            if (generation.get() != startedIn) return
-            loadDetail(id)
-        }
+        if (missing.isEmpty()) return 0
+        return pending.track("running rows by id (${missing.size})") { byId(missing, startedIn) { id -> loadDetail(id) } }
     }
+
+    /**
+     * Fetches by id, a few at a time rather than one after another: [ids] go through [fetch] under [BY_ID_POOL]
+     * concurrent calls, and an id whose row has landed meanwhile — brought by a page, by another pass fetching the
+     * same id — is not fetched again. Returns how many were fetched. Stops handing out ids once the list has been
+     * reset since [startedIn].
+     */
+    private suspend fun byId(ids: Collection<String>, startedIn: Int, fetch: suspend (String) -> Unit): Int {
+        if (ids.isEmpty()) return 0
+        val fetched = java.util.concurrent.atomic.AtomicInteger()
+        coroutineScope {
+            ids.distinct().forEach { id ->
+                launch {
+                    byIdPool.withPermit {
+                        if (generation.get() != startedIn) return@withPermit
+                        if (agent(id) != null) return@withPermit
+                        fetched.incrementAndGet()
+                        fetch(id)
+                    }
+                }
+            }
+        }
+        return fetched.get()
+    }
+
+    /**
+     * Fetches by id in flight at once, across the passes that do (see [byId]) — each a `GET /v1/agents/{id}`, its run
+     * record and its account record — few enough that the list's own pages, the transcripts and the account service
+     * are never queued behind them (OkHttp gives a host five connections), and that the host does not refuse them.
+     */
+    private val byIdPool = kotlinx.coroutines.sync.Semaphore(BY_ID_POOL)
+
+    /**
+     * Fetches by id the rows of [ids] the list does not hold, through the same pool as every other pass: for a
+     * Project's members its memberships named that no page brought. Returns how many were fetched.
+     */
+    suspend fun fetchMissing(ids: Collection<String>, startedIn: Int = token()): Int = byId(ids.filter { agent(it) == null }, startedIn) { id -> loadDetail(id) }
+
+    /** Fetches by id in flight, so two passes asking for the same row share one read (see [loadDetail]). */
+    private val inFlightById = ConcurrentHashMap<String, kotlinx.coroutines.Deferred<Result<Agent>>>()
 
     /**
      * A pinned chat is always shown, whatever page it would have been on, whatever it runs on and whatever it was
@@ -1001,21 +1359,21 @@ class AgentRepository(
      * will not give it (a chat the public API does not know), stood in from its account record where there is one.
      * A chat that could not be fetched is asked for again after [PINNED_RETRY_MS]; the diagnostics name it meanwhile.
      */
-    suspend fun resolvePinned(startedIn: Int = token()) {
+    suspend fun resolvePinned(startedIn: Int = token()): Int {
         // The demo's list is its whole dataset: nothing of it is beyond a page.
-        if (session.isDemo || !_state.value.hasLoaded || _state.value.isFromCache) return
-        pinnedMutex.withLock {
+        if (session.isDemo || !_state.value.hasLoaded || _state.value.isFromCache) return 0
+        return pinnedMutex.withLock {
             val pinned = prefs.localAgentState.first().pinnedIds
             val held = _state.value.agents.mapTo(HashSet()) { it.id }
             pinnedUnresolved.keys.retainAll(pinned)
             val now = AppClock.now()
             val due = pinned.filter { it !in held && (pinnedUnresolved[it]?.let { tried -> now >= tried } ?: true) }
-            for (id in due) {
-                if (generation.get() != startedIn) return
+            if (due.isEmpty()) return@withLock 0
+            pending.track("pinned rows by id (${due.size})") { byId(due, startedIn) { id ->
                 val fetched = loadDetail(id)
                 if (fetched.isSuccess) {
                     pinnedUnresolved.remove(id)
-                    continue
+                    return@byId
                 }
                 val record = runCatching { recordOf(id) }.getOrNull()
                 if (record != null && generation.get() == startedIn) {
@@ -1025,14 +1383,20 @@ class AgentRepository(
                     // Tried again after a while (offline, a server that is down); a chat the server says is gone,
                     // much later — the account may still come to know it once Extended mode is on.
                     val gone = (fetched.exceptionOrNull() as? CursorApiException)?.httpCode == 404
-                    pinnedUnresolved[id] = now + if (gone) PINNED_GONE_RETRY_MS else PINNED_RETRY_MS
+                    pinnedUnresolved[id] = now + if (gone) PINNED_GONE_RETRY_MS else retryDelayFor(fetched.exceptionOrNull())
                 }
-            }
+            } }
         }
     }
 
     /** The pinned ids the list does not hold and could not fetch, for the diagnostics. */
     fun unresolvedPinned(): Set<String> = pinnedUnresolved.keys.toSet()
+
+    /** How many pages of the list are loaded, for the diagnostics. */
+    fun pagesLoadedCount(): Int = synchronized(publishLock) { pagesLoaded }
+
+    /** Whether the list knows where its next page starts, for the diagnostics: [AgentListState.hasMore] without this is a tail that cannot move. */
+    fun hasNextCursor(): Boolean = synchronized(publishLock) { nextCursor != null }
 
     /**
      * Extended mode: every row the public API alone gave — a page's row before the account's round reached it, an
@@ -1042,30 +1406,42 @@ class AgentRepository(
      * per pass, the next pass takes the rest; a chat the account gave no record for is asked again after
      * [RECORD_RETRY_MS]. Nothing is asked in default mode or in the demo.
      */
-    suspend fun materializeRecords(startedIn: Int = token(), budget: Int = MAX_MATERIALIZED_RECORDS) {
-        if (session.isDemo || !_state.value.hasLoaded || _state.value.isFromCache || !capabilities().accountSession) return
-        recordMutex.withLock {
+    suspend fun materializeRecords(startedIn: Int = token(), budget: Int = MAX_MATERIALIZED_RECORDS): Int {
+        if (session.isDemo || !_state.value.hasLoaded || _state.value.isFromCache || !capabilities().accountSession) return 0
+        return recordMutex.withLock {
             val now = AppClock.now()
             val due = _state.value.agents
                 .filter { it.record == null && it.id !in pendingLaunches && (recordUnresolved[it.id]?.let { until -> now >= until } ?: true) }
                 .sortedWith(compareByDescending<Agent> { it.isRunning }.thenByDescending { it.updatedAtMillis })
                 .take(budget)
-            for (row in due) {
-                if (generation.get() != startedIn) return
-                val record = try {
-                    recordOf(row.id)
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (_: Throwable) {
-                    recordUnresolved[row.id] = now + PINNED_RETRY_MS
-                    continue
+            if (due.isEmpty()) return@withLock 0
+            val asked = java.util.concurrent.atomic.AtomicInteger()
+            pending.track("account records by id (${due.size})") { coroutineScope {
+                due.forEach { row ->
+                    launch {
+                        byIdPool.withPermit {
+                            if (generation.get() != startedIn) return@withPermit
+                            // A page or another pass may have brought the record meanwhile.
+                            if (agent(row.id)?.record != null) return@withPermit
+                            asked.incrementAndGet()
+                            val record = try {
+                                recordOf(row.id)
+                            } catch (e: CancellationException) {
+                                throw e
+                            } catch (t: Throwable) {
+                                recordUnresolved[row.id] = now + retryDelayFor(t)
+                                return@withPermit
+                            }
+                            if (record == null) {
+                                recordUnresolved[row.id] = now + RECORD_RETRY_MS
+                                return@withPermit
+                            }
+                            applyAccountSnapshots(listOf(record), startedIn)
+                        }
+                    }
                 }
-                if (record == null) {
-                    recordUnresolved[row.id] = now + RECORD_RETRY_MS
-                    continue
-                }
-                applyAccountSnapshots(listOf(record), startedIn)
-            }
+            } }
+            asked.get()
         }
     }
 
@@ -1124,9 +1500,9 @@ class AgentRepository(
      * A quiet row with no status is left at rest: `updatedAt` going quiet is what a finished run looks like, and
      * reading hundreds of old records would gain nothing. A record that cannot be read leaves its row as it is.
      */
-    private suspend fun verifyRunStatuses(api: CursorApi, before: Map<String, Agent>, startedAt: Long, publish: ((AgentListState) -> AgentListState) -> Boolean) {
+    private suspend fun verifyRunStatuses(api: CursorApi, before: Map<String, Agent>, startedAt: Long, publish: ((AgentListState) -> AgentListState) -> Boolean): Int {
         // A fetch that can no longer publish (backend switch, sign-out) has no rows of its own to settle.
-        if (!publish { it }) return
+        if (!publish { it }) return 0
         fun recent(agent: Agent) = agent.updatedAtMillis >= startedAt - VERIFY_RECENT_WINDOW_MS
         fun justActive(agent: Agent) = agent.updatedAtMillis >= startedAt - VERIFY_JUST_ACTIVE_WINDOW_MS
         fun newTurn(agent: Agent) = before[agent.id]?.latestRunId.let { it != null && it != agent.latestRunId }
@@ -1136,15 +1512,21 @@ class AgentRepository(
             .sortedWith(compareByDescending<Agent> { newTurn(it) }.thenByDescending { it.isRunning }.thenByDescending { it.updatedAtMillis })
             .take(MAX_VERIFIED_RUNS)
             .toList()
-        if (candidates.isEmpty()) return
+        if (candidates.isEmpty()) return 0
+        // Through the by-id pool: a dozen run records at once queued the list's own pages behind them on a phone.
         coroutineScope {
             candidates.map { agent ->
                 async {
-                    val run = runCatching { api.getRun(agent.id, agent.latestRunId!!) }.getOrNull() ?: return@async
-                    publish { s -> s.copy(agents = s.agents.map { if (it.id == agent.id) it.withLatestRun(run) else it }) }
+                    byIdPool.withPermit {
+                        val run = runCatching { api.getRun(agent.id, agent.latestRunId!!) }.getOrNull() ?: return@withPermit
+                        // As this device knows the run, read under the lock a cancel patches under: a Stop that landed
+                        // while the record was on its way is not undone by it.
+                        publish { s -> s.copy(agents = s.agents.map { if (it.id == agent.id) it.withLatestRun(known(agent.id, run)) else it }) }
+                    }
                 }
             }.awaitAll()
         }
+        return candidates.size
     }
 
     /**
@@ -1221,7 +1603,7 @@ class AgentRepository(
             val held = s.agents.mapTo(HashSet()) { it.id }
             val words = placements.entries.filter { (id, _) -> id !in held }.take(MAX_PERSISTED_PLACEMENTS).map { (id, p) -> CachedPlacement(id, p.parent.id, p.parent.kind, p.signal) }
             val records = pendingRecords.entries.filter { (id, _) -> id !in held }.map { (id, fields) -> CachedRecord(id, fields) }
-            Triple(cache.token(), s.agents.filterNot { it.id in pendingLaunches }, CachedLineage(words, roots = rootRecords.values.sortedByDescending { it.lastSeenMillis }.take(MAX_PERSISTED_PLACEMENTS), records = records))
+            Triple(cache.token(), s.agents.filterNot { it.id in pendingLaunches }, CachedLineage(words, roots = rootRecords.values.sortedByDescending { it.lastSeenMillis }.take(MAX_PERSISTED_PLACEMENTS), records = records, registryCompleteAtMillis = registryCompleteAtMillis))
         }
         cache.write(agents, token, lineage)
     }
@@ -1230,7 +1612,27 @@ class AgentRepository(
      * Loads the full agent record plus its latest run and folds them into the cached row. A [knownRun] the caller
      * already holds (from the runs list) is used instead of fetching it again when it is still the latest.
      */
-    suspend fun loadDetail(id: String, knownRun: RunDto? = null): Result<Agent> = runCatching {
+    suspend fun loadDetail(id: String, knownRun: RunDto? = null): Result<Agent> {
+        // Two passes asking for the same row at once — the running scan's and the pin's, a root's and a
+        // membership's — share one read rather than each making its own.
+        if (knownRun == null) {
+            inFlightById[id]?.let { return it.await() }
+            val deferred = kotlinx.coroutines.CompletableDeferred<Result<Agent>>()
+            val prior = inFlightById.putIfAbsent(id, deferred)
+            if (prior != null) return prior.await()
+            return try {
+                fetchDetail(id, null).also { deferred.complete(it) }
+            } catch (t: Throwable) {
+                deferred.complete(Result.failure(t))
+                throw t
+            } finally {
+                inFlightById.remove(id, deferred)
+            }
+        }
+        return fetchDetail(id, knownRun)
+    }
+
+    private suspend fun fetchDetail(id: String, knownRun: RunDto?): Result<Agent> = runCatching {
         val startedIn = token()
         val api = session.current.api
         val dto = api.getAgent(id)
@@ -1239,18 +1641,32 @@ class AgentRepository(
         } else {
             dto.latestRunId?.let { runId -> runCatching { api.getRun(id, runId) }.getOrNull() }
         }
-        val merged = dto.mergeInto(agent(id), run)
         // Extended mode: the row lands with its account record, as every row of the desktop's list does, so it is
         // published placed rather than published bare and moved once the record has been read.
-        val record = if (merged.record == null && !session.isDemo && capabilities().accountSession) runCatching { recordOf(id) }.getOrNull() else null
-        if (record != null && noteRecords(listOf(record), startedIn)) {
-            publish(null, startedIn) { s ->
-                val exists = s.agents.any { it.id == merged.id }
-                s.copy(agents = if (exists) s.agents.map { if (it.id == merged.id) merged else it } else listOf(merged) + s.agents).withAccountSnapshots(listOf(record))
+        val record = if (agent(id)?.record == null && !session.isDemo && capabilities().accountSession) runCatching { recordOf(id) }.getOrNull() else null
+        // Merged into the row as it is at publication, under the lock a cancel patches under, and with the run as
+        // this device knows it (see [known]): a Stop that landed while the record was on its way — the read a chat's
+        // load launched before it — is not undone by a record that predates it. A record whose latest run began
+        // before the run this device saw end since is that read: the turn moved on past it (see [endedBefore]), and
+        // the row keeps its own word on where the agent is — its latest run, that run's status, its lifecycle, its
+        // activity time — taking from the record only what is not about that (the repository, the branch, the name).
+        val merged = synchronized(publishLock) {
+            val row = agent(id)
+            val merged = if (row != null && run != null && endedBefore(id, run)) {
+                dto.mergeInto(row, null).copy(latestRunId = row.latestRunId, runStatus = row.runStatus, lifecycle = row.lifecycle, updatedAtMillis = row.updatedAtMillis)
+            } else {
+                dto.mergeInto(row, run?.let { known(id, it) })
             }
-            noteRunning(listOf(record), startedIn)
-        } else {
-            upsert(merged, startedIn)
+            if (record != null && noteRecords(listOf(record), startedIn)) {
+                publish(null, startedIn) { s ->
+                    val exists = s.agents.any { it.id == merged.id }
+                    s.copy(agents = if (exists) s.agents.map { if (it.id == merged.id) merged else it } else listOf(merged) + s.agents).withAccountSnapshots(listOf(record))
+                }
+                noteRunning(listOf(record), startedIn)
+            } else {
+                upsert(merged, startedIn)
+            }
+            merged
         }
         agent(id) ?: merged
     }
@@ -1313,21 +1729,25 @@ class AgentRepository(
      */
     suspend fun launch(request: LaunchRequest, modelDisplayName: String?, saveImages: Boolean = true, progress: UploadProgress = UploadProgress.NONE): Result<Launched> {
         val startedIn = token()
+        val onMachine = startsOnMachine(request)
+        val trace = LaunchTrace(request, onAccount = request.files.isNotEmpty() || onMachine)
+        request.agentId?.let { id -> synchronized(launchTraces) { launchTraces[id] = trace } }
         val result = runCatching {
             val api = session.current.api
-            val (dto, run) = if (request.files.isNotEmpty()) {
-                startWithFiles(api, request, progress)
+            val (dto, run) = if (request.files.isNotEmpty() || onMachine) {
+                startOnAccount(api, request, progress, trace, onMachine)
             } else try {
                 // Off the main thread: base64-encoding the images and serializing the body happen before the call is
                 // enqueued, on whichever thread makes it.
-                withContext(Dispatchers.IO) { api.createAgent(request.toCreateAgentDto()) }.let { it.agent to it.run }
+                withContext(Dispatchers.IO) { api.createAgent(request.toCreateAgentDto()) }.let { it.agent to it.run }.also { (_, run) -> trace.accepted(run) }
             } catch (t: Throwable) {
                 if (t is CancellationException) throw t
-                val id = request.agentId ?: throw t
+                val id = request.agentId ?: throw machineRefusal(request, t)
                 when {
-                    t.toCursorError()?.code == AGENT_ID_CONFLICT -> adopt(api, id)
-                    t.isLostReply() -> recoverLostReply(api, id) ?: throw LaunchUnansweredException(t)
-                    else -> throw t
+                    t.toCursorError()?.code == AGENT_ID_CONFLICT -> adopt(api, id).also { (_, run) -> trace.adopted("after 409 agent_id_conflict", run) }
+                    t.isLostReply() -> recoverLostReply(api, id)?.also { (_, run) -> trace.adopted("after a lost reply (${t.javaClass.simpleName})", run) }
+                        ?: throw LaunchUnansweredException(t)
+                    else -> throw machineRefusal(request, t)
                 }
             }
             // The provisional row, when there is one, fills in what the server's record leaves blank — its name
@@ -1350,11 +1770,80 @@ class AgentRepository(
             Launched(agent, run)
         }
         if (result.isFailure) {
+            val failure = result.exceptionOrNull()
+            trace.failed(failure)
             request.agentId?.let { discardLaunch(it, startedIn) }
-            result.exceptionOrNull()?.let { if (it is CancellationException) throw it }
+            if (failure is CancellationException) throw failure
         }
         return result
     }
+
+    /** [agentId] was started from this phone other than by [launch] (a side chat, a Project): it may read as unread here. */
+    suspend fun markStartedHere(agentId: String) {
+        prefs.markTouchedHere(agentId)
+    }
+
+    /**
+     * One launch's decision and its outcome, for the diagnostics' `send:` block (see [SendDiagnostics.LaunchLine]):
+     * which request it went out as, what it named as the place to run, and what came of it.
+     */
+    private class LaunchTrace(request: LaunchRequest, onAccount: Boolean) {
+        val atMillis: Long = AppClock.now()
+        /** `account` for the account's start (a prompt with files, a machine in Extended mode), `v1` for the documented create. */
+        val via: String = if (onAccount) "account" else "v1"
+        val target: String = request.launchTarget(via)
+        val files: Int = request.files.size
+        val images: Int = request.images.size
+        @Volatile var outcome: String = "in flight"
+        @Volatile var detail: String? = null
+
+        fun accepted(run: RunDto?) = settle("accepted" + run.tail())
+
+        /** The chat an earlier attempt created was taken over ([how] says what told the launch so), with its run when that could be read. */
+        fun adopted(how: String, run: RunDto?) = settle("adopted $how" + run.tail())
+
+        fun settle(outcome: String, detail: String? = null) {
+            this.outcome = outcome
+            this.detail = detail?.let(::redact)
+        }
+
+        fun failed(t: Throwable?) {
+            if (outcome != "in flight") return
+            val error = t?.toCursorError() ?: (t as? MachineRepositoryRefusedException)?.error
+            val connect = t as? ConnectRpcException ?: t?.cause as? ConnectRpcException
+            settle(
+                when {
+                    t is CancellationException -> "cancelled"
+                    t is LaunchCancelledException -> "stopped from the chat"
+                    t is LaunchUnansweredException -> "unanswered" + (t.cause?.let { " (${it.javaClass.simpleName})" } ?: "")
+                    error != null -> "refused http=${error.httpCode} code=${error.code}"
+                    connect != null -> "refused by the account http=${connect.httpCode}" + (connect.code?.let { " code=$it" } ?: "")
+                    t is IOException -> "no answer (${t.javaClass.simpleName})"
+                    else -> "failed before the request (${t?.javaClass?.simpleName ?: "-"})"
+                },
+                // The server's words when it gave any (the API's body, the account's reason); the exception's otherwise.
+                error?.message ?: t?.message,
+            )
+        }
+
+        fun line(): SendDiagnostics.LaunchLine = SendDiagnostics.LaunchLine(Instant.ofEpochMilli(atMillis).toString(), via, target, files, images, outcome, detail)
+
+        private companion object {
+            fun RunDto?.tail(): String = this?.let { " run=${ProjectDiagnostics.tail(it.id)}" } ?: ""
+
+            /** The server's words without any id, URL or quoted text, as the export prints them. */
+            fun redact(text: String): String =
+                text.replace(Regex("""bc-[A-Za-z0-9-]+"""), "bc-…").replace(Regex("""https?://[^\s)"]+"""), "<url>").replace(Regex("\"[^\"]*\""), "\"…\"").take(160)
+        }
+    }
+
+    /** The launches made from here this process, by chat id, the newest [MAX_LAUNCH_TRACES] kept; cleared with the list. */
+    private val launchTraces = object : LinkedHashMap<String, LaunchTrace>(16, 0.75f, false) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, LaunchTrace>?): Boolean = size > MAX_LAUNCH_TRACES
+    }
+
+    /** How [agentId] was launched from this device, and how that ended (see [SendDiagnostics.LaunchLine]); null for a chat not launched here this process. */
+    fun launchDiagnostics(agentId: String): SendDiagnostics.LaunchLine? = synchronized(launchTraces) { launchTraces[agentId] }?.line()
 
     /**
      * A launch whose prompt carries files, the way the desktop starts one: the files are up already, from the moment
@@ -1363,35 +1852,93 @@ class AgentRepository(
      * [ConnectAgentStartApi][com.cursorforandroid.data.api.ConnectAgentStartApi]); a file without one is uploaded here first. The chat is then
      * read back through the documented API under the id the request minted — the account answers with its record,
      * not a run, and the list and the transcript are built from `GET /v1/agents/{id}` like every other chat's; the
-     * first run is read once it is named, asked for a few times as [recoverLostReply] does. A machine or pool is
-     * refused here, before anything is sent: the desktop's private-worker start has no equivalent in this request.
+     * first run is read once it is named, asked for a few times as [recoverLostReply] does. A pool, or a machine with
+     * files, is refused here, before anything is sent.
+     *
+     * [onMachine] (see [startsOnMachine]): the same start on one of the user's machines, as the desktop starts one
+     * there — `use_private_worker` with the machine's labels (see `ConnectAgentStartApi`), which Cursor routes to the
+     * machine's own checkout without asking its GitHub app about the repository. A refusal comes back as
+     * [MachineStartRefusedException]: the account's words and what was asked.
      */
-    private suspend fun startWithFiles(api: CursorApi, request: LaunchRequest, progress: UploadProgress): Pair<AgentDto, RunDto?> {
-        val id = requireNotNull(request.agentId) { "A launch with files needs the client-minted agent id." }
+    private suspend fun startOnAccount(api: CursorApi, request: LaunchRequest, progress: UploadProgress, trace: LaunchTrace, onMachine: Boolean): Pair<AgentDto, RunDto?> {
+        val id = requireNotNull(request.agentId) { "A launch on the account needs the client-minted agent id." }
         val startApi = start ?: throw IllegalStateException(FILES_NEED_EXTENDED)
-        val uploader = uploads ?: throw IllegalStateException(FILES_NEED_EXTENDED)
-        if (!capabilities().promptFiles) throw IllegalStateException(FILES_NEED_EXTENDED)
-        if (request.env.type == EnvType.POOL || request.env.type == EnvType.MACHINE) throw IllegalArgumentException(FILES_NEED_CLOUD)
-        // The files went up when they were attached and carry their references; one that did not is uploaded here.
-        val uploaded = uploader().ensure(request.files, progress)
-        startApi().start(
-            StartRequest(
-                agentId = id,
-                text = request.prompt,
-                images = request.images,
-                files = uploaded,
-                repoUrl = request.repoUrl,
-                ref = request.ref,
-                environmentName = request.env.apiName,
-                modelId = request.modelId,
-                modelParams = request.modelParams,
-                planMode = request.planMode,
-                autoCreatePr = request.autoCreatePr,
-                name = request.name,
-                mcpServers = request.mcpServers,
-            ),
+        val uploaded = if (request.files.isEmpty()) emptyList() else {
+            val uploader = uploads ?: throw IllegalStateException(FILES_NEED_EXTENDED)
+            if (!capabilities().promptFiles) throw IllegalStateException(FILES_NEED_EXTENDED)
+            if (request.env.type == EnvType.POOL || request.env.type == EnvType.MACHINE) throw IllegalArgumentException(FILES_NEED_CLOUD)
+            // The files went up when they were attached and carry their references; one that did not is uploaded here.
+            uploader().ensure(request.files, progress)
+        }
+        val machine = if (onMachine) MachineStart(name = requireNotNull(request.env.apiName), worker = request.worker, ownerUserId = signedInUserId()) else null
+        val startRequest = StartRequest(
+            agentId = id,
+            text = request.prompt,
+            images = request.images,
+            files = uploaded,
+            repoUrl = request.repoUrl,
+            ref = request.ref,
+            environmentName = request.env.apiName.takeIf { machine == null },
+            modelId = request.modelId,
+            modelParams = request.modelParams,
+            planMode = request.planMode,
+            autoCreatePr = request.autoCreatePr,
+            name = request.name,
+            mcpServers = request.mcpServers,
+            machine = machine,
         )
-        return recoverLostReply(api, id) ?: throw LaunchUnansweredException(IOException("The chat was started on your account but has not appeared in the API yet."))
+        val record = try {
+            startApi().start(startRequest)
+        } catch (t: ConnectRpcException) {
+            if (machine != null) throw MachineStartRefusedException(t) else throw t
+        }
+        recoverLostReply(api, id)?.let { (dto, run) -> return (dto to run).also { trace.accepted(run) } }
+        // The account started the chat and said so; the documented API has not listed it in the moments since. The
+        // chat exists, so the row stands — from the account's record and what the request asked for — rather than
+        // being rolled back as if nothing had been created: the list's next read brings the API's record, and the
+        // transcript loads when the API has the chat. Sending the draft again would only start a second chat.
+        trace.settle("stood in from the account's record, not listed by the API after $lostReplyProbes reads")
+        return request.standIn(id, record.name) to null
+    }
+
+    /**
+     * Whether [request] goes to one of the user's machines the way the desktop sends one there (the account's start;
+     * Extended mode, `machineStart`): a machine with a repository. A machine without one takes the documented request,
+     * which the desktop has no start for either (`Qfm`: "Select a repository with an owner and name").
+     */
+    private suspend fun startsOnMachine(request: LaunchRequest): Boolean =
+        request.env.type == EnvType.MACHINE && request.env.apiName != null && request.repoUrl != null && request.files.isEmpty() &&
+            start != null && !session.current.isDemo && capabilities().machineStart
+
+    /** The signed-in account's user id, whose machines a start names (`private_worker_owner_filter`), when the worker's listing did not say. */
+    private fun signedInUserId(): Long? = (session.state.value as? SessionState.SignedIn)?.user?.userId?.takeIf { it > 0 }
+
+    /**
+     * [t] as the composer words it, and for a machine the documented request could not start on its repository —
+     * Cursor checks a machine's repository through its GitHub app (`integration_not_connected`, `repository_access`)
+     * — with the one line that says what does start it.
+     */
+    private fun machineRefusal(request: LaunchRequest, t: Throwable): Throwable {
+        if (request.env.type != EnvType.MACHINE) return t
+        val error = t.toCursorError() ?: return t
+        if (error.code !in MACHINE_REPOSITORY_REFUSALS) return t
+        return MachineRepositoryRefusedException(error)
+    }
+
+    /** The row for a chat the account created under [id] and the API has not listed yet: the record's name over the request's facts. */
+    private fun LaunchRequest.standIn(id: String, recordName: String?): AgentDto {
+        val now = Instant.ofEpochMilli(AppClock.now()).toString()
+        return AgentDto(
+            id = id,
+            name = recordName?.trim()?.takeIf { it.isNotEmpty() },
+            status = "ACTIVE",
+            env = env.toEnvDto() ?: AgentEnvDto(type = "cloud"),
+            url = "https://cursor.com/agents/$id",
+            createdAt = now,
+            updatedAt = now,
+            latestRunId = null,
+            repos = listOfNotNull(repoUrl?.let { RepoConfigDto(url = it, startingRef = ref?.ifBlank { null }) }),
+        )
     }
 
     /** The agent an earlier attempt created under the client-minted [id], with its latest run when that can be read. */
@@ -1453,12 +2000,21 @@ class AgentRepository(
                 ),
             )
         }
+        noteFollowUp(agentId, response.run, modelId, modelParams, modelDisplayName, startedIn)
+        response.run
+    }
+
+    /**
+     * The row after the server took a follow-up as [run]: running on it, active, touched now, and switched to the
+     * model the request named (see [switchedTo]). What [followUp] does with the server's answer, and what a caller
+     * does with a run it found on the server after the answer was lost (see `ConversationRepository.sendStaged`).
+     */
+    fun noteFollowUp(agentId: String, run: RunDto, modelId: String? = null, modelParams: List<ModelParam> = emptyList(), modelDisplayName: String? = null, startedIn: Int = token()) {
         patch(agentId, startedIn) { current ->
             current.switchedTo(modelId, modelParams, modelDisplayName)
-                .copy(runStatus = RunStatus.parse(response.run.status), latestRunId = response.run.id, lifecycle = AgentLifecycle.ACTIVE)
+                .copy(runStatus = RunStatus.parse(run.status), latestRunId = run.id, lifecycle = AgentLifecycle.ACTIVE)
                 .touched(AppClock.now())
         }
-        response.run
     }
 
     /**
@@ -1482,13 +2038,15 @@ class AgentRepository(
      * documented API cannot carry (see `SteeringApi.addFollowup`). [send] answers with the id of the run the account
      * started, or null when it named none; the row is updated the way [followUp] updates it, the run stamped now
      * since the account reports no record for it. Null from [send] is success with no run to stream: the caller
-     * reloads the chat instead.
+     * reloads the chat instead. A message [queued] behind a turn under way — asked with the run the account named,
+     * once it has answered — leaves the row on that turn, its run and its status: the account has started nothing.
      */
     suspend fun followUpVia(
         agentId: String,
         modelId: String? = null,
         modelParams: List<ModelParam> = emptyList(),
         modelDisplayName: String? = null,
+        queued: (runId: String?) -> Boolean = { false },
         send: suspend () -> String?,
     ): Result<RunDto?> = runCatching {
         val startedIn = token()
@@ -1496,10 +2054,14 @@ class AgentRepository(
         val now = AppClock.now()
         val stamp = Instant.ofEpochMilli(now).toString()
         val run = runId?.let { RunDto(id = it, agentId = agentId, status = RunStatus.CREATING.name, createdAt = stamp, updatedAt = stamp) }
+        val behind = queued(runId)
         patch(agentId, startedIn) { current ->
-            current.switchedTo(modelId, modelParams, modelDisplayName)
-                .copy(runStatus = RunStatus.CREATING, latestRunId = run?.id ?: current.latestRunId, lifecycle = AgentLifecycle.ACTIVE)
-                .touched(now)
+            val switched = current.switchedTo(modelId, modelParams, modelDisplayName)
+            if (behind) {
+                switched.copy(lifecycle = AgentLifecycle.ACTIVE).touched(now)
+            } else {
+                switched.copy(runStatus = RunStatus.CREATING, latestRunId = run?.id ?: current.latestRunId, lifecycle = AgentLifecycle.ACTIVE).touched(now)
+            }
         }
         run
     }
@@ -1507,7 +2069,12 @@ class AgentRepository(
     suspend fun cancelRun(agentId: String, runId: String): Result<Unit> = runCatching {
         val startedIn = token()
         session.current.api.cancelRun(agentId, runId)
-        patch(agentId, startedIn) { it.copy(runStatus = RunStatus.CANCELLED, lifecycle = AgentLifecycle.IDLE) }
+        // Remembered and patched as one step: a record read landing between the two would put the row back to
+        // running for the run just stopped, and the memory is what tells the next read not to.
+        synchronized(publishLock) {
+            if (generation.get() == startedIn) endedRuns[agentId] = EndedRun(runId, RunStatus.CANCELLED, startOf(agentId, runId))
+            patch(agentId, startedIn) { it.copy(runStatus = RunStatus.CANCELLED, lifecycle = AgentLifecycle.IDLE) }
+        }
     }
 
     suspend fun archive(agentId: String): Result<Unit> = setArchived(agentId, archived = true)
@@ -1591,7 +2158,7 @@ class AgentRepository(
         var kept = false
         composers.forEach { snap ->
             if (snap.scope == AgentScope.PROJECT_ROOT) {
-                noteRoot(KnownRoot(snap.id, snap.name, snap.projectAppearance, snap.archived == true, LineageSignal.ACCOUNT_RECORD, now, flagged = true, record = snap.record ?: RecordFields(projectMetadata = "{}")))
+                noteRoot(KnownRoot(snap.id, snap.name, snap.projectAppearance, snap.archived == true, LineageSignal.ACCOUNT_RECORD, now, flagged = true, record = snap.record ?: RecordFields(projectMetadata = "{}"), activityAtMillis = snap.activityAtMillis))
             } else if (rootRecords[snap.id]?.flagged == true) {
                 revalidateRoot(snap.id, flagged = false)
             }
@@ -1627,11 +2194,14 @@ class AgentRepository(
             if (generation.get() == startedIn) {
                 val now = AppClock.now()
                 _runningScan.update {
-                    it.copy(
-                        accountIds = composers.filter { c -> c.isRunning }.mapTo(LinkedHashSet()) { c -> c.id },
-                        accountAtMillis = now,
-                        accountWord = it.accountWord + composers.filter { c -> c.status != null }.associate { c -> c.id to RunningScan.AccountWord(c.isRunning, now) },
-                    )
+                    // The account's latest word on each composer named, merged into what it said before: the running
+                    // set is every composer those words call running — the same set whichever batch came last, the
+                    // list's page of two hundred, a discovery pass's thousand or one record read by id. Taking each
+                    // batch's running composers as the set made it flap with the order the batches landed in (a
+                    // record read by id emptied it), and with it the running count and how many rows the next pass
+                    // fetched by id.
+                    val words = it.accountWord + composers.filter { c -> c.status != null }.associate { c -> c.id to RunningScan.AccountWord(c.isRunning, now) }
+                    it.copy(accountIds = words.filterValues { w -> w.running }.keys, accountAtMillis = now, accountWord = words)
                 }
             }
         }
@@ -1646,8 +2216,31 @@ class AgentRepository(
         source = source?.name,
     )
 
-    /** [materializeRunning] for the pin sync's round, once the account list has landed. */
-    suspend fun reconcileRunning(startedIn: Int = token()) = materializeRunning(startedIn)
+    /** [materializeRunning] for the pin sync's round, once the account list has landed; how many rows it fetched. */
+    suspend fun reconcileRunning(startedIn: Int = token()): Int = materializeRunning(startedIn)
+
+    /**
+     * When a discovery pass last read the whole account list (to its end, or as far as a pass may), this process or
+     * an earlier one (kept on disk with the registry, see [persist]). Only then is the registry the account's, and
+     * only then may a pass stop at the page older than the oldest Project it knows (see
+     * `ProjectRepository.discoverRoots`); null on a fresh install, on a disk an older build wrote, and after a reset.
+     */
+    @Volatile var registryCompleteAtMillis: Long? = null
+        private set
+
+    /** A discovery pass read the whole account list: the registry is complete from here on, on disk too. */
+    fun markRegistryComplete(atMillis: Long = AppClock.now()) {
+        registryCompleteAtMillis = atMillis
+        // The registry's persistence cue: the flag goes to the disk with the next write.
+        registryChanges.update { it + 1 }
+    }
+
+    /**
+     * How deep the last completed fetch went: a [RefreshDepth.Deep] one — the user asking for everything — is the cue
+     * for the account layer to read the whole account list rather than stopping at the registry's oldest Project.
+     */
+    @Volatile var lastRefreshDepth: RefreshDepth = RefreshDepth.Full
+        private set
 
     private fun AgentListState.withAccountSnapshots(composers: List<ComposerSnapshot>): AgentListState {
         if (composers.isEmpty()) return this
@@ -1777,12 +2370,21 @@ class AgentRepository(
         private const val MAX_MATERIALIZED_ROOTS = 8
         /** Rows without an account record, asked for one by id per pass (see [materializeRecords]). */
         private const val MAX_MATERIALIZED_RECORDS = 16
+        /** Fetches by id in flight at once, across the passes (see [byId]). */
+        private const val BY_ID_POOL = 2
+        /** A row whose fetch failed in passing — a refusal, a dropped connection — is asked for again after this long. */
+        const val TRANSIENT_RETRY_MS = 30_000L
+        /** How long the rows without a record wait for the account's pages before being asked for one by one. */
+        const val RECORD_DEBOUNCE_MS = 4_000L
         /** Records of chats the list does not hold, kept for the rows to come (see [pendingRecords]). */
         private const val MAX_PENDING_RECORDS = 3_000
         /** A row the account gave no record for is asked again after this long. */
         const val RECORD_RETRY_MS = 10 * 60_000L
         /** How long a stamp made by an action here stands over a record that has not caught up with it (the desktop keeps its stamp until the next list refresh). */
         const val ACTION_GRACE_MS = 5 * 60_000L
+        /** How many of an agent's newest runs are kept by their start (see [runStarts]): the turns a stale read can still name. */
+        private const val RUN_STARTS_KEPT = 8
+
         /** How long a fetch's first publication waits for the account's list (see [accountPrime]). */
         const val ACCOUNT_WORD_WAIT_MS = 4_000L
         /**
@@ -1801,9 +2403,14 @@ class AgentRepository(
         private const val AGENT_ID_CONFLICT = "agent_id_conflict"
         const val FILES_NEED_EXTENDED = "Attaching files needs Extended mode; turn it on in Settings, or take the files off."
         const val FILES_NEED_CLOUD = "Files can go on a new chat that runs on Cursor's cloud only. Start it on Cloud, or attach them in a follow-up once it is running."
+        const val MACHINE_NEEDS_EXTENDED = "A machine's repository that isn't on a GitHub owner with Cursor's GitHub app starts only in Extended mode (Settings › Advanced)."
+        /** How the documented create refuses a machine's repository its GitHub app cannot vouch for. */
+        val MACHINE_REPOSITORY_REFUSALS = setOf("integration_not_connected", "repository_access")
         /** Reads of the chat by id after a launch's reply was lost, and the wait between them: about a quarter of a minute in all. */
         const val LOST_REPLY_PROBES = 5
         const val LOST_REPLY_PROBE_DELAY_MS = 3_000L
+        /** Launches remembered for the diagnostics, by chat id. */
+        private const val MAX_LAUNCH_TRACES = 32
         /** Same cap as `POST /v1/agents` `name` and the official rename field. */
         private const val MAX_NAME_LENGTH = 100
         /** Why [rename] refuses with Extended mode off; the screens hide the action, this is for whatever still asks. */

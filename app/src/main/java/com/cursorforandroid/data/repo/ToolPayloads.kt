@@ -1,6 +1,7 @@
 package com.cursorforandroid.data.repo
 
 import com.cursorforandroid.domain.DiffStats
+import com.cursorforandroid.domain.FileFormat
 import com.cursorforandroid.domain.GoalStatus
 import com.cursorforandroid.domain.ToolKind
 import com.cursorforandroid.domain.ToolNames
@@ -55,7 +56,8 @@ object ToolPayloads {
         return when (kind) {
             ToolKind.Edit -> diff(arguments, value)
             ToolKind.Create -> written(arguments, value)
-            ToolKind.Read -> read(arguments, value)
+            ToolKind.Read -> read(arguments, value, images, callId)
+            ToolKind.Grep, ToolKind.Glob, ToolKind.List -> hits(kind, arguments, value)
             ToolKind.Image -> image(arguments, value, images, callId)
             ToolKind.Task -> subagent(arguments, value)
             ToolKind.Question -> question(arguments, value)
@@ -101,8 +103,13 @@ object ToolPayloads {
     private fun coordinator(name: String, args: JsonObject?, value: JsonObject?): ToolPayload? {
         val tool = ToolNames.coordinatorTool(name) ?: return null
         if (tool == ToolNames.USER_MESSAGE_TOOL) {
-            val message = coordinatorMessage(args) ?: value?.deepString("message", "text") ?: return null
-            return ToolPayload.CoordinatorMessage(ToolPayloadLimits.clip(message).first)
+            // The text is the arguments' alone: neither tool's result carries it (`SendMessageResult.success` is a
+            // timestamp and a message id, `SendToUserResult.success` empty), and a result's `message` is a status
+            // note, not the coordinator's word. Without arguments the call is a message without its text (see
+            // ToolCallMapper), never one given another field's words.
+            val message = coordinatorMessage(args) ?: return null
+            // The server's id for the delivered message (`SendMessageResult.success.messageId`), when the result carries it.
+            return ToolPayload.CoordinatorMessage(ToolPayloadLimits.clip(message).first, messageId = value?.deepString("messageId", "message_id"))
         }
         val note = value?.deepString("message")
         val argAgent = args.string(AGENT_ID_KEYS)
@@ -115,6 +122,8 @@ object ToolPayloads {
                 title = args.string(listOf("name")),
                 note = note,
                 reported = resultAgent != null,
+                model = args.string(listOf("model", "model_id", "modelId")),
+                workerId = args.string(listOf("worker_id", "workerId")),
             )
             "send_to_agent" -> ToolPayload.WorkerAction(
                 kind = ToolPayload.WorkerAction.Kind.Messaged,
@@ -122,6 +131,7 @@ object ToolPayloads {
                 text = args.string(listOf("message"))?.let { ToolPayloadLimits.clip(it, PROMPT_CHARS).first },
                 title = args.string(listOf("title")),
                 note = value?.deepString("delivered_as", "deliveredAs")?.let { "Delivered as ${it.lowercase().replace('_', ' ')}" } ?: note,
+                delivery = delivery(args.string(listOf("delivery"))) ?: delivery(value?.deepString("delivered_as", "deliveredAs")),
             )
             "get_agent_status" -> {
                 val reported = (value?.deep("workers") as? JsonArray)?.mapNotNull { element ->
@@ -229,18 +239,95 @@ object ToolPayloads {
         )
     }
 
-    private fun read(args: JsonObject?, value: JsonObject?): ToolPayload? {
-        val text = value?.deepString("content", "text", "contents") ?: return null
+    /**
+     * `read`: the text the agent saw (`ReadToolSuccess.content`), or — for a picture — the bytes the read tool hands
+     * the model instead (`output.data`, base64 in proto3 JSON), kept on the device like a generated image so the
+     * row opens it without another read. A read of a range names where it starts, so its lines are numbered as the
+     * file's.
+     */
+    private fun read(args: JsonObject?, value: JsonObject?, images: GeneratedImageSink?, callId: String): ToolPayload? {
         val path = args.string(PATH_KEYS) ?: value.string(PATH_KEYS) ?: return null
+        val text = value?.deepString("content", "text", "contents")
+        if (text == null) {
+            val data = value?.deepString("data") ?: return null
+            val bytes = runCatching { Base64.getMimeDecoder().decode(data.substringAfter("base64,").trim()) }.getOrNull() ?: return null
+            val format = FileFormat.sniff(bytes)?.takeIf { it.isImage } ?: return null
+            val src = images?.save(callId, bytes, format.mimeType)
+                ?: if (data.length <= ToolPayloadLimits.MAX_INLINE_IMAGE_CHARS) "data:${format.mimeType};base64,${data.substringAfter("base64,").trim()}" else null
+            return ToolPayload.ReadMedia(path, src, format.mimeType)
+        }
         val (clipped, truncated) = ToolPayloadLimits.clip(text)
+        val start = (args.int("start_line_one_indexed", "startLine", "start_line") ?: args.int("offset"))?.takeIf { it > 1 }
         return ToolPayload.FileContent(
             path = path,
             content = clipped,
             kind = ToolPayload.FileContent.Kind.Read,
             totalLines = value.deepInt("totalLines", "total_lines"),
             fileSize = value.deepLong("fileSize", "file_size"),
-            truncated = truncated,
+            truncated = truncated || value.deepBool("exceededLimit", "exceeded_limit") == true,
+            startLine = start,
         )
+    }
+
+    /**
+     * The files a search or a listing found, by the shapes of `agent.v1.GrepSuccess` (`workspaceResults`: a map from
+     * the searched root to a `GrepUnionResult` — `content.matches[{file, matches[{lineNumber, content}]}]`,
+     * `files.files[]` or `count.counts[{file, count}]`), `GlobToolSuccess` (`path`, `files[]`) and `LsSuccess`
+     * (`directoryTreeRoot {absPath, childrenFiles[{name}], childrenDirs[…]}`), in proto3 JSON's spelling and the
+     * proto's. A path relative to the root it was found under is joined to it, so every hit names a file the row can open.
+     */
+    private fun hits(kind: ToolKind, args: JsonObject?, value: JsonObject?): ToolPayload? {
+        if (value == null) return null
+        val found = ArrayList<ToolPayload.FileHits.Hit>()
+        var truncated = false
+        fun add(path: String?, root: String?, line: Int? = null, text: String? = null) {
+            val clean = path?.trim()?.takeIf { it.isNotEmpty() } ?: return
+            if (found.size >= ToolPayloadLimits.MAX_HITS) {
+                truncated = true
+                return
+            }
+            val joined = if (clean.startsWith("/") || root.isNullOrBlank() || root == ".") clean else root.trimEnd('/') + "/" + clean.removePrefix("./")
+            found += ToolPayload.FileHits.Hit(joined, line, text?.trim()?.take(HIT_TEXT_CHARS))
+        }
+        when (kind) {
+            ToolKind.Grep -> {
+                val roots = (value["workspaceResults"] ?: value["workspace_results"]) as? JsonObject
+                roots?.forEach { (root, union) ->
+                    val result = union as? JsonObject ?: return@forEach
+                    (result["content"] as? JsonObject)?.let { content ->
+                        (content["matches"] as? JsonArray)?.forEach { fileMatch ->
+                            val obj = fileMatch as? JsonObject ?: return@forEach
+                            val first = (obj["matches"] as? JsonArray)?.firstNotNullOfOrNull { (it as? JsonObject)?.takeIf { m -> (m["isContextLine"] ?: m["is_context_line"])?.let { c -> (c as? JsonPrimitive)?.booleanOrNull } != true } }
+                            add(obj.string(listOf("file", "path")), root, first?.let { (it["lineNumber"] ?: it["line_number"]) as? JsonPrimitive }?.intOrNull, first?.string(listOf("content")))
+                        }
+                        if (content.bool("clientTruncated", "client_truncated", "ripgrepTruncated", "ripgrep_truncated") == true) truncated = true
+                    }
+                    (result["files"] as? JsonObject)?.let { files ->
+                        (files["files"] as? JsonArray)?.forEach { add((it as? JsonPrimitive)?.contentOrNull, root) }
+                        if (files.bool("clientTruncated", "client_truncated", "ripgrepTruncated", "ripgrep_truncated") == true) truncated = true
+                    }
+                    (result["count"] as? JsonObject)?.let { counts ->
+                        (counts["counts"] as? JsonArray)?.forEach { add((it as? JsonObject)?.string(listOf("file", "path")), root) }
+                    }
+                }
+            }
+            ToolKind.Glob -> {
+                val root = value.string(listOf("path")) ?: args.string(listOf("target_directory", "targetDirectory"))
+                (value["files"] as? JsonArray)?.forEach { add((it as? JsonPrimitive)?.contentOrNull, root) }
+                if (value.bool("clientTruncated", "client_truncated", "ripgrepTruncated", "ripgrep_truncated") == true) truncated = true
+            }
+            else -> {
+                val tree = (value["directoryTreeRoot"] ?: value["directory_tree_root"]) as? JsonObject
+                fun walk(node: JsonObject, depth: Int) {
+                    val dir = node.string(listOf("absPath", "abs_path"))
+                    ((node["childrenFiles"] ?: node["children_files"]) as? JsonArray)?.forEach { add((it as? JsonObject)?.string(listOf("name")), dir) }
+                    if (depth < MAX_TREE_DEPTH) ((node["childrenDirs"] ?: node["children_dirs"]) as? JsonArray)?.forEach { child -> (child as? JsonObject)?.let { walk(it, depth + 1) } }
+                }
+                tree?.let { walk(it, 0) }
+            }
+        }
+        if (found.isEmpty()) return null
+        return ToolPayload.FileHits(found.distinctBy { it.path to it.line }, truncated)
     }
 
     private fun image(args: JsonObject?, value: JsonObject?, images: GeneratedImageSink?, callId: String): ToolPayload? {
@@ -286,9 +373,24 @@ object ToolPayloads {
         return ToolPayload.Recording(path, value.deepLong("recordingDurationMs", "recording_duration_ms", "durationMs", "duration_ms"))
     }
 
+    /**
+     * `send_to_agent`'s `delivery`, or the result's `delivered_as`: a follow-up steers the worker's turn, a queued
+     * message waits behind it. Spelt as the SDK's words (`followup`, `queue`) or the proto enum's (`…_FOLLOWUP`).
+     */
+    private fun delivery(raw: String?): ToolPayload.WorkerAction.Delivery? {
+        val word = raw?.trim()?.lowercase()?.replace("_", "")?.replace("-", "") ?: return null
+        return when {
+            word.endsWith("queue") || word.endsWith("queued") -> ToolPayload.WorkerAction.Delivery.Queue
+            word.endsWith("followup") || word.endsWith("steer") || word.endsWith("steered") -> ToolPayload.WorkerAction.Delivery.Followup
+            else -> null
+        }
+    }
+
     private fun subagent(args: JsonObject?, value: JsonObject?): ToolPayload? {
         val description = args.string(listOf("description", "name"))
-        val agentId = value?.deepString("agentId", "agent_id") ?: args.string(listOf("agentId", "agent_id"))
+        val agentId = args.string(listOf("cloudAgentBcId", "cloud_agent_bc_id"))
+            ?: value?.deepString("agentId", "agent_id")
+            ?: args.string(listOf("agentId", "agent_id"))
         val transcript = value?.deepString("transcriptPath", "transcript_path")
         val subagentType = (args?.get("subagentType") as? JsonObject)?.string(listOf("name", "kind"))
             ?: args.string(listOf("subagentType", "subagent_type"))
@@ -300,6 +402,8 @@ object ToolPayloads {
             durationMs = value?.deepLong("durationMs", "duration_ms"),
             isBackground = value?.deepBool("isBackground", "is_background") == true,
             subagentType = subagentType,
+            model = args.string(listOf("model")),
+            environment = args.string(listOf("environment")),
         )
     }
 
@@ -396,6 +500,12 @@ object ToolPayloads {
         return null
     }
 
+    private fun JsonObject?.int(vararg keys: String): Int? {
+        if (this == null) return null
+        for (key in keys) (this[key] as? JsonPrimitive)?.intOrNull?.let { return it }
+        return null
+    }
+
     private fun JsonObject?.bool(vararg keys: String): Boolean? {
         if (this == null) return null
         for (key in keys) (this[key] as? JsonPrimitive)?.booleanOrNull?.let { return it }
@@ -440,6 +550,10 @@ object ToolPayloads {
     private val DATA_URI = Regex("""^data:([^;,]*)(?:;[^,]*)?,(.*)$""", RegexOption.DOT_MATCHES_ALL)
     /** A coordinator's prompt to a worker, or a transcript excerpt, is kept to a card's worth; the worker's own chat has the whole. */
     private const val PROMPT_CHARS = 4_000
+    /** A hit's matching line, as a row shows it. */
+    private const val HIT_TEXT_CHARS = 160
+    /** A listing's tree is walked this deep for its files. */
+    private const val MAX_TREE_DEPTH = 6
     /** A goal's objective is shown whole on the strip and in its row; a paragraph or two at most in practice. */
     private const val OBJECTIVE_CHARS = 8_000
     /** The desktop's words for a goal result without an error message of its own. */

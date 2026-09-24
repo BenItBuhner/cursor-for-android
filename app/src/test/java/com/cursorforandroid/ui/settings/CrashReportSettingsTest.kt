@@ -2,6 +2,7 @@ package com.cursorforandroid.ui.settings
 
 import android.content.Context
 import androidx.activity.ComponentActivity
+import androidx.compose.ui.test.assertHasNoClickAction
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithText
 import androidx.test.core.app.ApplicationProvider
@@ -36,7 +37,8 @@ class CrashReportSettingsTest {
         // The whole screen is composed (a scrolling Column, not a lazy list), so existence is the question: which copy.
         compose.onNodeWithText(CrashReportCopy.TITLE).assertExists()
         compose.onNodeWithText(CrashReportCopy.UNAVAILABLE).assertExists()
-        compose.onNodeWithText(CrashReportCopy.OFF).assertDoesNotExist()
-        compose.onNodeWithText(CrashReportCopy.ON).assertDoesNotExist()
+        compose.onNodeWithText(CrashReportCopy.DETAIL).assertDoesNotExist()
+        // A switch's row takes the tap and carries its title; this row is words and nothing to press.
+        compose.onNodeWithText(CrashReportCopy.TITLE).assertHasNoClickAction()
     }
 }

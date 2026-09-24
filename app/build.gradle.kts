@@ -13,9 +13,17 @@ plugins {
 // ---------------------------------------------------------------------------------------------------------------------
 // Versioning
 //
-// `app.versionName` lives in gradle.properties and is overridden with `-Papp.versionName=X.Y.Z` by the release
-// workflow, which derives it from the `vX.Y.Z` git tag. versionCode is computed from that name so a tag is the only
-// input a release needs:
+// The version comes from git; nothing in the repository is edited to cut a release:
+//
+//   * `-Papp.versionName=X.Y.Z` names it outright. release.yml and scripts/release-cut.sh pass the `vX.Y.Z` tag's
+//     version this way, so a release never depends on what the checkout can see.
+//   * A checkout at a release tag `vX.Y.Z` builds X.Y.Z.
+//   * Anything else is a dev build of the release that comes next: the highest `v*` tag's PATCH + 1 - or the tag's own
+//     version while that tag is a pre-release such as v0.4.0-rc.1 - with `-dev` appended, e.g. `0.3.49-dev` after
+//     v0.3.48. CI replaces the `-dev` with its stamp (below). A checkout without git or without any release tag builds
+//     0.0.0-dev and says so; fetch the tags (`git fetch --tags`) to get the real version.
+//
+// versionCode is computed from the resolved name, so the tag is the only input a release needs:
 //
 //     MAJOR * 1_000_000 + MINOR * 10_000 + PATCH * 100 + STAGE
 //     STAGE: alpha.N -> N (0..24), beta.N -> 25 + N, rc.N -> 50 + N, stable (no pre-release) -> 99
@@ -23,17 +31,51 @@ plugins {
 // e.g. 0.2.0-alpha.1 -> 20001, 0.2.0-beta.1 -> 20026, 0.2.0-rc.1 -> 20051, 0.2.0 -> 20099. Build metadata after `+`
 // is ignored. `-Papp.versionCode=N` overrides the derived value.
 //
-// `-Papp.versionNameSuffix=...` is appended to the versionName (CI uses it to stamp dev builds with the run number
-// and commit) and the code is derived from the result, not from the base: a `0.2.0-dev.148+gabc1234` build has to
-// report 20024, or the updater would refuse the stable 0.2.0 (20099) it leads up to as "not newer".
+// `-Papp.versionNameSuffix=...` replaces the `-dev` (CI uses it to stamp dev builds with the run number and commit,
+// `-dev.148+gabc1234`) and the code is derived from the result, not from the base: a `0.2.0-dev.148+gabc1234` build
+// has to report 20024, or the updater would refuse the stable 0.2.0 (20099) it leads up to as "not newer". `dev`
+// counts as an alpha-class stage, so every dev build sorts below every release of the version it leads up to.
 //
 // The in-app updater (domain/AppUpdate.kt, AppVersion.versionCode) reproduces this scheme to compare a release tag
 // with the installed BuildConfig.VERSION_CODE; AppVersionTest pins both to the same examples, and asserts that this
 // script's own output for the build under test agrees with it. Change them together.
 // ---------------------------------------------------------------------------------------------------------------------
+val releaseTagVersion = Regex("""^v(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$""")
+
+/** stdout of `git args...` in the repository root, or null when git is missing, fails or prints nothing. */
+fun git(vararg args: String): String? = runCatching {
+    providers.exec {
+        commandLine("git", *args)
+        workingDir = rootDir
+        isIgnoreExitValue = true
+    }.standardOutput.asText.get().trim().takeIf { it.isNotEmpty() }
+}.getOrNull()
+
+/** The highest release version among [tags] (`vX.Y.Z[-pre]` lines; anything else is ignored), without the `v`. */
+fun highestReleaseVersion(tags: String?): String? = tags.orEmpty().lines().map(String::trim)
+    .filter(releaseTagVersion::matches)
+    .map { it.removePrefix("v") }
+    .maxByOrNull { runCatching { versionCodeFor(it) }.getOrDefault(-1) }
+
+/** The version this checkout builds by default, and whether it is a dev build leading up to that version. */
+fun versionFromGit(): Pair<String, Boolean> {
+    highestReleaseVersion(git("tag", "--points-at", "HEAD", "--list", "v[0-9]*"))?.let { return it to false }
+    val latest = highestReleaseVersion(git("tag", "--list", "v[0-9]*"))
+    if (latest == null) {
+        logger.warn("No release tag (vX.Y.Z) is visible to this checkout, so this is a 0.0.0-dev build. Fetch the tags (git fetch --tags) for the real version, or pass -Papp.versionName.")
+        return "0.0.0" to true
+    }
+    val (major, minor, patch, preRelease) = releaseTagVersion.matchEntire("v$latest")!!.destructured
+    return (if (preRelease.isEmpty()) "$major.$minor.${patch.toInt() + 1}" else "$major.$minor.$patch") to true
+}
+
 val appVersionNameSuffix: String? = providers.gradleProperty("app.versionNameSuffix").orNull?.takeIf { it.isNotBlank() }
-val appVersionName: String = providers.gradleProperty("app.versionName").get()
-val appResolvedVersionName: String = appVersionName + (appVersionNameSuffix ?: "")
+val appExplicitVersionName: String? = providers.gradleProperty("app.versionName").orNull?.takeIf { it.isNotBlank() }
+val appGitVersion: Pair<String, Boolean>? = if (appExplicitVersionName == null) versionFromGit() else null
+val appVersionName: String = appExplicitVersionName ?: appGitVersion!!.first
+val appIsDevBuild: Boolean = appGitVersion?.second ?: false
+val appEffectiveVersionNameSuffix: String? = appVersionNameSuffix ?: "-dev".takeIf { appIsDevBuild }
+val appResolvedVersionName: String = appVersionName + (appEffectiveVersionNameSuffix ?: "")
 val appVersionCode: Int = providers.gradleProperty("app.versionCode").map(String::toInt).getOrElse(versionCodeFor(appResolvedVersionName))
 // The GitHub repository whose releases the app updates itself from (`owner/name`); a fork points this at its own.
 val appGitHubRepo: String = providers.gradleProperty("app.githubRepo").get().also {
@@ -152,7 +194,7 @@ android {
         targetSdk = 35
         versionCode = appVersionCode
         versionName = appVersionName
-        versionNameSuffix = appVersionNameSuffix
+        versionNameSuffix = appEffectiveVersionNameSuffix
         vectorDrawables.useSupportLibrary = true
         buildConfigField("String", "GITHUB_REPO", "\"$appGitHubRepo\"")
         buildConfigField("String", "SENTRY_DSN", "\"$appSentryDsn\"")
@@ -212,6 +254,13 @@ android {
         unitTests.isReturnDefaultValues = true
         unitTests.isIncludeAndroidResources = true
     }
+    lint {
+        // `assembleRelease` would otherwise run lintVitalRelease - a second analysis of the same sources for the
+        // fatal-only subset of what `lintDebug` already reports in full. There is no release-only source set to check
+        // (src/main, src/debug and src/test are all there is), so the vital pass proves nothing lintDebug does not, and
+        // CI runs lintDebug on every change. It cost ten minutes of the build job and of every release cut.
+        checkReleaseBuilds = false
+    }
 }
 
 dependencies {
@@ -245,6 +294,7 @@ dependencies {
 
     implementation(libs.coil.core)
     implementation(libs.coil.network.okhttp)
+    implementation(libs.coil.svg)
     implementation(libs.media3.exoplayer)
     implementation(libs.media3.ui)
 
@@ -270,6 +320,166 @@ roborazzi {
     outputDir.set(file("$rootDir/screenshots"))
 }
 
+// ---------------------------------------------------------------------------------------------------------------------
+// Robolectric SDK jars
+//
+// Every Robolectric test runs on a pre-instrumented android-all jar for its SDK level: `@Config(sdk = [35])` almost
+// everywhere in src/test (35 is also the default, being the targetSdk) and `sdk = [30]` for AppNightModeTest's pre-31
+// case. Left to itself Robolectric downloads those jars (200 MB for SDK 35) from Maven Central *inside the test JVM*
+// (MavenArtifactFetcher, into ~/.m2), on every CI run because nothing caches ~/.m2 - and when Maven Central refuses or
+// rate-limits the runner, every test class fails in `classMethod` before a single test runs. Declaring the jars as
+// Gradle dependencies moves that download into dependency resolution, where the Gradle dependency cache (restored by
+// setup-gradle in CI) serves them and Gradle's repository retries apply; `robolectric.offline` +
+// `robolectric.dependency.dir` then point Robolectric at the resolved files, so the tests never touch the network for
+// them. The versions live next to `robolectric` in gradle/libs.versions.toml and move with it.
+//
+// One configuration per jar: they are all versions of the same module, org.robolectric:android-all-instrumented, and a
+// single configuration would conflict-resolve them down to the highest one.
+// ---------------------------------------------------------------------------------------------------------------------
+val robolectricSdkJars = mapOf(35 to libs.robolectric.android.all.sdk35, 30 to libs.robolectric.android.all.sdk30)
+val robolectricSdkConfigurations: List<Configuration> = robolectricSdkJars.keys.map { sdk ->
+    configurations.create("robolectricSdk$sdk") {
+        description = "The android-all-instrumented jar Robolectric runs SDK $sdk unit tests on."
+        isCanBeConsumed = false
+        isCanBeResolved = true
+        isTransitive = false
+    }
+}
+
+dependencies {
+    robolectricSdkJars.forEach { (sdk, jar) -> add("robolectricSdk$sdk", jar) }
+}
+
+// Robolectric wants one directory holding `android-all-instrumented-<version>.jar` files; the Gradle cache keeps each
+// artifact in its own hash directory, so the resolved jars are gathered here (Sync also drops the jar of a previous
+// version, which would otherwise linger after a bump).
+val robolectricSdkDir: Provider<Directory> = layout.buildDirectory.dir("robolectric-sdks")
+val syncRobolectricSdks by tasks.registering(Sync::class) {
+    description = "Gathers the Robolectric android-all jars for offline test runs."
+    robolectricSdkConfigurations.forEach { from(it) }
+    into(robolectricSdkDir)
+}
+
+tasks.withType<Test>().configureEach {
+    dependsOn(syncRobolectricSdks)
+    inputs.dir(robolectricSdkDir).withPropertyName("robolectricSdkDir").withPathSensitivity(PathSensitivity.RELATIVE)
+    systemProperty("robolectric.offline", "true")
+    systemProperty("robolectric.dependency.dir", robolectricSdkDir.get().asFile.absolutePath)
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Unit-test parallelism and sharding
+//
+// src/test is ~2000 Robolectric tests. One test JVM runs them one after another in about eleven minutes; CI splits the
+// classes over several runners, one test JVM each. Both knobs are plain Gradle properties, so a developer can run the
+// whole suite the ordinary way and CI can shape it:
+//
+//   -Papp.testForks=N        test JVMs run side by side, each holding a Robolectric SDK in a 2 GB heap (default: half
+//                            the machine's cores, at least one and at most four - never more than the cores minus one,
+//                            and no more heap between them than the machine has). CI passes 1: a hosted runner's four
+//                            "cores" are two hyper-threaded ones, and with two or three forks the fault, benchmark and
+//                            Compose UI tests - which assert on wall-clock behaviour, or wait on it - timed out on one
+//                            shard job in five; alone in their JVM, as they always were, they did not.
+//   -Papp.testShard=I/N      run only the I-th of N deterministic slices of the test classes (I from 1), the benchmarks
+//                            excepted (below). The test source files are assigned heaviest first, each onto the slice
+//                            with the least in it so far (`testClassSeconds`), so the slices take about the same time;
+//                            they are stable across runs and machines and together cover every class exactly once. A
+//                            nested class travels with its outer class; a class whose file is not named after it goes
+//                            by a hash of the name. Combine with `--tests` or `-Papp.skipScreenshotTests` as usual:
+//                            both filters apply.
+//   -Papp.testShard=benchmarks
+//                            run only the benchmark classes (`*BenchmarkTest`, `TranscriptPerf*`): the frame-time and
+//                            throughput claims. Always one JVM, whatever -Papp.testForks says, and nothing else beside
+//                            them, so what they measure is the code and not the neighbour.
+// ---------------------------------------------------------------------------------------------------------------------
+val testForks: Int = providers.gradleProperty("app.testForks").map(String::toInt)
+    .getOrElse((Runtime.getRuntime().availableProcessors() / 2).coerceIn(1, 4))
+
+/** One slice of the test classes: `Slice(index, count)` for the I-th of N ordinary slices, or [Benchmarks]. */
+sealed interface TestShard : java.io.Serializable {
+    data class Slice(val index: Int, val count: Int) : TestShard
+    object Benchmarks : TestShard { private fun readResolve(): Any = Benchmarks }
+}
+
+val testShard: TestShard? = providers.gradleProperty("app.testShard").orNull?.let { spec ->
+    if (spec == "benchmarks") return@let TestShard.Benchmarks
+    val match = Regex("""^(\d+)/(\d+)$""").matchEntire(spec) ?: error("app.testShard must be I/N (e.g. 1/5) or 'benchmarks'; got '$spec'")
+    val (index, count) = match.destructured.toList().map(String::toInt)
+    require(count >= 1 && index in 1..count) { "app.testShard=$spec: I must be between 1 and N" }
+    TestShard.Slice(index, count)
+}
+
+/**
+ * Keeps the class files of one [TestShard]. [slices] maps an ordinary class (relative path without extension, e.g.
+ * `com/x/FooTest`) to its slice; a class not in it goes by a hash of that path. A standalone class rather than a
+ * lambda: the configuration cache has to serialize the filter with the task, and a lambda in this script would drag
+ * the script object along.
+ */
+class TestShardFilter(private val shard: TestShard, private val slices: Map<String, Int>) : Spec<FileTreeElement>, java.io.Serializable {
+    // Directories have to pass or nothing under them is visited; only class files are assigned.
+    override fun isSatisfiedBy(element: FileTreeElement): Boolean {
+        if (element.isDirectory || !element.name.endsWith(".class")) return true
+        val outerClass = element.relativePath.pathString.substringBefore('$').removeSuffix(".class")
+        val benchmark = isBenchmark(outerClass.substringAfterLast('/'))
+        return when (shard) {
+            is TestShard.Benchmarks -> benchmark
+            is TestShard.Slice -> !benchmark && (slices[outerClass] ?: (Math.floorMod(outerClass.hashCode(), shard.count) + 1)) == shard.index
+        }
+    }
+
+    companion object {
+        /** A benchmark class by name: a frame-time or throughput claim, measured rather than asserted on state. */
+        fun isBenchmark(simpleName: String): Boolean = simpleName.endsWith("BenchmarkTest") || simpleName.startsWith("TranscriptPerf")
+    }
+}
+
+/**
+ * How long a test class takes alone in its JVM, in seconds, for the ones that take more than a few: the fault and
+ * harness suites (built on real timeouts and paced retries: a dozen classes, half of the suite's time) and the larger
+ * Compose and repository suites. Every other class counts as one second. The slices are filled with these: heaviest
+ * class first, each onto the slice with the least in it so far, so no slice ends up with two of the biggest while
+ * another has none. Only the balance depends on the numbers - a class missing here, or a stale one, costs seconds of
+ * wall time, never correctness. Refresh them from the per-class `time` in the `unit-tests-results-*` artifacts every CI
+ * run uploads (the TEST-*.xml files under app/build/test-results/testDebugUnitTest). The benchmarks are not here: they
+ * have their own shard.
+ */
+val testClassSeconds = mapOf(
+    "SendFaultsTest" to 80, "LongProjectReopenTest" to 65, "TranscriptVerifyHarness" to 60, "TranscriptFaultsTest" to 45,
+    "RefreshFaultsTest" to 40, "LiveTurnDeliveryTest" to 40, "NewAgentViewModelTest" to 25, "LongProjectLoadTest" to 25,
+    "LiveFinishFaultsTest" to 25, "DemoBackendTest" to 20, "LiveNotificationServiceTest" to 15, "ConversationViewModelTest" to 15,
+    "PredictiveBackTest" to 10, "FollowUpRepositoryTest" to 10, "RegularChatTextTest" to 10, "LiveStatusTruthTest" to 10,
+    "WidgetSyncTest" to 10, "ConversationRepositoryTest" to 10, "MainActivityThemeTest" to 5, "SidebarCollapsePersistenceTest" to 5,
+    "AppGraphTest" to 5, "AppGraphExtendedModeTest" to 5, "LocalEchoOrderTest" to 5, "DeferredStartupTest" to 5,
+    "AttachmentStoreTest" to 5, "AccountSimulationTest" to 5, "WidgetRefreshTest" to 5, "SnoozeChatDialogTest" to 5,
+)
+
+/** Every ordinary test source file as the class path it compiles to, assigned to one of [count] slices: heaviest first, each onto the lightest slice so far. */
+fun testShardSlices(count: Int): Map<String, Int> {
+    val classPaths = layout.projectDirectory.dir("src/test/java").asFileTree
+        .matching { include("**/*.kt", "**/*.java") }
+        .files.map { it.relativeTo(file("src/test/java")).path.replace(File.separatorChar, '/').substringBeforeLast('.') }
+        .filterNot { TestShardFilter.isBenchmark(it.substringAfterLast('/')) }
+    fun seconds(classPath: String) = testClassSeconds[classPath.substringAfterLast('/')] ?: 1
+    val load = IntArray(count)
+    return classPaths.sortedWith(compareByDescending<String> { seconds(it) }.thenBy { it }).associateWith { classPath ->
+        val lightest = load.indices.minBy { load[it] }
+        load[lightest] += seconds(classPath)
+        lightest + 1
+    }
+}
+
+tasks.withType<Test>().configureEach {
+    maxParallelForks = if (testShard is TestShard.Benchmarks) 1 else testForks
+    // The JVM's default collector (G1) stays: the fault and benchmark tests assert on wall-clock behaviour, and a
+    // throughput collector's long stop-the-world pauses are one more way to starve them.
+    maxHeapSize = "2g"
+    when (val shard = testShard) {
+        null -> Unit
+        is TestShard.Benchmarks -> include(TestShardFilter(shard, emptyMap()))
+        is TestShard.Slice -> include(TestShardFilter(shard, testShardSlices(shard.count)))
+    }
+}
+
 // `-Papp.skipScreenshotTests=true` leaves the Roborazzi walkthrough to the dedicated screenshot job in CI; everything
 // else in src/test still runs.
 if (providers.gradleProperty("app.skipScreenshotTests").map(String::toBoolean).getOrElse(false)) {
@@ -290,6 +500,33 @@ tasks.register("printAppVersion") {
         println("versionName=$resolvedName")
         println("versionCode=$resolvedCode")
         println("releaseCertSha256=$resolvedCert")
+    }
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// tools/transcript-verify
+//
+// The verification harness (tools/transcript-verify/run.sh): the app's own transcript pipeline — the session exchange,
+// the Connect and REST clients, the record pager, the run list, the SSE follower, the trace cache, the presenter, the
+// rows, the send gate — run on this JVM against a real account (the API key read from a file named on the command
+// line) or, with --replay, against the recorded fixtures. Its sources live in src/test and it runs on the unit-test
+// classpath (Robolectric stands in for the Android types the stores need), so nothing of it is in the APK. Options go
+// through --args; `--help` documents every call it makes.
+// ---------------------------------------------------------------------------------------------------------------------
+afterEvaluate {
+    val unitTest = tasks.named<Test>("testDebugUnitTest").get()
+    tasks.register<JavaExec>("transcriptVerify") {
+        group = "verification"
+        description = "Runs tools/transcript-verify: the app's transcript pipeline against an account or the fixtures. Options with --args; see --help."
+        dependsOn(unitTest.taskDependencies)
+        classpath = unitTest.classpath + unitTest.testClassesDirs
+        mainClass.set("com.cursorforandroid.tools.transcriptverify.TranscriptVerifyMainKt")
+        systemProperties(unitTest.systemProperties)
+        jvmArgs(unitTest.jvmArgs)
+        maxHeapSize = unitTest.maxHeapSize ?: "3g"
+        workingDir = unitTest.workingDir
+        standardInput = System.`in`
+        outputs.upToDateWhen { false }
     }
 }
 

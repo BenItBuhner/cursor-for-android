@@ -5,6 +5,10 @@ import com.cursorforandroid.data.api.dto.SseToolCallDto
 import com.cursorforandroid.domain.ActivityGroup
 import com.cursorforandroid.domain.AssistantMessage
 import com.cursorforandroid.domain.CoordinatorLineage
+import com.cursorforandroid.domain.CoordinatorTranscript
+import com.cursorforandroid.domain.RunFooter
+import com.cursorforandroid.domain.TranscriptRow
+import com.cursorforandroid.domain.TranscriptRows
 import com.cursorforandroid.domain.RunStatus
 import com.cursorforandroid.domain.TimelineItem
 import com.cursorforandroid.domain.ToolKind
@@ -85,6 +89,51 @@ class CoordinatorTranscriptTest {
         }
         // Nothing said: nothing to render as the message.
         assertThat(ToolPayloads.from("SendMessage", Json.parseToJsonElement("{}"), null, null, callId = "c")).isNull()
+    }
+
+    /**
+     * A silent turn's log replays the previous turn whole, not its message alone (Bennett's 2026-09-20 export: the
+     * eleven-step block with ids …7gwWXN … w2dwQQ twice in a row, each with its own `assistant chars=239` and footer,
+     * then a third `assistant chars=239` under a 4 s footer). Every call an earlier run drew is a replay, the text
+     * that came with them too; the silent runs keep their footers and nothing else. A run with a call of its own
+     * keeps its text although the words were said before.
+     */
+    @Test
+    fun `a silent run's log that replays the previous turn's whole activity contributes only its footer`() {
+        fun turn(runId: String, calls: List<Pair<String, String>>, text: String?, durationMs: Long): List<TimelineItem> {
+            val live = TimelineBuilder.LiveRun(runId, timed = false)
+            live.apply(RunStreamEvent.Thinking("Reading the report."))
+            calls.forEach { (id, name) ->
+                val args = when (name) { "send_message" -> """{"text":{"content":"Done: the pricing table is filed."}}"""; "send_to_agent" -> """{"agentId":"bc-w","message":"Next."}"""; else -> """{"path":"notes.md"}""" }
+                live.apply(call(id, name, args, """{"success":{}}"""))
+            }
+            text?.let { live.apply(RunStreamEvent.Assistant(it)) }
+            live.apply(RunStreamEvent.Result(runId, RunStatus.FINISHED, null, durationMs, null))
+            return live.snapshot()
+        }
+        val original = listOf("7gwWXN" to "run_terminal_cmd", "xVzzwn" to "get_mcp_tools", "AGGrGj" to "read_file", "9dBRYJ" to "send_to_agent", "W5TUR6" to "send_message", "RCHLg4" to "edit_file", "w2dwQQ" to "edit_file")
+        val note = "The research worker's table is filed; the primary is told what comes next."
+        val items = turn("run-A", original, note, 98_586) +
+            turn("run-B", original, note, 115_315) +
+            turn("run-C", emptyList(), note, 4_245) +
+            // A later run of its own that says the same words again: not a replay.
+            turn("run-D", listOf("mzA4RA" to "edit_file"), note, 54_429)
+
+        val leftOut = CoordinatorTranscript.replayedActivity(items)
+        val presented = CoordinatorTranscript.present(items, coordinatorMode = true)
+        // Run A whole; run B its footer alone; run C its footer alone; run D its call, its text and its footer.
+        val calls = presented.filterIsInstance<ActivityGroup>().flatMap { it.calls }.map { it.callId }
+        assertThat(calls).containsExactlyElementsIn(original.map { it.first } + "mzA4RA").inOrder()
+        assertThat(presented.filterIsInstance<AssistantMessage>().map { it.markdown }).containsExactly(note, note).inOrder()
+        assertThat(presented.filterIsInstance<RunFooter>().map { it.runId }).containsExactly("run-A", "run-B", "run-C", "run-D").inOrder()
+        assertThat(leftOut.values.toSet()).containsExactly("run:run-A")
+        // The rows: run B and C fold into the stretch after run A's message, whose time is the three runs' together.
+        val rows = TranscriptRows.of(presented, coordinatorMode = true)
+        val messages = rows.filterIsInstance<TranscriptRow.Message>()
+        assertThat(messages).hasSize(1)
+        val after = rows.subList(rows.indexOf(messages.single()) + 1, rows.size).filterIsInstance<TranscriptRow.Stretch>()
+        assertThat(after.first().entries.filterIsInstance<TranscriptRow.Entry.Footer>().map { it.footer.runId }).containsExactly("run-A", "run-B", "run-C", "run-D").inOrder()
+        assertThat(after.first().summary.action).isEqualTo("Worked 4m 32s")
     }
 
     @Test

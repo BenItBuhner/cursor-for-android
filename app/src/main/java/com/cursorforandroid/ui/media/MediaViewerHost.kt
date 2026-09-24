@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.PagerDefaults
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
@@ -42,6 +43,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.RoundRect
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.clipPath
 import androidx.compose.ui.graphics.drawscope.clipRect
@@ -51,11 +53,15 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.paneTitle
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.toSize
 import androidx.core.view.WindowCompat
@@ -64,10 +70,11 @@ import androidx.core.view.WindowInsetsControllerCompat
 import com.cursorforandroid.data.media.MediaLoader
 import com.cursorforandroid.domain.MediaRef
 import com.cursorforandroid.ui.components.PredictiveBackEasing
-import com.cursorforandroid.ui.components.opaqueToPointerInput
+import com.cursorforandroid.ui.components.hitTestBoundary
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlin.math.roundToInt
 
 /**
  * Hosts the media viewer over [content] — the whole app, so that on a tablet the viewer covers the sidebar as well
@@ -87,6 +94,11 @@ fun MediaViewerHost(
     autoHideControlsMillis: Long? = AutoHideMillis,
     content: @Composable () -> Unit,
 ) {
+    val preloadScope = rememberCoroutineScope()
+    DisposableEffect(state, loader, preloadScope) {
+        state.preloads = ViewerPreloads(loader, preloadScope) { state.hostCoordinates?.takeIf { it.isAttached }?.size ?: IntSize.Zero }
+        onDispose { state.preloads = null }
+    }
     Box(modifier.fillMaxSize().onGloballyPositioned { state.hostCoordinates = it }) {
         CompositionLocalProvider(LocalMediaViewer provides state) { content() }
         val session = state.session
@@ -143,6 +155,8 @@ private class TransformFrames(
     val pageRect: () -> Rect,
     val source: () -> PagePresentation?,
     val fallbackSize: IntSize,
+    /** The thumbnail's own decode, drawn until the page's presentation is registered: the open's first frame has it. */
+    val fallbackBitmap: ImageBitmap? = null,
 )
 
 @Composable
@@ -153,7 +167,19 @@ private fun MediaViewerOverlay(state: MediaViewerState, session: MediaViewerStat
     val pagerState = rememberPagerState(initialPage = session.initialIndex) { session.entries.size }
     val presentations = remember { HashMap<Int, PagePresentation>() }
     val dismiss = remember { DismissState() }
-    var frames by remember { mutableStateOf<TransformFrames?>(null) }
+
+    /** The open's frames: out of the tapped thumbnail, into wherever the first page rests once it is laid out. */
+    fun openingFrames() = TransformFrames(
+        thumbnail = state.originFrame(),
+        pageRect = { presentations[session.initialIndex]?.fitted?.takeIf { it != Rect.Zero } ?: restingRect(viewport, session.seenSize) },
+        source = { presentations[session.initialIndex] },
+        fallbackSize = session.seenSize,
+        fallbackBitmap = session.seen,
+    )
+
+    // Set as the overlay is first composed, not by an effect a frame later: the frame the viewer appears on already
+    // draws the picture over its thumbnail — which the viewer has hidden — rather than a blank where it was.
+    var frames by remember { mutableStateOf(if (state.phase == MediaViewerState.Phase.Opening) openingFrames() else null) }
     var notice by remember { mutableStateOf<String?>(null) }
     var interactions by remember { mutableIntStateOf(0) }
     val actions = remember(loader) { MediaActions(context, loader) }
@@ -192,12 +218,7 @@ private fun MediaViewerOverlay(state: MediaViewerState, session: MediaViewerStat
     // Opening: out of the tapped thumbnail (or, without one, up from a little below scale where the page will be).
     LaunchedEffect(Unit) {
         if (state.phase != MediaViewerState.Phase.Opening) return@LaunchedEffect
-        frames = TransformFrames(
-            thumbnail = state.originFrame(),
-            pageRect = { presentations[session.initialIndex]?.fitted?.takeIf { it != Rect.Zero } ?: restingRect(viewport, session.seenSize) },
-            source = { presentations[session.initialIndex] },
-            fallbackSize = session.seenSize,
-        )
+        if (frames == null) frames = openingFrames()
         state.progress.snapTo(0f)
         state.progress.animateTo(1f, TransformSpec)
         if (state.phase == MediaViewerState.Phase.Opening) {
@@ -251,26 +272,39 @@ private fun MediaViewerOverlay(state: MediaViewerState, session: MediaViewerStat
         scope.launch { finishClose() }
     }
 
-    val environment = remember(loader, dismiss, scope) {
+    // A zoomed picture's drag drives the pager past the picture's edge (see PagerHandover): in a left-to-right
+    // layout the finger and the pager's offset run opposite ways, and a fling past this speed commits the page.
+    val rtl = LocalLayoutDirection.current == LayoutDirection.Rtl
+    val minFlingPx = with(LocalDensity.current) { PageFlingVelocity.toPx() }
+    val handover = remember(pagerState, rtl, minFlingPx) { PagerHandover(pagerState, reverse = !rtl, minFlingVelocityPx = minFlingPx) }
+    val uriHandler = LocalUriHandler.current
+    val environment = remember(loader, dismiss, scope, pagerState, handover, actions, uriHandler) {
         PageEnvironment(
             loader = loader,
             dismiss = dismiss,
+            pagerState = pagerState,
+            handover = handover,
             scope = scope,
             onTap = {
                 state.controlsVisible = !state.controlsVisible
                 interactions++
             },
             onDismiss = { state.close() },
+            onOpenInBrowser = { url -> if (runCatching { uriHandler.openUri(url) }.isFailure) notice = "Nothing on this device opens links." },
+            onOpenElsewhere = { ref, entry -> scope.launch { actions.openWith(ref, entry).onFailure { notice = MediaLoader.problemOf(it).title } } },
         )
     }
     val current = state.current
-    val currentPlayback = currentPresentation()?.playback.takeIf { current?.isVideo == true }
+    val currentPlayback = currentPresentation()?.playback.takeIf { current?.isPlayable == true }
 
     Box(
         Modifier
             .fillMaxSize()
             .onSizeChanged { viewport = it }
-            .opaqueToPointerInput()
+            // Never a root that consumes here: consuming every move cancelled the pager's touch-slop detection
+            // (which re-reads each move on the Final pass), so only a swipe fast enough to clear the slop on its
+            // first move ever turned a page. Hit testing alone keeps the shell underneath out of reach.
+            .hitTestBoundary()
             .semantics { paneTitle = "Media viewer" }
             .testTag("media-viewer"),
     ) {
@@ -285,6 +319,9 @@ private fun MediaViewerOverlay(state: MediaViewerState, session: MediaViewerStat
             modifier = Modifier.fillMaxSize().testTag("viewer-pager"),
             beyondViewportPageCount = 1,
             pageSpacing = 16.dp,
+            // A slow drag commits on how far the page was pulled — past two fifths of the width — rather than
+            // Compose's half; a fast one commits on its speed, as it always did. The settle is the pager's spring.
+            flingBehavior = PagerDefaults.flingBehavior(state = pagerState, snapPositionalThreshold = ViewerGeometry.PageCommitShare),
             userScrollEnabled = state.phase == MediaViewerState.Phase.Open,
             key = { session.entries[it].src },
         ) { page ->
@@ -294,10 +331,12 @@ private fun MediaViewerOverlay(state: MediaViewerState, session: MediaViewerStat
                 presentations[page] = presentation
                 onDispose { if (presentations[page] === presentation) presentations.remove(page) }
             }
+            LaunchedEffect(presentation, presentation.previous) { presentation.playUpgrade() }
             val isCurrent = page == state.currentIndex
             when (entry.kind) {
                 MediaEntry.Kind.Image -> ImagePage(state, session, entry, page, presentation, environment, viewport, isCurrent)
                 MediaEntry.Kind.Video -> VideoPage(state, session, entry, page, presentation, environment, viewport, isCurrent)
+                MediaEntry.Kind.Audio -> AudioPage(state, session, entry, page, presentation, environment, viewport, isCurrent)
             }
         }
         // The chrome: composed on the open's first frame, so that its arrival costs the landing frame nothing, but
@@ -318,7 +357,7 @@ private fun MediaViewerOverlay(state: MediaViewerState, session: MediaViewerStat
                     val ref = remember(current.src, session.agentId) { MediaRef.parse(current.src, session.agentId) }
                     fun run(block: suspend () -> Result<String?>) {
                         interactions++
-                        scope.launch { block().fold(onSuccess = { it?.let { message -> notice = message } }, onFailure = { notice = it.message ?: "That didn't work." }) }
+                        scope.launch { block().fold(onSuccess = { it?.let { message -> notice = message } }, onFailure = { notice = MediaLoader.problemOf(it).title }) }
                     }
                     ViewerTopBar(
                         index = state.currentIndex,
@@ -327,7 +366,7 @@ private fun MediaViewerOverlay(state: MediaViewerState, session: MediaViewerStat
                         onClose = { state.close() },
                         onShare = { run { actions.share(ref, current).map { null } } },
                         onSave = if (MediaActions.canSave) ({ run { actions.save(ref, current).map { it } } }) else null,
-                        onOpenWith = if (current.isVideo) ({ run { actions.openWith(ref, current).map { null } } }) else null,
+                        onOpenWith = if (current.isPlayable) ({ run { actions.openWith(ref, current).map { null } } }) else null,
                         modifier = Modifier.align(Alignment.TopCenter),
                     )
                     ViewerBottomBar(
@@ -356,8 +395,9 @@ private fun MediaViewerOverlay(state: MediaViewerState, session: MediaViewerStat
 /**
  * Draws the picture on its way: at [MediaViewerState.progress] 0 it fills the thumbnail's box, clipped to the box's
  * rounded corners; at 1 it is the page, wherever the page rests or was dragged to. Without a thumbnail it scales up
- * from (or down to) a little under the page's size while fading. One `drawImage` under a transform per frame, and
- * nothing recomposes for it.
+ * from (or down to) a little under the page's size while fading. A sharper picture landing on the way is faded in
+ * over the one it replaces ([PagePresentation.previous]), both in the same box. One or two `drawImage`s under a
+ * transform per frame, and nothing recomposes for it.
  */
 @Composable
 private fun TransformLayer(state: MediaViewerState, frames: TransformFrames, dismiss: DismissState, modifier: Modifier = Modifier) {
@@ -365,10 +405,14 @@ private fun TransformLayer(state: MediaViewerState, frames: TransformFrames, dis
     Spacer(
         modifier.drawBehind {
             val progress = state.progress.value
-            val bitmap = frames.source()?.bitmap
+            val presentation = frames.source()
+            val bitmap = presentation?.bitmap ?: frames.fallbackBitmap
+            val upgrade = presentation?.upgrade ?: 1f
+            val previous = presentation?.previous?.takeIf { upgrade < 1f }
             val imageSize = bitmap?.let { IntSize(it.width, it.height) } ?: frames.fallbackSize
             if (imageSize.width <= 0 || imageSize.height <= 0) return@drawBehind
-            val page = frames.pageRect()
+            // Before the viewer's own size is measured the layer's is the viewport: the page's rest is known from it.
+            val page = frames.pageRect().takeIf { it.width > 0f && it.height > 0f } ?: restingRect(IntSize(size.width.roundToInt(), size.height.roundToInt()), imageSize)
             if (page.width <= 0f || page.height <= 0f) return@drawBehind
             val viewport = Rect(Offset.Zero, size)
             val thumbnail = frames.thumbnail
@@ -382,8 +426,13 @@ private fun TransformLayer(state: MediaViewerState, frames: TransformFrames, dis
             if (bitmap == null) return@drawBehind
             val draw: () -> Unit = {
                 translate(frame.image.left, frame.image.top) {
+                    if (previous != null) {
+                        scale(frame.image.width / previous.width, frame.image.height / previous.height, pivot = Offset.Zero) {
+                            drawImage(previous, alpha = alpha)
+                        }
+                    }
                     scale(frame.image.width / imageSize.width, frame.image.height / imageSize.height, pivot = Offset.Zero) {
-                        drawImage(bitmap, alpha = alpha)
+                        drawImage(bitmap, alpha = if (previous != null) alpha * upgrade else alpha)
                     }
                 }
             }
@@ -405,6 +454,9 @@ private fun restingRect(viewport: IntSize, imageSize: IntSize): Rect {
     if (imageSize.width <= 0 || imageSize.height <= 0) return Rect(Offset.Zero, size)
     return ViewerGeometry.fitted(size, imageSize.width, imageSize.height)
 }
+
+/** Compose's own line between a drag that is let go and a fling: a page flung faster than this commits whatever the distance. */
+private val PageFlingVelocity = 400.dp
 
 /** The transform's curve: Material's emphasised decelerate, the drawer's and sheets' slide, over the same 300 ms. */
 internal val TransformSpec: AnimationSpec<Float> = tween(TransformMillis, easing = CubicBezierEasing(0.2f, 0f, 0f, 1f))

@@ -24,6 +24,12 @@ import com.cursorforandroid.util.AppClock
 
 object TimelineBuilder {
 
+    /** What the row says for a turn whose log the server has let go (about a day after the run) with no record to read it from. */
+    const val EXPIRED_TITLE = "Activity for this turn expired on the server"
+    const val EXPIRED_DETAIL = "Cursor keeps a run's log for about a day; the reply is the transcript's."
+    /** The expired rows' dismiss key (see `NoticeCard.dismissKey`): closing one puts every expired row in the chat away. */
+    const val EXPIRED_DISMISS_KEY = "expired-activity"
+
     /**
      * Interleaves the legacy transcript with v1 runs. Each `user_message` begins a run, so a run footer
      * ("Worked 3m 5s") is placed right before the next user message, and after the final assistant
@@ -43,54 +49,124 @@ object TimelineBuilder {
         pending: Set<String> = emptySet(),
         /** The prompt, by position among [messages]' prompts, the first of [runs] belongs to: the prompts before it have no run in hand. */
         firstRunAt: Int = 0,
+        /**
+         * Runs whose entry in [traces] is the story their stream told before the follow ended, not the whole trace
+         * (see `ConversationRepository.Entry.partial`): the transcript's replies for the run join it — the words the
+         * stream never delivered — and the run's footer closes it when the run is over.
+         */
+        partial: Set<String> = emptySet(),
+        /**
+         * Runs whose log the server no longer has and whose activity no other source gave (see
+         * `ConversationRepository.Entry.expiredRuns`): a row says so under the turn's reply, where the activity
+         * would have been — never nothing, and never another turn's activity in its place.
+         */
+        expired: Set<String> = emptySet(),
+        /**
+         * Draw the expired row under a turn that shows its reply too: a Project coordinator's, whose word to the user
+         * went through its message tool — activity, gone with the log — while the transcript's text is its notes.
+         * An ordinary chat's turn with its reply shown says enough; the count line above the transcript has the rest.
+         */
+        expiredRowWithReplies: Boolean = false,
+    ): List<TimelineItem> = fromTurns(TurnPairing.positional(messages, runs.sortedBy { parseIsoMillis(it.createdAt) }, firstRunAt), traces, attachments, pending, partial, expired, expiredRowWithReplies)
+
+    /**
+     * The transcript as a run of turns (see [TurnPairing.Turn]), oldest first: each prompt as the user message that
+     * started its run, the run's items — its trace when there is one, else the transcript's replies and its footer
+     * — under it; a run no prompt started on its own, its result standing for its reply when it has no trace; a
+     * prompt whose run is not in hand with its replies and nothing else. Every prompt handed in is drawn, in the
+     * order handed in. The other parameters as for [fromHistory].
+     */
+    fun fromTurns(
+        turns: List<TurnPairing.Turn>,
+        traces: Map<String, List<TimelineItem>> = emptyMap(),
+        attachments: Map<String, List<MessageAttachment>> = emptyMap(),
+        pending: Set<String> = emptySet(),
+        partial: Set<String> = emptySet(),
+        expired: Set<String> = emptySet(),
+        expiredRowWithReplies: Boolean = false,
+        /** Runs whose rows the caller appends itself (the run being followed): their turn contributes its prompt and nothing else. */
+        omit: Set<String> = emptySet(),
     ): List<TimelineItem> {
-        val ordered = runs.sortedBy { parseIsoMillis(it.createdAt) }
-        /** The run of the [index]th prompt, when it is in hand. */
-        fun runAt(index: Int): RunDto? = ordered.getOrNull(index - firstRunAt)
         val items = mutableListOf<TimelineItem>()
 
+        /** The named row for a turn whose activity is gone from the server and from every other source (see [expired]). */
+        fun expiredNotice(run: RunDto) = NoticeCard("expired-${run.id}", EXPIRED_TITLE, EXPIRED_DETAIL, NoticeTone.Neutral, dismissKey = EXPIRED_DISMISS_KEY)
+
         /** Everything a run produced after its prompt: the trace when there is one, else the text replies + footer. */
-        fun closeRun(run: RunDto?, replies: List<TimelineItem>) {
-            val trace = run?.let { traces[it.id] }
+        fun closeRun(run: RunDto, replies: List<TimelineItem>) {
+            val trace = traces[run.id]
             if (trace != null) {
-                items += trace
+                // A story that ended before the run did takes the transcript's reply for the run — else, the transcript
+                // not caught up yet, the one the run's record ended on (see [recordReply]).
+                items += if (run.id in partial) withReplies(trace, replies.ifEmpty { if (trace.none { it is RunFooter }) recordReply(run) else emptyList() }) else trace
+                // A whole trace ends on its own footer. The story a stream told before it broke does not: the run
+                // that ended meanwhile (by its record) gets the record's footer under it, like a run without a trace.
+                if (!run.statusEnum().isActive && items.none { it is RunFooter && it.runId == run.id }) items += footer(run)
                 return
             }
             items += replies
+            if (run.id in expired && (replies.isEmpty() || expiredRowWithReplies)) items += expiredNotice(run)
             // Anything but a running turn is over as far as this build can tell, including a status it cannot read:
             // a footer says so, where none would leave the turn looking unfinished forever.
-            if (run != null && !run.statusEnum().isActive) items += footer(run)
+            if (!run.statusEnum().isActive) items += footer(run)
         }
 
         fun resultReply(run: RunDto) = listOfNotNull(run.result?.takeIf { it.isNotBlank() }?.let { AssistantMessage("res-${run.id}", it) })
 
-        if (messages.isEmpty()) {
-            ordered.forEach { run -> closeRun(run, resultReply(run)) }
-            return items.withUniqueIds()
-        }
-        var userIndex = -1
-        var replies = mutableListOf<TimelineItem>()
-        messages.forEach { msg ->
-            when (msg.type) {
-                "user_message" -> {
-                    if (userIndex >= 0) closeRun(runAt(userIndex), replies) else items += replies
-                    replies = mutableListOf()
-                    userIndex++
-                    val run = runAt(userIndex)
-                    val startedAt = run?.let { parseIsoMillis(it.createdAt) }
-                    // A turn Cursor injected (a goal continuing, a subagent's report) starts a run like any prompt,
-                    // but is shown as the notification it is rather than as something the user said.
-                    items += SystemNotifications.parse(msg.id, msg.text, startedAt)?.items
-                        ?: listOf(UserMessage(msg.id, msg.text, startedAt, attachments = run?.let { attachments[it.id] } ?: emptyList(), isPending = run != null && run.id in pending))
-                }
-                else -> replies += AssistantMessage(msg.id, msg.text)
+        for (turn in turns) {
+            val run = turn.run
+            val prompt = turn.prompt
+            if (prompt != null) {
+                val startedAt = run?.let { parseIsoMillis(it.createdAt) }
+                // A turn Cursor injected (a goal continuing, a subagent's report) starts a run like any prompt,
+                // but is shown as the notification it is rather than as something the user said.
+                items += SystemNotifications.parse(prompt.id, prompt.text, startedAt)?.items
+                    ?: listOf(UserMessage(prompt.id, prompt.text, startedAt, attachments = run?.let { attachments[it.id] } ?: emptyList(), isPending = run != null && run.id in pending))
+            }
+            val replies = turn.replies.map { AssistantMessage(it.id, it.text) }
+            when {
+                run != null && run.id in omit -> {}
+                // A prompt whose run is not in hand — not fetched, or not started yet — says what was said back, and no more.
+                run == null -> items += replies
+                // A run no prompt started: its result stands for its reply when it has no trace to show.
+                prompt == null -> closeRun(run, replies.ifEmpty { resultReply(run) })
+                else -> closeRun(run, replies)
             }
         }
-        if (userIndex >= 0) closeRun(runAt(userIndex), replies) else items += replies
-        // Runs without a matching transcript message (e.g. transcript truncated) still surface their result.
-        ordered.drop((userIndex + 1 - firstRunAt).coerceAtLeast(0)).forEach { run -> closeRun(run, resultReply(run)) }
         return items.withUniqueIds()
     }
+
+    /**
+     * The final reply a run over by its record ended on (its `result`), for a story its stream told before it broke:
+     * the words the stream never delivered, until the transcript has them — as [LiveRun] places them when the hub
+     * settles a run off its record. Nothing for a run still going, nor for a failure, whose text is its footer's reason.
+     */
+    fun recordReply(run: RunDto): List<TimelineItem> {
+        val status = run.statusEnum()
+        if (status.isActive || status == RunStatus.ERROR) return emptyList()
+        return listOfNotNull(run.result?.takeIf { it.isNotBlank() }?.let { AssistantMessage("res-${run.id}", it) })
+    }
+
+    /**
+     * A run's story so far with the transcript's [replies] for the run: the words the stream never delivered join
+     * the calls and thoughts it did. A reply the story already holds is not said twice, and a reply the story holds
+     * cut off — the stream's copy a prefix of the transcript's whole — gives way to the whole. Footers and notices
+     * among [replies] follow as they are.
+     */
+    fun withReplies(story: List<TimelineItem>, replies: List<TimelineItem>): List<TimelineItem> {
+        if (replies.isEmpty()) return story
+        val told = story.filterIsInstance<AssistantMessage>().map { normalizeText(it.markdown) }.filter { it.isNotEmpty() }
+        val texts = replies.filterIsInstance<AssistantMessage>().map { normalizeText(it.markdown) }.filter { it.isNotEmpty() }
+        if (told.isEmpty() || texts.isEmpty()) return story + replies
+        // A story message the transcript completes (the stream's copy cut off ahead of the transcript's whole) gives
+        // way to the whole; a reply the story already has, whole or ahead of it, is not said again. The story's own
+        // instances stand wherever the words agree, so nothing on screen is redrawn for the same words.
+        val kept = story.filterNot { item -> item is AssistantMessage && normalizeText(item.markdown).let { mine -> mine.isNotEmpty() && texts.any { it != mine && it.startsWith(mine) } } }
+        val added = replies.filterNot { item -> item is AssistantMessage && normalizeText(item.markdown).let { theirs -> theirs.isNotEmpty() && told.any { it.startsWith(theirs) } } }
+        return kept + added
+    }
+
+    private fun normalizeText(text: String) = text.trim().replace(WHITESPACE, " ")
 
     /**
      * Ids double as `LazyColumn` keys and `rememberSaveable` keys, both of which abort on a repeat, and the ones
@@ -139,6 +215,8 @@ object TimelineBuilder {
         branches = run.git.toBranches(),
         // A run that is over was last written to when it ended; a run still going has no end yet.
         endedAtMillis = parseIsoMillis(run.updatedAt).takeIf { it > 0 && run.statusEnum().isTerminal },
+        // The record's own word on a failure, when it carries one: the run's final text.
+        reason = run.result?.trim()?.takeIf { it.isNotEmpty() && run.statusEnum() == RunStatus.ERROR },
     )
 
     /** The [ToolCall] a `tool_call` event shows as; see [ToolCallMapper] for the wording and for what is not kept. */
@@ -386,13 +464,11 @@ object TimelineBuilder {
             finished = true
             val finalText = event.text?.trim().orEmpty()
             placeFinalReply(finalText)
-            if (event.status == RunStatus.ERROR) {
-                // A failure is the server's: the reason is the final text, else the last error the stream (or the
-                // account's record, see HeadlessTranscript) gave; the notice carries it. A cancel is the user's —
-                // their next message, their stop — and gets no notice: the footer says so, quietly (see TranscriptRows).
-                val reason = finalText.ifBlank { streamError?.message?.ifBlank { null } ?: streamError?.code }
-                items += NoticeCard(nextId("notice"), "Run failed", reason, NoticeTone.Error)
-            }
+            // A failure is the server's — its status for the run, and no other word — and the footer carries the
+            // reason: the final text, else the last error the stream (or the account's record, see
+            // HeadlessTranscript) gave. Said as a line of its own by the rows (see TranscriptRows), never a banner;
+            // a cancel is the user's — their next message, their stop — and the footer says so quietly.
+            val reason = if (event.status == RunStatus.ERROR) finalText.ifBlank { streamError?.message?.ifBlank { null } ?: streamError?.code } else null
             // The duration is the outcome's own. Only a run the stream itself saw finish, watched from its start,
             // gets the clock's word when the outcome carries none. Never an outcome read off a record, and never an
             // end other than finished: "Cancelled after 30s" was this device's clock — from opening the stream to
@@ -400,7 +476,7 @@ object TimelineBuilder {
             val elapsed = startedAtMillis?.takeIf { timed && it > 0 && !event.fromRecord && event.status == RunStatus.FINISHED }?.let { nowProvider() - it }?.takeIf { it > 0 }
             // No end time here: the run record's `updatedAt` gives it when the chat is read again (see [footer]),
             // and a footer stamped with this device's clock would differ from the record's copy of the same run.
-            items += RunFooter(nextId("run"), runId, event.status, event.durationMs ?: elapsed, event.git.toBranches())
+            items += RunFooter(nextId("run"), runId, event.status, event.durationMs ?: elapsed, event.git.toBranches(), reason = reason)
         }
 
         /**

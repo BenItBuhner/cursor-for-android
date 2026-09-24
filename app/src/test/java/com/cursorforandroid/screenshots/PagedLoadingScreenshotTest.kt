@@ -7,11 +7,13 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.LocalRippleConfiguration
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.remember
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.test.hasTestTag
@@ -37,6 +39,8 @@ import com.cursorforandroid.domain.TranscriptRows
 import com.cursorforandroid.domain.ToolCall
 import com.cursorforandroid.domain.ToolKind
 import com.cursorforandroid.domain.UserMessage
+import com.cursorforandroid.ui.components.ComposerBox
+import com.cursorforandroid.ui.components.ComposerMenuActions
 import com.cursorforandroid.ui.components.LocalMarkdownMedia
 import com.cursorforandroid.ui.components.MarkdownMediaContext
 import com.cursorforandroid.ui.conversation.LocalTranscriptControls
@@ -46,6 +50,7 @@ import com.cursorforandroid.ui.conversation.TimelineItemView
 import com.cursorforandroid.ui.conversation.TraceStatusRow
 import com.cursorforandroid.ui.conversation.TranscriptRowView
 import com.cursorforandroid.ui.conversation.TranscriptControls
+import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.ui.theme.ThemeMode
 import com.github.takahirom.roborazzi.RoborazziOptions
@@ -173,7 +178,7 @@ class PagedLoadingScreenshotTest {
     /**
      * The transcript loading the desktop's way (Extended mode): the record's newest turns on screen with their tool
      * calls, the older ones a scroll away, and — the network having failed on a refresh — the failure said in the
-     * server's words under the transcript, with Retry and the load diagnostics one tap away.
+     * server's words in a card over the composer, with Retry and the load diagnostics one tap away.
      */
     @OptIn(ExperimentalMaterial3Api::class)
     @Composable
@@ -183,18 +188,36 @@ class PagedLoadingScreenshotTest {
         val media = remember(loader) { MarkdownMediaContext("bc-demo", loader) }
         CursorTheme(mode = ThemeMode.Dark) {
             CompositionLocalProvider(LocalRippleConfiguration provides null, LocalMarkdownMedia provides media, LocalTranscriptControls provides TranscriptControls()) {
-                Column(
-                    Modifier.fillMaxWidth().background(CursorTheme.colors.canvas).padding(16.dp).testTag("scene"),
-                    verticalArrangement = Arrangement.spacedBy(10.dp),
-                ) {
-                    OlderTurnsRow(isLoading = true, onLoad = {})
-                    rows.forEach { TranscriptRowView(it) }
-                    LoadErrorRow(
-                        message = "Couldn't refresh the transcript: Cursor took too long to respond.",
-                        onRetry = {},
-                        onShareDiagnostics = {},
-                        modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
-                    )
+                Column(Modifier.fillMaxWidth().background(CursorTheme.colors.canvas).testTag("scene")) {
+                    Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        OlderTurnsRow(isLoading = true, onLoad = {})
+                        rows.forEach { TranscriptRowView(it) }
+                    }
+                    // The dock as the chat lays it out: the notice first, over the box, in the gutter.
+                    Column(
+                        Modifier.fillMaxWidth().padding(horizontal = CursorDimens.composerGutter).padding(bottom = CursorDimens.composerBottomGap),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                    ) {
+                        LoadErrorRow(
+                            message = "Couldn't refresh the transcript: Cursor took too long to respond.",
+                            onRetry = {},
+                            onShareDiagnostics = {},
+                            onDismiss = {},
+                            modifier = Modifier.widthIn(max = CursorDimens.composerMaxWidth).padding(bottom = 4.dp),
+                        )
+                        ComposerBox(
+                            value = "",
+                            onValueChange = {},
+                            placeholder = "Follow up…",
+                            onSend = {},
+                            isRunning = false,
+                            onStop = {},
+                            plusMenu = ComposerMenuActions(onPickMedia = {}),
+                            modelLabel = "Claude Fable 5.1",
+                            onModel = {},
+                            modifier = Modifier.widthIn(max = CursorDimens.composerMaxWidth),
+                        )
+                    }
                 }
             }
         }

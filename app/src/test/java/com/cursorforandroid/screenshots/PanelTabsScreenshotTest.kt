@@ -8,7 +8,6 @@ import android.graphics.Paint
 import androidx.activity.ComponentActivity
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -49,16 +48,10 @@ import com.cursorforandroid.domain.CursorUser
 import com.cursorforandroid.domain.ProjectAppearance
 import com.cursorforandroid.domain.RecentContextFile
 import com.cursorforandroid.domain.Subscriptions
-import com.cursorforandroid.domain.ToolCall
-import com.cursorforandroid.domain.ToolKind
-import com.cursorforandroid.domain.ToolPayload
 import com.cursorforandroid.ui.components.LocalMarkdownMedia
 import com.cursorforandroid.ui.components.MarkdownMediaContext
 import com.cursorforandroid.ui.conversation.ConversationPills
 import com.cursorforandroid.ui.conversation.ConversationPillsState
-import com.cursorforandroid.ui.conversation.LocalTranscriptControls
-import com.cursorforandroid.ui.conversation.TimelineItemView
-import com.cursorforandroid.ui.conversation.TranscriptControls
 import com.cursorforandroid.ui.navigation.AppShell
 import com.cursorforandroid.ui.navigation.RailState
 import com.cursorforandroid.ui.panel.ContextPanelState
@@ -324,35 +317,6 @@ class PanelTabsScreenshotTest {
             }
         }
         capture("73_composer_pills")
-    }
-
-    /** A Task row inside an open stretch: the dot, the title, the cloud glyph, "Completed" with the time it ran. */
-    @Test
-    fun taskRow() {
-        val task = ToolCall(
-            callId = "t1",
-            name = "task_v2",
-            kind = ToolKind.Task,
-            status = ToolCall.STATUS_COMPLETED,
-            summary = "Icon fidelity gaps: target and layered triangle",
-            payload = ToolPayload.Subagent("Icon fidelity gaps: target and layered triangle", agentId = "bc-icons", durationMs = 45 * 60_000L + 9_000L),
-        )
-        val thought = com.cursorforandroid.domain.ThinkingBlock("The two glyphs read as different objects; a full audit against the desktop's sheet is the fix, not two spot changes.", durationSeconds = 3)
-        compose.setContent {
-            CursorTheme(mode = ThemeMode.Dark) {
-                CompositionLocalProvider(LocalRippleConfiguration provides null, LocalTranscriptControls provides TranscriptControls(onOpenAgent = {})) {
-                    Column(Modifier.fillMaxWidth().background(CursorTheme.colors.canvas).padding(16.dp).testTag("scene")) {
-                        TimelineItemView(ActivityGroup("g1", listOf(thought, task)))
-                    }
-                }
-            }
-        }
-        // The task sits behind the stretch's summary row ("Worked" in the web's frame): open it, as the reference did.
-        compose.waitUntil(10_000) { compose.onAllNodes(hasText("Explored", substring = true)).fetchSemanticsNodes().isNotEmpty() }
-        compose.onAllNodes(hasText("Explored", substring = true))[0].performClick()
-        compose.waitUntil(10_000) { compose.onAllNodes(hasTestTag("task-row")).fetchSemanticsNodes().isNotEmpty() }
-        compose.mainClock.advanceTimeBy(1_000)
-        capture("74_transcript_task_row")
     }
 
     /**

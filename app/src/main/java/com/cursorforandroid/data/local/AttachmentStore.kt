@@ -86,8 +86,36 @@ class AttachmentStore(context: Context) {
         moved
     }
 
+    /**
+     * The attachments [commit]ted under [runId] as a staged set again, in place — for a message the transcript filed
+     * under a run that turned out not to carry it, which goes back to waiting with its images (see
+     * `ConversationRepository.noteAccountQueue`); the next [commit] moves them under the run the account does start.
+     */
+    fun committed(agentId: String, runId: String, attachments: List<MessageAttachment>): StagedAttachments =
+        if (attachments.isEmpty()) StagedAttachments.EMPTY else StagedAttachments(runDir(agentId, runId), attachments)
+
+    /**
+     * The set [stage] wrote for [attachments], read back after a restart — for a message still waiting on the account's
+     * queue, whose copies are to be filed under the run it starts; empty when they are gone.
+     */
+    fun staged(attachments: List<MessageAttachment>): StagedAttachments {
+        val dir = attachments.firstOrNull()?.let { File(it.path).parentFile } ?: return StagedAttachments.EMPTY
+        if (dir.parentFile != staging || attachments.any { !File(it.path).isFile }) return StagedAttachments.EMPTY
+        return StagedAttachments(dir, attachments)
+    }
+
     suspend fun discard(staged: StagedAttachments) = withContext(Dispatchers.IO) {
         staged.dir?.deleteRecursively()
+        Unit
+    }
+
+    /**
+     * At start: the staged sets last written more than [maxAgeMs] ago. A process that died between [stage] and
+     * [commit] or [discard] left one nothing will ever reach again. A message still waiting on the account's queue
+     * reads its set back by [staged], and a week is past any wait that still delivers.
+     */
+    suspend fun sweepStaging(nowMillis: Long = System.currentTimeMillis(), maxAgeMs: Long = STAGING_MAX_AGE_MS) = withContext(Dispatchers.IO) {
+        staging.listFiles { f -> f.isDirectory }?.forEach { if (it.lastModified() < nowMillis - maxAgeMs) it.deleteRecursively() }
         Unit
     }
 
@@ -223,6 +251,7 @@ class AttachmentStore(context: Context) {
         const val JPEG_QUALITY = 85
         /** Pixels held at once while looking for transparency: a quarter of a megabyte, whatever the image's shape. */
         const val PIXEL_BAND_PX = 64 * 1024
+        const val STAGING_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000L
 
         /**
          * IDs are `bc-…` / `run-…` today, but nothing an API returns should be trusted as a path segment: unsafe

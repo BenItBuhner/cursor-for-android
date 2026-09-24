@@ -12,6 +12,8 @@ import com.cursorforandroid.domain.SteerOutcome
 import com.cursorforandroid.domain.WorkerMembership
 import com.cursorforandroid.domain.WorkerSpawnKind
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonPrimitive
@@ -33,6 +35,9 @@ interface ProjectLineageApi {
     /** The root discovery pass over the whole account list (see `RootScanApi`); null when the source has no list to scan. */
     suspend fun scanRoots(maxPages: Int): RootScan? = null
 
+    /** The same pass stopped at the page older than [stopBelowActivityMillis] (see `RootScanApi.scanRoots`); sources that cannot date their pages read as [scanRoots]. */
+    suspend fun scanRoots(maxPages: Int, stopBelowActivityMillis: Long?): RootScan? = scanRoots(maxPages)
+
     /** The chats branched off or spawned by [parentId], as the account's list would describe them. */
     suspend fun children(parentId: String): List<ComposerSnapshot>
 
@@ -41,25 +46,30 @@ interface ProjectLineageApi {
      * subagents `ListBackgroundComposerChildren` lists. One refusing does not lose the other's answer — a Project
      * whose children call is not offered still has its workers placed — and the result says which read answered.
      */
-    suspend fun lineage(rootId: String): ProjectLineage {
-        var failure: Throwable? = null
-        val workers = try {
-            workersForManager(rootId)
-        } catch (e: CancellationException) {
-            throw e
-        } catch (t: Throwable) {
-            failure = t
-            null
+    suspend fun lineage(rootId: String): ProjectLineage = coroutineScope {
+        // Both reads at once: neither waits on the other's round trip.
+        val workersRead = async {
+            try {
+                Result.success(workersForManager(rootId))
+            } catch (e: CancellationException) {
+                throw e
+            } catch (t: Throwable) {
+                Result.failure(t)
+            }
         }
-        val childRecords = try {
-            children(rootId)
-        } catch (e: CancellationException) {
-            throw e
-        } catch (t: Throwable) {
-            if (failure == null) failure = t
-            null
+        val childrenRead = async {
+            try {
+                Result.success(children(rootId))
+            } catch (e: CancellationException) {
+                throw e
+            } catch (t: Throwable) {
+                Result.failure(t)
+            }
         }
-        return ProjectLineage(
+        val workers = workersRead.await().getOrNull()
+        val childRecords = childrenRead.await().getOrNull()
+        val failure = workersRead.await().exceptionOrNull() ?: childrenRead.await().exceptionOrNull()
+        ProjectLineage(
             rootId = rootId,
             workers = workers.orEmpty(),
             children = childRecords.orEmpty().associate { child -> child.id to (child.parent?.kind ?: AgentParentKind.SUBAGENT) },
@@ -111,7 +121,7 @@ interface ProjectActionsApi {
     suspend fun resume(agentId: String)
 }
 
-/** A Project's shared context (its Agent Store), read-only. */
+/** A Project's shared context (its Agent Store): its listing and files, and one new file written into it. */
 interface AgentStoreApi {
     /** The store id of the store [sourceId] (a Project's coordinator) owns, or null when the account lists none for it. */
     suspend fun storeFor(sourceId: String): String?
@@ -130,6 +140,16 @@ interface AgentStoreApi {
      * for a while. Null when the service answered with no instruction for it.
      */
     suspend fun presignRead(target: StoreReadTarget, relativePath: String): PresignedStoreRead?
+
+    /**
+     * `PresignAgentStoreWrites`: a URL the bytes of a new file at [relativePath] in [storeId] are to be `PUT` to,
+     * with the headers the write must carry, for a while. The file is declared by its [sizeBytes] and its SHA-256
+     * ([sha256Hex], lowercase), which the storage checks against what arrives; the write expects no file at the
+     * path yet, so it never overwrites. Null when the service answered with no instruction for it. A source that
+     * cannot write says so.
+     */
+    suspend fun presignWrite(storeId: String, relativePath: String, sizeBytes: Long, sha256Hex: String): PresignedStoreWrite? =
+        throw UnsupportedOperationException("This source cannot write to a store.")
 }
 
 /**
@@ -145,6 +165,13 @@ sealed interface StoreReadTarget {
 
 /** `aiserver.v1.AgentStoreReadInstruction`: where a store file's bytes are, and until when. */
 data class PresignedStoreRead(val relativePath: String, val url: String, val expiresAtMillis: Long?)
+
+/**
+ * `aiserver.v1.AgentStoreWriteInstruction`: where a store file's bytes go, the headers the `PUT` must carry (the
+ * content's length and SHA-256 checksum, `If-None-Match: *` for a file that must not exist yet), until when the URL
+ * is good, and whether the storage already refused the precondition (the file exists).
+ */
+data class PresignedStoreWrite(val relativePath: String, val url: String, val headers: Map<String, String>, val expiresAtMillis: Long?, val preconditionFailed: Boolean)
 
 /**
  * The Cursor Projects corner of `aiserver.v1.BackgroundComposerService` (see [BackgroundComposerApi] for the
@@ -314,6 +341,25 @@ class ProjectApi(
         return PresignedStoreRead(instruction.relPath ?: relativePath, url, instruction.expiresAtMs?.longOrNull)
     }
 
+    /**
+     * The request the agents' own store mount makes for a small file (Cursor 3.20.21's `cursor-agent-store-fuse`,
+     * seen on the wire): `{storeId, files: [{relPath, sizeBytes, sha, expectAbsent: true}], supportsSignedContentLength: true}`
+     * — the store by its id alone, the size as the int64 string proto3 JSON writes, the SHA-256 in hex — answered
+     * with `{instructions: [{relPath, url, headers: {Content-Length, x-amz-checksum-sha256, If-None-Match}, expiresAtMs, conflict?}]}`.
+     * The `PUT` that follows is the caller's, with those headers; no completion call is needed for a single part.
+     */
+    override suspend fun presignWrite(storeId: String, relativePath: String, sizeBytes: Long, sha256Hex: String): PresignedStoreWrite? {
+        val request = PresignWritesDto(
+            storeId = storeId,
+            files = listOf(WriteFileEntryDto(relPath = relativePath, sizeBytes = sizeBytes.toString(), sha = sha256Hex, expectAbsent = true)),
+            supportsSignedContentLength = true,
+        )
+        val response = call("PresignAgentStoreWrites", request, PresignWritesDto.serializer(), PresignWritesResponseDto.serializer())
+        val instruction = response.instructions.firstOrNull { it.relPath == relativePath } ?: response.instructions.firstOrNull() ?: return null
+        val url = instruction.url?.takeIf { it.isNotBlank() } ?: return null
+        return PresignedStoreWrite(instruction.relPath ?: relativePath, url, instruction.headers, instruction.expiresAtMs?.let { it.longOrNull ?: it.contentOrNull?.toLongOrNull() }, instruction.primaryPreconditionFailed == true)
+    }
+
     private suspend fun <I, O> call(method: String, body: I, requestSerializer: KSerializer<I>, responseSerializer: KSerializer<O>): O =
         rpc.unaryWithSession(BackgroundComposerApi.SERVICE, method, tokens, body, requestSerializer, responseSerializer)
 
@@ -456,6 +502,27 @@ class ProjectApi(
     /** `AgentStoreReadInstruction {rel_path, url, expires_at_ms}`; the stamp is an int64, a string or a number in Connect JSON. */
     @Serializable
     private data class ReadInstructionDto(val relPath: String? = null, val url: String? = null, val expiresAtMs: JsonPrimitive? = null)
+
+    /** `PresignAgentStoreWritesRequest {agent_id, files[], store_id?, lock_token?, lock_client_uuid?, supports_signed_content_length}`: the store by id, no agent. */
+    @Serializable
+    private data class PresignWritesDto(val storeId: String, val files: List<WriteFileEntryDto>, val supportsSignedContentLength: Boolean)
+
+    /** `AgentStoreWriteFileEntry {rel_path, size_bytes, sha, base_etag | expect_absent, multipart_parts[]}`; the size an int64 string, no parts for one `PUT`. */
+    @Serializable
+    private data class WriteFileEntryDto(val relPath: String, val sizeBytes: String, val sha: String, val expectAbsent: Boolean? = null)
+
+    @Serializable
+    private data class PresignWritesResponseDto(val instructions: List<WriteInstructionDto> = emptyList())
+
+    /** `AgentStoreWriteInstruction {rel_path, url, headers, expires_at_ms, conflict?, lock_redirect?, multipart?, primary_precondition_failed}`. */
+    @Serializable
+    private data class WriteInstructionDto(
+        val relPath: String? = null,
+        val url: String? = null,
+        val headers: Map<String, String> = emptyMap(),
+        val expiresAtMs: JsonPrimitive? = null,
+        val primaryPreconditionFailed: Boolean? = null,
+    )
 
     @Serializable
     private class EmptyDto

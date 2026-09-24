@@ -3,7 +3,14 @@ package com.cursorforandroid.ui.conversation
 import androidx.compose.runtime.compositionLocalOf
 import com.cursorforandroid.domain.Agent
 import com.cursorforandroid.domain.ConversationControls
+import com.cursorforandroid.domain.FileOpenRequest
+import com.cursorforandroid.domain.ModelOption
+import com.cursorforandroid.domain.SubagentChild
+import com.cursorforandroid.domain.SubagentPlacement
+import com.cursorforandroid.domain.SubagentRows
 import com.cursorforandroid.domain.ToolPayload
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flowOf
 
 /**
  * What the transcript's rows may do on the account (Extended mode): answer the question a card shows, stop the tool
@@ -27,6 +34,56 @@ data class TranscriptControls(
      * text it produced between tool calls is its working notes, folded away under "Background" unless opened.
      */
     val coordinatorMode: Boolean = false,
+    /**
+     * Throws the chat's copies away and reads it again from the server (see `ConversationRepository.reloadTranscript`):
+     * what a coordinator's message shown without its text offers, since the run's log or the record read afresh is
+     * where the text would come from. Null where the rows are rendered without a chat behind them.
+     */
+    val onReloadTranscript: (() -> Unit)? = null,
+    /**
+     * Where each message sent from this chat's composer and not yet filed by the server stands, by its bubble's id
+     * (see [OutgoingStatus]): the bubble draws its files still going up, or a failure with the reason and its two
+     * ways on — [onRetryOutgoing] sends it again, [onEditOutgoing] hands the draft back to the composer. Empty where
+     * the rows are rendered without a composer behind them.
+     */
+    val outgoing: Map<String, OutgoingStatus> = emptyMap(),
+    val onRetryOutgoing: ((id: String) -> Unit)? = null,
+    val onEditOutgoing: ((id: String) -> Unit)? = null,
+    /**
+     * The reader closes a notice among the rows that offers it (`NoticeCard.dismissKey`): every notice with that key
+     * in the chat goes, and stays gone for the chat (see `NoticeDismissals`). Null where the rows are rendered
+     * without a chat behind them, and the notices show no X.
+     */
+    val onDismissNotice: ((key: String) -> Unit)? = null,
+    /**
+     * A file path a tool call names was tapped — a read, an edit, a write, a search hit — and it is not a picture, a
+     * recording or a sound (those open the media viewer from the row itself): the full-file viewer opens on it. Null
+     * where the rows are rendered without a chat behind them, and the paths are plain text.
+     */
+    val onOpenFile: ((FileOpenRequest) -> Unit)? = null,
+    /**
+     * A picture a tool call read is outside the agent's workspace and no source this chat carries has it, so the
+     * reader asked the agent to copy it in (see `MediaProblem.OutsideWorkspace`): the composer is filled with a
+     * follow-up asking for the copy, not sent, so the reader can send it. [path] is the file to copy. Null where no
+     * composer stands behind the rows.
+     */
+    val onAskToCopyFile: ((path: String) -> Unit)? = null,
+    /** The account's models, which a subagent's row names its model by (see [SubagentRows.modelLabel]). */
+    val models: List<ModelOption> = emptyList(),
+    /** What the transcript's subagent rows say across its turns: each worker's newest row, name and model. */
+    val subagents: SubagentRows.Index = SubagentRows.Index.EMPTY,
+    /** Where this chat's own agent runs, which a subagent's glyph is drawn against (see [SubagentRows.placement]). */
+    val placement: SubagentPlacement? = null,
+    /**
+     * A cloud child's state as it moves — its run's status, the step it announced, the action it is on — for the
+     * row that stands for it; a flow of nothing where the rows are rendered without the app behind them.
+     */
+    val subagentActivity: (agentId: String) -> Flow<SubagentChild?> = { flowOf(null) },
+    /**
+     * The in-VM subagents the account's record of this chat tracks (Extended mode on the Beta engine), by the id
+     * of the task call that started each: its status, and the step it last announced.
+     */
+    val subagentRuns: Map<String, SubagentChild> = emptyMap(),
 )
 
 /** The transcript's controls, provided by the conversation screen around its list; the defaults where it is rendered alone. */

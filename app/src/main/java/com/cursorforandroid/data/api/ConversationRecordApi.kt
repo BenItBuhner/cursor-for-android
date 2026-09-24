@@ -1,7 +1,16 @@
 package com.cursorforandroid.data.api
 
+import com.cursorforandroid.data.api.proto.AgentSchemas
+import com.cursorforandroid.data.api.proto.ProtoWire
 import com.cursorforandroid.data.auth.SessionTokenProvider
 import com.cursorforandroid.domain.StepShape
+import com.cursorforandroid.domain.SubagentChild
+import com.cursorforandroid.domain.TranscriptPerf
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
@@ -11,6 +20,7 @@ import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.longOrNull
+import java.util.Base64
 
 /**
  * One step of the account's own copy of a chat's transcript (`HeadlessAgenticComposerResponse`), in the corner this
@@ -32,6 +42,14 @@ data class HeadlessStep(
      */
     val projectMode: Boolean = false,
     val shape: StepShape? = null,
+    /**
+     * The whole-chat index of the turn this step belongs to, when the record was read by turns (the blob-backed
+     * record, see [ConversationRecordApi.turns]): every step of a turn carries the same index, and the record is
+     * indexed by turn rather than by step. Null for a step of the step-indexed record (`FetchBackgroundComposer`).
+     */
+    val turnIndex: Int? = null,
+    /** A prompt delivered into the turn under way (`agent.v1.UserMessage.turn_steer`), not one that started a turn. */
+    val steer: Boolean = false,
 )
 
 /**
@@ -62,8 +80,8 @@ data class HeadlessPage(val steps: List<HeadlessStep>, val startIndex: Int, val 
 data class TurnTiming(val durationMs: Long?, val timestampMs: Long?)
 
 /**
- * The account's latest word on a chat's conversation (`GetLatestAgentConversationState`), in the corner this app
- * reads: how many turns the chat has ([turnCount], one per prompt), each turn's timing, whether a tool call is
+ * The account's latest word on a chat's conversation (`StreamConversation`'s `initial_state`, see
+ * [ConversationStateReader]), in the corner this app reads: how many turns the chat has ([turnCount], one per prompt), each turn's timing, whether a tool call is
  * pending (the agent is mid-step), whether the chat is a Project's root conversation, and the two counters that say
  * how far the live stream has gone ([numPriorInteractionUpdates]) and whether the chat was rewound ([rewindEpoch]).
  */
@@ -74,7 +92,61 @@ data class RecordState(
     val isRootProject: Boolean,
     val numPriorInteractionUpdates: Long,
     val rewindEpoch: Long,
+    /**
+     * The blob id of each turn (`ConversationStateStructure.turns[]`, base64 as Connect JSON writes `bytes`), oldest
+     * first: what [ConversationRecordApi.turns] reads the turns from. Empty for a record that names none.
+     */
+    val turnBlobIds: List<String> = emptyList(),
+    /** How many blobs the state read brought with it (the server's prefetch), into the shared cache: read from there rather than fetched. */
+    val prefetchedCount: Int = 0,
+    /** What the answer carried, keys only — where the state came from, how many turns, the stream's message kinds — for a notice that names a shape the build did not expect. */
+    val shape: String = "",
+    /** Where the account's live stream of the chat stood when this was read (see [LivePoint]): what an open chat's watch resumes from. */
+    val live: LivePoint? = null,
+    /** The in-VM subagents the state tracks, by the id of the task call that started each (see [RecordSubagents]). */
+    val subagents: Map<String, SubagentChild> = emptyMap(),
 )
+
+/**
+ * How much of a turn a read of the blob-backed record brings (see [ConversationRecordApi.readTurns]): [FULL] every
+ * step; [MESSAGES] what the reader sees of a turn before opening its stretch — the turn's structure, its prompt, the
+ * steps that are the coordinator's messages to the user (`send_message_step_indices`), and any other step already
+ * held — the rest read after, behind what is on screen.
+ */
+enum class TurnPlan { FULL, MESSAGES }
+
+/**
+ * One turn of the blob-backed record as its steps (see [ConversationRecordApi.turns]): [index] is its whole-chat
+ * index, [steps] its prompt first, then each step as the step-indexed record would have carried it; [blobs] how
+ * many blobs were read for it and [prefetched] how many of them the state answer had carried, for the diagnostics.
+ */
+data class HeadlessTurn(
+    val index: Int,
+    val steps: List<HeadlessStep>,
+    val blobs: Int = 0,
+    val prefetched: Int = 0,
+    /** The turn's own blob (`ConversationStateStructure.turns[index]`): content-addressed, so an unchanged id is an unchanged turn. */
+    val blobId: String? = null,
+    /** Every step was read; a [TurnPlan.MESSAGES] read leaves steps for later. */
+    val complete: Boolean = true,
+    /** Not read: the reader holds the turn under the same [blobId] already, and its items stand. */
+    val reused: Boolean = false,
+    /** How many steps the turn's structure lists, and how many of them are messages to the user; null when the structure was not read. */
+    val stepTotal: Int? = null,
+    val messageSteps: Int? = null,
+    /** Blobs of the turn asked for ([asked]) and answered as missing or unreadable ([missing]), with the last such answer, for the drift check. */
+    val asked: Int = 0,
+    val missing: Int = 0,
+    val lastMissing: ConnectRpcException? = null,
+    /** Pieces the server failed to give after their retries (see [BlobRecord.Read.unavailable]), and the last such failure. */
+    val unavailable: Int = 0,
+    val lastUnavailable: Throwable? = null,
+    /** The turn's structure was read (false: the server failed to give it, and nothing of the turn is known yet). */
+    val readable: Boolean = true,
+)
+
+/** Turns [from] until [from] + `turns.size` of a chat of [turnCount] turns. */
+data class HeadlessTurnPage(val turns: List<HeadlessTurn>, val from: Int, val turnCount: Int)
 
 /**
  * The account's transcript of a chat, tool calls included, which outlives the documented stream's retention window.
@@ -84,8 +156,42 @@ interface ConversationRecordApi {
     /** `FetchBackgroundComposer {bc_id, start_index, limit}`: [limit] steps from [startIndex], oldest first. */
     suspend fun fetch(agentId: String, startIndex: Int, limit: Int): HeadlessPage
 
-    /** `GetLatestAgentConversationState {bc_id}`: the chat's turn count, timings and pending work (see [RecordState]). */
+    /** The chat's conversation state — its turn count, timings and pending work (see [RecordState]) — as `StreamConversation`'s `initial_state` gives it. */
     suspend fun state(agentId: String): RecordState
+
+    /**
+     * The blob-backed record, by turn: turns [from] until [from] + [limit] of the chat, oldest first, each read from
+     * its blobs (`GetBlobForAgentKV`) and given as the steps the step-indexed record would have carried. [state] is
+     * the conversation state when the caller read it a moment ago, else it is read here. Null when this record has
+     * no turn read (a fake of the step-indexed record alone).
+     */
+    suspend fun turns(agentId: String, from: Int, limit: Int, state: RecordState? = null): HeadlessTurnPage? = null
+
+    /**
+     * [turns] read to [plan], the turns whose blob id [held] names (by whole-chat index) left unread and given as
+     * [HeadlessTurn.reused]: the reader has them already, and a content-addressed turn does not change.
+     */
+    suspend fun readTurns(agentId: String, from: Int, limit: Int, state: RecordState?, plan: TurnPlan, held: Map<Int, String> = emptyMap(), patient: Boolean = true): HeadlessTurnPage? = turns(agentId, from, limit, state)
+
+    /** Whether [turns] is the read this record serves: the step-indexed read is gone from the server, the blob-backed one stands. */
+    val readsTurns: Boolean get() = false
+
+    /** What [agentId]'s blob reads have come to this process (see [BlobCache.Counts]) and the memory tier's size, for the diagnostics; null for a record without blobs. */
+    fun blobCounts(agentId: String): Pair<BlobCache.Snapshot, Long>? = null
+
+    /**
+     * Holds the account's live stream of [agentId]'s conversation open until it says the chat moved on from [since]
+     * (see [ConversationStateReader.watch]), resuming from [since]'s offset when [resume]. Null where there is no
+     * live stream to hold.
+     */
+    suspend fun watch(agentId: String, since: LivePoint?, resume: Boolean): LiveWatch? = null
+
+    /**
+     * The turns [turns] names (whole-chat index to the turn's blob id) read from the blobs this device holds alone —
+     * memory, then the disk — never the network: a saved turn whose file is gone rebuilt before anything is painted
+     * (see `ConversationRepository.rebuiltFromHeldBlobs`). A piece not held leaves its turn short, not unreadable.
+     */
+    suspend fun heldTurns(agentId: String, turns: Map<Int, String>): List<HeadlessTurn> = emptyList()
 }
 
 /**
@@ -99,10 +205,27 @@ interface ConversationRecordApi {
 class HeadlessConversationApi(
     private val rpc: ConnectJsonClient,
     private val tokens: SessionTokenProvider,
+    /**
+     * Read the record by turns from its blobs (see [turns]) — the read Cursor's client makes, and the only one the
+     * server still answers since `FetchBackgroundComposer` was removed (September 2026). False reads the
+     * step-indexed record ([fetch]) for the tests that keep that wire's captured shapes readable.
+     */
+    override val readsTurns: Boolean = true,
+    /** The blobs read so far, shared with every other reader of the record (the goal strip's, see `SteeringApi`). */
+    val blobs: BlobCache = BlobCache(),
+    /** The waits between attempts of a read the server failed (see [ServerRetry]). */
+    private val waits: ServerRetry.Waits = ServerRetry.Waits(),
 ) : ConversationRecordApi {
+
+    /** The conversation state read (`StreamConversation`, PREWARM), which names the turns and brings the newest blobs. */
+    private val states = ConversationStateReader(rpc, tokens, blobs, waits.state)
+
+    override fun blobCounts(agentId: String): Pair<BlobCache.Snapshot, Long> = blobs.counts(agentId).snapshot() to blobs.memoryBytes
 
     override suspend fun fetch(agentId: String, startIndex: Int, limit: Int): HeadlessPage {
         val from = startIndex.coerceAtLeast(0)
+        // A refusal is heard at once: the transcript has the documented endpoints to fall back on, and the pause the
+        // refusal asks for is waited out by the next record read, not by this open (see ApiThrottle.call).
         val response = rpc.unaryWithSession(
             SERVICE,
             "FetchBackgroundComposer",
@@ -110,49 +233,201 @@ class HeadlessConversationApi(
             FetchRequestDto(bcId = agentId, startIndex = from, limit = limit.coerceAtLeast(1)),
             FetchRequestDto.serializer(),
             FetchResponseDto.serializer(),
+            retryRefusals = false,
         )
         // One step per response, a blank one for a response this app reads nothing from (a status, a done marker):
         // the record is paged by index, and a page's steps must line up with the indices it was asked for.
         return HeadlessPage(response.responses.mapIndexed { i, json -> parseStep(json, from + i) }, from, response.totalResponses ?: response.responses.size)
     }
 
+    /**
+     * The chat's conversation state off `StreamConversation`'s `initial_state` (see [ConversationStateReader]): the
+     * turn list, each turn's timing, the pending calls, the counters. The blobs the server sent with it are in
+     * [blobs] already, so [turns] reads them from there. `GetLatestAgentConversationState`, which said the same,
+     * is gone from the server (2026-09-21) and is not asked.
+     */
     override suspend fun state(agentId: String): RecordState {
-        val response = rpc.unaryWithSession(
-            SERVICE,
-            "GetLatestAgentConversationState",
-            tokens,
-            StateRequestDto(bcId = agentId),
-            StateRequestDto.serializer(),
-            StateResponseDto.serializer(),
-        )
-        val latest = response.latestConversationState
-        val conversation = latest?.conversationState
+        // A read in flight is joined: the goal strip reads the same state as the chat opens.
+        val initial = states.read(agentId)
+        // The state inline, as the desktop takes it; else the state's own blob (`initial_state.blob_id`), read as the structure.
+        var source = if (initial.conversationState != null) "inline" else "absent"
+        val stateJson = initial.conversationState ?: initial.stateBlobId?.let { id ->
+            val bytes = runCatching { blob(agentId, id) }.onFailure { if (it is kotlinx.coroutines.CancellationException) throw it }.getOrNull()
+            val decoded = bytes?.let { runCatching { ProtoWire.decode(it, AgentSchemas.CONVERSATION_STATE) }.getOrNull() }
+            source = when {
+                bytes == null -> "blob(missing)"
+                decoded == null -> "blob(unreadable)"
+                else -> "blob"
+            }
+            decoded
+        }
+        val conversation = stateJson?.let { runCatching { CursorJson.decodeFromJsonElement(ConversationStateDto.serializer(), it) }.getOrNull() }
+        val cloud = initial.cloudAgentState
         return RecordState(
             turnCount = conversation?.turns?.size ?: 0,
             timings = conversation?.turnTimings?.map { TurnTiming(it.durationMs?.toLongLenient(), it.timestampMs?.toLongLenient()) } ?: emptyList(),
             pendingToolCalls = conversation?.pendingToolCalls?.size ?: 0,
             isRootProject = conversation?.isRootProjectConversation == true,
-            numPriorInteractionUpdates = latest?.numPriorInteractionUpdates?.toLongLenient() ?: 0L,
-            rewindEpoch = latest?.conversationRewindEpoch?.toLongLenient() ?: 0L,
+            numPriorInteractionUpdates = cloud?.get("numPriorInteractionUpdates")?.toLongLenient() ?: 0L,
+            // `conversation_rewind_epoch` was the unary's own field; the stream carries no such counter.
+            rewindEpoch = 0L,
+            turnBlobIds = conversation?.turns?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull?.takeIf { id -> id.isNotBlank() } } ?: emptyList(),
+            prefetchedCount = initial.prefetchedCount,
+            shape = "conversationState=$source turns=${conversation?.turns?.size ?: 0} messages=${initial.kinds.joinToString(",")} cloudAgentState=${cloud?.keys?.sorted()?.joinToString(",", "[", "]") ?: "absent"}",
+            live = LivePoint(ConversationStateReader.offsetKeyOf(cloud), LivePoint.status(initial.workflowStatus), conversation?.turns?.size),
+            subagents = conversation?.let { RecordSubagents.of(it.subagentRunsByParentToolCallId, it.communicateUpdateStatesByParentToolCallId) } ?: emptyMap(),
         )
+    }
+
+    override suspend fun watch(agentId: String, since: LivePoint?, resume: Boolean): LiveWatch = states.watch(agentId, since, resume)
+
+    override suspend fun heldTurns(agentId: String, turns: Map<Int, String>): List<HeadlessTurn> = coroutineScope {
+        turns.entries.sortedBy { it.key }.map { (index, id) ->
+            async {
+                val counter = BlobRecord.Counter()
+                val read = BlobRecord.read(index, id, heldSource(agentId, counter), TurnPlan.FULL)
+                HeadlessTurn(
+                    index, read.steps, counter.blobs.get(), counter.prefetched.get(),
+                    blobId = id, complete = read.complete, stepTotal = read.stepTotal, messageSteps = read.messageSteps,
+                    asked = read.asked, missing = read.missing, lastMissing = read.lastMissing,
+                    unavailable = read.unavailable, lastUnavailable = read.lastUnavailable, readable = read.readable,
+                )
+            }
+        }.awaitAll()
+    }
+
+    /** A turn read's pieces from the cache alone (see [heldTurns]): one not held is left for later, as a failed piece is. */
+    private fun heldSource(agentId: String, counter: BlobRecord.Counter) = object : BlobRecord.Source {
+        override suspend fun blob(id: String, whole: Boolean): ByteArray {
+            counter.blobs.incrementAndGet()
+            val held = blobs.read(agentId, id)
+            if (held != null && !(whole && held.partial)) return held.bytes
+            throw java.io.IOException("Not held on this device: $id")
+        }
+
+        override suspend fun held(id: String): BlobCache.Held? = blobs.read(agentId, id)
+
+        override suspend fun confirm(id: String) = blobs.confirm(agentId, id)
+    }
+
+    /**
+     * The turns [from] until [from] + [limit], each from its blobs: the turn's structure, the user's message and
+     * every step, decoded against [AgentSchemas] (see [BlobRecord]). A handful of blobs are in flight at once, and
+     * every blob read is kept (blobs are immutable, named by their content), so a turn read twice costs one round
+     * trip the second time, and the delta of a chat that grew costs the new turns' blobs alone.
+     */
+    override suspend fun turns(agentId: String, from: Int, limit: Int, state: RecordState?): HeadlessTurnPage =
+        readTurns(agentId, from, limit, state, TurnPlan.FULL, emptyMap())
+
+    /**
+     * The turns [from] until [from] + [limit], each from its blobs to [plan]: the turn's structure, the user's
+     * message and its steps, decoded against [AgentSchemas] (see [BlobRecord]). Blobs come from the cache first —
+     * memory, then disk — and from the network only when neither holds them, [BLOB_PARALLELISM] at once across the
+     * page. A turn whose blob id [held] names is not read at all. A blob the server fails to give is asked again
+     * with backoff (see [ServerRetry]) — [patient] the whole way, else once, for a read the screen is waiting on,
+     * the piece left for the reads behind it.
+     */
+    override suspend fun readTurns(agentId: String, from: Int, limit: Int, state: RecordState?, plan: TurnPlan, held: Map<Int, String>, patient: Boolean): HeadlessTurnPage {
+        val known = state ?: state(agentId)
+        val ids = known.turnBlobIds
+        val start = from.coerceIn(0, ids.size)
+        val end = (start + limit.coerceAtLeast(0)).coerceAtMost(ids.size)
+        if (start >= end) return HeadlessTurnPage(emptyList(), start, ids.size)
+        val gate = Semaphore(BLOB_PARALLELISM)
+        val turns = coroutineScope {
+            // Newest first: the gate lets the turns on screen through before the ones above them.
+            (start until end).reversed().map { index ->
+                async {
+                    val id = ids[index]
+                    if (held[index] == id) return@async HeadlessTurn(index, emptyList(), blobId = id, reused = true)
+                    val counter = BlobRecord.Counter()
+                    val read = BlobRecord.read(index, id, source(agentId, gate, counter, if (patient) waits.pieces else waits.onScreen), plan)
+                    HeadlessTurn(
+                        index, read.steps, counter.blobs.get(), counter.prefetched.get(),
+                        blobId = id, complete = read.complete, stepTotal = read.stepTotal, messageSteps = read.messageSteps,
+                        asked = read.asked, missing = read.missing, lastMissing = read.lastMissing,
+                        unavailable = read.unavailable, lastUnavailable = read.lastUnavailable, readable = read.readable,
+                    )
+                }
+            }.awaitAll().asReversed()
+        }
+        return HeadlessTurnPage(turns, start, ids.size)
+    }
+
+    /** Where a turn read of [agentId] takes its blobs from: the cache, then the network through [gate]. */
+    private fun source(agentId: String, gate: Semaphore, counter: BlobRecord.Counter, retryDelaysMs: List<Long>) = object : BlobRecord.Source {
+        override suspend fun blob(id: String, whole: Boolean): ByteArray {
+            counter.blobs.incrementAndGet()
+            val held = blobs.read(agentId, id)
+            if (held != null && !(whole && held.partial)) {
+                if (held.partial) counter.prefetched.incrementAndGet()
+                return held.bytes
+            }
+            return gate.withPermit { fetchBlob(agentId, id, retryDelaysMs) }
+        }
+
+        override suspend fun held(id: String): BlobCache.Held? = blobs.read(agentId, id)
+
+        override suspend fun confirm(id: String) = blobs.confirm(agentId, id)
+    }
+
+    /**
+     * One blob of the chat's record (`GetBlobForAgentKV {bc_id, blob_id}` → `blob_data`), from the cache when it was
+     * read before. Blobs are content-addressed and never change, so the cache needs no invalidation; it is bounded
+     * by count and by bytes (see [BlobCache]).
+     */
+    suspend fun blob(agentId: String, blobId: String): ByteArray {
+        blobs.read(agentId, blobId)?.takeIf { !it.partial }?.let { return it.bytes }
+        return fetchBlob(agentId, blobId)
+    }
+
+    /**
+     * The network's copy of a blob, kept whole in memory and on disk. A failure of the server's own — a 5xx (the
+     * load balancer's bare 502 among them), `unavailable`, a dropped connection — is asked again with backoff (see
+     * [ServerRetry]); what still fails after that is thrown for the turn to leave the piece for later, never the page.
+     */
+    private suspend fun fetchBlob(agentId: String, blobId: String, retryDelaysMs: List<Long> = waits.pieces): ByteArray {
+        val counts = blobs.counts(agentId)
+        val response = try {
+            ServerRetry.withRetries(retryDelaysMs, onRetry = { _, _, _ -> counts.retried.incrementAndGet() }) {
+                TranscriptPerf.session(agentId).network("blob")
+                counts.fetched.incrementAndGet()
+                rpc.unaryWithSession(
+                    SERVICE,
+                    "GetBlobForAgentKV",
+                    tokens,
+                    BlobRequestDto(bcId = agentId, blobId = blobId),
+                    BlobRequestDto.serializer(),
+                    BlobResponseDto.serializer(),
+                    // A blob has no other source: a rate limit is waited out and the read made once more (see ApiThrottle.call).
+                    retryRefusals = true,
+                    lane = ApiThrottle.Lane.BLOBS,
+                )
+            }
+        } catch (e: Throwable) {
+            val connect = e as? ConnectRpcException
+            if (connect != null && (connect.httpCode == 404 || connect.code == "not_found")) counts.missing.incrementAndGet()
+            if (ServerRetry.isTransient(e)) counts.failed.incrementAndGet()
+            throw e
+        }
+        val bytes = response.blobData?.let { runCatching { Base64.getDecoder().decode(it) }.getOrNull() }
+        if (bytes == null) {
+            counts.missing.incrementAndGet()
+            throw ConnectRpcException(200, ConnectRpcException.UNREADABLE_ANSWER, "Cursor's answer to GetBlobForAgentKV carried no blob.", path = ConnectRpc.path(SERVICE, BLOB_METHOD))
+        }
+        counts.fetchedBytes.addAndGet(bytes.size.toLong())
+        blobs.keep(agentId, blobId, bytes)
+        return bytes
     }
 
     @Serializable
     private data class FetchRequestDto(val bcId: String, val startIndex: Int, val limit: Int)
 
     @Serializable
-    private data class StateRequestDto(val bcId: String)
+    private data class BlobRequestDto(val bcId: String, val blobId: String)
 
     @Serializable
-    private data class StateResponseDto(val latestConversationState: LatestStateDto? = null)
-
-    /** `aiserver.v1.LatestAgentConversationState`: the counters are `uint32`, written as numbers or as strings by an encoder. */
-    @Serializable
-    private data class LatestStateDto(
-        val conversationState: ConversationStateDto? = null,
-        val numPriorInteractionUpdates: JsonElement? = null,
-        val conversationRewindEpoch: JsonElement? = null,
-    )
+    private data class BlobResponseDto(val blobData: String? = null)
 
     /** `agent.v1.ConversationStateStructure`, of which the turn list (blob ids, counted only), the timings and the pending calls are read. */
     @Serializable
@@ -161,6 +436,9 @@ class HeadlessConversationApi(
         val turnTimings: List<TimingDto> = emptyList(),
         val pendingToolCalls: List<JsonElement> = emptyList(),
         val isRootProjectConversation: Boolean? = null,
+        // Read as they come: a shape this build does not expect costs the subagents' lines, never the turns.
+        val communicateUpdateStatesByParentToolCallId: JsonElement? = null,
+        val subagentRunsByParentToolCallId: JsonElement? = null,
     )
 
     /** `agent.v1.StepTiming`: `uint64`s, which proto3 JSON writes as strings. */
@@ -240,6 +518,13 @@ class HeadlessConversationApi(
 
     companion object {
         const val SERVICE = "aiserver.v1.BackgroundComposerService"
+        const val BLOB_METHOD = "GetBlobForAgentKV"
+        /**
+         * Blob reads in flight at once for one page of turns: a few hundred bytes each, so the round trip is the cost,
+         * not the body. Below the desktop's own: Cursor 3.21.18 puts no bound on its blob reads but the 64 of its cache
+         * migration, so eight is not what makes the server fail one.
+         */
+        const val BLOB_PARALLELISM = 8
 
         /** `AgentMode.AGENT_MODE_PROJECT` — by its name in Connect JSON, or by its number (6) when an encoder writes enums so. */
         internal const val AGENT_MODE_PROJECT = 6

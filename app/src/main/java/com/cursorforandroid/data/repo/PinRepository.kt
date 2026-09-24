@@ -7,8 +7,11 @@ import com.cursorforandroid.data.api.userMessage
 import com.cursorforandroid.data.auth.SessionUnavailableException
 import com.cursorforandroid.data.local.PreferencesStore
 import com.cursorforandroid.domain.Capabilities
+import com.cursorforandroid.domain.PendingWork
+import com.cursorforandroid.domain.RefreshStats
 import com.cursorforandroid.util.AppClock
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -81,6 +84,10 @@ class PinRepository(
      * the pins are this device's — [toggle] flips them here and nothing is recorded as owed to a server.
      */
     private val capabilities: suspend () -> Capabilities = { Capabilities.EXTENDED },
+    /** What each round cost, for the diagnostics (see [RefreshStats]); the graph shares one recorder across the layers. */
+    private val stats: RefreshStats = RefreshStats(),
+    /** The list's work in flight (see [PendingWork]): the account's list read and its pages register here, with the list's own. */
+    private val pending: PendingWork = PendingWork(),
 ) {
     private val _state = MutableStateFlow(PinSyncState())
     val state: StateFlow<PinSyncState> = _state.asStateFlow()
@@ -271,9 +278,12 @@ class PinRepository(
             val agentsToken = agents.token()
             val list = primed?.takeIf { now() - it.atMillis < PRIME_FRESH_MS }?.list?.also { primed = null } ?: readList(startedIn) ?: return Result.success(Unit)
             // The account's statuses named what is running; whatever of it no page holds is fetched by id now, and
-            // the pins the list does not hold are resolved whether or not the pins themselves are synced.
-            agents.reconcileRunning(agentsToken)
-            agents.resolvePinned(agentsToken)
+            // the pins the list does not hold are resolved whether or not the pins themselves are synced — side by
+            // side, each a few at a time.
+            coroutineScope {
+                launch { stats.timed("account round: running rows fetched by id", calls = { n: Int -> n }) { agents.reconcileRunning(agentsToken) } }
+                launch { stats.timed("account round: pinned rows fetched by id", calls = { n: Int -> n }) { agents.resolvePinned(agentsToken) } }
+            }
             if (!pinsEnabled) return Result.success(Unit)
             val server = list.pinned
             if (server.loaded) {
@@ -290,7 +300,11 @@ class PinRepository(
             }
             Result.success(Unit)
         } catch (t: Throwable) {
-            if (t is CancellationException) throw t
+            if (t is CancellationException) {
+                // A round cut short is not a round in flight: the flag goes with it (a reset resets the state whole).
+                if (generation.get() == startedIn) _state.update { it.copy(isSyncing = false) }
+                throw t
+            }
             if (generation.get() != startedIn) return Result.success(Unit)
             noteFailure(t)
             Result.failure(t)
@@ -304,7 +318,7 @@ class PinRepository(
      */
     private suspend fun readList(startedIn: Int): AccountList? {
         val agentsToken = agents.token()
-        val list = api.list()
+        val list = pending.track("account list (ListBackgroundComposers)") { stats.timed("account round (ListBackgroundComposers)", calls = { _: AccountList -> 1 }, note = { "${it.composers.size} records" }) { api.list() } }
         if (generation.get() != startedIn) return null
         accountCursor = list.nextCursor
         agents.applyAccountSnapshots(list.composers, agentsToken)
@@ -346,7 +360,7 @@ class PinRepository(
             val cursor = accountCursor ?: return@withLock Result.success(Unit)
             try {
                 val agentsToken = agents.token()
-                val list = api.listMore(cursor)
+                val list = pending.track("account page (ListBackgroundComposers)") { api.listMore(cursor) }
                 if (generation.get() != startedIn) return@withLock Result.success(Unit)
                 accountCursor = list.nextCursor
                 agents.applyAccountSnapshots(list.composers, agentsToken)

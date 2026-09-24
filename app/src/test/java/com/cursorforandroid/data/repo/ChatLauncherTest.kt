@@ -5,6 +5,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.cursorforandroid.data.FakeCursorApi
 import com.cursorforandroid.data.FakeRunStreamer
 import com.cursorforandroid.data.api.CursorApiException
+import com.cursorforandroid.data.api.userMessage
 import com.cursorforandroid.data.local.AgentListCache
 import com.cursorforandroid.data.local.AttachmentStore
 import com.cursorforandroid.data.local.JsonDiskCache
@@ -144,10 +145,58 @@ class ChatLauncherTest {
         assertThat(failed.agentId).isEqualTo(id)
         assertThat(failed.request).isEqualTo(request)
         assertThat(failed.nonce).isEqualTo("nonce-1")
-        assertThat(failed.reason).isEqualTo("Rate limited by Cursor. Try again in a moment.")
+        assertThat(failed.reason).isEqualTo("Rate limited by Cursor: Slow down. Try again in a moment.")
         // Nothing of the chat is left behind.
         assertThat(prompts()).isEmpty()
         assertThat(agents.agent(id)).isNull()
+    }
+
+    @Test
+    fun `a launch waited out returns once the server has answered, with nothing for other composers`() = runBlocking<Unit> {
+        api.createGate = CompletableDeferred()
+        val outcome = CompletableDeferred<Result<Unit>>()
+        scope.launch { outcome.complete(launcher.launchAndAwait(request, "Auto", "nonce-1")) }
+
+        // The chat is staged like any other, but the caller is still waiting: the server has not said.
+        awaitUntil { prompts().isNotEmpty() }
+        delay(100)
+        assertThat(outcome.isCompleted).isFalse()
+
+        api.createGate!!.complete(Unit)
+        assertThat(withTimeout(5_000) { outcome.await() }.isSuccess).isTrue()
+        assertThat(agents.agent(id)?.latestRunId).isNotNull()
+        delay(100)
+        assertThat(failures).isEmpty()
+    }
+
+    @Test
+    fun `a launch waited out and refused comes back to its caller alone, in the server's words`() = runBlocking<Unit> {
+        api.failNextCreate = CursorApiException(429, "rate_limited", "Slow down.")
+
+        val outcome = launcher.launchAndAwait(request, "Auto", "nonce-1")
+
+        assertThat(outcome.isFailure).isTrue()
+        assertThat(outcome.exceptionOrNull()?.userMessage()).isEqualTo("Rate limited by Cursor: Slow down. Try again in a moment.")
+        // The composer that waited still holds the draft; no other composer is told to take it back.
+        delay(100)
+        assertThat(failures).isEmpty()
+        assertThat(prompts()).isEmpty()
+        assertThat(agents.agent(id)).isNull()
+    }
+
+    @Test
+    fun `a launch waited out and stopped comes back as the stop`() = runBlocking<Unit> {
+        api.createGate = CompletableDeferred()
+        val outcome = CompletableDeferred<Result<Unit>>()
+        scope.launch { outcome.complete(launcher.launchAndAwait(request, "Auto", "nonce-1")) }
+        awaitUntil { conversations.cancelLaunch(id) }
+
+        val result = withTimeout(5_000) { outcome.await() }
+        assertThat(result.exceptionOrNull()).isInstanceOf(LaunchCancelledException::class.java)
+        delay(100)
+        assertThat(failures).isEmpty()
+        assertThat(prompts()).isEmpty()
+        api.createGate!!.complete(Unit)
     }
 
     @Test

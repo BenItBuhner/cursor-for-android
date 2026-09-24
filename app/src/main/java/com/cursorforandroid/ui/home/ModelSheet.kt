@@ -19,7 +19,6 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -29,6 +28,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.selected
@@ -39,13 +39,12 @@ import com.cursorforandroid.domain.ModelAxis
 import com.cursorforandroid.domain.ModelOption
 import com.cursorforandroid.domain.ModelVariant
 import com.cursorforandroid.domain.arrangedForPicker
-import com.cursorforandroid.ui.components.CursorButton
 import com.cursorforandroid.ui.components.CursorIcons
 import com.cursorforandroid.ui.components.CursorSheet
+import com.cursorforandroid.ui.components.FadingLazyColumn
 import com.cursorforandroid.ui.components.CursorToggle
 import com.cursorforandroid.ui.components.HairlineDivider
-import com.cursorforandroid.ui.components.SheetHeader
-import com.cursorforandroid.ui.components.SpinnerRing
+import com.cursorforandroid.ui.components.RefreshableSheetHeader
 import com.cursorforandroid.ui.components.cursorSurface
 import com.cursorforandroid.ui.components.pressable
 import com.cursorforandroid.ui.theme.CursorDimens
@@ -81,7 +80,8 @@ internal fun ModelSheet(
     /** Null hides "Plan mode" (and, with no [onAutoCreatePr], the Options section): a Project's coordinator has neither. */
     onPlanMode: ((Boolean) -> Unit)?,
     onAutoCreatePr: ((Boolean) -> Unit)?,
-    onRetry: () -> Unit,
+    /** Fetches the list again, whether or not it is fresh: the header's refresh button, as on the repository picker. */
+    onRefresh: () -> Unit,
     onSelect: (ModelOption?, ModelVariant?) -> Unit,
     onDismiss: () -> Unit,
     pinnedIds: List<String> = emptyList(),
@@ -102,10 +102,8 @@ internal fun ModelSheet(
             val offset = (if (noModelRow != null) 1 else 0) + (if (onPlanMode != null || onAutoCreatePr != null) 1 else 0) + 1
             listState.scrollToItem(offset)
         }
-        SheetHeader("Model") {
-            if (loading && models.isNotEmpty()) SpinnerRing(modifier = Modifier.padding(end = 8.dp))
-        }
-        LazyColumn(
+        RefreshableSheetHeader("Model", loading, "Refresh models", onRefresh, Modifier.testTag("model-sheet-header"))
+        FadingLazyColumn(
             state = listState,
             modifier = Modifier.fillMaxWidth().weight(1f, fill = false),
             contentPadding = PaddingValues(bottom = 12.dp),
@@ -126,24 +124,17 @@ internal fun ModelSheet(
             }
             if (models.isEmpty()) {
                 when {
+                    // The header's spinner and refresh button are the controls; the body only says why the list is empty.
                     loading -> item("loading") {
-                        Row(Modifier.padding(horizontal = 20.dp, vertical = 14.dp), verticalAlignment = Alignment.CenterVertically) {
-                            SpinnerRing()
-                            Spacer(Modifier.width(8.dp))
-                            Text("Loading models…", style = type.small, color = colors.textQuaternary)
-                        }
+                        Text("Loading models…", style = type.small, color = colors.textQuaternary, modifier = Modifier.padding(horizontal = 20.dp, vertical = 14.dp))
                     }
                     unavailable -> item("unavailable") {
-                        Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Text(
-                                "Couldn't load the model list.",
-                                style = type.small,
-                                color = colors.textQuaternary,
-                                modifier = Modifier.weight(1f),
-                            )
-                            Spacer(Modifier.width(12.dp))
-                            CursorButton("Retry", onClick = onRetry)
-                        }
+                        Text(
+                            "Couldn't load the model list. Refresh to try again.",
+                            style = type.small,
+                            color = colors.textQuaternary,
+                            modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp),
+                        )
                     }
                 }
             } else {

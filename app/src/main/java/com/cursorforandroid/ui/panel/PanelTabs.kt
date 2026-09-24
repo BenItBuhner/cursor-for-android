@@ -14,7 +14,6 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -32,8 +31,9 @@ import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import com.cursorforandroid.ui.agents.MenuItem
 import com.cursorforandroid.ui.components.CursorIcons
+import com.cursorforandroid.ui.components.CursorMenu
+import com.cursorforandroid.ui.components.CursorMenuItem
 import com.cursorforandroid.ui.components.FlatIconButton
 import com.cursorforandroid.ui.components.TouchTarget
 import com.cursorforandroid.ui.components.pressable
@@ -140,9 +140,9 @@ internal fun PanelTabStrip(
             if (onOpenFile != null || onNewSideChat != null) {
                 Box {
                     FlatIconButton(CursorIcons.Plus, "Open a tab", onClick = { menuOpen = true }, size = 28.dp, iconSize = 14.dp, tint = colors.iconSecondary, modifier = Modifier.testTag("panel-tab-add"))
-                    DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }, containerColor = colors.elevated, shape = CursorTheme.shapes.lg) {
-                        if (onOpenFile != null) MenuItem("Open a file…", CursorIcons.Folder) { menuOpen = false; onOpenFile() }
-                        if (onNewSideChat != null) MenuItem("New side chat", CursorIcons.Ask) { menuOpen = false; onNewSideChat() }
+                    CursorMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                        if (onOpenFile != null) CursorMenuItem("Open a file…", CursorIcons.Folder) { menuOpen = false; onOpenFile() }
+                        if (onNewSideChat != null) CursorMenuItem("New side chat", CursorIcons.Ask) { menuOpen = false; onNewSideChat() }
                     }
                 }
             }

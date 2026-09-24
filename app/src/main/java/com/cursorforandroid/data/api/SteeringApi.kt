@@ -6,6 +6,7 @@ import com.cursorforandroid.domain.AgentSource
 import com.cursorforandroid.domain.Goal
 import com.cursorforandroid.domain.GoalStatus
 import com.cursorforandroid.domain.InteractionResolution
+import com.cursorforandroid.domain.ModelParam
 import com.cursorforandroid.domain.PendingAttachment
 import com.cursorforandroid.domain.PendingFollowup
 import com.cursorforandroid.domain.PromptFile
@@ -43,9 +44,16 @@ data class AccountFollowup(
     val mode: AgentMode? = null,
     /** The model the chat switches to from this run on; null keeps the current one. */
     val modelId: String? = null,
-    /** Client-minted, so a retry after a lost reply files nothing twice. */
-    val followupId: String = "fu-${UUID.randomUUID()}",
-)
+    /** The picked variant's parameters, sent with [modelId] as the desktop sends them (`requested_model.parameters`). */
+    val modelParams: List<ModelParam> = emptyList(),
+    /** Client-minted, so a retry after a lost reply files nothing twice — and so the card's row and the transcript's copy of the message are one (see `QueuePlacement`). */
+    val followupId: String = newId(),
+) {
+    companion object {
+        /** A followup id as this client mints them (`ListPendingFollowups` gives it back as `followupId`). */
+        fun newId(): String = "fu-${UUID.randomUUID()}"
+    }
+}
 
 /**
  * The account's queue for a chat, the one the desktop, the web and the iOS app share: `AddAsyncFollowupBackgroundComposer`
@@ -92,9 +100,9 @@ interface RunControlApi {
 }
 
 /**
- * The goal the account keeps on a chat: `GetLatestAgentConversationState {bc_id}` → `latest_conversation_state
- * .conversation_state.goal_state` (`agent.v1.GoalState`), the same record the desktop's goal tray and Cursor's
- * goal-continuation reconciler read. Null when the account has no goal on the chat.
+ * The goal the account keeps on a chat: `StreamConversation`'s `initial_state.cloud_agent_state.conversation_state
+ * .goal_state` (`agent.v1.GoalState`, see [ConversationStateReader]), the same record the desktop's goal tray and
+ * Cursor's goal-continuation reconciler read. Null when the account has no goal on the chat.
  */
 fun interface GoalStateApi {
     suspend fun goal(agentId: String): Goal?
@@ -110,19 +118,25 @@ fun interface GoalStateApi {
 class SteeringApi(
     private val rpc: ConnectJsonClient,
     private val tokens: SessionTokenProvider,
+    /** The record's blobs, shared with the transcript's reader so the state read tells the server what this device holds already. */
+    blobs: BlobCache = BlobCache(),
 ) : InteractionApi, FollowupQueueApi, RunControlApi, GoalStateApi {
+
+    private val states = ConversationStateReader(rpc, tokens, blobs)
 
     // ---- the goal ---------------------------------------------------------------------------------------------------
 
     /**
-     * `GetLatestAgentConversationState`: the conversation's state structure, of which the goal is read and the rest —
-     * the turns' blob ids, the todos, the plans — skipped. Enums arrive by name (`GOAL_STATUS_ACTIVE`) or by number,
-     * the two `uint64` timings as decimal strings, and a field at its default (a zero count) is left out, as proto3
-     * JSON does; a status this build cannot read, or no `goal_state` at all, is no goal.
+     * The conversation's state structure off `StreamConversation`'s initial state (see [ConversationStateReader]),
+     * of which the goal is read and the rest — the turns' blob ids, the todos, the plans — skipped. Enums arrive by
+     * name (`GOAL_STATUS_ACTIVE`) or by number, the two `uint64` timings as decimal strings, and a field at its
+     * default (a zero count) is left out, as proto3 JSON does; a status this build cannot read, or no `goal_state`
+     * at all, is no goal.
      */
     override suspend fun goal(agentId: String): Goal? {
-        val response = call("GetLatestAgentConversationState", BcIdDto(agentId), BcIdDto.serializer(), ConversationStateResponseDto.serializer())
-        val state = response.latestConversationState?.conversationState?.goalState ?: return null
+        // The transcript's read of the same state, when one is in flight, serves: the state is the whole turn list.
+        val conversation = states.read(agentId).conversationState ?: return null
+        val state = runCatching { CursorJson.decodeFromJsonElement(ConversationStateDto.serializer(), conversation) }.getOrNull()?.goalState ?: return null
         val objective = state.objective?.trim()?.takeIf { it.isNotEmpty() } ?: return null
         val status = GoalStatus.parse(state.status) ?: return null
         return Goal.fromAccount(
@@ -169,7 +183,9 @@ class SteeringApi(
             followup = text,
             synchronous = synchronous,
             followupMessage = ConversationMessageDto(text = text, agentMode = followup.mode?.wireName),
-            requestedModel = followup.modelId?.takeIf { it.isNotBlank() }?.let { RequestedModelDto(it) },
+            requestedModel = followup.modelId?.takeIf { it.isNotBlank() }?.let { id ->
+                RequestedModelDto(id, followup.modelParams.filter { it.id.isNotBlank() }.map { ModelParameterDto(it.id, it.value) }.takeIf { it.isNotEmpty() })
+            },
             followupSource = SOURCE,
             followupId = followup.followupId,
             followupConversationAction = ConversationActionDto(
@@ -344,8 +360,13 @@ class SteeringApi(
     @Serializable
     private data class ConversationMessageDto(val text: String, val agentMode: String? = null)
 
+    /** `agent.v1.RequestedModel {model_id, parameters[]}`; `parameters` only when there are any, as the start sends them. */
     @Serializable
-    private data class RequestedModelDto(val modelId: String)
+    private data class RequestedModelDto(val modelId: String, val parameters: List<ModelParameterDto>? = null)
+
+    /** `agent.v1.RequestedModel.ModelParameterValue {id, value}`. */
+    @Serializable
+    private data class ModelParameterDto(val id: String, val value: String)
 
     @Serializable
     private data class ConversationActionDto(val userMessageAction: UserMessageActionDto)
@@ -449,13 +470,6 @@ class SteeringApi(
 
     @Serializable
     private data class WakeResponseDto(val signaled: Boolean? = null)
-
-    /** `GetLatestAgentConversationStateResponse`, the goal's corner of it; `pre_fetched_blobs` and the rest are skipped. */
-    @Serializable
-    private data class ConversationStateResponseDto(val latestConversationState: LatestConversationStateDto? = null)
-
-    @Serializable
-    private data class LatestConversationStateDto(val conversationState: ConversationStateDto? = null)
 
     /** `agent.v1.ConversationStateStructure`, of which only `goal_state` (field 32) is read. */
     @Serializable

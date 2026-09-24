@@ -1,13 +1,16 @@
 package com.cursorforandroid.data.repo
 
 import com.cursorforandroid.data.api.isTransientFailure
+import com.cursorforandroid.data.api.retryAfterMillis
 import com.cursorforandroid.data.api.toCursorError
 import com.cursorforandroid.data.api.userMessage
 import com.cursorforandroid.data.local.FollowUpStore
 import com.cursorforandroid.domain.Agent
 import com.cursorforandroid.domain.AgentLifecycle
+import com.cursorforandroid.domain.AgentMode
 import com.cursorforandroid.domain.DraftFile
 import com.cursorforandroid.domain.DraftImage
+import com.cursorforandroid.domain.DraftModel
 import com.cursorforandroid.domain.FollowUpComposerState
 import com.cursorforandroid.domain.FollowUpDraft
 import com.cursorforandroid.domain.McpServer
@@ -61,8 +64,9 @@ import java.util.concurrent.atomic.AtomicInteger
  * when no screen and no service is watching. The chat's own live state, while it is streaming, has the last word:
  * the row can be a poll behind.
  *
- * The draft is the composer's text and images as typed. Both draft and queue are written to the [FollowUpStore] so
- * leaving the chat, or the app, loses nothing; the demo backend's chats are not written, like its transcripts.
+ * The draft is the composer as it was left: the text, the attachments, the mode pill and the model picked for the next
+ * follow-up. Both draft and queue are written to the [FollowUpStore] so leaving the chat, or the app, loses nothing;
+ * the demo backend's chats are not written, like its transcripts.
  */
 class FollowUpRepository(
     private val conversations: ConversationRepository,
@@ -82,7 +86,7 @@ class FollowUpRepository(
      * the account's row. Answers with the run the account started, or null when it queued the message. Null (default
      * mode, or the surface off) leaves the message waiting here, tried again with a growing pause (see [dispatch]).
      */
-    private val accountQueue: (suspend (agentId: String, item: QueuedFollowUp) -> String?)? = null,
+    private val accountQueue: (suspend (agentId: String, item: QueuedFollowUp) -> AccountHandoff)? = null,
     /** Whether the account's queue may take a refused message right now (Extended mode on, not the demo). */
     private val accountQueueAvailable: suspend () -> Boolean = { false },
     private val store: FollowUpStore? = null,
@@ -96,6 +100,13 @@ class FollowUpRepository(
     /** The first pause before a cancel or a send that failed for a passing reason is tried again; doubles each time. */
     private val retryBaseMs: Long = RETRY_BASE_MS,
 ) {
+    /**
+     * What the account's queue answered a message handed to it with (see the `accountQueue` hand-off): the run it
+     * started, when the agent was free after all, and the account's id for the follow-up, by which the card above the
+     * composer and the transcript's copy are one message (see `QueuePlacement`).
+     */
+    data class AccountHandoff(val runId: String?, val followupId: String)
+
     private inner class Entry(val agentId: String) {
         val state = MutableStateFlow(FollowUpComposerState(restored = store == null || !persist()))
         var restoreJob: Job? = null
@@ -205,9 +216,41 @@ class FollowUpRepository(
         e.scheduleSave()
     }
 
+    /** The composer's mode pill (see [FollowUpDraft.mode]), kept with the draft so it comes back with it. */
+    fun setDraftMode(agentId: String, mode: AgentMode?) {
+        val e = entry(agentId)
+        if (e.state.value.draft.mode == mode) return
+        e.update { copy(draft = draft.copy(mode = mode)) }
+        e.scheduleSave()
+    }
+
+    /** The model picked for the next follow-up, every parameter included (see [FollowUpDraft.model]); null keeps the chat's. */
+    fun setDraftModel(agentId: String, model: DraftModel?) {
+        val e = entry(agentId)
+        if (e.state.value.draft.model == model) return
+        e.update { copy(draft = draft.copy(model = model)) }
+        e.scheduleSave()
+    }
+
+    /**
+     * The server has the message [model] was picked for, and keeps the chat on it for the runs after: the draft's
+     * pick is spent — unless another has been picked since.
+     */
+    fun spendDraftModel(agentId: String, model: DraftModel) {
+        val e = entry(agentId)
+        val current = e.state.value.draft.model ?: return
+        if (current.id != model.id || current.params != model.params) return
+        e.update { copy(draft = draft.copy(model = null)) }
+        e.scheduleSave()
+    }
+
+    /**
+     * What a send takes away: the text and the attachments. The mode pill and the model stay, as the composer still
+     * shows them; the model goes once the server has the message it was picked for ([spendDraftModel]).
+     */
     fun clearDraft(agentId: String) {
         val e = entry(agentId)
-        e.update { copy(draft = FollowUpDraft.EMPTY) }
+        e.update { copy(draft = draft.withoutContent()) }
         e.scheduleSave()
     }
 
@@ -215,6 +258,29 @@ class FollowUpRepository(
     fun flush(agentId: String) {
         val e = synchronized(entries) { entries[agentId] } ?: return
         if (e.saveJob?.isActive == true) e.scheduleSave()
+    }
+
+    /**
+     * Writes every draft still waiting for its debounce: called when the app leaves the screen, after which the
+     * process may be ended at any moment — a swipe from the recents, the system reclaiming memory — without another word.
+     */
+    fun flushAll() {
+        val waiting = synchronized(entries) { entries.values.filter { it.saveJob?.isActive == true } }
+        waiting.forEach { it.scheduleSave() }
+    }
+
+    /**
+     * Writes every draft and queue still waiting to be written, and returns once they are on disk: what a sign-out
+     * does before [resetAll] stops the saves and the files are parked for the account.
+     */
+    suspend fun saveAll() {
+        val store = store?.takeIf { persist() } ?: return
+        val waiting = synchronized(entries) { entries.values.filter { it.saveJob?.isActive == true && it.state.value.restored } }
+        for (e in waiting) {
+            e.saveJob?.cancel()
+            val snapshot = e.state.value
+            runCatching { store.write(e.agentId, snapshot.draft, snapshot.queue) }.onFailure { if (it is CancellationException) throw it }
+        }
     }
 
     // -- queue -------------------------------------------------------------------------------------------------------
@@ -280,11 +346,11 @@ class FollowUpRepository(
             e.update {
                 val item = queue.firstOrNull { it.id == id && !it.isSending && !it.isSteered } ?: return@update this
                 taken = item
-                val displaced = draft.takeUnless { it.isEmpty }?.let { d ->
+                val displaced = draft.takeUnless { it.isBlank }?.let { d ->
                     item.copy(id = "queued-" + UUID.randomUUID(), text = d.text.trim(), images = d.images, files = d.files, queuedAtMillis = AppClock.now(), error = null)
                 }
                 copy(
-                    draft = FollowUpDraft(item.text, item.images, item.files),
+                    draft = draft.copy(text = item.text, images = item.images, files = item.files),
                     queue = queue.flatMap { q -> if (q.id != id) listOf(q) else listOfNotNull(displaced) },
                 )
             }
@@ -298,7 +364,7 @@ class FollowUpRepository(
         val e = entry(agentId)
         synchronized(e) {
             e.update {
-                copy(queue = queue.map { if (it.id == id) it.copy(error = null, needsConfirmation = false, sendStartedAtMillis = null, heldSinceMillis = null, busyRefusals = 0, serverReason = null, notBeforeMillis = null) else it })
+                copy(queue = queue.map { if (it.id == id) it.copy(error = null, needsConfirmation = false, sendStartedAtMillis = null, heldSinceMillis = null, busyRefusals = 0, serverReason = null, notBeforeMillis = null, holdReason = null, throttleRefusals = 0) else it })
             }
             e.ensureDispatcher()
         }
@@ -368,9 +434,11 @@ class FollowUpRepository(
             when {
                 error?.code == RUN_NOT_CANCELLABLE || error?.httpCode == 404 -> {
                     // The turn ended by itself while the cancel was on its way: the message goes out all the same, so
-                    // that is not a failure to report. The chat is brought up to date so it shows the turn as finished.
+                    // that is not a failure to report. The chat is brought up to date so it shows the turn as finished
+                    // — forced, since the server has just said the chat's copy is behind it, and a load it has in
+                    // flight read its page before this too.
                     over += target
-                    conversations.revalidate(e.agentId)
+                    conversations.revalidate(e.agentId, force = true)
                 }
                 t.isTransientFailure() && retries < MAX_CANCEL_RETRIES -> delay(retryBaseMs shl retries++)
                 else -> return Result.failure(t)
@@ -406,6 +474,7 @@ class FollowUpRepository(
                     e.attempt(item, VIA_STEER, "accepted", result.getOrNull())
                     result.getOrNull()?.let { e.acceptedId(it) }
                     e.update { copy(queue = queue.filterNot { it.id == item.id }) }
+                    spendPickOf(e, item)
                     e.scheduleSave()
                     return
                 }
@@ -426,7 +495,8 @@ class FollowUpRepository(
                         return
                     }
                     e.attempt(item, VIA_STEER, "retry", t.userMessage())
-                    delay(retryBaseMs shl retries++)
+                    // The pause doubles each time, and is never shorter than the wait the server named.
+                    delay(maxOf(retryBaseMs shl retries++, t.retryAfterMillis() ?: 0L).coerceAtMost(MAX_BUSY_PAUSE_MS))
                 }
                 else -> {
                     e.attempt(item, VIA_STEER, "failed", t.userMessage())
@@ -502,10 +572,23 @@ class FollowUpRepository(
      * v0.3.33). Now nothing is written to the row: a steered message waits [busyPause] for its [busyStreak], then
      * the record and the agent's detail are read so the row is where the server has it, and it is tried again. (A
      * queued message's pause is [QueuedFollowUp.notBeforeMillis], which [dispatchLoop] waits out the same way.)
+     * Nor does the record put the row back to running for the run this device stopped (see
+     * `AgentRepository.cancelRun`): a steer's send refused while the cancelled turn winds down is paced by this pause
+     * alone, cut short by the turn's end when the hub sees it.
      */
     private suspend fun awaitBusyTurn(agentId: String, busyStreak: Int = 0) {
-        delay(busyPause(busyStreak))
+        awaitPauseOrFinish(agentId, busyPause(busyStreak))
         settleRow(agentId)
+    }
+
+    /**
+     * Waits [pauseMs], or less: a run of the chat ending meanwhile — the hub reports the finish of every run it
+     * follows live, the turn a steer cancelled among them — is the moment the server is most likely free, and is not
+     * waited past. A pause cut short is still a pause taken: the next refusal's is longer.
+     */
+    private suspend fun awaitPauseOrFinish(agentId: String, pauseMs: Long) {
+        if (pauseMs <= 0) return
+        withTimeoutOrNull(pauseMs) { hub.finishes.first { it.agentId == agentId } }
     }
 
     /** The pause before the attempt after [busyStreak] refusals in a row: [retryBaseMs] doubled each time, to [MAX_BUSY_PAUSE_MS]. */
@@ -537,10 +620,26 @@ class FollowUpRepository(
 
     private inline fun Entry.update(transform: FollowUpComposerState.() -> FollowUpComposerState) = state.update { it.transform() }
 
+    /** [item] went out on the model the draft still has picked: the chat runs on it now, and the pick is spent (see [spendDraftModel]). */
+    private fun spendPickOf(e: Entry, item: QueuedFollowUp) {
+        val id = item.modelId ?: return
+        e.update {
+            val picked = draft.model
+            if (picked != null && picked.id == id && picked.params == item.modelParams) copy(draft = draft.copy(model = null)) else this
+        }
+    }
+
+    /** This draft, written into before the [saved] one was read, with the saved one filling in what it has not set. */
+    private fun FollowUpDraft.over(saved: FollowUpDraft): FollowUpDraft {
+        val content = if (isBlank) saved else this
+        return FollowUpDraft(content.text, content.images, content.files, mode = mode ?: saved.mode, model = model ?: saved.model)
+    }
+
     /**
-     * Folds the disk copy in. The user may have typed, or queued, before the file was read: what is in memory is
-     * newer and stays; the saved draft only fills an empty composer, and the saved queue goes ahead of anything
-     * queued since. Nothing is written back before this has run, so an early save cannot wipe the file.
+     * Folds the disk copy in. The user may have typed, picked or queued before the file was read: what is in memory
+     * is newer and stays, part by part — the saved text and attachments only fill a composer with none, the saved
+     * mode and model only one where none was asked for — and the saved queue goes ahead of anything queued since.
+     * Nothing is written back before this has run, so an early save cannot wipe the file.
      */
     private fun restore(e: Entry) {
         val store = store?.takeIf { persist() } ?: return
@@ -552,7 +651,7 @@ class FollowUpRepository(
                 e.update {
                     val known = queue.mapTo(HashSet()) { it.id }
                     copy(
-                        draft = if (draft.isEmpty && saved != null) saved.draft else draft,
+                        draft = saved?.draft?.let { draft.over(it) } ?: draft,
                         queue = saved?.queue?.filter { it.id !in known }.orEmpty() + queue,
                         restored = true,
                     )
@@ -692,7 +791,7 @@ class FollowUpRepository(
                 // clock stands still.
                 val pending = e.state.value.queue.firstOrNull()?.let { h -> h.notBeforeMillis?.let { nb -> h.id to nb } }
                 if (pending != null && e.pausedFor != pending) {
-                    delay((pending.second - AppClock.now()).coerceIn(0L, MAX_BUSY_PAUSE_MS))
+                    awaitPauseOrFinish(e.agentId, (pending.second - AppClock.now()).coerceIn(0L, MAX_BUSY_PAUSE_MS))
                     e.pausedFor = pending
                     settleRow(e.agentId)
                     continue
@@ -764,6 +863,7 @@ class FollowUpRepository(
                 e.attempt(item, via, "accepted", runId)
                 runId?.let { e.acceptedId(it) }
                 e.update { copy(queue = queue.filterNot { it.id == item.id }) }
+                spendPickOf(e, item)
                 e.scheduleSave()
             },
             onFailure = { t ->
@@ -777,12 +877,21 @@ class FollowUpRepository(
                             val handed = runCatching { accountQueue(e.agentId, item) }
                             if (generation.get() != startedIn) return
                             handed.fold(
-                                onSuccess = { runId ->
-                                    e.attempt(item, VIA_ACCOUNT, if (runId == null) "queued-on-account" else "accepted", runId)
+                                onSuccess = { (runId, followupId) ->
+                                    // A run named behind a turn under way has not started: the message is queued all the same.
+                                    val queued = runId == null || conversations.waitsBehindTurn(e.agentId, runId)
+                                    e.attempt(item, VIA_ACCOUNT, if (runId == null) "queued-on-account" else if (queued) "queued-behind-turn" else "accepted", runId)
                                     runId?.let { e.acceptedId(it) }
                                     e.update { copy(queue = queue.filterNot { it.id == item.id }) }
                                     e.scheduleSave()
-                                    if (runId == null) conversations.reload(e.agentId)
+                                    if (queued) {
+                                        // The account holds it now, under its followup id: the transcript files it
+                                        // under the run the account starts on it (see ConversationRepository.expectDelivery)
+                                        // — the card above the composer showing it meanwhile — and is read again for
+                                        // the turn the account is on.
+                                        conversations.expectDelivery(e.agentId, item.previewText, item.images.map { it.image }, followupId = followupId, runId = runId)
+                                        conversations.reload(e.agentId)
+                                    }
                                     return
                                 },
                                 onFailure = { handoff ->
@@ -805,6 +914,33 @@ class FollowUpRepository(
                                         notBeforeMillis = now + busyPause(item.busyRefusals),
                                         // The server's own reason, once it has refused three times: what the card says under the wait.
                                         serverReason = if (refusals >= REFUSALS_BEFORE_REASON) (error.message?.takeIf { m -> m.isNotBlank() } ?: it.serverReason) else it.serverReason,
+                                        // A wait on the agent, whatever the message waited for before.
+                                        holdReason = null,
+                                        throttleRefusals = 0,
+                                    )
+                                } else it
+                            })
+                        }
+                        e.scheduleSave()
+                    }
+                    // The server asked every caller to slow down: a `429`, or a `503` naming when to come back.
+                    // Once, the wait it named is waited out — the card saying so, the server's words under it — and
+                    // the message goes out by itself; a second refusal in a row is the user's to hear.
+                    error != null && (error.isRateLimited || (error.httpCode == 503 && t.retryAfterMillis() != null)) && item.throttleRefusals < THROTTLE_RETRIES -> {
+                        e.attempt(item, via, "throttled", error.message)
+                        val now = AppClock.now()
+                        val wait = (t.retryAfterMillis() ?: busyPause(0)).coerceIn(retryBaseMs, MAX_BUSY_PAUSE_MS)
+                        e.update {
+                            copy(queue = queue.map {
+                                if (it.id == item.id) {
+                                    it.copy(
+                                        isSending = false,
+                                        sendStartedAtMillis = null,
+                                        heldSinceMillis = it.heldSinceMillis ?: now,
+                                        notBeforeMillis = now + wait,
+                                        holdReason = QueuedFollowUp.RATE_LIMITED,
+                                        serverReason = error.message.takeIf { m -> m.isNotBlank() } ?: it.serverReason,
+                                        throttleRefusals = it.throttleRefusals + 1,
                                     )
                                 } else it
                             })
@@ -864,6 +1000,8 @@ class FollowUpRepository(
         const val MAX_SEND_RETRIES = 3
         /** How many doublings the pause between refused attempts takes before [MAX_BUSY_PAUSE_MS] caps it. */
         const val MAX_BUSY_BACKOFF_STEPS = 6
+        /** A refusal that names a wait (`429`, `503` with `Retry-After`) is waited out and tried again this many times before it is shown. */
+        const val THROTTLE_RETRIES = 1
         const val AGENT_BUSY = "agent_busy"
         const val RUN_NOT_CANCELLABLE = "run_not_cancellable"
         /** The ids of the placeholder runs prompts sent from here are shown under until the server answers (see [ConversationRepository]). */

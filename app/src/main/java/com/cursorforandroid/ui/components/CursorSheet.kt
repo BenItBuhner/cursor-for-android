@@ -21,6 +21,7 @@ import androidx.compose.material3.SheetValue
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -51,7 +52,8 @@ import kotlinx.coroutines.launch
  * gesture first, the way they do anywhere else in the app.
  *
  * [content] receives `dismiss`, which plays the hide animation before calling [onDismiss]; use it when a row is
- * picked so the sheet slides away instead of vanishing with the composition.
+ * picked so the sheet slides away instead of vanishing with the composition. It is composed with the sheet's surface
+ * as [LocalScrollFadeSurface], so a list in it fades its edges in that colour without naming it.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -120,7 +122,9 @@ fun CursorSheet(
                 }
                 .navigationBarsPadding(),
         ) {
-            content(dismiss)
+            CompositionLocalProvider(LocalScrollFadeSurface provides colors.elevated) {
+                content(dismiss)
+            }
         }
     }
 }
@@ -150,6 +154,24 @@ fun SheetHeader(
             modifier = Modifier.weight(1f),
         )
         trailing?.invoke(this)
+    }
+}
+
+/**
+ * A picker's title row with its refresh control at the end: the refresh glyph, swapped for a spinner while the list
+ * is being fetched — the model and repository pickers alike, so a list that can go stale always shows the same
+ * way to fetch it again.
+ */
+@Composable
+fun RefreshableSheetHeader(
+    title: String,
+    loading: Boolean,
+    refreshLabel: String,
+    onRefresh: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    SheetHeader(title, modifier) {
+        if (loading) SpinnerRing(modifier = Modifier.padding(end = 8.dp)) else FlatIconButton(CursorIcons.Refresh, refreshLabel, onClick = onRefresh)
     }
 }
 

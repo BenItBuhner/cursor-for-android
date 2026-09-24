@@ -22,6 +22,7 @@ import androidx.test.core.app.ApplicationProvider
 import com.cursorforandroid.data.FakeCursorApi
 import com.cursorforandroid.data.media.MediaLoader
 import com.cursorforandroid.data.repo.ArtifactRepository
+import com.cursorforandroid.ui.components.AudioChip
 import com.cursorforandroid.ui.components.ImageBlock
 import com.cursorforandroid.ui.components.LocalMarkdownMedia
 import com.cursorforandroid.ui.components.MarkdownMediaContext
@@ -97,6 +98,7 @@ internal fun ViewerScene(
                                 when (entry.kind) {
                                     MediaEntry.Kind.Image -> ImageBlock(entry.src, entry.caption, heightCap = 150.dp)
                                     MediaEntry.Kind.Video -> VideoBlock(entry.src, poster = null, heightCap = 150.dp)
+                                    MediaEntry.Kind.Audio -> AudioChip(entry.src, entry.fileName, subtitle = "Audio")
                                 }
                             }
                         }

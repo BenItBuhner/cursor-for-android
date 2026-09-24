@@ -16,10 +16,11 @@ sealed interface MediaSegment {
 
 /** Finds `<img>`, `<video>` and `![alt](src)` inside message text. Pure string processing, no rendering. */
 object MediaMarkup {
-    private val candidate = Regex("""<img\b|<video\b|!\[""", RegexOption.IGNORE_CASE)
+    private val candidate = Regex("""<img\b|<video\b|<audio\b|!\[""", RegexOption.IGNORE_CASE)
     private val imgTag = Regex("""<img\b([^>]*)>""", RegexOption.IGNORE_CASE)
-    private val videoOpen = Regex("""<video\b([^>]*)>""", RegexOption.IGNORE_CASE)
-    private val videoClose = Regex("""</video\s*>""", RegexOption.IGNORE_CASE)
+    /** `<video>` and `<audio>` read alike: a `src` on the tag or its first `<source>`; a sound is told apart by its file later. */
+    private val videoOpen = Regex("""<(?:video|audio)\b([^>]*)>""", RegexOption.IGNORE_CASE)
+    private val videoClose = Regex("""</(?:video|audio)\s*>""", RegexOption.IGNORE_CASE)
     private val sourceTag = Regex("""<source\b([^>]*)>""", RegexOption.IGNORE_CASE)
     /** `![alt](src "title")`, with the optional `<…>` around the destination CommonMark allows. */
     private val markdownImage = Regex("""!\[([^\]]*)]\(\s*<?([^\s)>]+)>?(?:\s+(?:"[^"]*"|'[^']*'))?\s*\)""")
@@ -31,13 +32,13 @@ object MediaMarkup {
     private val linkCloseAfter = Regex("""\s*]\([^)\s]*\)""")
     // Image-wrapped <a>…</a> is consumed by [linkWrapper]. Standalone <a href> stays in the text so the inline
     // renderer can turn it into a link; leftover video/source tags are never meaningful as prose.
-    private val strayTags = Regex("""</video\s*>|<source\b[^>]*>""", RegexOption.IGNORE_CASE)
+    private val strayTags = Regex("""</(?:video|audio)\s*>|<source\b[^>]*>""", RegexOption.IGNORE_CASE)
     /**
      * An opening tag or markdown image that has not been closed yet — what a streaming reply looks like mid-token.
      * A `<video>` without `</video>` only counts for a short stretch so a missing close tag cannot hide paragraphs.
      */
     private val partialTail = Regex(
-        """(?:<img\b[^>]*|<video\b[^>]*|<video\b[^>]*>(?:(?!</video>).){0,160}|!\[[^\]]*(?:]\([^)]*)?)$""",
+        """(?:<img\b[^>]*|<(?:video|audio)\b[^>]*|<(?:video|audio)\b[^>]*>(?:(?!</(?:video|audio)>).){0,160}|!\[[^\]]*(?:]\([^)]*)?)$""",
         setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL),
     )
 
@@ -62,7 +63,7 @@ object MediaMarkup {
             pending.append(text, i, m.range.first)
             val parsed = when (m.value.lowercase()) {
                 "<img" -> parseImg(text, m.range.first)
-                "<video" -> parseVideo(text, m.range.first)
+                "<video", "<audio" -> parseVideo(text, m.range.first)
                 else -> parseMarkdownImage(text, m.range.first)
             }
             if (parsed == null) {
@@ -232,7 +233,18 @@ sealed interface MediaRef {
         val webUrl: String get() = StorePath.webUrl(ownerId)
     }
 
-    /** A `src` we cannot fetch: a repository-relative path, a VM path with no agent to ask, an unknown scheme. */
+    /**
+     * A file of [agentId]'s machine or repository, named the way the agent names it: relative to the repository
+     * (`screenshots/demo.png`) or absolute on its VM (`/workspace/screenshots/demo.png`) — anything that is neither
+     * an artifact nor a store file. Read from the agent's workspace in Extended mode, else from the repository at
+     * the agent's branch; where neither can be asked, the row names where the file is.
+     */
+    data class Workspace(val agentId: String, val path: String) : MediaRef {
+        override val cacheKey: String get() = "workspace:$agentId:$path"
+        override val label: String get() = ArtifactPaths.fileName(path)
+    }
+
+    /** A `src` we cannot fetch: a VM path with no agent to ask, an unknown scheme, an anchor. */
     data class Unavailable(val src: String) : MediaRef {
         override val cacheKey: String get() = "unavailable:$src"
         override val label: String get() = ArtifactPaths.fileName(src)
@@ -267,7 +279,18 @@ sealed interface MediaRef {
                 return if (bytes == null || bytes.isEmpty()) Unavailable("data:") else Inline(bytes, m.groupValues[1].ifBlank { null })
             }
             val path = ArtifactPaths.apiPath(trimmed)
-            return if (path != null && agentId != null) Artifact(agentId, path) else Unavailable(trimmed)
+            if (path != null) return if (agentId != null) Artifact(agentId, path) else Unavailable(trimmed)
+            return if (agentId != null && isFilePath(trimmed)) Workspace(agentId, trimmed) else Unavailable(trimmed)
         }
+
+        /** A path a file could be at: no scheme, no protocol-relative host, no anchor or query alone, and a name at its end. */
+        private fun isFilePath(src: String): Boolean {
+            if (src.isEmpty() || src.startsWith("#") || src.startsWith("?") || src.startsWith("//")) return false
+            if (SCHEME.containsMatchIn(src)) return false
+            val name = ArtifactPaths.fileName(src)
+            return name.isNotBlank() && name != "." && name != ".."
+        }
+
+        private val SCHEME = Regex("""^[A-Za-z][A-Za-z0-9+.-]*:""")
     }
 }

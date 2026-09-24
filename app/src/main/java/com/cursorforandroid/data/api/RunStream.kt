@@ -112,14 +112,17 @@ data class SseFrame(
  */
 object SseParser {
     /**
-     * A line longer than this, or a frame whose data is, is more than this client has a use for: the SDK-shape
-     * `interaction_update` of a generated image carries the picture itself as base64, megabytes of it. Such a line
-     * is read past and its frame marked [SseFrame.oversized], never kept whole. It used to end the connection
-     * instead, and the next connection — resumed from the event before it — met the same frame again, so a run with
-     * one such event could never be replayed to its end: its tool calls never reached the transcript.
+     * A line longer than this, or a frame whose data is, is more than this client keeps: a read of an image, or the
+     * SDK-shape `interaction_update` of a generated one, carries the picture as base64 — a big screenshot is a few
+     * megabytes of it. The cap is high enough that a read result arrives whole (a read image the picture a tool call
+     * shows), and bounded so one giant frame cannot exhaust memory: past it the line is read past and the frame
+     * marked [SseFrame.oversized], never kept short. It used to end the connection instead, and the next connection —
+     * resumed from the event before it — met the same frame again, so a run with one such event could never be
+     * replayed to its end: its tool calls never reached the transcript. Raised from 1 MB (2026-09): the desktop's own
+     * read of an image over the documented stream is this size, and a base64 screenshot exceeded 1 MB.
      */
-    private const val MAX_LINE_BYTES = 1L shl 20
-    private const val MAX_DATA_CHARS = 4 shl 20
+    private const val MAX_LINE_BYTES = 16L shl 20
+    private const val MAX_DATA_CHARS = 24 shl 20
 
     /** What a `retry:` is honoured within: below a second it is a reconnect loop, past a minute the caller decides. */
     private const val MIN_RETRY_MS = 1_000L
@@ -288,6 +291,8 @@ class SseRunStreamer(
         var attempt = 0
         /** The reconnection time the server last asked for, which outlives the connection that carried it. */
         var serverRetryMs: Long? = null
+        /** Whether this pass has handed the caller anything: until it has, a connection that starts over duplicates nothing. */
+        var delivered = false
         while (currentCoroutineContext().isActive) {
             val outcome = connectOnce(agentId, runId, lastId) { frame ->
                 frame.retryMillis?.let { serverRetryMs = it }
@@ -300,7 +305,7 @@ class SseRunStreamer(
                 when (parsed) {
                     is SseParser.Parsed.Delivered -> {
                         frame.id?.let { lastId = it }
-                        parsed.event.takeUnless { it is RunStreamEvent.Error }?.let { emit(it) }
+                        parsed.event.takeUnless { it is RunStreamEvent.Error }?.let { delivered = true; emit(it) }
                     }
                     // Skipped on purpose, either way: resuming past them is right, since asking again brings the same frame.
                     SseParser.Parsed.Ignored, SseParser.Parsed.Oversized -> frame.id?.let { lastId = it }
@@ -325,8 +330,11 @@ class SseRunStreamer(
                     // Without a position to resume from, the next connection replays the run from its first event —
                     // into an accumulator that already holds part of it, which would read as the agent saying
                     // everything twice. Ending the pass hands that decision to the caller, which rebuilds from
-                    // nothing when it comes back (see [RunStreamEvent.Error.resumeFrom]).
-                    if (attempt > maxAttempts || lastId == null) {
+                    // nothing when it comes back (see [RunStreamEvent.Error.resumeFrom]). A pass that has handed
+                    // over nothing yet — the connection refused, or dropped before its first event — has nothing to
+                    // duplicate, and rides the blip out here like any other: a replay refused once with a `503` used
+                    // to read as a failed trace, with a Retry, for a moment's trouble.
+                    if (attempt > maxAttempts || (lastId == null && delivered)) {
                         emit(RunStreamEvent.Error("stream_unavailable", outcome.reason, resumeFrom = lastId))
                         return@flow
                     }

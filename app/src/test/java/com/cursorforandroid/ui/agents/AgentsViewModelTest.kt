@@ -11,17 +11,22 @@ import com.cursorforandroid.data.api.dto.ListAgentsResponseDto
 import com.cursorforandroid.data.demo.DemoBackendFactory
 import com.cursorforandroid.data.demo.DemoData
 import com.cursorforandroid.data.local.CachedConversation
+import com.cursorforandroid.data.repo.AgentRepositoryTestHelper
+import com.cursorforandroid.data.repo.AgentListState
 import com.cursorforandroid.data.repo.CursorBackend
 import com.cursorforandroid.domain.AgentIndicator
+import com.cursorforandroid.domain.PendingWork
 import com.cursorforandroid.domain.AgentListOrganizer
 import com.cursorforandroid.domain.SortOrder
 import com.cursorforandroid.domain.StatusFilter
 import com.cursorforandroid.util.AppClock
 import com.google.common.truth.Truth.assertThat
+import com.google.common.truth.Truth.assertWithMessage
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.yield
@@ -38,6 +43,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
 import java.io.IOException
+import java.util.concurrent.CopyOnWriteArrayList
 
 /**
  * The list state both the sidebar and the New Chat pane render from, against the demo backend (seventeen agents, three
@@ -59,6 +65,12 @@ class AgentsViewModelTest {
     @Volatile private var failList: Throwable? = null
     @Volatile private var listCalls = 0
     private val listCallReached = mutableListOf<CompletableDeferred<Unit>>()
+    /** The list calls numbered from 1 that fail as if the server could not be reached; the polling cadence is read off the rest. */
+    @Volatile private var failListCalls: IntRange? = null
+    /** The test's virtual clock, read at each list call (see [listCallTimes]); the wall clock until a test sets it. */
+    @Volatile private var virtualNow: () -> Long = { 0L }
+    /** When each list call was made, on the virtual clock: the polling cadence, with nothing of the real threads' timing in it. */
+    private val listCallTimes = CopyOnWriteArrayList<Long>()
     @Volatile private var blockListCall: Int? = null
     private var listCallGate = CompletableDeferred<Unit>()
 
@@ -71,6 +83,8 @@ class AgentsViewModelTest {
     private suspend fun buildGraph() {
         listCalls = 0
         listCallReached.clear()
+        listCallTimes.clear()
+        failListCalls = null
         blockListCall = null
         listCallGate = CompletableDeferred()
         val (demoApi, demoStreamer) = DemoBackendFactory.create()
@@ -82,8 +96,11 @@ class AgentsViewModelTest {
 
             override suspend fun listAgents(limit: Int, cursor: String?, includeArchived: Boolean): ListAgentsResponseDto {
                 listCalls++
-                listCallReached.getOrNull(listCalls - 1)?.complete(Unit)
-                if (listCalls == blockListCall) listCallGate.await()
+                val call = listCalls
+                listCallTimes += virtualNow()
+                listCallReached.getOrNull(call - 1)?.complete(Unit)
+                if (call == blockListCall) listCallGate.await()
+                if (failListCalls?.contains(call) == true) throw IOException("offline")
                 failList?.let { throw it }
                 return demoApi.listAgents(limit, cursor, includeArchived)
             }
@@ -105,8 +122,9 @@ class AgentsViewModelTest {
         return listCallReached[index]
     }
 
+    /** The list once a fetch has settled: the indicator let go, and nothing still syncing underneath it. */
     private suspend fun AgentsViewModel.loaded(): AgentListUiState =
-        uiState.first { it.hasLoaded && !it.isRefreshing && it.recentRows.isNotEmpty() }
+        uiState.first { it.hasLoaded && !it.isRefreshing && it.tail !is SidebarTail.Loading && it.recentRows.isNotEmpty() }
 
     private suspend fun awaitRefresh(after: Long = graph.agents.refreshCompleted.value) {
         graph.agents.refreshCompleted.first { it > after }
@@ -196,6 +214,9 @@ class AgentsViewModelTest {
         val vm = AgentsViewModel(graph, pollIntervalMs = 100)
         advanceUntilIdle()
         vm.loaded()
+        // The rows are published a step before the fetch is stamped as landed (on its own thread, the stamp and the
+        // completion under one lock): the stamp is read once the completion has been counted.
+        awaitRefresh(0)
         assertThat(graph.agents.lastRefreshedAt).isEqualTo(now)
         val before = graph.agents.refreshCompleted.value
         val polling = vm.pollWhileVisible()
@@ -212,40 +233,61 @@ class AgentsViewModelTest {
         }
     }
 
+    /**
+     * The cadence is read off the virtual clock at each list call, not off how many calls a window of virtual time
+     * let through: the fetch itself runs on the repository's own threads, and `advanceTimeBy` does not wait for
+     * them, so "no fifth call within two seconds" was true only while the fifth call's thread had not reached the
+     * server yet — and after three refusals the fifth attempt is eight intervals away, well inside two seconds. Under
+     * load the thread got there first (three rounds in eight).
+     *
+     * The virtual clock is read from the fetch's thread, so nothing else may move it while a fetch is in flight —
+     * `runTest` runs any delayed task it finds the moment the body suspends. Hence no reader of [AgentsViewModel.uiState]
+     * here (a reader that leaves schedules the sharing's five-second stop, and while it stays the minute clock ticks),
+     * and the minute clock set never to tick: the poll's own delay is the only timer, scheduled once each fetch lands.
+     */
     @Test
     fun `polling backs off while the list cannot be fetched and picks its cadence up once it can`() = runTest {
         mainDispatcher.set(StandardTestDispatcher(testScheduler))
-        listCallGate = CompletableDeferred()
-        val vm = AgentsViewModel(graph, pollIntervalMs = 100)
+        virtualNow = { testScheduler.currentTime }
+        val vm = AgentsViewModel(graph, pollIntervalMs = 100, clockTickMs = Long.MAX_VALUE)
         advanceUntilIdle()
-        vm.loaded()
+        // The cold start's own fetch, landed — and run to the end of its job: a fetch lands before its tail (the rows
+        // fetched by id, the settle), and a poll that finds a fetch still in flight is skipped at the plain interval,
+        // which read as a first gap of 200 or 400 under load. Joining it here is what the cadence starts from.
+        awaitRefresh(0)
+        AgentRepositoryTestHelper.awaitFetchIdle(graph.agents)
+        assertThat(listCalls).isEqualTo(1)
+        val landed = graph.agents.refreshCompleted.value
+        // The next three polls are refused; the one after them gets through.
         now += 60_000
-        failList = IOException("offline")
+        failListCalls = 2..4
+        val started = testScheduler.currentTime
         val polling = vm.pollWhileVisible()
         try {
-            expectListCall(3).await()
-            assertThat(listCalls).isEqualTo(4)
-            blockListCall = 5
-            advanceTimeBy(2_000)
-            runCurrent()
-            assertThat(listCalls).isEqualTo(4)
+            // Three refusals in a row: the interval, then twice, four and eight times it (each with up to a quarter of jitter).
+            expectListCall(4).await()
+            val gaps = (listOf(started) + listCallTimes.drop(1)).zipWithNext { a, b -> b - a }
+            assertWithMessage("poll gaps on the virtual clock: $gaps").that(gaps).hasSize(4)
+            assertThat(gaps[0]).isEqualTo(100L)
+            assertThat(gaps[1]).isIn(200L..250L)
+            assertThat(gaps[2]).isIn(400L..500L)
+            assertThat(gaps[3]).isIn(800L..1000L)
 
-            failList = null
+            // The fifth call answers: the run of failures is cleared, and the plain interval is back for the calls after
+            // it. A fetch that lands stamps the list with the frozen clock, and a poll within half an interval of the
+            // last landing is skipped, so the clock moves on after each landing — as it does on a phone.
+            awaitRefresh(landed)
             now += 60_000
-            blockListCall = null
-            listCallGate.complete(Unit)
-            awaitRefresh()
-            failList = IOException("offline")
+            expectListCall(5).await()
+            awaitRefresh(landed + 1)
             now += 60_000
-            val start = listCalls
-            expectListCall(start).await()
-            expectListCall(start + 1).await()
+            expectListCall(6).await()
+            val recovered = listCallTimes.drop(4).zipWithNext { a, b -> b - a }
+            assertWithMessage("poll gaps after the recovery: $recovered").that(recovered).containsExactly(100L, 100L).inOrder()
         } finally {
-            blockListCall = null
-            if (!listCallGate.isCompleted) listCallGate.complete(Unit)
             polling.cancel()
-            // What the cancel and the gate's release scheduled on the test's own dispatcher runs to its end here,
-            // rather than being reported as coroutines the test left behind.
+            // What the cancel scheduled on the test's own dispatcher runs to its end here, rather than being reported
+            // as coroutines the test left behind.
             advanceUntilIdle()
         }
     }
@@ -282,6 +324,82 @@ class AgentsViewModelTest {
         } finally {
             polling.cancel()
         }
+    }
+
+    /**
+     * The pull request badges are read for the rows on screen, as the sidebar reports them — not for every row the
+     * list holds: a row the reader has not scrolled to costs nothing until they do. (Before the sidebar has said
+     * what is on screen, a screenful of the newest rows is read; the demo fits in one, so this drives the sidebar's
+     * report by hand.)
+     */
+    /**
+     * The one rule the sidebar's end is drawn by (see [sidebarTail]): nothing under the refresh indicator; the spinner
+     * for a page being fetched or the work the user asked for, named; the server's words with Retry for a page that
+     * failed; the ask for the next page while the server has one; else nothing — in that order of precedence.
+     */
+    @Test
+    fun `the tail is drawn by one rule, one row at a time`() {
+        val idle = PendingWork.State()
+        val page = PendingWork.State(items = listOf(PendingWork.Item(1, "list page 2", 0L)), shown = true)
+        val quietWork = PendingWork.State(items = listOf(PendingWork.Item(2, "list refresh (quick, silent)", 0L)), shown = false)
+        val loaded = AgentListState(hasLoaded = true)
+
+        assertThat(sidebarTail(AgentListState(), page)).isEqualTo(SidebarTail.None)
+        assertThat(sidebarTail(loaded.copy(isRefreshing = true, hasMore = true), page)).isEqualTo(SidebarTail.None)
+        assertThat(sidebarTail(loaded.copy(hasMore = true), page)).isEqualTo(SidebarTail.Loading(listOf("list page 2")))
+        assertThat(sidebarTail(loaded.copy(isLoadingMore = true, hasMore = true), idle)).isEqualTo(SidebarTail.Loading(emptyList()))
+        // Work the user did not ask for shows nothing: a poll's round is not the reader's spinner.
+        assertThat(sidebarTail(loaded.copy(hasMore = true), quietWork)).isEqualTo(SidebarTail.More)
+        assertThat(sidebarTail(loaded, quietWork)).isEqualTo(SidebarTail.None)
+        assertThat(sidebarTail(loaded.copy(hasMore = true, loadMoreError = "Rate limited by Cursor. Try again in 3 s."), idle)).isEqualTo(SidebarTail.Failed("Rate limited by Cursor. Try again in 3 s."))
+        // A page being fetched again outranks the words of the one that failed.
+        assertThat(sidebarTail(loaded.copy(isLoadingMore = true, hasMore = true, loadMoreError = "old words"), page)).isEqualTo(SidebarTail.Loading(listOf("list page 2")))
+        assertThat(sidebarTail(loaded.copy(hasMore = true), idle)).isEqualTo(SidebarTail.More)
+        assertThat(sidebarTail(loaded, idle)).isEqualTo(SidebarTail.None)
+    }
+
+    /** The demo's cold start, as the sidebar sees it: the indicator, then the one row for the tail, then nothing more; never both. */
+    @Test
+    fun `a cold start ends with an empty tail, and never shows the row under the indicator`() = runTest {
+        mainDispatcher.set(StandardTestDispatcher(testScheduler))
+        val vm = AgentsViewModel(graph)
+        val seen = mutableListOf<AgentListUiState>()
+        val watcher = backgroundScope.launch { vm.uiState.collect { seen += it } }
+        advanceUntilIdle()
+        val loaded = vm.loaded()
+        assertThat(loaded.tail).isEqualTo(SidebarTail.None)
+        assertThat(loaded.hasMore).isFalse()
+        assertThat(seen.none { it.isRefreshing && it.tail is SidebarTail.Loading }).isTrue()
+        watcher.cancel()
+    }
+
+    @Test
+    fun `pull request badges are read for the rows on screen, not for every row`() = runTest {
+        mainDispatcher.set(StandardTestDispatcher(testScheduler))
+        // The sidebar's first report lands before the list does: one row with a PR (the demo's Revenue Scaling
+        // Pipeline Research, bc-demo-0002) is on screen. The list is held at its first call meanwhile.
+        blockListCall = 1
+        val vm = AgentsViewModel(graph)
+        vm.rowsVisible(listOf("bc-demo-0002"))
+        expectListCall(0).await()
+        listCallGate.complete(Unit)
+        advanceUntilIdle()
+        vm.loaded()
+        val all = graph.agents.state.value.agents
+        val withPr = all.filter { it.prUrl != null }
+        assertThat(withPr.size).isAtLeast(3)
+        val onScreen = withPr.first { it.id == "bc-demo-0002" }
+        graph.pullRequests.statuses.first { onScreen.prUrl in it.keys }
+        // Only that row's badge was read: the rows off screen keep theirs unread.
+        assertThat(graph.pullRequests.statuses.value.keys).containsExactly(onScreen.prUrl)
+
+        // The reader scrolls: another row with a PR comes on screen, and its badge is read then.
+        val scrolledTo = withPr.first { it.id != "bc-demo-0002" }
+        vm.rowsVisible(listOf(onScreen.id, scrolledTo.id))
+        advanceTimeBy(AgentsViewModel.VISIBLE_DEBOUNCE_MS + 1)
+        runCurrent()
+        graph.pullRequests.statuses.first { scrolledTo.prUrl in it.keys }
+        assertThat(graph.pullRequests.statuses.value.keys).containsExactly(onScreen.prUrl, scrolledTo.prUrl)
     }
 
     @Test

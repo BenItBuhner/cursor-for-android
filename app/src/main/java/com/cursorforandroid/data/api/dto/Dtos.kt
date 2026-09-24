@@ -245,6 +245,8 @@ data class WorkerDto(
     val repoUrl: String? = null,
     /** "Primary workspace path on the worker": the checkout's directory. */
     val workspaceRootPath: String? = null,
+    /** "Owning user id. `0` for workers authenticated with a service account key." */
+    val userId: Long? = null,
     val scope: String? = null,
     val labels: List<WorkerLabelDto> = emptyList(),
 ) {

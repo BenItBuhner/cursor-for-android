@@ -1,0 +1,166 @@
+{
+  "_source": "Cursor desktop 3.21.18 (c4730f7d93d787d9ab120af715999f0345ee5bc5) resources/app/out/vs/workbench/workbench.glass.main.js: New Agent submit (glass.new_agent.submitted) -> _bs/iZS -> QPl -> CloudAgentRepository.createAgent -> _createAgentReal -> _startCloudAgent -> backgroundComposerSyncClient.startBackgroundComposerFromSnapshot; the machine's repository from FS1 -> nZS (the account's project with the same host-less owner/name, else VXS's https://github.com/{owner}/{name}) -> D0t -> _resolveCloudStartTarget (usePrivateWorker: environment_public_id and environment_name) -> AWe; labels from Mel/OOa, owner filter from QPl, worker from RRe/Ael; listing fields from cursor.com/docs/cloud-agent/api/endpoints.md 'List Workers'. Values are synthesized: no request was made to any real machine or account.",
+  "workers": {
+    "online": {
+      "workers": [
+        {
+          "workerId": "5f1c9d2a-3b4e-4f60-8a71-92b3c4d5e6f7",
+          "repoOwner": "bennett",
+          "repoName": "codex-poly-bot",
+          "workspaceRootPath": "/home/bennett/projects/codex-poly-bot",
+          "connectedAtMs": 1737306900000,
+          "userId": 42,
+          "isInUse": false,
+          "name": "bennett"
+        },
+        {
+          "workerId": "c2b1a0f9-8e7d-4c6b-a5f4-e3d2c1b0a9f8",
+          "repoOwner": "acme",
+          "repoName": "payments-service",
+          "repoUrl": "https://github.com/acme/payments-service",
+          "workspaceRootPath": "/home/dev/payments-service",
+          "connectedAtMs": 1737306880000,
+          "userId": 42,
+          "isInUse": false,
+          "name": "studio"
+        }
+      ],
+      "totalCount": 2
+    },
+    "studioOffline": {
+      "workers": [
+        {
+          "workerId": "5f1c9d2a-3b4e-4f60-8a71-92b3c4d5e6f7",
+          "repoOwner": "bennett",
+          "repoName": "codex-poly-bot",
+          "workspaceRootPath": "/home/bennett/projects/codex-poly-bot",
+          "connectedAtMs": 1737306900000,
+          "userId": 42,
+          "isInUse": false,
+          "name": "bennett"
+        }
+      ],
+      "totalCount": 1
+    }
+  },
+  "environments": {
+    "_source": "BackgroundComposerService/ListEnvironments {includeEnvironmentJson: false}, as _fetchLogicalEnvironments asks it. BSS keeps an environment of one repository (repoConfig.repos[0].repoUrl) as a template; qZ lists them before the SCM repositories, so nZS finds one first. A public id of digits alone names nothing (r5e/LWe).",
+    "withCodexPolyBot": {
+      "environments": [
+        {
+          "publicId": "env_2wFullstackMix",
+          "name": "Fullstack",
+          "repoConfig": { "repos": [ { "repoUrl": "https://github.com/bennett/codex-poly-bot" }, { "repoUrl": "https://github.com/acme/web" } ] }
+        },
+        {
+          "publicId": "env_7qCodexPolyBot",
+          "name": "codex-poly-bot",
+          "repoConfig": { "repos": [ { "repoUrl": "https://origin.cursor.com/bennett/codex-poly-bot" } ] }
+        }
+      ],
+      "hasMore": false
+    },
+    "none": { "environments": [], "hasMore": false }
+  },
+  "branches": {
+    "_source": "BackgroundComposerService/GetRepositoryBranches {repoUrl, page: 1} (the desktop's branch list; initialPageParam 1) -> {branches[{name, isDefault}], hasMore, page, isEmptyRepo, bootstrapBranch}.",
+    "codexPolyBot": {
+      "branches": [ { "name": "main", "isDefault": true }, { "name": "feature/accuracy" }, { "name": "fix/slippage" } ],
+      "hasMore": false,
+      "page": 1
+    }
+  },
+  "sentByPr301": {
+    "_source": "What the app sent for Bennett's pick before this fix (PR #301): the worker's GitHub guess, and no environment on the starting point. The account checked that URL against GitHub access and refused it (refusals.noAccess).",
+    "bennett": {
+      "snapshotNameOrId": "github.com/bennett/codex-poly-bot",
+      "devcontainerStartingPoint": { "url": "https://github.com/bennett/codex-poly-bot" },
+      "snapshotWorkspaceRootPath": "/workspace",
+      "returnImmediately": true,
+      "repoUrl": "https://github.com/bennett/codex-poly-bot",
+      "autoBranch": true,
+      "labels": [
+        { "key": "repo", "value": "bennett/codex-poly-bot" },
+        { "key": "name", "value": "bennett" },
+        { "key": "cursor.private_worker.shared_assignment_allowed", "value": "true" }
+      ],
+      "privateWorkerOwnerFilter": { "ownerCursorUserId": 42 },
+      "selectedPrivateWorkerId": "5f1c9d2a-3b4e-4f60-8a71-92b3c4d5e6f7",
+      "usePrivateWorker": true
+    }
+  },
+  "start": {
+    "bennett": {
+      "snapshotNameOrId": "github.com/bennett/codex-poly-bot",
+      "devcontainerStartingPoint": { "url": "https://github.com/bennett/codex-poly-bot", "environmentName": "bennett/codex-poly-bot" },
+      "snapshotWorkspaceRootPath": "/workspace",
+      "returnImmediately": true,
+      "repoUrl": "https://github.com/bennett/codex-poly-bot",
+      "autoBranch": true,
+      "labels": [
+        { "key": "repo", "value": "bennett/codex-poly-bot" },
+        { "key": "name", "value": "bennett" },
+        { "key": "cursor.private_worker.shared_assignment_allowed", "value": "true" }
+      ],
+      "privateWorkerOwnerFilter": { "ownerCursorUserId": 42 },
+      "selectedPrivateWorkerId": "5f1c9d2a-3b4e-4f60-8a71-92b3c4d5e6f7",
+      "usePrivateWorker": true
+    },
+    "bennettEnvironment": {
+      "snapshotNameOrId": "origin.cursor.com/bennett/codex-poly-bot",
+      "devcontainerStartingPoint": { "url": "https://origin.cursor.com/bennett/codex-poly-bot", "environmentPublicId": "env_7qCodexPolyBot", "environmentName": "codex-poly-bot" },
+      "snapshotWorkspaceRootPath": "/workspace",
+      "returnImmediately": true,
+      "repoUrl": "https://origin.cursor.com/bennett/codex-poly-bot",
+      "autoBranch": true,
+      "labels": [
+        { "key": "repo", "value": "bennett/codex-poly-bot" },
+        { "key": "name", "value": "bennett" },
+        { "key": "cursor.private_worker.shared_assignment_allowed", "value": "true" }
+      ],
+      "privateWorkerOwnerFilter": { "ownerCursorUserId": 42 },
+      "selectedPrivateWorkerId": "5f1c9d2a-3b4e-4f60-8a71-92b3c4d5e6f7",
+      "usePrivateWorker": true
+    },
+    "studio": {
+      "snapshotNameOrId": "github.com/acme/payments-service",
+      "devcontainerStartingPoint": { "url": "https://github.com/acme/payments-service", "environmentName": "acme/payments-service" },
+      "repoUrl": "https://github.com/acme/payments-service",
+      "labels": [
+        { "key": "repo", "value": "acme/payments-service" },
+        { "key": "name", "value": "studio" },
+        { "key": "cursor.private_worker.shared_assignment_allowed", "value": "true" }
+      ],
+      "privateWorkerOwnerFilter": { "ownerCursorUserId": 42 },
+      "selectedPrivateWorkerId": "c2b1a0f9-8e7d-4c6b-a5f4-e3d2c1b0a9f8",
+      "usePrivateWorker": true
+    }
+  },
+  "response": {
+    "composer": {
+      "bcId": "BC_ID",
+      "createdAtMs": "1737307000000",
+      "workspaceRootPath": "/workspace",
+      "name": "Codex-Poly-Bot accuracy pass",
+      "repoUrl": "https://github.com/bennett/codex-poly-bot",
+      "status": "BACKGROUND_COMPOSER_STATUS_CREATING",
+      "source": "BACKGROUND_COMPOSER_SOURCE_API",
+      "workerId": "5f1c9d2a-3b4e-4f60-8a71-92b3c4d5e6f7",
+      "usePrivateWorker": true,
+      "privateWorkerDisplayName": "bennett"
+    },
+    "initialRunId": "run-00000000-0000-0000-0000-000000000042"
+  },
+  "refusals": {
+    "offline": {
+      "_source": "The account's words for a machine that is not connected, as the Projects CreateAgent path gives them (forum.cursor.com/t/171320); a Connect error body.",
+      "status": 400,
+      "body": { "code": "failed_precondition", "message": "The requested self-hosted worker is not connected." }
+    },
+    "noAccess": {
+      "_source": "The account's words to Bennett's start on 2026-09-23 (internal/reference/bennett-machine-launch-0923.png): POST /aiserver.v1.BackgroundComposerService/StartBackgroundComposerFromSnapshot -> HTTP 400 invalid_argument, for a repository URL the account cannot reach.",
+      "status": 400,
+      "body": { "code": "invalid_argument", "message": "You do not have access to this repository. Please ensure you have the necessary permissions." }
+    }
+  }
+}

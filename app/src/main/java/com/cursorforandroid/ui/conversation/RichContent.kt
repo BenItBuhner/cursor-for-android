@@ -49,6 +49,9 @@ import com.cursorforandroid.ui.components.ShimmerText
 import com.cursorforandroid.ui.components.VideoBlock
 import com.cursorforandroid.ui.components.cursorSurface
 import com.cursorforandroid.ui.components.pressable
+import com.cursorforandroid.ui.components.stylusWriting
+import com.cursorforandroid.ui.files.FileHitsList
+import com.cursorforandroid.ui.files.rememberFileOpener
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.util.TimeFormat
 
@@ -61,14 +64,15 @@ import com.cursorforandroid.util.TimeFormat
 @Composable
 internal fun ToolPayloadView(call: ToolCall, modifier: Modifier = Modifier) {
     when (val payload = call.payload) {
-        is ToolPayload.FileDiff -> DiffBlock(payload, modifier)
-        is ToolPayload.FileContent -> FileCard(payload, modifier)
+        is ToolPayload.FileDiff -> DiffBlock(payload, modifier, onOpen = rememberFileOpener(payload.path, call)?.open)
+        is ToolPayload.FileContent -> FileCard(payload, modifier, onOpen = rememberFileOpener(payload.path, call)?.open)
         is ToolPayload.Subagent -> SubagentCard(payload, modifier)
         is ToolPayload.Question -> if (call.pendingQuestion == null) QuestionCard(payload, pending = false, modifier = modifier)
         // A coordinator's calls are rows and cards of their own (see CoordinatorContent.kt), not lines that open;
         // a goal call is lifted into a row of its own before it reaches a group (see GoalTranscript.lift).
         is ToolPayload.WorkerAction, is ToolPayload.CoordinatorMessage, is ToolPayload.GoalChange -> Unit
-        is ToolPayload.GeneratedImage, is ToolPayload.Recording, null -> Unit
+        is ToolPayload.FileHits -> FileHitsList(payload, modifier)
+        is ToolPayload.GeneratedImage, is ToolPayload.Recording, is ToolPayload.ReadMedia, null -> Unit
     }
 }
 
@@ -77,7 +81,8 @@ internal fun ToolCall.hasExpandablePayload(): Boolean = when (payload) {
     is ToolPayload.FileDiff, is ToolPayload.FileContent, is ToolPayload.Subagent -> true
     is ToolPayload.Question -> pendingQuestion == null
     is ToolPayload.WorkerAction, is ToolPayload.CoordinatorMessage, is ToolPayload.GoalChange -> false
-    is ToolPayload.GeneratedImage, is ToolPayload.Recording, null -> false
+    is ToolPayload.FileHits -> (payload as ToolPayload.FileHits).hits.isNotEmpty()
+    is ToolPayload.GeneratedImage, is ToolPayload.Recording, is ToolPayload.ReadMedia, null -> false
 }
 
 /**
@@ -100,13 +105,13 @@ internal fun TruncationNote(truncation: ToolTruncation, modifier: Modifier = Mod
  * scrolling sideways rather than wrapping, so the columns line up. A diff the stream cut short says so at the end.
  */
 @Composable
-fun DiffBlock(diff: ToolPayload.FileDiff, modifier: Modifier = Modifier, showHeader: Boolean = true) {
+fun DiffBlock(diff: ToolPayload.FileDiff, modifier: Modifier = Modifier, showHeader: Boolean = true, onOpen: (() -> Unit)? = null) {
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
     val lines = remember(diff) { diff.lines.filterNot { it.startsWith("\\ No newline") } }
     CursorCard(modifier.fillMaxWidth().testTag("diff-block"), fill = colors.fillFaint, border = Color.Transparent) {
         if (showHeader) {
-            PayloadHeader(icon = CursorIcons.Code, title = ToolNames.basename(diff.path), detail = diff.path.takeIf { it != ToolNames.basename(diff.path) }) {
+            PayloadHeader(icon = CursorIcons.Code, title = ToolNames.basename(diff.path), detail = diff.path.takeIf { it != ToolNames.basename(diff.path) }, onOpen = onOpen) {
                 LineCounts(diff.linesAdded, diff.linesRemoved)
             }
             HairlineDivider()
@@ -140,18 +145,19 @@ fun DiffBlock(diff: ToolPayload.FileDiff, modifier: Modifier = Modifier, showHea
  * does not stretch the transcript by a thousand rows unasked.
  */
 @Composable
-fun FileCard(file: ToolPayload.FileContent, modifier: Modifier = Modifier, showHeader: Boolean = true, initialLines: Int = FileCardInitialLines) {
+fun FileCard(file: ToolPayload.FileContent, modifier: Modifier = Modifier, showHeader: Boolean = true, initialLines: Int = FileCardInitialLines, onOpen: (() -> Unit)? = null) {
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
     val lines = remember(file) { file.content.replace("\r\n", "\n").lines().let { if (it.size > 1 && it.last().isEmpty()) it.dropLast(1) else it } }
     var showAll by rememberSaveable(file.path, file.content.length) { mutableStateOf(lines.size <= initialLines) }
     val shown = if (showAll) lines else lines.take(initialLines)
-    val gutter = lines.size.toString().length
+    val first = file.startLine ?: 1
+    val gutter = (first + lines.size - 1).toString().length
     CursorCard(modifier.fillMaxWidth().testTag("file-card"), fill = colors.fillFaint, border = Color.Transparent) {
         if (showHeader) {
             val verb = if (file.kind == ToolPayload.FileContent.Kind.Written) "Wrote" else "Read"
             val count = file.totalLines ?: lines.size
-            PayloadHeader(icon = CursorIcons.File, title = ToolNames.basename(file.path), detail = file.path.takeIf { it != ToolNames.basename(file.path) }) {
+            PayloadHeader(icon = CursorIcons.File, title = ToolNames.basename(file.path), detail = file.path.takeIf { it != ToolNames.basename(file.path) }, onOpen = onOpen) {
                 Text("$verb · $count ${if (count == 1) "line" else "lines"}", style = type.small, color = colors.textQuaternary, maxLines = 1)
             }
             HairlineDivider()
@@ -159,7 +165,7 @@ fun FileCard(file: ToolPayload.FileContent, modifier: Modifier = Modifier, showH
         Column(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(vertical = 6.dp)) {
             shown.forEachIndexed { index, line ->
                 Row(Modifier.padding(horizontal = 10.dp)) {
-                    Text((index + 1).toString().padStart(gutter), style = type.code, color = colors.textQuaternary, softWrap = false)
+                    Text((index + first).toString().padStart(gutter), style = type.code, color = colors.textQuaternary, softWrap = false)
                     Spacer(Modifier.width(12.dp))
                     Text(line.ifEmpty { " " }, style = type.code, color = colors.textSecondary, softWrap = false)
                 }
@@ -377,6 +383,7 @@ private fun AnswerField(value: String, onValueChange: (String) -> Unit, placehol
         cursorBrush = SolidColor(colors.textPrimary),
         modifier = Modifier
             .fillMaxWidth()
+            .stylusWriting(enabled = enabled)
             .cursorSurface(colors.fill, colors.strokeSubtle, shape)
             .padding(horizontal = 10.dp, vertical = 7.dp)
             .semantics { contentDescription = placeholder }
@@ -437,12 +444,21 @@ internal fun PendingQuestionCard(call: ToolCall, modifier: Modifier = Modifier, 
     )
 }
 
-/** The first row of a diff or file card: a glyph, the file's name, its path dimmed after it, and [trailing] at the end. */
+/**
+ * The first row of a diff or file card: a glyph, the file's name, its path dimmed after it, and [trailing] at the end.
+ * With [onOpen] the row opens the whole file (the full-file viewer), and says so with a glyph at its end.
+ */
 @Composable
-private fun PayloadHeader(icon: ImageVector, title: String, detail: String?, trailing: @Composable () -> Unit) {
+private fun PayloadHeader(icon: ImageVector, title: String, detail: String?, onOpen: (() -> Unit)? = null, trailing: @Composable () -> Unit) {
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
-    Row(Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 7.dp), verticalAlignment = Alignment.CenterVertically) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .then(if (onOpen != null) Modifier.pressable(onOpen, CursorTheme.shapes.base).semantics { contentDescription = "Open $title" }.testTag("payload-open") else Modifier)
+            .padding(horizontal = 10.dp, vertical = 7.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
         Icon(icon, null, tint = colors.iconTertiary, modifier = Modifier.size(13.dp))
         Spacer(Modifier.width(7.dp))
         Text(title, style = type.baseMedium.copy(fontFamily = type.code.fontFamily), color = colors.textSecondary, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -454,6 +470,10 @@ private fun PayloadHeader(icon: ImageVector, title: String, detail: String?, tra
         }
         Spacer(Modifier.width(8.dp))
         Box { trailing() }
+        if (onOpen != null) {
+            Spacer(Modifier.width(6.dp))
+            Icon(CursorIcons.ChevronRight, null, tint = colors.iconQuaternary, modifier = Modifier.size(13.dp))
+        }
     }
 }
 

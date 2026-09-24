@@ -43,6 +43,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -53,6 +54,7 @@ import com.cursorforandroid.domain.AgentIndicator
 import com.cursorforandroid.domain.AgentRow
 import com.cursorforandroid.domain.DeviceTarget
 import com.cursorforandroid.domain.MediaMarkup
+import com.cursorforandroid.domain.NewChatHome
 import com.cursorforandroid.domain.Repository
 import com.cursorforandroid.ui.agents.AgentListUiState
 import com.cursorforandroid.ui.agents.AgentRowActions
@@ -62,6 +64,7 @@ import com.cursorforandroid.ui.agents.SnoozeChatDialog
 import com.cursorforandroid.ui.components.ComposerBox
 import com.cursorforandroid.ui.components.CursorCard
 import com.cursorforandroid.ui.components.CursorHeader
+import com.cursorforandroid.ui.components.FadingLazyColumn
 import com.cursorforandroid.ui.components.CursorIcons
 import com.cursorforandroid.ui.components.CursorSheet
 import com.cursorforandroid.ui.components.Dot
@@ -70,17 +73,17 @@ import com.cursorforandroid.ui.components.HairlineDivider
 import com.cursorforandroid.ui.components.ModePills
 import com.cursorforandroid.ui.components.Pill
 import com.cursorforandroid.ui.components.PullRequestPill
+import com.cursorforandroid.ui.components.RefreshableSheetHeader
 import com.cursorforandroid.ui.components.RunningGlyph
-import com.cursorforandroid.ui.components.SelectorChip
-import com.cursorforandroid.ui.components.SelectorRow
-import com.cursorforandroid.ui.components.SheetHeader
-import com.cursorforandroid.ui.components.SpinnerRing
 import com.cursorforandroid.ui.components.pressable
 import com.cursorforandroid.ui.components.pullRequestTint
 import com.cursorforandroid.ui.components.AttachmentCounts
+import com.cursorforandroid.ui.conversation.LoadNoticeCard
+import com.cursorforandroid.ui.conversation.RECORD_FALLBACK_ASKED
 import com.cursorforandroid.ui.components.rememberFilePicker
 import com.cursorforandroid.ui.components.rememberMediaPicker
 import com.cursorforandroid.ui.components.scrollEdgeFade
+import com.cursorforandroid.ui.components.stylusWriting
 import com.cursorforandroid.share.ShareTarget
 import com.cursorforandroid.ui.compose.NewAgentUiState
 import com.cursorforandroid.ui.compose.NewAgentViewModel
@@ -91,8 +94,9 @@ import com.cursorforandroid.util.AppClock
 import com.cursorforandroid.util.TimeFormat
 
 /**
- * The "New Chat" pane — the home of the official app: context selectors, the composer, then the recent chats
- * list with preview cards (cursor.com/agents). On phones a 44dp header carries the sidebar toggle.
+ * The "New Chat" pane — the home of the official app: context selectors, the composer, then — as Settings › New chat
+ * page chooses ([home]) — the recent chats list with preview cards (cursor.com/agents), or the Projects as shortcuts
+ * (see [homeBlocks]). On phones a 44dp header carries the sidebar toggle.
  *
  * Sending opens the new chat through [onLaunchOpen] right away, before the server has answered, and leaves the
  * composer empty behind it: the launch is on its own from there (see [NewAgentViewModel.launch]), so this pane is
@@ -108,12 +112,24 @@ fun HomeScreen(
     onLaunchOpen: (agentId: String) -> Unit,
     rowActions: AgentRowActions,
     modifier: Modifier = Modifier,
+    /** What the pane lists under the composer; null while the preference is still being read, which lists nothing. */
+    home: NewChatHome? = NewChatHome.DEFAULT,
+    /** Whether the account has Projects to pin at all: Extended mode, or the demo. */
+    projectsAvailable: Boolean = false,
+    /** The Projects page's way to a first Project, when there is none. */
+    onNewProject: (() -> Unit)? = null,
+    /** The Projects page's way to Extended mode, while it is off. */
+    onOpenSettings: (() -> Unit)? = null,
 ) {
-    val viewModel: NewAgentViewModel = viewModel(factory = NewAgentViewModel.Factory(graph))
+    // The draft open here is kept with the screen's saved state: a process ended under the composer opens it again,
+    // while an app started afresh begins a new one, the others waiting in the sidebar.
+    var openDraft by rememberSaveable { mutableStateOf<String?>(null) }
+    val viewModel: NewAgentViewModel = viewModel(factory = NewAgentViewModel.Factory(graph, resume = openDraft))
+    val draftId by viewModel.draftId.collectAsStateWithLifecycle()
+    LaunchedEffect(draftId) { openDraft = draftId }
     val state by viewModel.state.collectAsStateWithLifecycle()
     val commands by viewModel.commands.collectAsStateWithLifecycle()
     val colors = CursorTheme.colors
-    val type = CursorTheme.typography
     var repoSheet by rememberSaveable { mutableStateOf(false) }
     var branchSheet by rememberSaveable { mutableStateOf(false) }
     var deviceSheet by rememberSaveable { mutableStateOf(false) }
@@ -121,7 +137,8 @@ fun HomeScreen(
 
     // The Chats filters chosen in the sidebar's menu apply here just the same (the sidebar search does not), so the two
     // lists never disagree about which chats are visible; the cards are newest first.
-    val recent = listState.recentRows
+    val blocks = remember(home, listState, projectsAvailable) { homeBlocks(home, listState, projectsAvailable) }
+    val blockActions = HomeBlockActions(onOpenAgent = onOpenAgent, rowActions = rowActions, onNewProject = onNewProject, onOpenSettings = onOpenSettings)
     // The "+" menu's two pickers: the gallery — images alone in the default mode, images and videos as real files in
     // Extended mode — and, in Extended mode, the document picker for files of any type.
     val counts = AttachmentCounts.of(state.attachments, state.files)
@@ -160,19 +177,11 @@ fun HomeScreen(
         ) {
             item("composer") {
                 Column(Modifier.widthIn(max = CursorDimens.composerMaxWidth).fillMaxWidth()) {
-                    SelectorRow {
-                        // The source: a repository, or "Start from scratch" as the web composer names a chat without one.
-                        SelectorChip(state.repoLabel, onClick = { repoSheet = true }, icon = if (state.noRepo) CursorIcons.Cloud else CursorIcons.Repo, modifier = Modifier.weight(1f, fill = false))
-                        if (!state.noRepo) {
-                            // A blank ref leaves the starting point to the repository's default branch.
-                            SelectorChip(state.ref.ifBlank { "default" }, onClick = { branchSheet = true }, icon = CursorIcons.GitBranch)
-                        }
-                        SelectorChip(state.deviceLabel, onClick = { deviceSheet = true }, icon = deviceIcon(state.selectedDevice))
-                    }
+                    NewChatSelectors(state, onRepo = { repoSheet = true }, onBranch = { branchSheet = true }, onDevice = { deviceSheet = true })
                     ComposerBox(
                         value = state.prompt,
                         onValueChange = viewModel::setPrompt,
-                        placeholder = "Ask Cursor to build, fix bugs, explore",
+                        placeholder = NewChatHomeCopy.PLACEHOLDER,
                         onSend = { viewModel.launch(onOpen = onLaunchOpen) },
                         canSend = state.canLaunch,
                         isSending = state.isLaunching,
@@ -188,6 +197,7 @@ fun HomeScreen(
                         fileUploads = state.fileUploads,
                         onRetryFile = viewModel::retryFile,
                         sendHint = state.uploadHint,
+                        media = graph.media,
                         modelLabel = state.modelLabel,
                         onModel = { modelSheet = true },
                         // Plan mode is a pill beside "+" rather than a suffix on the model chip, as on cursor.com/agents.
@@ -195,31 +205,11 @@ fun HomeScreen(
                         modePill = if (state.planMode) ModePills.Pill.Plan else null,
                         onModePill = { pill -> viewModel.setPlanMode(pill == ModePills.Pill.Plan) },
                     )
-                    state.error?.let {
-                        Row(Modifier.padding(top = 8.dp, start = 2.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Icon(CursorIcons.Warning, null, tint = colors.red, modifier = Modifier.size(14.dp))
-                            Spacer(Modifier.width(6.dp))
-                            Text(it, style = type.small, color = colors.red)
-                        }
-                    }
+                    state.error?.let { ComposerErrorLine(it, state.errorAsked, onDismiss = viewModel::dismissError) }
                 }
             }
-            item("gap") { Spacer(Modifier.height(26.dp)) }
-            if (recent.isEmpty() && listState.hasLoaded) {
-                item("empty") {
-                    // A failed list request is not "no chats": say what happened (offline, rejected key, ...).
-                    val error = listState.error
-                    Text(
-                        error ?: "No chats yet",
-                        style = type.base,
-                        color = if (error != null) colors.red else colors.textQuaternary,
-                        modifier = Modifier.widthIn(max = CursorDimens.composerMaxWidth).padding(top = 24.dp, start = 7.dp, end = 7.dp),
-                    )
-                }
-            }
-            items(recent, key = { it.agent.id }) { row ->
-                RecentChatRow(row, onClick = { onOpenAgent(row) }, actions = rowActions, modifier = Modifier.widthIn(max = CursorDimens.composerMaxWidth).fillMaxWidth(), nowMillis = listState.nowMillis)
-            }
+            item("gap") { Spacer(Modifier.height(ComposerGap)) }
+            items(blocks, key = { it.key }) { block -> HomeBlockView(block, nowMillis = listState.nowMillis, actions = blockActions) }
         }
     }
 
@@ -243,6 +233,8 @@ fun HomeScreen(
             repo = state.selectedRepo,
             branches = state.branches,
             selected = state.ref,
+            fromCheckout = state.startsFromCheckout,
+            listedByAccount = state.branchesListedByAccount,
             onSelect = viewModel::setRef,
             onDismiss = { branchSheet = false },
         )
@@ -268,7 +260,7 @@ fun HomeScreen(
             unavailable = state.modelsUnavailable,
             onPlanMode = viewModel::setPlanMode,
             onAutoCreatePr = viewModel::setAutoCreatePr,
-            onRetry = viewModel::refreshModels,
+            onRefresh = viewModel::refreshModels,
             onSelect = viewModel::selectModel,
             onDismiss = { modelSheet = false },
             pinnedIds = state.pinnedModelIds,
@@ -405,9 +397,36 @@ private fun PreviewCard(row: AgentRow) {
     }
 }
 
+/**
+ * Why the last send did not go through, under the composer. A start the account was asked for and refused ([asked]
+ * set, a machine's in Extended mode) is the app's compact notice: the account's words as its title and the call under
+ * them (`Asked: POST /…/StartBackgroundComposerFromSnapshot → HTTP 400 failed_precondition`), closed with its X.
+ * Anything else is the red line it has always been.
+ */
+@Composable
+internal fun ComposerErrorLine(error: String, asked: String?, onDismiss: () -> Unit) {
+    if (asked != null) {
+        LoadNoticeCard(
+            title = error,
+            detail = "$RECORD_FALLBACK_ASKED $asked",
+            docked = false,
+            onDismiss = onDismiss,
+            titleTag = "composer-refusal-title",
+            modifier = Modifier.padding(top = 8.dp).testTag("composer-refusal"),
+        )
+        return
+    }
+    Row(Modifier.padding(top = 8.dp, start = 2.dp), verticalAlignment = Alignment.CenterVertically) {
+        Icon(CursorIcons.Warning, null, tint = CursorTheme.colors.red, modifier = Modifier.size(14.dp))
+        Spacer(Modifier.width(6.dp))
+        Text(error, style = CursorTheme.typography.small, color = CursorTheme.colors.red, modifier = Modifier.testTag("composer-error"))
+    }
+}
+
+/** The source picker: Start from scratch, the device's checkout, the recent repositories, the catalogue. Shared with the quick composer. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun RepositorySheet(
+internal fun RepositorySheet(
     repos: List<Repository>,
     recent: List<Repository>,
     selected: Repository?,
@@ -431,9 +450,7 @@ private fun RepositorySheet(
             onSelect(repo)
             dismiss()
         }
-        SheetHeader("Repository") {
-            if (loading) SpinnerRing(modifier = Modifier.padding(end = 8.dp)) else FlatIconButton(CursorIcons.Refresh, "Refresh repositories", onClick = onRefresh)
-        }
+        RefreshableSheetHeader("Repository", loading, "Refresh repositories", onRefresh, Modifier.testTag("repository-sheet-header"))
         SheetSearchField(value = filter, onValueChange = { filter = it }, placeholder = "Filter repositories")
         Spacer(Modifier.height(6.dp))
         // The list keys rows on the URL, so duplicates from the catalogue must go before they reach the LazyColumn.
@@ -445,7 +462,7 @@ private fun RepositorySheet(
         // app does not see), as does a selection the catalogue lacks: either must still show checked.
         val listedUrls = (recent + repos).map { it.url }.toSet()
         val unlisted = listOfNotNull(deviceRepo, selected?.takeIf { !noRepo }).distinctBy { it.url }.filter { it.url !in listedUrls && matches(it) }
-        LazyColumn(Modifier.fillMaxWidth().weight(1f, fill = false), contentPadding = PaddingValues(bottom = 12.dp)) {
+        FadingLazyColumn(Modifier.fillMaxWidth().weight(1f, fill = false), contentPadding = PaddingValues(bottom = 12.dp)) {
             if (device != null && filter.isEmpty()) {
                 item("device-note") {
                     Text(
@@ -522,6 +539,7 @@ internal fun SheetSearchField(value: String, onValueChange: (String) -> Unit, pl
         Modifier
             .fillMaxWidth()
             .padding(horizontal = 12.dp)
+            .stylusWriting()
             .background(colors.fillFaint, shape)
             .border(CursorDimens.hairline, colors.strokeSubtle, shape)
             .height(38.dp)

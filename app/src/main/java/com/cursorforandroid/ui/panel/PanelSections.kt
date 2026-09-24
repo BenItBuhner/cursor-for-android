@@ -1,6 +1,10 @@
 package com.cursorforandroid.ui.panel
 
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.lazy.LazyItemScope
+import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import com.cursorforandroid.domain.AgentDiffFile
 import com.cursorforandroid.domain.AgentStoreRef
@@ -56,6 +60,10 @@ interface PanelActions {
     fun openTouched(path: String)
     fun openChange(change: TranscriptContent.FileChange)
     fun closeFile()
+    /** Asks the viewer's file again after a failure, waking the agent's machine first when [wake]. */
+    fun retryFile(wake: Boolean) = Unit
+    /** Drafts a follow-up asking the agent to copy a file into the workspace (a picture the panel could not read outside it). */
+    fun askToCopyFile(path: String) = Unit
     fun openUrl(url: String)
     fun copyText(text: String, confirmation: String = "Copied")
     fun shareText(text: String)
@@ -206,11 +214,37 @@ class PanelSection(
     val expandedByDefault: Boolean = false,
     /** Runs when the section is opened: the read it needs. */
     val onOpen: (PanelActions) -> Unit = {},
-    val content: @Composable (PanelState, PanelActions) -> Unit,
+    val content: @Composable (PanelState, PanelActions) -> Unit = { _, _ -> },
+    /**
+     * In place of [content], for a section that can run long — a Project coordinator's hundreds of primaries: its rows
+     * as the panel list's own items ([sectionRow], [sectionRows]), so the list composes the ones on screen rather than
+     * all of them in the frame the sheet starts in on, which the finger dragging it would otherwise wait out. Composed
+     * while the section is open, beside the list rather than in it, so what it holds — a view model, a sheet it opened —
+     * outlives rows that scroll away; it returns the rows that go under the section's header.
+     */
+    val items: (@Composable (PanelState, PanelActions) -> (LazyListScope.() -> Unit))? = null,
 ) {
     /** [visible] for this chat, and not gated on a mode that is off: the rule the panel draws sections by. */
     fun isShown(capabilities: Capabilities, state: PanelState): Boolean =
         visible(capabilities, state) && availability(capabilities, state) !is SectionAvailability.RequiresExtended
+}
+
+/**
+ * One row of a section laid out as the panel list's items ([PanelSection.items]). Every section's rows share the one
+ * list, so [key] is unique across the panel. A row that comes in with the section opening, or with a new entry, fades in.
+ */
+fun LazyListScope.sectionRow(key: Any, contentType: Any? = null, content: @Composable () -> Unit) {
+    item(key = key, contentType = contentType) { SectionRowFrame(content) }
+}
+
+/** A run of [sectionRow]s, one for each of [rows]. */
+fun <T> LazyListScope.sectionRows(rows: List<T>, key: (T) -> Any, contentType: (T) -> Any? = { null }, content: @Composable (T) -> Unit) {
+    items(rows.size, key = { key(rows[it]) }, contentType = { contentType(rows[it]) }) { index -> SectionRowFrame { content(rows[index]) } }
+}
+
+@Composable
+private fun LazyItemScope.SectionRowFrame(content: @Composable () -> Unit) {
+    Box(Modifier.animateItem(placementSpec = null, fadeOutSpec = null)) { content() }
 }
 
 /** The panel's sections in order. Immutable; [with] returns a registry with one section replaced or appended. */

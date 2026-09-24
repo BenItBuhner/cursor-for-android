@@ -143,4 +143,14 @@ class KnownDevicesTest {
         assertThat(DeviceOption.repositoryUrl(null, null, null)).isNull()
         assertThat(DeviceOption.repositoryUrl(null, "acme", "")).isNull()
     }
+
+    /** A `repoUrl` spelled the way git keeps the remote goes out the way the desktop sends it: `https://host/owner/name`. */
+    @Test
+    fun `a worker's remote is taken in the form the create request wants`() {
+        assertThat(DeviceOption.repositoryUrl("git@github.com:acme/app.git", "acme", "app")).isEqualTo("https://github.com/acme/app")
+        assertThat(DeviceOption.repositoryUrl("https://token@github.com/acme/app.git/", "acme", "app")).isEqualTo("https://github.com/acme/app")
+        assertThat(DeviceOption.repositoryUrl("ssh://git@github.com:22/acme/app", "acme", "app")).isEqualTo("https://github.com/acme/app")
+        // A remote that names no owner and repository is no URL to send; the registered label is what is left.
+        assertThat(DeviceOption.repositoryUrl("https://github.com/acme", "acme", "app")).isEqualTo("https://github.com/acme/app")
+    }
 }

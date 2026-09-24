@@ -2,6 +2,7 @@ package com.cursorforandroid.data.api
 
 import com.cursorforandroid.BuildConfig
 import com.cursorforandroid.data.api.dto.ApiErrorBodyDto
+import com.cursorforandroid.data.auth.SessionUnavailableException
 import kotlinx.serialization.json.Json
 import okhttp3.Interceptor
 import okhttp3.MediaType.Companion.toMediaType
@@ -91,7 +92,8 @@ private const val MAX_RETRY_AFTER_SECONDS = 15 * 60L
  * connection), a `429`, a `5xx`, or a `409` about the agent's state other than it being busy — the moments right
  * after a run was cancelled, when the agent is between turns. Busy is a wait, not a retry, and is left to the caller;
  * so is anything that will not change by itself: a request the server found wrong, a rejected key, an agent that is
- * gone or archived, a spent usage limit, or being offline.
+ * gone or archived, a spent usage limit, or being offline. A name lookup that failed on a phone that is online is a
+ * resolver's moment, and passes.
  */
 fun Throwable.isTransientFailure(): Boolean {
     toCursorError()?.let { e ->
@@ -101,7 +103,7 @@ fun Throwable.isTransientFailure(): Boolean {
             else -> false
         }
     }
-    return this is IOException && this !is java.net.UnknownHostException
+    return this is IOException && (this !is java.net.UnknownHostException || DeviceNetwork.isOnline() == true)
 }
 
 /** `409` codes that describe a state another attempt will find unchanged, or one the caller handles in its own way. */
@@ -115,21 +117,102 @@ private val SETTLED_CONFLICTS = setOf("agent_busy", "agent_id_conflict", "agent_
  */
 fun Throwable.isLostReply(): Boolean = this is IOException && this !is java.net.UnknownHostException && toCursorError() == null
 
+/**
+ * True for a failure on the way to Cursor rather than an answer from it: a name lookup, a connection that would not
+ * open or that dropped, a reply cut off or too slow — and a session that could not be started for one of those. Not
+ * an answer the server gave (a Connect error, the API's error body), nor a session refused (the key, a policy).
+ */
+fun Throwable.isTransportFailure(): Boolean = when (this) {
+    is ConnectRpcException, is CursorApiException -> false
+    is SessionUnavailableException -> cause?.isTransportFailure() == true
+    is IOException -> true
+    else -> false
+}
+
 fun Throwable.userMessage(): String {
     toCursorError()?.let { e ->
         return when {
             e.isUnauthorized -> "That API key was rejected. Create one at cursor.com/dashboard/api."
-            e.isRateLimited -> "Rate limited by Cursor. Try again in a moment."
+            e.isRateLimited -> rateLimitedMessage(e)
             e.code == "agent_busy" -> "The agent is still working on the previous prompt."
             e.code == "agent_archived" -> "This agent is archived. Unarchive it to send a follow-up."
             e.code == "usage_limit_exceeded" -> "Your Cursor usage limit has been reached."
             else -> e.message
         }
     }
+    // A session that could not be started for want of a connection is said as the connection's failure.
+    if (this is SessionUnavailableException) cause?.takeIf { it.isTransportFailure() }?.let { return it.userMessage() }
+    // Offline is the phone's own word (see DeviceNetwork), never a guess from the failure: a lookup the resolver did
+    // not answer with Wi-Fi and cellular both up is not being offline. An answer from the server never is either.
+    val online = if (isTransportFailure()) DeviceNetwork.isOnline() else null
+    if (online == false) return OFFLINE
     return when (this) {
-        is java.net.UnknownHostException -> "You're offline. Check your connection."
+        is java.net.UnknownHostException -> if (online == true) LOOKUP_FAILED_ONLINE else LOOKUP_FAILED
         is java.net.SocketTimeoutException -> "Cursor took too long to respond."
+        is java.net.ConnectException -> "Cursor couldn't be reached. Check your connection."
+        is IOException -> transportWords() ?: message ?: "Something went wrong."
         else -> message ?: "Something went wrong."
+    }
+}
+
+/**
+ * A rate limit, framed by the app and carrying the server's own words and the wait it named, so the reader knows
+ * both what happened and when to try again: "Rate limited by Cursor: Too many requests from this key. Try again in
+ * 7 s." A body without words of its own — a bare `429` from a proxy — reads "Rate limited by Cursor. Try again in a moment."
+ */
+private fun Throwable.rateLimitedMessage(e: CursorApiException): String {
+    val words = e.message.trim().takeIf { it.isNotBlank() && !it.startsWith("Request failed") && !it.equals("Too Many Requests", ignoreCase = true) }
+    val wait = retryAfterMillis()?.let { "in ${((it + 999) / 1000).coerceAtLeast(1)} s" } ?: "in a moment"
+    return if (words == null) "Rate limited by Cursor. Try again $wait." else "Rate limited by Cursor: ${words.trimEnd('.')}. Try again $wait."
+}
+
+/**
+ * The connection's own failures, in plain words rather than OkHttp's: a socket reset or closed under the request, a
+ * reply cut before its status line or its end, a handshake that failed, the call's budget spent. Null for an
+ * [IOException] that carries a message of its own worth showing (an API error, a launch left unanswered).
+ */
+private fun IOException.transportWords(): String? = when (this) {
+    is java.io.InterruptedIOException -> if (message == "timeout") "Cursor took too long to respond." else null
+    is java.net.SocketException, is java.io.EOFException, is javax.net.ssl.SSLException, is okhttp3.internal.http2.StreamResetException -> CONNECTION_DROPPED
+    else -> if (message?.startsWith("unexpected end of stream") == true || message == "Socket closed" || message == "Canceled") CONNECTION_DROPPED else null
+}
+
+/** Said of a request whose reply never came back whole: the connection went, not the server. */
+const val CONNECTION_DROPPED = "The connection to Cursor dropped before it answered."
+
+/** Said of any failure to reach Cursor while the phone has no network (see [DeviceNetwork]). */
+const val OFFLINE = "You're offline. Check your connection."
+
+/** Said of a failed name lookup of Cursor's host while the phone has a network. */
+const val LOOKUP_FAILED_ONLINE = "Couldn't look up Cursor's server, though the phone is online. Try again in a moment."
+
+/** Said of a failed name lookup of Cursor's host when the phone cannot tell whether it has a network. */
+const val LOOKUP_FAILED = "Couldn't look up Cursor's server. Check your connection."
+
+/**
+ * Marks the body of every request that is not idempotent — a `POST`, a `DELETE`, anything but `GET` and `HEAD` —
+ * as one-shot, so OkHttp never sends it a second time on its own. OkHttp's transparent recovery — the same request
+ * again on a fresh connection when a pooled connection turns out dead, or the reply is cut before its status line —
+ * is what a `GET` wants and what `POST /v1/agents/{id}/runs` must never get: the runs API takes no idempotency key,
+ * so a follow-up whose reply was lost on a network handoff went out again on the retry — a second run when the
+ * server had already taken the first, or `409 agent_busy`, which queued the message to be sent once more when that
+ * run ended. Either way the agent heard it twice. Such a failure now reaches the repositories as the lost reply it
+ * is (see [isLostReply]), and they ask the server whether the message arrived before anything goes out again.
+ */
+class OneShotWritesInterceptor : Interceptor {
+    override fun intercept(chain: Interceptor.Chain): Response {
+        val request = chain.request()
+        val body = request.body
+        if (body == null || request.method == "GET" || request.method == "HEAD" || body.isOneShot()) return chain.proceed(request)
+        return chain.proceed(request.newBuilder().method(request.method, OneShot(body)).build())
+    }
+
+    private class OneShot(private val delegate: okhttp3.RequestBody) : okhttp3.RequestBody() {
+        override fun contentType() = delegate.contentType()
+        override fun contentLength() = delegate.contentLength()
+        override fun writeTo(sink: okio.BufferedSink) = delegate.writeTo(sink)
+        override fun isDuplex() = delegate.isDuplex()
+        override fun isOneShot() = true
     }
 }
 
@@ -145,7 +228,10 @@ object CursorApiFactory {
         // timeout above, sixty seconds of silence, still catches a connection that has died. At ninety seconds the
         // long chats' transcripts failed on every open, and the failure read as the chat not loading at all.
         .callTimeout(5, TimeUnit.MINUTES)
+        .dns(LastGoodDns.CURSOR)
         .addInterceptor(AuthInterceptor(apiKeyProvider))
+        // Writes go out once: a lost reply is reported, not resent behind the app's back (see the class).
+        .addInterceptor(OneShotWritesInterceptor())
         .addInterceptor(RetryInterceptor())
         .apply {
             if (BuildConfig.DEBUG) {
@@ -164,6 +250,7 @@ object CursorApiFactory {
         .connectTimeout(20, TimeUnit.SECONDS)
         .readTimeout(30, TimeUnit.SECONDS)
         .callTimeout(45, TimeUnit.SECONDS)
+        .dns(LastGoodDns.CURSOR)
         .addInterceptor { chain ->
             chain.proceed(chain.request().newBuilder().header("User-Agent", "cursor-for-android/${BuildConfig.VERSION_NAME}").build())
         }
@@ -222,6 +309,17 @@ object CursorApiFactory {
      * hourly and a `429` retried in seconds only spends more of it; the repositories behind these calls have their
      * own schedules.
      */
+    /**
+     * The client for a cloud agent's cursor-server (see [com.cursorforandroid.data.api.CursorServerApi]): a plain
+     * client with no API-key interceptor — the request carries only the connection token and the headers the server
+     * named — and bounded timeouts, since a picture off the machine should not hang a viewer.
+     */
+    fun cursorServerClient(): OkHttpClient = OkHttpClient.Builder()
+        .connectTimeout(20, TimeUnit.SECONDS)
+        .readTimeout(30, TimeUnit.SECONDS)
+        .callTimeout(60, TimeUnit.SECONDS)
+        .build()
+
     fun gitHubClient(): OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(20, TimeUnit.SECONDS)
         .readTimeout(30, TimeUnit.SECONDS)

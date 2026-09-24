@@ -17,7 +17,6 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -57,6 +56,7 @@ import com.cursorforandroid.domain.ContextEntry
 import com.cursorforandroid.domain.MediaRef
 import com.cursorforandroid.domain.RecentContextFile
 import com.cursorforandroid.ui.components.CursorIcons
+import com.cursorforandroid.ui.components.FadingLazyColumn
 import com.cursorforandroid.ui.components.HairlineDivider
 import com.cursorforandroid.ui.components.LocalMarkdownMedia
 import com.cursorforandroid.ui.components.MarkdownAppearance
@@ -85,7 +85,7 @@ internal fun ProjectTabContent(state: PanelState, actions: PanelActions, modifie
     val allFiles = state.context.allFiles
     BoxWithConstraints(modifier.fillMaxSize()) {
         val inset = contentInset(maxWidth)
-        LazyColumn(Modifier.fillMaxSize().testTag(if (allFiles) "all-files-tab" else "project-notes-tab"), contentPadding = PaddingValues(bottom = 24.dp)) {
+        FadingLazyColumn(Modifier.fillMaxSize().testTag(if (allFiles) "all-files-tab" else "project-notes-tab"), contentPadding = PaddingValues(bottom = 24.dp)) {
             item("header") {
                 // The web's header: the icon 20px outside the content column, the name on its edge, the toggle at the end.
                 Row(Modifier.fillMaxWidth().padding(start = (inset - 20.dp).coerceAtLeast(8.dp), end = (inset - 8.dp).coerceAtLeast(8.dp), top = 12.dp).heightIn(min = 32.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -484,7 +484,7 @@ private fun DocumentBody(document: ContextDocument, source: Boolean) {
         TextFile(document.text, truncated = false, modifier = Modifier.testTag("document-source"))
     } else {
         // A document runs to the web's 16px inset, unlike the notes under the Project's header.
-        LazyColumn(Modifier.fillMaxSize().testTag("document-preview"), contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 14.dp, bottom = 24.dp)) {
+        FadingLazyColumn(Modifier.fillMaxSize().testTag("document-preview"), contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 14.dp, bottom = 24.dp)) {
             item { MarkdownText(document.text, style = NotesText, appearance = MarkdownAppearance.Notes.copy(h1Scale = 2f)) }
         }
     }

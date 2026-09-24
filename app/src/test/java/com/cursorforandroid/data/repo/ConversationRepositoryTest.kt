@@ -1,5 +1,9 @@
 package com.cursorforandroid.data.repo
 
+import androidx.datastore.core.DataStore
+import androidx.datastore.preferences.core.PreferenceDataStoreFactory
+import androidx.datastore.preferences.core.Preferences
+import androidx.datastore.preferences.preferencesDataStoreFile
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.cursorforandroid.data.FakeCursorApi
@@ -32,7 +36,9 @@ import com.cursorforandroid.domain.ToolKind
 import com.cursorforandroid.domain.ToolPayload
 import com.cursorforandroid.domain.UserMessage
 import com.cursorforandroid.util.AppClock
+import com.cursorforandroid.util.HeldDispatcher
 import com.google.common.truth.Truth.assertThat
+import com.google.common.truth.Truth.assertWithMessage
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -41,6 +47,8 @@ import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -53,6 +61,7 @@ import org.junit.Test
 import org.junit.rules.TemporaryFolder
 import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
+import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
@@ -306,6 +315,50 @@ class ConversationRepositoryTest {
 
     private fun ConversationState.types() = items.map { it::class.simpleName }
 
+    /**
+     * Every frame [conversations] publishes for [agentId] from now on, subscribed before the caller's next line runs.
+     * [assertNoEndedRunStreaming] is the rule #237/#241 pinned read the other way round: no frame shows a run's footer
+     * while the stream on that run is still on — the record's footer and the stream's end arrive in one frame.
+     * Main's CI at `adcd808` caught a frame that broke it, once, in the test below; a sampled `state.value` can miss it.
+     */
+    private inner class Frames(conversations: ConversationRepository, private val agentId: String) {
+        /** Each frame with the agent row's word at the instant it was published: whether the row ran. */
+        val frames = java.util.concurrent.CopyOnWriteArrayList<Pair<ConversationState, Boolean?>>()
+        private val job = scope.launch(start = kotlinx.coroutines.CoroutineStart.UNDISPATCHED) { conversations.state(agentId).collect { frames += it to agents.agent(agentId)?.isRunning } }
+
+        fun stop() = job.cancel()
+
+        /**
+         * No frame shows [runId]'s footer with the stream on it still on; and the first frame that shows the footer
+         * finds the row no longer running — the row is patched before the frame that ends the stream (#237/#241),
+         * which `LiveFinishFaultsTest` caught the merge-frame version of on the follow-up PR's first CI run.
+         */
+        fun assertNoEndedRunStreaming(runId: String) {
+            var first = true
+            frames.forEachIndexed { i, (f, rowRunning) ->
+                val footer = f.items.any { it is RunFooter && it.runId == runId }
+                assertWithMessage("frame $i shows $runId's footer with the stream still on: streaming=${f.isStreaming} status=${f.runStatus} items=${f.types()}").that(footer && f.isStreaming && f.activeRunId == runId).isFalse()
+                if (footer && first) {
+                    first = false
+                    assertWithMessage("frame $i, the first with $runId's footer, finds the row still running").that(rowRunning).isFalse()
+                }
+            }
+        }
+
+        /**
+         * Every frame that shows [runId]'s footer shows [reply] above it: the frame that first says the run is over
+         * carries the reply it ended on. Main's CI on #281's head (`e24ef7f`) caught the footer a frame ahead of the
+         * reply, once, in `revalidating an open chat swaps a fragment…`.
+         */
+        fun assertEndedRunWhole(runId: String, reply: String) {
+            frames.forEachIndexed { i, (f, _) ->
+                val footer = f.items.indexOfFirst { it is RunFooter && it.runId == runId }
+                if (footer < 0) return@forEachIndexed
+                assertWithMessage("frame $i shows $runId's footer without its reply: items=${f.types()}").that(f.items.take(footer).count { it is AssistantMessage && it.markdown == reply }).isEqualTo(1)
+            }
+        }
+    }
+
     @Test
     fun `a transcript saved earlier renders before the network and is then revalidated`() = runBlocking<Unit> {
         api.addIdleAgent("bc-1", "Agent", "run-1", result = "Second reply")
@@ -418,26 +471,35 @@ class ConversationRepositoryTest {
         api.agents["bc-1"] = api.agents.getValue("bc-1").copy(status = "IDLE")
         api.transcripts["bc-1"] = transcript("user_message" to "Ship it", "assistant_message" to "Shipped.")
 
-        // Reopened, the reply and the footer come from the transcript. The run's log is asked for again — the story
-        // followed so far was no replacement for it — but it cannot be read to its end yet.
+        // Reopened moments later, the chat stands as it was left and nothing is read again but the run it was
+        // following: its stream is opened once more, and the transcript is not fetched (see REOPEN_FRESH_MS).
+        val fetches = api.conversationCalls
         conversations.attach("bc-1")
-        awaitUntil { !conversations.state("bc-1").value.isLoading && conversations.state("bc-1").value.items.lastOrNull() is RunFooter }
-        val reopened = conversations.state("bc-1").value
-        assertThat(reopened.items.map { it::class.simpleName }).containsExactly("UserMessage", "AssistantMessage", "RunFooter").inOrder()
-        assertThat(reopened.items.filterIsInstance<AssistantMessage>().single().markdown).isEqualTo("Shipped.")
-        assertThat(reopened.isStreaming).isFalse()
-        assertThat(reopened.runStatus).isEqualTo(RunStatus.FINISHED)
         awaitUntil { streamer.connections.count { it == "run-1" } == 2 }
+        awaitUntil { conversations.state("bc-1").value.let { it.isStreaming && it.items.any { item -> item is ActivityGroup } } }
+        assertThat(api.conversationCalls).isEqualTo(fetches)
+        assertThat(conversations.state("bc-1").value.items.map { it::class.simpleName }).containsExactly("UserMessage", "ActivityGroup").inOrder()
 
-        // Once the retained log reads to its end, the complete trace takes the reply's place. Reading it is not
-        // news about the agent: the row keeps the timestamp the server gave it.
+        // The stream replays the retained log to its end: the reply and the footer come from it, the run reads finished.
         streamer.emit("run-1", RunStreamEvent.Assistant("Shipped."))
         streamer.emit("run-1", RunStreamEvent.Result("run-1", RunStatus.FINISHED, "Shipped.", 30_000, null))
         streamer.emit("run-1", RunStreamEvent.Done)
-        awaitUntil { conversations.state("bc-1").value.items.any { it is ActivityGroup } }
+        awaitUntil { !conversations.state("bc-1").value.isStreaming && conversations.state("bc-1").value.items.lastOrNull() is RunFooter }
         val traced = conversations.state("bc-1").value
         assertThat(traced.items.map { it::class.simpleName }).containsExactly("UserMessage", "ActivityGroup", "AssistantMessage", "RunFooter").inOrder()
         assertThat(traced.items.filterIsInstance<AssistantMessage>().single().markdown).isEqualTo("Shipped.")
+        assertThat(traced.runStatus).isEqualTo(RunStatus.FINISHED)
+        assertThat(api.conversationCalls).isEqualTo(fetches)
+
+        // Left again and reopened after the fresh window, the chat is read again: the transcript's copy of the
+        // reply stands with the trace, once, and the row keeps the timestamp the server gave it.
+        conversations.detach("bc-1")
+        now += 60_000
+        conversations.attach("bc-1")
+        awaitUntil { api.conversationCalls > fetches && !conversations.state("bc-1").value.isLoading }
+        val reread = conversations.state("bc-1").value
+        assertThat(reread.items.map { it::class.simpleName }).containsExactly("UserMessage", "ActivityGroup", "AssistantMessage", "RunFooter").inOrder()
+        assertThat(reread.items.filterIsInstance<AssistantMessage>().single().markdown).isEqualTo("Shipped.")
         delay(100)
         assertThat(agents.agent("bc-1")!!.updatedAtMillis).isEqualTo(parseIsoMillis(api.agents.getValue("bc-1").updatedAt))
     }
@@ -464,9 +526,12 @@ class ConversationRepositoryTest {
         retainWholeRun("run-1", "Shipped.")
 
         conversations.attach("bc-1")
-        awaitUntil { conversations.state("bc-1").value.items.lastOrNull() is RunFooter }
+        // The transcript, the run page and the replayed log land in whichever order the scheduler has them, and
+        // each is shown as it lands: with the transcript ahead of the replay the turn reads prompt, reply, footer
+        // for a moment, its trace pending (the same footer this wait used to stop at — the flake in a full run).
+        // Settled is when the one trace shown is on screen and nothing is pending.
+        awaitUntil { conversations.state("bc-1").value.let { !it.isLoading && !it.isStreaming && it.traceStatus.pending == 0 && it.traceStatus.shown == 1 && it.items.lastOrNull() is RunFooter } }
         val state = conversations.state("bc-1").value
-        assertThat(state.isLoading).isFalse()
         assertThat(state.isStreaming).isFalse()
         assertThat(state.runStatus).isEqualTo(RunStatus.FINISHED)
         // Not the two items the screen left with: the edit that followed, the final reply and the footer are all there.
@@ -474,10 +539,64 @@ class ConversationRepositoryTest {
         assertThat(state.items.filterIsInstance<ActivityGroup>().single().calls.map { it.callId }).containsExactly("run-1-c1", "run-1-c2").inOrder()
         assertThat(state.items.filterIsInstance<AssistantMessage>().single().markdown).isEqualTo("Shipped.")
         assertThat((state.items.last() as RunFooter).durationMs).isEqualTo(30_000L)
-        // The whole story is kept for the next open, and the transcript's copy of the reply too.
+        // The whole story is kept for the next open, and the transcript's copy of the reply too. The two writes are
+        // the load's and the replay's, in either order.
         awaitUntil { traces.read("bc-1")["run-1"] != null }
         assertThat(traces.read("bc-1").getValue("run-1").items.last()).isInstanceOf(RunFooter::class.java)
-        assertThat(cache.read("bc-1")!!.value.messages.map { it.text }).containsExactly("Ship it", "Shipped.").inOrder()
+        awaitUntil { cache.read("bc-1")?.value?.messages?.map { it.text } == listOf("Ship it", "Shipped.") }
+    }
+
+    /**
+     * The chat's load ends by reading the agent's record and its latest run (`AgentRepository.loadDetail`), and its
+     * run page is folded into the row when it lands. Either read can be in flight when the run finishes on its
+     * stream — a phone's round trip is long, a turn about to end is short — and both read the run as `RUNNING`, the
+     * record a moment behind the stream. Landing after the hub had settled the row, either put it back to running
+     * for the finished run: the spinner back on a finished chat until the next refresh's verification, and a queued
+     * message waiting its whole busy recheck on it. The hub now tells the list which run it saw end, and every run
+     * record reaches a row through that memory (`AgentRepository.known`).
+     */
+    @Test
+    fun `a record read that predates the run's finish does not put the row back to running`() = runBlocking<Unit> {
+        api.addRunningAgent("bc-1", "Agent", "run-1")
+        api.transcripts["bc-1"] = transcript("user_message" to "Ship it")
+        agents.refresh()
+        val conversations = repository()
+        // Held from before the open: the load's run page and its record read are in flight across the finish.
+        val runPage = CompletableDeferred<Unit>()
+        val detail = CompletableDeferred<Unit>()
+        api.runsGate = runPage
+        api.getAgentGate = detail
+        conversations.attach("bc-1")
+        awaitUntil { api.listRunsCalls == 1 }
+        // The run ends on its stream while the reads are out; the monitor's subscription is what follows it here.
+        val monitor = scope.launch { hub.snapshots("bc-1", "run-1").collect { } }
+        awaitUntil { streamer.connections.contains("run-1") }
+        now += 30_000
+        retainWholeRun("run-1", "Shipped.")
+        awaitUntil { agents.agent("bc-1")!!.runStatus == RunStatus.FINISHED }
+        val settled = agents.agent("bc-1")!!
+        assertThat(settled.durationMs).isEqualTo(30_000L)
+
+        // The run page lands, RUNNING as it was read: the row stays finished, with what the finish gave it.
+        runPage.complete(Unit)
+        api.runsGate = null
+        awaitUntil { !conversations.state("bc-1").value.isLoading }
+        assertThat(agents.agent("bc-1")!!.runStatus).isEqualTo(RunStatus.FINISHED)
+        assertThat(agents.agent("bc-1")!!.isRunning).isFalse()
+        // Then the record read, the same run still RUNNING in it: the same.
+        awaitUntil { api.getAgentCalls >= 1 }
+        detail.complete(Unit)
+        api.getAgentGate = null
+        awaitUntil { agents.agent("bc-1")!!.lifecycle == com.cursorforandroid.domain.AgentLifecycle.ACTIVE }
+        val row = agents.agent("bc-1")!!
+        assertThat(row.runStatus).isEqualTo(RunStatus.FINISHED)
+        assertThat(row.isRunning).isFalse()
+        assertThat(row.latestRunId).isEqualTo("run-1")
+        assertThat(row.durationMs).isEqualTo(30_000L)
+        assertThat(row.summary).isEqualTo("Shipped.")
+        // The chat itself reads finished too, and whole.
+        awaitUntil { conversations.state("bc-1").value.let { it.runStatus == RunStatus.FINISHED && it.items.lastOrNull() is RunFooter } }
+        monitor.cancel()
     }
 
     @Test
@@ -488,8 +607,11 @@ class ConversationRepositoryTest {
         val conversations = repository()
         conversations.attach("bc-1")
         awaitUntil { conversations.state("bc-1").value.isStreaming }
-        // The live notification keeps the stream open after the screen leaves.
-        val monitor = scope.launch { hub.snapshots("bc-1", "run-1").collect { } }
+        // The live notification keeps the stream open after the screen leaves: subscribed — its first snapshot in
+        // hand — before the screen goes, so the hub's grace period is never what keeps the one connection alive.
+        val subscribed = CompletableDeferred<Unit>()
+        val monitor = scope.launch { hub.snapshots("bc-1", "run-1").collect { subscribed.complete(Unit) } }
+        subscribed.await()
         conversations.detach("bc-1")
         delay(150)
         retainWholeRun("run-1", "Shipped.")
@@ -511,7 +633,9 @@ class ConversationRepositoryTest {
         api.conversationGate = CompletableDeferred()
         val next = repository()
         next.attach("bc-1")
-        awaitUntil { next.state("bc-1").value.items.lastOrNull() is RunFooter }
+        // The disk copy renders in two steps — the transcript and its runs, then the traces from their own files —
+        // so the wait is for the trace it asserts, not for the footer the first step already shows.
+        awaitUntil { next.state("bc-1").value.let { s -> s.items.lastOrNull() is RunFooter && s.items.any { it is ActivityGroup } } }
         val fromDisk = next.state("bc-1").value
         assertThat(fromDisk.types()).containsExactly("UserMessage", "ActivityGroup", "AssistantMessage", "RunFooter").inOrder()
         assertThat(fromDisk.items.filterIsInstance<ActivityGroup>().single().calls.map { it.callId }).containsExactly("run-1-c1", "run-1-c2").inOrder()
@@ -540,11 +664,18 @@ class ConversationRepositoryTest {
         assertThat(api.conversationCalls).isEqualTo(1)
 
         // The connection drops after the first tool call; the hub polls, and the run is finished by then.
+        val frames = Frames(conversations, "bc-1")
         streamFirstHalf("run-1")
         awaitUntil { conversations.state("bc-1").value.items.any { it is ActivityGroup } }
         api.runs["run-1"] = api.runs.getValue("run-1").copy(status = "FINISHED", result = "Shipped.", durationMs = 30_000)
         streamer.emit("run-1", RunStreamEvent.Done)
-        awaitUntil { conversations.state("bc-1").value.items.lastOrNull() is RunFooter }
+        // The footer and the stream's end come in one frame, whichever of the hub's poll and a list refresh brings the
+        // finished record first: waited for as a pair, and every frame between checked for the pair's halves apart.
+        awaitUntil { conversations.state("bc-1").value.let { it.items.lastOrNull() is RunFooter && !it.isStreaming } }
+        frames.stop()
+        frames.assertNoEndedRunStreaming("run-1")
+        // Whichever of the hub's two listeners publishes first, the footer's first frame has the reply above it.
+        frames.assertEndedRunWhole("run-1", "Shipped.")
         val polled = conversations.state("bc-1").value
         assertThat(polled.isStreaming).isFalse()
         // The outcome is shown right away — final reply included — even though the edit in between never arrived.
@@ -567,6 +698,134 @@ class ConversationRepositoryTest {
         assertThat(replayed.items.filterIsInstance<AssistantMessage>().single().markdown).isEqualTo("Shipped.")
         assertThat(api.conversationCalls).isEqualTo(2)
         awaitUntil { traces.read("bc-1")["run-1"]?.items?.filterIsInstance<ActivityGroup>()?.single()?.calls?.size == 2 }
+    }
+
+    /**
+     * The ordering main's CI hit once (`adcd808`, 1 of 2046): the run list reports the followed run finished before
+     * its stream has said so — a revalidation landing while the connection is only dropped — and the merge drew the
+     * record's footer under the run in one frame and turned the stream off in the next. Forced here: the record is
+     * finished and merged by a revalidation while the stream is still open; the frame that first carries the footer
+     * must be the frame the stream ends in, and the run's status must be the record's in that same frame.
+     */
+    @Test
+    fun `a run list that reports the followed run finished before its stream does ends the follow in the frame that shows the footer`() = runBlocking<Unit> {
+        api.addRunningAgent("bc-1", "Agent", "run-1")
+        api.transcripts["bc-1"] = transcript("user_message" to "Ship it")
+        agents.refresh()
+        val conversations = repository()
+        conversations.attach("bc-1")
+        awaitUntil { !conversations.state("bc-1").value.isLoading && conversations.state("bc-1").value.isStreaming }
+        streamFirstHalf("run-1")
+        awaitUntil { conversations.state("bc-1").value.items.any { it is ActivityGroup } }
+        val frames = Frames(conversations, "bc-1")
+        // The server has the run over; the stream has not said so (the connection is merely quiet).
+        now += 60_000
+        finishOnServer("bc-1", "run-1", "Shipped.", at = "2026-04-13T19:00:00.000Z")
+        conversations.revalidate("bc-1")
+        awaitUntil { conversations.state("bc-1").value.items.any { it is RunFooter && it.runId == "run-1" } }
+        frames.stop()
+        frames.assertNoEndedRunStreaming("run-1")
+        // The run list may land before the transcript (see the pin below): either way the footer comes with the reply.
+        frames.assertEndedRunWhole("run-1", "Shipped.")
+        val settled = conversations.state("bc-1").value
+        assertThat(settled.isStreaming).isFalse()
+        assertThat(settled.isReconnecting).isFalse()
+        assertThat(settled.runStatus).isEqualTo(RunStatus.FINISHED)
+        // The story the stream told stands under the run, with the record's footer and the transcript's reply.
+        assertThat(settled.items.filterIsInstance<ActivityGroup>().single().calls).hasSize(1)
+        assertThat(settled.items.filterIsInstance<AssistantMessage>().single().markdown).isEqualTo("Shipped.")
+        // The stream's own late word changes nothing.
+        streamer.emit("run-1", RunStreamEvent.Done)
+        delay(200)
+        assertThat(conversations.state("bc-1").value.isStreaming).isFalse()
+        assertThat(conversations.state("bc-1").value.types()).isEqualTo(settled.types())
+    }
+
+    /**
+     * The ordering main's CI hit once on #281's head (`e24ef7f`, shard 2/5) in `revalidating an open chat swaps a
+     * fragment…`: the hub reports a run's end to two listeners at once — the follow's own collector and the
+     * repository's finish listener — and the finish listener published first. Its frame marked the run's record over
+     * under the story the stream had told before it broke: the footer under the tool call, the final reply the run
+     * ended on drawn a frame later, above it. Forced here: the follow's collector is held while the finish lands, so
+     * the finish listener's frame is the first to show the run over; it must carry the reply.
+     */
+    @Test
+    fun `a finish the hub reports before the follow applies it shows the run's reply in the frame that first shows its footer`() = runBlocking<Unit> {
+        api.addRunningAgent("bc-1", "Agent", "run-1")
+        api.transcripts["bc-1"] = transcript("user_message" to "Ship it")
+        agents.refresh()
+        val follow = HeldDispatcher()
+        val conversations = ConversationRepository(
+            session, agents, prefs, hub, attachments, cache, traces,
+            isForeground = { true }, prefetchLimit = 0, prefetchSpacingMs = 0, scope = scope,
+            entryDispatcher = follow.dispatcher,
+        )
+        try {
+            conversations.attach("bc-1")
+            awaitUntil { !conversations.state("bc-1").value.isLoading && conversations.state("bc-1").value.isStreaming }
+            streamFirstHalf("run-1")
+            awaitUntil { conversations.state("bc-1").value.items.any { it is ActivityGroup } }
+            val frames = Frames(conversations, "bc-1")
+            // The connection drops after the first tool call; the run is over by its record, and the follow is held.
+            follow.hold = true
+            api.runs["run-1"] = api.runs.getValue("run-1").copy(status = "FINISHED", result = "Shipped.", durationMs = 30_000)
+            streamer.emit("run-1", RunStreamEvent.Done)
+            awaitUntil { conversations.state("bc-1").value.items.any { it is RunFooter && it.runId == "run-1" } }
+            assertWithMessage("the follow's collector was held while the finish landed").that(follow.heldCount).isAtLeast(1)
+            val first = conversations.state("bc-1").value
+            assertThat(first.types()).containsExactly("UserMessage", "ActivityGroup", "AssistantMessage", "RunFooter").inOrder()
+            assertThat(first.items.filterIsInstance<AssistantMessage>().single().markdown).isEqualTo("Shipped.")
+            assertThat(first.items.filterIsInstance<ActivityGroup>().single().calls).hasSize(1)
+            assertThat(first.isStreaming).isFalse()
+            assertThat(first.runStatus).isEqualTo(RunStatus.FINISHED)
+            // The follow's own frame, landing after, is the same frame.
+            follow.release()
+            awaitUntil { follow.heldCount == 0 }
+            delay(200)
+            assertThat(conversations.state("bc-1").value.types()).isEqualTo(first.types())
+            frames.stop()
+            frames.assertEndedRunWhole("run-1", "Shipped.")
+            frames.assertNoEndedRunStreaming("run-1")
+        } finally {
+            follow.close()
+        }
+    }
+
+    /**
+     * The same frame from a revalidation whose run list lands before its transcript (see [ConversationRepository]'s
+     * `publishRunsFirst`): the page shows the followed run over and ends the follow, its story kept, under the
+     * record's footer — while the reply is in the transcript still on its way (megabytes, for a long chat on a cell
+     * connection). The run's record carries the reply it ended on; the frame shows it, and the transcript's copy takes
+     * over without a second one.
+     */
+    @Test
+    fun `a run list that lands before the transcript shows the followed run's reply from its record with the footer`() = runBlocking<Unit> {
+        api.addRunningAgent("bc-1", "Agent", "run-1")
+        api.transcripts["bc-1"] = transcript("user_message" to "Ship it")
+        agents.refresh()
+        val conversations = repository()
+        conversations.attach("bc-1")
+        awaitUntil { !conversations.state("bc-1").value.isLoading && conversations.state("bc-1").value.isStreaming }
+        streamFirstHalf("run-1")
+        awaitUntil { conversations.state("bc-1").value.items.any { it is ActivityGroup } }
+        val frames = Frames(conversations, "bc-1")
+        now += 60_000
+        finishOnServer("bc-1", "run-1", "Shipped.", at = "2026-04-13T19:00:00.000Z")
+        api.conversationGate = CompletableDeferred()
+        conversations.revalidate("bc-1")
+        awaitUntil { conversations.state("bc-1").value.items.any { it is RunFooter && it.runId == "run-1" } }
+        val runsFirst = conversations.state("bc-1").value
+        assertThat(runsFirst.isLoading).isTrue()
+        assertThat(runsFirst.types()).containsExactly("UserMessage", "ActivityGroup", "AssistantMessage", "RunFooter").inOrder()
+        assertThat(runsFirst.items.filterIsInstance<AssistantMessage>().single().markdown).isEqualTo("Shipped.")
+        assertThat(runsFirst.isStreaming).isFalse()
+        api.conversationGate!!.complete(Unit)
+        awaitUntil { !conversations.state("bc-1").value.isLoading }
+        delay(150)
+        frames.stop()
+        frames.assertEndedRunWhole("run-1", "Shipped.")
+        frames.assertNoEndedRunStreaming("run-1")
+        assertThat(conversations.state("bc-1").value.types()).isEqualTo(runsFirst.types())
     }
 
     @Test
@@ -801,8 +1060,15 @@ class ConversationRepositoryTest {
         assertThat(degraded.items.filterIsInstance<UserMessage>().map { it.text }).containsExactly("Prompt 1", "Prompt 2").inOrder()
         assertThat(degraded.activeRunId).isEqualTo("run-2")
         assertThat(degraded.runStatus).isEqualTo(RunStatus.FINISHED)
+        // Said under the transcript in the server's words, with the way to ask again, rather than swallowed.
+        assertThat(degraded.transcriptError).isEqualTo("Try again later.")
         // And the degraded shape is never the one written back.
         assertThat(cache.read("bc-1")!!.value.runs.map { it.id }).containsExactly("run-1", "run-2")
+
+        // The next read that goes through clears the word.
+        api.failListRuns = null
+        conversations.reload("bc-1")
+        awaitUntil { !state(conversations).isLoading && state(conversations).transcriptError == null }
     }
 
     @Test
@@ -1081,7 +1347,8 @@ class ConversationRepositoryTest {
 
         assertThat(traces.read("bc-1").keys).containsExactly("run-1", "run-2", "run-3")
         val files = folder.root.walkTopDown().filter { it.isFile && it.path.contains("/traces/") }.map { it.name }.toList()
-        assertThat(files).containsExactly("run-1.json", "run-2.json", "run-3.json", "_index.json")
+        // And the marker that the chat was read, which keeps it past chats whose traces only the run monitor wrote.
+        assertThat(files).containsExactly("run-1.json", "run-2.json", "run-3.json", "_index.json", ".opened")
         // One write per run and one per index update: nothing was rewritten wholesale.
         assertThat(traceWrites.get()).isEqualTo(6)
     }
@@ -1164,20 +1431,22 @@ class ConversationRepositoryTest {
         streamer.emit("run-1", RunStreamEvent.Assistant("Working"))
         awaitUntil { conversations.state("bc-1").value.items.any { it is AssistantMessage } }
 
-        // The screen stopped: nothing publishes into it, and the fragment the stream had gone with the follow.
+        // The screen stopped: nothing publishes into it — the story the stream had told stands as it was (the frame
+        // the reader comes back to is not blank), and what the run says meanwhile waits for the resume.
         conversations.pause("bc-1")
         awaitUntil { !conversations.state("bc-1").value.isStreaming }
-        assertThat(conversations.state("bc-1").value.items.filterIsInstance<AssistantMessage>()).isEmpty()
+        assertThat(conversations.state("bc-1").value.items.filterIsInstance<AssistantMessage>().single().markdown).isEqualTo("Working")
         streamer.emit("run-1", RunStreamEvent.Assistant(" on it."))
         delay(100)
-        assertThat(conversations.state("bc-1").value.items.filterIsInstance<AssistantMessage>()).isEmpty()
+        assertThat(conversations.state("bc-1").value.items.filterIsInstance<AssistantMessage>().single().markdown).isEqualTo("Working")
 
-        // Back on screen well inside the revalidate window: the run is followed again without waiting for a fetch.
+        // Back on screen well inside the revalidate window: the run is followed again without waiting for a fetch,
+        // and what it said meanwhile joins the story kept — once, in the same message.
         val fetches = api.conversationCalls
         conversations.resume("bc-1")
         awaitUntil { conversations.state("bc-1").value.isStreaming }
         assertThat(api.conversationCalls).isEqualTo(fetches)
-        awaitUntil { conversations.state("bc-1").value.items.any { it is AssistantMessage } }
+        awaitUntil { conversations.state("bc-1").value.items.filterIsInstance<AssistantMessage>().any { it.markdown == "Working on it." } }
         assertThat(conversations.state("bc-1").value.items.filterIsInstance<AssistantMessage>().single().markdown)
             .isEqualTo("Working on it.")
     }
@@ -1229,21 +1498,194 @@ class ConversationRepositoryTest {
         val conversations = repository()
         conversations.attach("bc-1")
         awaitUntil { conversations.state("bc-1").value.isStreaming }
+        // Every state the screen would have seen from here, not the one a poll happens to catch: the run's end must
+        // read as one step — the stream over and the turn over in the same frame — with nothing active after it.
+        // The hub used to publish the finished snapshot before it patched the row idle; the collector, on its own
+        // thread, read the row still running and kept the chat at RUNNING for the six seconds its next-run looks
+        // took (a loaded CI runner: 35156980926). The hub now patches the row first, so no frame can show that.
+        val frames = CopyOnWriteArrayList<Pair<Boolean, RunStatus?>>()
+        val recorder = scope.launch { conversations.state("bc-1").collect { frames += it.isStreaming to it.runStatus } }
 
         // The record starts answering with a status this build has never heard of, and the stream is gone for good.
         api.runs["run-1"] = api.runs.getValue("run-1").copy(status = "HIBERNATING")
         streamer.emit("run-1", RunStreamEvent.Error(RunStreamEvent.Error.STREAM_EXPIRED, "This run's live stream has expired."))
         streamer.emit("run-1", RunStreamEvent.Done)
-        awaitUntil { !conversations.state("bc-1").value.isStreaming }
-        assertThat(conversations.state("bc-1").value.runStatus?.isActive).isNotEqualTo(true)
+        awaitUntil { frames.any { (streaming, _) -> !streaming } }
+        val ended = frames.indexOfFirst { (streaming, _) -> !streaming }
+        assertWithMessage("frames from the stream's end: ${frames.drop(ended)}").that(frames.drop(ended).none { (_, status) -> status?.isActive == true }).isTrue()
+        assertThat(frames[ended].second).isEqualTo(RunStatus.UNKNOWN)
+        // The row agrees, and the list remembers how the run ended.
+        assertThat(agents.agent("bc-1")!!.isRunning).isFalse()
+        assertThat(agents.endedStatus("bc-1", "run-1")).isEqualTo(RunStatus.UNKNOWN)
 
         // A reopen reads the same record and still shows the turn as over, with a footer closing it.
         now += 60_000
         conversations.revalidate("bc-1")
-        awaitUntil { conversations.state("bc-1").value.items.lastOrNull() is RunFooter }
+        // The footer and the end of streaming are published a beat apart; the wait covers both.
+        awaitUntil { conversations.state("bc-1").value.let { it.items.lastOrNull() is RunFooter && !it.isStreaming } }
         val reopened = conversations.state("bc-1").value
         assertThat(reopened.isStreaming).isFalse()
         assertThat((reopened.items.last() as RunFooter).status).isEqualTo(RunStatus.UNKNOWN)
+        recorder.cancel()
+        assertThat(frames.drop(ended).none { (_, status) -> status?.isActive == true }).isTrue()
+    }
+
+    /**
+     * The other way a load can meet a run that ended: the stream is still being followed — the connection dropped
+     * and the hub is between attempts, or the connection is open and silent — and the run page says the run is over.
+     * The load keeps the stream's word for the status ("a stream already open on the latest run keeps its word"),
+     * then stops following because the server says the run is over, and stopping only turned the stream off: the
+     * frame read `isStreaming=false, runStatus=RUNNING`, and with the collector gone nothing corrected it until the
+     * next load (a foreground return five seconds on at the soonest, or a reopen) — the Stop button and "Working…"
+     * over the reply and footer. On the phone: a network switch mid-turn, the turn ending while the connection is
+     * down, the app brought back. The frame that stops following now settles the status with it.
+     */
+    @Test
+    fun `a load that finds the followed run over by the server's account ends the turn in the frame that stops the stream`() = runBlocking<Unit> {
+        api.addRunningAgent("bc-1", "Agent", "run-1")
+        api.transcripts["bc-1"] = transcript("user_message" to "Ship it")
+        agents.refresh()
+        // The first connection drops after the first half; the hub reads the record (still running) and comes back
+        // with a resumed connection that has nothing more to say.
+        streamer.dropNextConnection("run-1", afterEvents = 3)
+        streamFirstHalf("run-1")
+        val conversations = repository()
+        conversations.attach("bc-1")
+        awaitUntil { conversations.state("bc-1").value.let { !it.isLoading && it.isStreaming && it.items.any { item -> item is ActivityGroup } } }
+        awaitUntil { streamer.connections.count { it == "run-1" } == 2 }
+        assertThat(conversations.state("bc-1").value.runStatus).isEqualTo(RunStatus.RUNNING)
+        val frames = CopyOnWriteArrayList<Pair<Boolean, RunStatus?>>()
+        val recorder = scope.launch { conversations.state("bc-1").collect { frames += it.isStreaming to it.runStatus } }
+
+        // The run ends on the server while the resumed connection stays silent; the app comes back to the foreground.
+        finishOnServer("bc-1", "run-1", "Shipped.", at = "2026-04-13T19:00:00.000Z")
+        now += 60_000
+        conversations.revalidate("bc-1")
+        awaitUntil { conversations.state("bc-1").value.let { !it.isLoading && !it.isStreaming } }
+        awaitUntil { frames.any { (streaming, _) -> !streaming } }
+        val ended = frames.indexOfFirst { (streaming, _) -> !streaming }
+        assertWithMessage("frames: $frames").that(frames[ended].second).isEqualTo(RunStatus.FINISHED)
+        assertThat(frames.drop(ended).none { (_, status) -> status?.isActive == true }).isTrue()
+        val settled = conversations.state("bc-1").value
+        assertThat(settled.runStatus).isEqualTo(RunStatus.FINISHED)
+        assertThat(settled.items.lastOrNull()).isInstanceOf(RunFooter::class.java)
+        assertThat(agents.agent("bc-1")!!.isRunning).isFalse()
+        // And it stays so: the released stream's late word, if any, cannot bring the turn back.
+        delay(300)
+        recorder.cancel()
+        assertThat(frames.drop(ended).none { (_, status) -> status?.isActive == true }).isTrue()
+    }
+
+    /** A settings store whose writes wait for [gate] when one is set: holds a caller inside `prefs.markRead`. */
+    private class HeldWrites(context: android.content.Context) : DataStore<Preferences> {
+        private val delegate = PreferenceDataStoreFactory.create(
+            scope = CoroutineScope(Dispatchers.IO + SupervisorJob()),
+            produceFile = { context.preferencesDataStoreFile("held_writes") },
+        )
+        @Volatile var gate: CompletableDeferred<Unit>? = null
+        val waiting = AtomicInteger()
+        override val data: Flow<Preferences> get() = delegate.data
+        override suspend fun updateData(transform: suspend (Preferences) -> Preferences): Preferences {
+            gate?.let { waiting.incrementAndGet(); it.await() }
+            return delegate.updateData(transform)
+        }
+    }
+
+    /**
+     * A load landing while the finish is still being filed — the read marker's write, the write to disk — found the
+     * follower's job alive and the run's story so far in hand, and took the two for "streaming": `chatStatus`
+     * answered RUNNING over the footer, and the load's own publication kept it, until the next-run looks gave up
+     * six seconds later. On the phone: a foreground return, or a reopen, in the moment a turn ends. Pinned by
+     * holding the finish's read-marker write, which is where the screen's collector sits right after the frame that
+     * ended the stream, while a revalidation lands with its run page ahead of its transcript (the page-first render
+     * is what asks `chatStatus`). A run this device saw end is not being followed live, whatever the job's state.
+     */
+    @Test
+    fun `a load landing while the finish is still being filed does not call the chat running again`() = runBlocking<Unit> {
+        api.addRunningAgent("bc-1", "Agent", "run-1")
+        api.transcripts["bc-1"] = transcript("user_message" to "Ship it")
+        agents.refresh()
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val settings = HeldWrites(context)
+        val heldPrefs = PreferencesStore(context, settings)
+        val conversations = ConversationRepository(
+            session, agents, heldPrefs, hub, attachments, cache, traces,
+            isForeground = { true }, prefetchLimit = 0, prefetchSpacingMs = 0, scope = scope,
+        )
+        conversations.attach("bc-1")
+        awaitUntil { conversations.state("bc-1").value.let { it.isStreaming && !it.isLoading } }
+        awaitUntil { heldPrefs.localAgentState.first().readMarkers.containsKey("bc-1") }
+        val frames = CopyOnWriteArrayList<Pair<Boolean, RunStatus?>>()
+        val recorder = scope.launch { conversations.state("bc-1").collect { frames += it.isStreaming to it.runStatus } }
+
+        // The run ends off its record (a status this build cannot read; the stream gone for good). The finish's
+        // read-marker write is held: the screen's collector is still inside the finish when the load below lands.
+        settings.gate = CompletableDeferred()
+        api.runs["run-1"] = api.runs.getValue("run-1").copy(status = "HIBERNATING")
+        streamer.emit("run-1", RunStreamEvent.Error(RunStreamEvent.Error.STREAM_EXPIRED, "This run's live stream has expired."))
+        streamer.emit("run-1", RunStreamEvent.Done)
+        awaitUntil { frames.any { (streaming, _) -> !streaming } && settings.waiting.get() > 0 }
+        val ended = frames.indexOfFirst { (streaming, _) -> !streaming }
+        assertThat(frames[ended].second).isEqualTo(RunStatus.UNKNOWN)
+
+        // A revalidation now, its run page landing ahead of its transcript.
+        api.conversationGate = CompletableDeferred()
+        now += 60_000
+        val pages = api.listRunsCalls
+        conversations.revalidate("bc-1")
+        awaitUntil { api.listRunsCalls > pages }
+        awaitUntil { api.conversationCalls >= 2 }
+        api.conversationGate!!.complete(Unit)
+        awaitUntil { !conversations.state("bc-1").value.isLoading }
+        settings.gate!!.complete(Unit)
+        settings.gate = null
+        awaitUntil { conversations.state("bc-1").value.items.lastOrNull() is RunFooter }
+        recorder.cancel()
+
+        assertWithMessage("frames from the stream's end: ${frames.drop(ended)}").that(frames.drop(ended).none { (_, status) -> status?.isActive == true }).isTrue()
+        val settled = conversations.state("bc-1").value
+        assertThat(settled.isStreaming).isFalse()
+        assertThat(settled.runStatus).isEqualTo(RunStatus.UNKNOWN)
+    }
+
+    /**
+     * The common way a turn ends on the phone: on its own stream, with the chat open. The hub's finish reaches the
+     * list before the snapshot reaches the chat (see `LiveRunHub.finish`), so the frame that ends the stream ends
+     * the turn too — never a frame that reads "Working…" over the reply and the footer — and nothing the chat's
+     * next-run looks read afterwards (the agent's record, a poll behind) puts it back.
+     */
+    @Test
+    fun `a run finishing on its stream ends the chat in the frame that ends the stream, and nothing puts it back`() = runBlocking<Unit> {
+        api.addRunningAgent("bc-1", "Agent", "run-1")
+        api.transcripts["bc-1"] = transcript("user_message" to "Ship it")
+        agents.refresh()
+        val conversations = repository()
+        conversations.attach("bc-1")
+        awaitUntil { conversations.state("bc-1").value.isStreaming }
+        val frames = CopyOnWriteArrayList<Pair<Boolean, RunStatus?>>()
+        val recorder = scope.launch { conversations.state("bc-1").collect { frames += it.isStreaming to it.runStatus } }
+
+        streamer.emit("run-1", RunStreamEvent.Status("run-1", RunStatus.RUNNING))
+        streamer.emit("run-1", RunStreamEvent.Assistant("Shipped."))
+        now += 30_000
+        streamer.emit("run-1", RunStreamEvent.Result("run-1", RunStatus.FINISHED, "Shipped.", 30_000, null))
+        streamer.emit("run-1", RunStreamEvent.Done)
+        awaitUntil { conversations.state("bc-1").value.items.lastOrNull() is RunFooter && frames.any { (streaming, _) -> !streaming } }
+        val ended = frames.indexOfFirst { (streaming, _) -> !streaming }
+        assertWithMessage("frames from the stream's end: ${frames.drop(ended)}").that(frames[ended].second).isEqualTo(RunStatus.FINISHED)
+        assertThat(agents.agent("bc-1")!!.let { it.isRunning to it.runStatus }).isEqualTo(false to RunStatus.FINISHED)
+
+        // The next-run looks that follow a finish read the agent's record, whose run still reads RUNNING on a server
+        // a poll behind its own stream: the list's memory of the finish outranks it, in the row and in the chat.
+        api.runs["run-1"] = api.runs.getValue("run-1").copy(status = "RUNNING")
+        agents.refresh()
+        assertThat(agents.agent("bc-1")!!.isRunning).isFalse()
+        assertThat(agents.loadDetail("bc-1").getOrThrow().runStatus).isEqualTo(RunStatus.FINISHED)
+        conversations.revalidate("bc-1")
+        delay(300)
+        recorder.cancel()
+        assertWithMessage("frames from the stream's end: ${frames.drop(ended)}").that(frames.drop(ended).none { (_, status) -> status?.isActive == true }).isTrue()
+        assertThat(conversations.state("bc-1").value.runStatus).isEqualTo(RunStatus.FINISHED)
     }
 
     @Test
@@ -1329,17 +1771,18 @@ class ConversationRepositoryTest {
             assertThat(occupied.await(5, TimeUnit.SECONDS)).isTrue()
 
             now += 60_000
-            val fetches = api.conversationCalls
+            val fetches = api.listRunsCalls
             // Both return while the entry is unreachable, and neither has done anything yet.
             withTimeout(1_000) { launch(Dispatchers.Default) { conversations.resume("bc-1") }.join() }
             withTimeout(1_000) { launch(Dispatchers.Default) { conversations.revalidate("bc-1") }.join() }
             assertThat(conversations.state("bc-1").value.isStreaming).isFalse()
-            assertThat(api.conversationCalls).isEqualTo(fetches)
+            assertThat(api.listRunsCalls).isEqualTo(fetches)
 
-            // Released: the run is followed again and the history is fetched, as the resume asked.
+            // Released: the run is followed again and the history is fetched, as the resume asked — the run list; the
+            // transcript only when the list says a turn started or ended since, which none did (see runsUnchanged).
             busy.countDown()
             awaitUntil { conversations.state("bc-1").value.isStreaming }
-            awaitUntil { api.conversationCalls > fetches }
+            awaitUntil { api.listRunsCalls > fetches }
         } finally {
             entryThread.shutdownNow()
         }

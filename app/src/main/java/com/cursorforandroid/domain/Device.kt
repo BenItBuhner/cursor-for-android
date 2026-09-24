@@ -48,6 +48,20 @@ data class DeviceTarget(
     }
 }
 
+/**
+ * One of the user's machines as the desktop names it when it starts a chat there (`RRe` in `workbench.glass.main.js`):
+ * [workerId] for `selected_private_worker_id`, [name] — the worker's `name` label, else its id (`Ael`) — for the
+ * `name=` label, [repoLabel] the `repo=owner/name` it registered for its checkout, and [ownerUserId] for
+ * `private_worker_owner_filter`.
+ */
+@Serializable
+data class MachineWorker(
+    val workerId: String,
+    val name: String,
+    val repoLabel: String? = null,
+    val ownerUserId: Long? = null,
+)
+
 /** How the device picker groups a row. Cloud is always first; this phone is never a row. */
 enum class DeviceSection { Cloud, Machines, Pools }
 
@@ -68,6 +82,8 @@ data class DeviceOption(
     val lastUsedAtMillis: Long = 0L,
     val section: DeviceSection,
     val repoUrl: String? = null,
+    /** The machine's worker as `GET /v0/private-workers` last listed it; null for pools and machines never listed. */
+    val worker: MachineWorker? = null,
 ) {
     val key: String get() = keyOf(target)
 
@@ -75,11 +91,14 @@ data class DeviceOption(
         fun keyOf(target: DeviceTarget): String = "${target.type.name}:${target.apiName.orEmpty()}"
 
         /**
-         * A GitHub URL from the fleet endpoints' repository fields: `repoUrl` when the worker or pool sent one, else
-         * `https://github.com/{repoOwner}/{repoName}`; null when both are absent or blank (an any-repo worker).
+         * The repository `repos[0].url` names for a worker or pool, from the fleet endpoints' fields: `repoUrl` when
+         * one was sent, as a canonical `https://host/owner/name` ([RepoRemote]); else
+         * `https://github.com/{repoOwner}/{repoName}`, since a worker registers its checkout only as a `repo=owner/name`
+         * label (the CLI's `worker-mode:repo-label`, host dropped) and a GitHub URL is what Create An Agent takes
+         * (`RepoConfig.url`). Null when neither names a repository (an any-repo worker).
          */
         fun repositoryUrl(repoUrl: String?, repoOwner: String?, repoName: String?): String? {
-            repoUrl?.trim()?.takeIf { it.isNotEmpty() }?.let { return it }
+            RepoRemote.canonical(repoUrl)?.let { return it }
             val owner = repoOwner?.trim()?.takeIf { it.isNotEmpty() } ?: return null
             val name = repoName?.trim()?.takeIf { it.isNotEmpty() } ?: return null
             return "https://github.com/$owner/$name"

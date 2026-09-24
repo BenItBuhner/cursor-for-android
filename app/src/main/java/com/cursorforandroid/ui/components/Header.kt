@@ -16,8 +16,12 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.zIndex
 import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
 
@@ -59,6 +63,42 @@ fun CursorHeader(
         } else {
             Spacer(Modifier.weight(1f))
         }
+        trailing?.invoke(this)
+    }
+}
+
+/**
+ * A chat's header: its controls and nothing else, the buttons laid out as [CursorHeader] lays them. The chat's name
+ * is the row's accessibility label ([label]) and, with its repository and branch, the panel's header.
+ *
+ * The row is [CursorDimens.chatHeaderHeight] whatever the font: the buttons stand 8dp under the status bar, so a 48dp
+ * target centred on each starts at the bar's edge, and the row ends at their bottom edge. The targets reach the
+ * other 8dp over the transcript's top edge, and the row is drawn over what follows it so that strip still takes the
+ * tap; the buttons in [leading] and [trailing] pass `touchHeight = CursorDimens.minTouchTarget`.
+ */
+@Composable
+fun ChatHeader(
+    label: String,
+    modifier: Modifier = Modifier,
+    leading: (@Composable RowScope.() -> Unit)? = null,
+    trailing: (@Composable RowScope.() -> Unit)? = null,
+) {
+    Row(
+        modifier
+            .zIndex(1f)
+            .fillMaxWidth()
+            .windowInsetsPadding(WindowInsets.statusBars)
+            .heightIn(min = CursorDimens.chatHeaderHeight)
+            .padding(horizontal = 6.dp)
+            .semantics {
+                contentDescription = label
+                heading()
+            }
+            .testTag("chat-header"),
+        verticalAlignment = Alignment.Bottom,
+    ) {
+        leading?.invoke(this)
+        Spacer(Modifier.weight(1f))
         trailing?.invoke(this)
     }
 }

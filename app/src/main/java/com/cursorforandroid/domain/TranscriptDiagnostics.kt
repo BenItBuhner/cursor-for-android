@@ -55,27 +55,157 @@ data class TranscriptLoadDiagnostics(
     val record: RecordLine? = null,
     /** The chat's status as shown, and the words it was reconciled from (see `ConversationRepository.Entry.chatStatus`). */
     val status: StatusLine? = null,
+    /** How the transcript's prompts were paired with the runs on the documented path (see `TurnPairing`); null on the record path. */
+    val pairing: PairingLine? = null,
     /**
      * The record's newest turns as this session read them, step by step — keys and value types, the parser branch
      * that took each step, how each call's arguments came together — and never a value (see [TurnShape]). What says
      * whether a coordinator's messages are in the record at all, and in what shape, when they are not on screen.
      */
     val shapes: List<TurnShape> = emptyList(),
+    /** The messages sent from here that the account holds behind a turn (see [QueuedLine]); empty when none. */
+    val queued: List<QueuedLine> = emptyList(),
+    /** The last load of the blob-backed record (the Beta engine), when there was one (see [BetaLine]). */
+    val beta: BetaLine? = null,
 ) {
+    /**
+     * One load of the blob-backed record, in the numbers that pin a gap from one export: the chat's turns and the
+     * window over them, how many of the window's turns were held and not read again, how many still wait for their
+     * steps, the prompts and messages the window holds ([words]); the blobs the load asked the network for (and their
+     * bytes), took from memory, from disk, from the state read's prefetch, and found missing; the reads asked again
+     * after the server's failure ([retried]) and the ones it still failed after their retries ([failed]); the memory
+     * tier's size; when the window was first painted and when everything behind it was in; and the fallback's
+     * reason, if the load ended on the documented path.
+     */
+    data class BetaLine(
+        val turns: Int,
+        val windowStart: Int,
+        val windowEnd: Int,
+        val reused: Int,
+        val incomplete: Int,
+        val words: Int,
+        val fetched: Int,
+        val fetchedBytes: Long,
+        val memory: Int,
+        val disk: Int,
+        val prefetched: Int,
+        val missing: Int,
+        val memoryKb: Long,
+        val firstPaintMs: Long?,
+        val fullLoadMs: Long?,
+        val fallback: String?,
+        val retried: Int = 0,
+        val failed: Int = 0,
+        /** Saved turns rebuilt from the blobs on the phone because their files were gone (see `ConversationRepository.rebuiltFromHeldBlobs`). */
+        val rebuilt: Int = 0,
+        /** How long ago the account's word last confirmed the window current, or null when it never has (see `ConversationRepository.Entry.currentAt`). */
+        val currentAgoMs: Long? = null,
+    ) {
+        val text: String get() =
+            "beta: engine=beta turns=$turns window=[$windowStart,$windowEnd) reused=$reused incomplete=$incomplete words=$words" +
+                " blobs fetched=$fetched/${fetchedBytes / 1024}KB memory=$memory disk=$disk prefetched=$prefetched missing=$missing retried=$retried failed=$failed memKb=$memoryKb" +
+                " firstPaintMs=${firstPaintMs ?: "-"} fullLoadMs=${fullLoadMs ?: "-"} fallback=${fallback?.let { "\"$it\"" } ?: "-"}" +
+                " rebuilt=$rebuilt currentAgoMs=${currentAgoMs ?: "-"}"
+    }
+
+    /**
+     * One message the account took behind a turn, on the card until its run starts: the run the account named for it
+     * when it answered ([runTail], null when it named none), the run it waits behind ([behindTail]), and whether the
+     * account's last list still named it ([listed]).
+     */
+    data class QueuedLine(val runTail: String?, val behindTail: String?, val listed: Boolean) {
+        val text: String get() = "[run=${runTail ?: "none"} behind=${behindTail ?: "-"} listed=$listed]"
+    }
+
     /**
      * [shown] is the status the screen has; [latestRun] the latest run record's; [streaming] whether a stream is open
      * on it; [rowRunning] the row's word; [accountRunning] the account list's running set's (Extended mode);
-     * [rowNewerThanRecordMs] how much newer the row's activity is than the record (negative: older).
+     * [rowNewerThanRecordMs] how much newer the row's activity is than the record (negative: older). [failure] is
+     * why the chat reads as failed when it does — or why its newest run does — see [FailureLine].
      */
-    data class StatusLine(val shown: String, val latestRun: String, val streaming: Boolean, val rowRunning: Boolean, val accountRunning: Boolean, val rowNewerThanRecordMs: Long?)
+    /**
+     * The documented path's pairing of prompts with runs: how many prompts there are and how many runs, how many
+     * turns each kind of evidence settled — the time an injected turn carries, this device's own echoes, the turn
+     * under way, a run's result, position — how many runs no prompt started ([promptless]) and how many prompts
+     * have no run in hand ([runless]).
+     */
+    data class PairingLine(val prompts: Int, val runs: Int, val timestamp: Int, val echo: Int, val live: Int, val result: Int, val position: Int, val promptless: Int, val runless: Int) {
+        val text: String get() = "pairing: prompts=$prompts runs=$runs timestamp=$timestamp echo=$echo live=$live result=$result position=$position promptless=$promptless runless=$runless"
+    }
 
-    data class RunLine(val idTail: String, val status: String, val trace: String, val items: Int)
+    data class StatusLine(
+        val shown: String,
+        val latestRun: String,
+        val streaming: Boolean,
+        val rowRunning: Boolean,
+        val accountRunning: Boolean,
+        val rowNewerThanRecordMs: Long?,
+        val failure: FailureLine? = null,
+        /** When the account last named this composer's status (the reading [accountRunning] is), so the `send:` line's older reading is read against it. */
+        val accountAtIso: String? = null,
+    )
+
+    /**
+     * The failure the chat shows, and where the word came from: [runIdTail] the run the server says failed; [source]
+     * which of the server's words said so — `stream` (the run's own `result` event), `run-record` (`GET …/runs/{id}`),
+     * `account-record` (the account's transcript, `FetchBackgroundComposer`, for the reason) — with `+account-record`
+     * when the reason came from the account's transcript while the status came from the run's record; [reason] the
+     * server's reason as shown (redacted in the report); [current] whether the conversation has moved past it
+     * (false: demoted to a line inside its stretch; true: the row of its own and the chat's status).
+     */
+    data class FailureLine(val runIdTail: String, val source: String, val reason: String?, val current: Boolean) {
+        val text: String get() = "run=$runIdTail source=$source current=$current reason=${reason?.let { "\"$it\"" } ?: "-"}"
+    }
+
+    /**
+     * One run of the window (a record turn with the run it pairs with, in Extended mode). [message] is the
+     * coordinator's word to the user through the turn's stages, for a coordinator's chat: what the record has of it
+     * (`body`, `recovered`, `missing`, `none`), whether its result was recorded, and what reached the screen (`yes`,
+     * `missing`, `none`) from which source (`record`, `log`, `live`) — which says where a reply the reader cannot see
+     * was lost. Null for a chat that is not a coordinator's.
+     */
+    data class RunLine(val idTail: String, val status: String, val trace: String, val items: Int, val message: String? = null)
 
     /**
      * The record: its size in steps, where the loaded steps begin, how many turns are loaded of how many the account
      * says the chat has, whether the state was read, whether the record answered with nothing, and the last failure.
      */
-    data class RecordLine(val total: Int, val firstStep: Int, val turnsLoaded: Int, val turnCount: Int?, val stateRead: Boolean, val empty: Boolean, val error: String?)
+    data class RecordLine(
+        val total: Int,
+        val firstStep: Int,
+        val turnsLoaded: Int,
+        val turnCount: Int?,
+        val stateRead: Boolean,
+        val empty: Boolean,
+        val error: String?,
+        val fallback: FallbackLine? = null,
+        /** How the record is read: `turns` (the blob-backed record, `GetLatestAgentConversationState` + `GetBlobForAgentKV`) or `steps` (`FetchBackgroundComposer`). */
+        val read: String = "steps",
+        /** The failure behind [error] as it was thrown, its class and its own words: a resolver's reason, a reset, the server's code. */
+        val cause: String? = null,
+        /** Whether the phone said it had a network (see `DeviceNetwork`): null when it cannot tell. */
+        val online: Boolean? = null,
+        /** The last load could not reach Cursor, and the chat reads itself again once it can (see `ConversationRepository.Entry.unreached`). */
+        val unreached: Boolean = false,
+    )
+
+    /**
+     * The record refused or failed with nothing of it on screen and the documented path stands in (see
+     * `ConversationState.recordFallback`): since when, how long the read took, the pause the server named, and until
+     * when the record is left alone.
+     */
+    data class FallbackLine(
+        val sinceIso: String,
+        val readMs: Long,
+        val retryAfterMs: Long?,
+        val refusedUntilIso: String?,
+        /** The request path the refused read was made on, as sent, and what the server answered — so a casing or a routing question is settled from the export alone. */
+        val path: String? = null,
+        val httpCode: Int? = null,
+        val code: String? = null,
+    ) {
+        val text: String get() = "fallback=runs since=$sinceIso readMs=$readMs retryAfterMs=${retryAfterMs ?: "-"} refusedUntil=${refusedUntilIso ?: "-"} asked=${path?.let { "POST $it" } ?: "-"} http=${httpCode ?: "-"} code=${code ?: "-"}"
+    }
 
     data class LiveStreamLine(val events: Int, val status: String, val reconnecting: Boolean, val expired: Boolean, val finished: Boolean, val items: Int)
 }
@@ -100,6 +230,8 @@ object TranscriptDiagnostics {
         val appVersion: String,
         val nowIso: String,
         val extendedMode: Boolean,
+        /** The transcript engine chosen in Settings (see [TranscriptEngine]); what `engine=` in the export says. */
+        val engine: TranscriptEngine = TranscriptEngine.DEFAULT,
         /** The chat diagnosed, or null when no chat has been opened this session. */
         val agentId: String?,
         /** The list's row for the chat, when the list holds one. */
@@ -113,6 +245,13 @@ object TranscriptDiagnostics {
         val perf: TranscriptPerf.Snapshot? = null,
         /** The send path's account of the chat (see [SendDiagnostics]); null when nothing was sent or queued from here. */
         val send: SendDiagnostics? = null,
+        /**
+         * The files the chat's tool calls named that were opened this process, one line each — the path, how
+         * `ListWorkspaceFiles` and `ReadBinaryFile` answered (the request as sent and the answer), the repository's
+         * read, and how the open ended — so a "Couldn't open" is read off the export (see `FileReadAttempt.text`).
+         * Paths are the agent's own, not anything anyone wrote.
+         */
+        val fileReads: List<String> = emptyList(),
     )
 
     /** The decision the conversation screen makes, spelled out: which of its three words fired. */
@@ -129,7 +268,7 @@ object TranscriptDiagnostics {
 
     fun render(input: Input): String = buildString {
         appendLine("Cursor for Android ${input.appVersion} · transcript diagnostics · ${input.nowIso}")
-        appendLine("mode=${if (input.extendedMode) "extended" else "default"}")
+        appendLine("mode=${if (input.extendedMode) "extended" else "default"} engine=${input.engine.key}")
         val id = input.agentId
         if (id == null) {
             appendLine("chat: none opened this session")
@@ -153,6 +292,10 @@ object TranscriptDiagnostics {
         input.perf?.let { appendLine(it.render()) }
         // The send path: the last send-or-queue decision with every input it read, the queue, and each attempt's outcome.
         input.send?.let { append(it.render()) }
+        if (input.fileReads.isNotEmpty()) {
+            appendLine("files: ${input.fileReads.size} opened")
+            input.fileReads.forEach { appendLine("  ${redactIds(it)}") }
+        }
         val decision = decide(agent, state.items, state.recordProjectMode)
         appendLine("classification: ${if (decision.coordinatorMode) "COORDINATOR" else "agent"} listProject=${decision.listProject} recordProjectMode=${decision.recordProjectMode} content=${decision.content}" + (if (decision.evidence.isNotEmpty()) " evidence=${decision.evidence.joinToString(",")}" else ""))
         val presented = CoordinatorTranscript.present(state.items, decision.coordinatorMode)
@@ -177,17 +320,28 @@ object TranscriptDiagnostics {
                 " runs=${load.runsLoaded} complete=${load.runsComplete} olderCursor=${load.hasOlderCursor} order=${load.runOrder?.name ?: "-"} latestById=${load.latestFetchedById}" +
                 " window=${load.window} turns=[${load.windowStart},${load.chatTurns})",
         )
+        load.pairing?.let { appendLine(it.text) }
         load.record?.let { r ->
-            appendLine("record: total=${r.total} firstStep=${r.firstStep} turnsLoaded=${r.turnsLoaded} turnCount=${r.turnCount ?: "-"} state=${if (r.stateRead) "read" else "-"} empty=${r.empty}" + (r.error?.let { " error=\"${redact(it)}\"" } ?: ""))
+            appendLine(
+                "record: read=${r.read} total=${r.total} firstStep=${r.firstStep} turnsLoaded=${r.turnsLoaded} turnCount=${r.turnCount ?: "-"} state=${if (r.stateRead) "read" else "-"} empty=${r.empty}" +
+                    (r.error?.let { " error=\"${redact(it)}\"" } ?: "") +
+                    (r.cause?.let { " cause=\"${redact(it)}\" online=${r.online ?: "-"} unreached=${r.unreached}" } ?: "") +
+                    (r.fallback?.let { " ${it.text}" } ?: ""),
+            )
         }
+        load.beta?.let { appendLine(it.copy(fallback = it.fallback?.let(::redact)).text) }
         load.status?.let { st ->
-            appendLine("status: shown=${st.shown} latestRun=${st.latestRun} streaming=${st.streaming} rowRunning=${st.rowRunning} accountRunning=${st.accountRunning} rowNewerThanRecordMs=${st.rowNewerThanRecordMs ?: "-"}")
+            appendLine(
+                "status: shown=${st.shown} latestRun=${st.latestRun} streaming=${st.streaming} rowRunning=${st.rowRunning} accountRunning=${st.accountRunning}${st.accountAtIso?.let { "@$it" } ?: ""} rowNewerThanRecordMs=${st.rowNewerThanRecordMs ?: "-"}" +
+                    (st.failure?.let { f -> " failed: ${f.copy(reason = f.reason?.let(::redact)).text}" } ?: ""),
+            )
         }
-        val shown = load.runs.count { it.trace == "shown" }
+        val shown = load.runs.count { it.trace.startsWith("shown") }
         appendLine(
             "traces: shown=$shown of ${load.runs.count { it.trace != "live" }} queue=${load.traceQueue} inFlight=${load.traceInFlight} worker=${load.traceWorkerRunning} expiredRuns=${load.expiredRuns} expiredBefore=${load.expiredBeforeIso ?: "-"} failed=${load.failedTraces}",
         )
-        load.runs.forEach { appendLine("  run ${it.idTail} ${it.status} trace=${it.trace} items=${it.items}") }
+        load.runs.forEach { appendLine("  run ${it.idTail} ${it.status} trace=${it.trace} items=${it.items}" + (it.message?.let { m -> " sendMessage: $m" } ?: "")) }
+        if (load.queued.isNotEmpty()) appendLine("queued: ${load.queued.size} " + load.queued.joinToString(" ") { it.text })
         appendLine(
             "live: run=${load.liveRunId?.let { ProjectDiagnostics.tail(it) } ?: "-"} following=${load.following}" +
                 (load.liveStream?.let { " stream=events:${it.events},status:${it.status},reconnecting:${it.reconnecting},expired:${it.expired},finished:${it.finished},items:${it.items}" } ?: " stream=none"),
@@ -204,9 +358,28 @@ object TranscriptDiagnostics {
      */
     private fun StringBuilder.describe(shapes: List<TurnShape>) {
         appendLine()
-        appendLine("shapes: newest ${shapes.size} turns of the record, oldest first (step: index · branch · keys:types; call: id · name · steps · args · result):")
+        append(renderShapes(shapes, "newest ${shapes.size} turns of the record"))
+    }
+
+    /**
+     * The shape dump on its own, for [describe] and for the verification harness (`tools/transcript-verify`), which
+     * dumps every turn it read rather than the newest few: [scope] is the words after `shapes:` that say which turns.
+     */
+    fun renderShapes(shapes: List<TurnShape>, scope: String): String = buildString {
+        appendLine("shapes: $scope, oldest first (step: index · branch · keys:types; call: id · name · steps · args · result):")
         for (turn in shapes) {
-            appendLine("turn@${turn.stepIndex} steps=${turn.steps.size} prompt=${turn.prompt} project=${turn.projectMode} calls=${turn.calls.size}")
+            // The coordinator's word to the user as the record gave it: with its body, read leniently, in pieces that
+            // never read, without arguments — or no such call in the record at all, which is what the run's log then answers for.
+            val messages = turn.calls.filter { ToolNames.coordinatorTool(it.name) == ToolNames.USER_MESSAGE_TOOL }
+            val stage = when {
+                messages.isEmpty() -> "none"
+                messages.any { it.args == "json" || it.args == "value" || it.args.startsWith("joined") } -> "body"
+                messages.any { it.args.startsWith("recovered") } -> "recovered"
+                messages.any { it.args.startsWith("partial") } -> "partial"
+                else -> "missing"
+            }
+            val result = if (messages.isEmpty()) "" else " result=${if (messages.any { it.result }) "yes" else "no"}"
+            appendLine("turn@${turn.stepIndex} steps=${turn.steps.size} prompt=${turn.prompt} project=${turn.projectMode} calls=${turn.calls.size} sendMessage=$stage$result")
             turn.steps.take(MAX_SHAPE_STEPS).forEach { step -> appendLine("  ${step.index} ${step.branch} ${step.keys}") }
             if (turn.steps.size > MAX_SHAPE_STEPS) appendLine("  … +${turn.steps.size - MAX_SHAPE_STEPS} more steps")
             turn.calls.forEach { call -> appendLine("  call ${call.idTail} ${call.name.ifBlank { "<blank>" }} steps=${call.steps} args=${call.args} result=${call.result}") }
@@ -222,7 +395,7 @@ object TranscriptDiagnostics {
             is AssistantMessage -> appendLine("  assistant chars=${item.markdown.length}${if (item.isStreaming) " streaming" else ""}")
             is SummaryRow -> appendLine("  summary")
             is NoticeCard -> appendLine("  notice tone=${item.tone.name}")
-            is RunFooter -> appendLine("  footer status=${item.status.name} duration=${item.durationMs ?: "-"} branches=${item.branches.size}")
+            is RunFooter -> appendLine("  footer status=${item.status.name} duration=${item.durationMs ?: "-"} branches=${item.branches.size}" + (item.reason?.let { " reasonChars=${it.length}" } ?: ""))
             is SystemNotification -> appendLine(
                 "  notification kind=${item.kind.name} title=\"${item.title}\" tone=${item.tone.name} summaryChars=${item.summary?.length ?: 0} bodyChars=${item.body?.length ?: 0}" +
                     (item.agentId?.let { " agent=${ProjectDiagnostics.tail(it)}" } ?: "") + (item.narration?.let { " narrationChars=${it.length}" } ?: ""),
@@ -254,6 +427,8 @@ object TranscriptDiagnostics {
             is ToolPayload.Recording -> "recording"
             is ToolPayload.Subagent -> "subagent(cloud=${p.isCloudAgent})"
             is ToolPayload.Question -> "question(${p.questions.size},answered=${p.isAnswered})"
+            is ToolPayload.ReadMedia -> "read_media(src=${p.src != null})"
+            is ToolPayload.FileHits -> "file_hits(${p.hits.size}${if (p.truncated) ",truncated" else ""})"
         }
         val truncated = call.truncated?.let { t -> listOfNotNull("args".takeIf { t.args }, "result".takeIf { t.result }).joinToString("+") } ?: "-"
         // The id's tail joins the line to the shape dump's call line for the same call.
@@ -261,6 +436,10 @@ object TranscriptDiagnostics {
     }
 
     /** An error message keeps its words but not any id, URL or quoted text it might carry. */
+    /** Ids and links out of a line that is otherwise meant whole (a path, a request, its answer). */
+    private fun redactIds(text: String): String =
+        text.replace(Regex("""bc-[A-Za-z0-9-]+"""), "bc-…").replace(Regex("""https?://[^\s)"]+"""), "<url>").take(600)
+
     private fun redact(text: String): String =
         text.replace(Regex("""bc-[A-Za-z0-9-]+"""), "bc-…").replace(Regex("""https?://[^\s)"]+"""), "<url>").replace(Regex("\"[^\"]*\""), "\"…\"").take(160)
 }

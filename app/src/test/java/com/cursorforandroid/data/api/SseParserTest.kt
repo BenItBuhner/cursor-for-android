@@ -91,7 +91,7 @@ class SseParserTest {
      */
     @Test
     fun `a line longer than the parser will buffer is skipped, not the connection`() {
-        val huge = "A".repeat((1 shl 20) + 5_000)
+        val huge = "A".repeat((16 shl 20) + 5_000)
         val source = Buffer().writeUtf8(
             "id: 10-0\nevent: tool_call\ndata: {\"callId\":\"img-1\",\"name\":\"generate_image\",\"status\":\"completed\"}\n\n" +
                 "id: 10-0\nevent: interaction_update\ndata: {\"type\":\"tool-call-completed\",\"callId\":\"img-1\",\"toolCall\":{\"type\":\"generateImage\",\"result\":{\"status\":\"success\",\"value\":{\"imageData\":\"$huge\"}}}}\n\n" +
@@ -110,7 +110,7 @@ class SseParserTest {
     /** A stream that ends inside an oversized line has nothing after it: no frame, no resume position. */
     @Test
     fun `a stream cut off inside an oversized line ends without a frame`() {
-        val source = Buffer().writeUtf8("id: 10-0\nevent: heartbeat\ndata: {}\n\nid: 11-0\nevent: assistant\ndata: " + "B".repeat((1 shl 20) + 100))
+        val source = Buffer().writeUtf8("id: 10-0\nevent: heartbeat\ndata: {}\n\nid: 11-0\nevent: assistant\ndata: " + "B".repeat((16 shl 20) + 100))
         val frames = generateSequence { SseParser.readFrame(source) }.toList()
         assertThat(frames.map { it.id }).containsExactly("10-0")
     }
@@ -218,7 +218,7 @@ class SseParserTest {
     @Test
     fun `an oversized frame is skipped and resumed past, and the run still finishes`() = runTest {
         val server = MockWebServer()
-        val huge = "A".repeat((1 shl 20) + 5_000)
+        val huge = "A".repeat((16 shl 20) + 5_000)
         server.enqueue(
             MockResponse().setHeader("Content-Type", "text/event-stream").setBody(
                 "id: 10-0\nevent: tool_call\ndata: {\"callId\":\"img-1\",\"name\":\"generate_image\",\"status\":\"completed\"}\n\n" +
@@ -262,21 +262,36 @@ class SseParserTest {
 
     /**
      * A connection with nothing to resume from replays the run from its first event, which would double every reply
-     * already accumulated. The pass ends instead, so the caller rebuilds from nothing.
+     * already accumulated — so once anything has been handed over, the pass ends and the caller rebuilds from
+     * nothing. Before anything has, there is nothing to double: a connection refused, or dropped before its first
+     * event, is tried again with the usual backoff, a bounded number of times, and only then given up.
      */
     @Test
-    fun `a retry with no resume position ends the pass instead of starting the run over`() = runTest {
+    fun `a retry with no resume position starts the run over only while nothing has been delivered`() = runTest {
         val server = MockWebServer()
-        server.enqueue(MockResponse().setResponseCode(503))
+        repeat(5) { server.enqueue(MockResponse().setResponseCode(503)) }
         server.start()
-        val streamer = SseRunStreamer(OkHttpClient(), { null }, urlFor = { _, _ -> server.url("/stream").toString() }, maxAttempts = 4)
+        val waits = mutableListOf<Long>()
+        val streamer = SseRunStreamer(OkHttpClient(), { null }, urlFor = { _, _ -> server.url("/stream").toString() }, maxAttempts = 4, waiter = { waits += it })
         val events = streamer.stream("bc-1", "run-1").toList()
 
         val error = events.single() as RunStreamEvent.Error
         assertThat(error.code).isEqualTo("stream_unavailable")
         assertThat(error.resumeFrom).isNull()
-        assertThat(server.requestCount).isEqualTo(1)
+        // The first connection and four more, each after a pause that doubles; then the caller's turn.
+        assertThat(server.requestCount).isEqualTo(5)
+        assertThat(waits).containsExactly(1_000L, 2_000L, 4_000L, 8_000L).inOrder()
         server.shutdown()
+
+        // Once a reply has been delivered without an id to resume from, a drop ends the pass at once.
+        val delivered = MockWebServer()
+        delivered.enqueue(MockResponse().setHeader("Content-Type", "text/event-stream").setBody("event: assistant\ndata: {\"text\":\"part one\"}\n\n"))
+        delivered.start()
+        val second = SseRunStreamer(OkHttpClient(), { null }, urlFor = { _, _ -> delivered.url("/stream").toString() }, maxAttempts = 4, waiter = { waits += it })
+        val afterDelivery = second.stream("bc-1", "run-1").toList()
+        assertThat(afterDelivery.map { it::class.simpleName }).containsExactly("Assistant", "Error").inOrder()
+        assertThat(delivered.requestCount).isEqualTo(1)
+        delivered.shutdown()
     }
 
     @Test

@@ -38,10 +38,12 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
+import kotlin.math.abs
 
 /**
- * The composer's Plan and Multitask pills and its orange `/command` highlight: what the owner holds and sends stays
- * the prompt it always was (`/multitask …` in front, plan mode as a flag), and only the presentation changes.
+ * The composer's Plan and Multitask pills and its `/command` highlight in the Plan pill's tint: what the owner holds
+ * and sends stays the prompt it always was (`/multitask …` in front, plan mode as a flag), and only the presentation
+ * changes.
  */
 @RunWith(AndroidJUnit4::class)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
@@ -143,7 +145,7 @@ class ComposerPillsTest {
         compose.runOnIdle { assertThat(value).isEqualTo("/multitask") }
 
         field.performTextInput(" ")
-        compose.waitUntil { pillCount("Multitask") == 1 }
+        compose.waitUntil(10_000) { pillCount("Multitask") == 1 }
         assertThat(shown()).isEmpty()
         compose.runOnIdle { assertThat(value).isEqualTo("/multitask ") }
 
@@ -157,8 +159,8 @@ class ComposerPillsTest {
         show()
 
         field.performTextInput("/plan ship it")
-        compose.waitUntil { planMode }
-        compose.waitUntil { pillCount("Plan") == 1 }
+        compose.waitUntil(10_000) { planMode }
+        compose.waitUntil(10_000) { pillCount("Plan") == 1 }
         assertThat(shown()).isEqualTo("ship it")
         compose.runOnIdle {
             assertThat(value).isEqualTo("ship it")
@@ -171,17 +173,17 @@ class ComposerPillsTest {
         show()
 
         field.performTextInput("/pl")
-        compose.waitUntil { compose.onAllNodes(hasText("Explore first and draft a plan", substring = true)).fetchSemanticsNodes().isNotEmpty() }
+        compose.waitUntil(10_000) { compose.onAllNodes(hasText("Explore first and draft a plan", substring = true)).fetchSemanticsNodes().isNotEmpty() }
         compose.onNodeWithText("/plan").performClick()
-        compose.waitUntil { planMode }
+        compose.waitUntil(10_000) { planMode }
         assertThat(shown()).isEmpty()
         compose.runOnIdle { assertThat(value).isEmpty() }
 
         // Multitask picked next replaces the plan: one slot, one pill.
         field.performTextInput("/mu")
-        compose.waitUntil { compose.onAllNodes(hasText("Orchestrate multiple subagents", substring = true)).fetchSemanticsNodes().isNotEmpty() }
+        compose.waitUntil(10_000) { compose.onAllNodes(hasText("Orchestrate multiple subagents", substring = true)).fetchSemanticsNodes().isNotEmpty() }
         compose.onNodeWithText("/multitask").performClick()
-        compose.waitUntil { value == "/multitask " }
+        compose.waitUntil(10_000) { value == "/multitask " }
         assertThat(shown()).isEmpty()
         compose.runOnIdle {
             assertThat(planMode).isFalse()
@@ -201,7 +203,7 @@ class ComposerPillsTest {
         compose.onNodeWithText("Plan").assertIsDisplayed()
 
         field.performTextInput("/multitask ")
-        compose.waitUntil { pillCount("Multitask") == 1 }
+        compose.waitUntil(10_000) { pillCount("Multitask") == 1 }
         compose.runOnIdle {
             assertThat(value).isEqualTo("/multitask ")
             assertThat(planMode).isFalse()
@@ -209,7 +211,7 @@ class ComposerPillsTest {
         assertThat(pillCount("Plan")).isEqualTo(0)
 
         field.performTextInput("/plan ")
-        compose.waitUntil { pillCount("Plan") == 1 }
+        compose.waitUntil(10_000) { pillCount("Plan") == 1 }
         compose.runOnIdle {
             assertThat(value).isEmpty()
             assertThat(planMode).isTrue()
@@ -225,9 +227,9 @@ class ComposerPillsTest {
 
         compose.onNodeWithContentDescription("Add to prompt").performClick()
         compose.onNodeWithText("Multitask").performClick()
-        compose.waitUntil { value == "/multitask " }
+        compose.waitUntil(10_000) { value == "/multitask " }
         compose.runOnIdle { assertThat(planMode).isFalse() }
-        compose.waitUntil { pillCount("Plan") == 0 }
+        compose.waitUntil(10_000) { pillCount("Plan") == 0 }
         assertThat(pillCount("Multitask")).isEqualTo(1)
     }
 
@@ -269,27 +271,27 @@ class ComposerPillsTest {
         show(extended = true)
 
         field.performTextInput("/ask why does the build fail")
-        compose.waitUntil { modePill == ModePills.Pill.Ask }
-        compose.waitUntil { pillCount("Ask") == 1 }
+        compose.waitUntil(10_000) { modePill == ModePills.Pill.Ask }
+        compose.waitUntil(10_000) { pillCount("Ask") == 1 }
         assertThat(shown()).isEqualTo("why does the build fail")
         compose.runOnIdle { assertThat(value).isEqualTo("why does the build fail") }
 
         // Debug typed next replaces Ask: one slot, one pill; the owner hears the swap.
         field.performTextInput(" /debug ")
-        compose.waitUntil { modePill == ModePills.Pill.Debug }
-        compose.waitUntil { pillCount("Debug") == 1 }
+        compose.waitUntil(10_000) { modePill == ModePills.Pill.Debug }
+        compose.waitUntil(10_000) { pillCount("Debug") == 1 }
         assertThat(pillCount("Ask")).isEqualTo(0)
         compose.runOnIdle { assertThat(modeChanges).containsExactly(ModePills.Pill.Ask, ModePills.Pill.Debug).inOrder() }
 
         // Multitask takes the mode off, as it does Plan.
         field.performTextInput("/multitask ")
-        compose.waitUntil { pillCount("Multitask") == 1 }
+        compose.waitUntil(10_000) { pillCount("Multitask") == 1 }
         compose.runOnIdle { assertThat(modePill).isNull() }
         assertThat(pillCount("Debug")).isEqualTo(0)
 
         // And the cross on a mode pill hands the owner null.
         field.performTextInput("/ask ")
-        compose.waitUntil { pillCount("Ask") == 1 }
+        compose.waitUntil(10_000) { pillCount("Ask") == 1 }
         compose.onNodeWithContentDescription("Remove Ask").performClick()
         compose.runOnIdle { assertThat(modePill).isNull() }
         assertThat(pillCount("Ask")).isEqualTo(0)
@@ -327,35 +329,52 @@ class ComposerPillsTest {
     }
 
     @Test
-    fun `slash commands are painted in the Cursor orange and the rest of the text is not`() {
+    fun `slash commands are painted in the Plan pill's tint and the rest of the text is not`() {
         show()
 
         field.performTextInput("ship it")
         compose.waitForIdle()
-        assertThat(orangePixelsInField()).isEqualTo(0)
+        assertThat(pixelsOfTintInField(PillAmberDark)).isEqualTo(0)
 
         field.performTextClearance()
         field.performTextInput("/goal ship it")
         compose.waitForIdle()
-        assertThat(orangePixelsInField()).isGreaterThan(0)
+        assertThat(pixelsOfTintInField(PillAmberDark)).isGreaterThan(0)
+        // The pill's tint and no other: the brand orange the commands once wore is gone from the field.
+        assertThat(pixelsOfTintInField(Color(0xFFF54E00))).isEqualTo(0)
     }
 
     @Test
-    fun `the highlight is drawn in the light theme too`() {
+    fun `the highlight is drawn in the light theme too, in the light pill's tint`() {
         show(mode = ThemeMode.Light)
 
         field.performTextInput("/review ship it")
         compose.waitForIdle()
-        assertThat(orangePixelsInField()).isGreaterThan(0)
+        assertThat(pixelsOfTintInField(PillAmberLight)).isGreaterThan(0)
+        assertThat(pixelsOfTintInField(PillAmberDark)).isEqualTo(0)
     }
 
+    @Test
+    fun `a command in the field and the Plan pill wear the same tint`() {
+        planMode = true
+        show()
+
+        field.performTextInput("/review ship it")
+        compose.waitForIdle()
+        // The pill's label is drawn in its tint; the field's command in the same one — the two are one thing.
+        assertThat(pixelsOfTint(compose.onNode(hasText("Plan")).fetchSemanticsNode().boundsInWindow, PillAmberDark)).isGreaterThan(0)
+        assertThat(pixelsOfTintInField(PillAmberDark)).isGreaterThan(0)
+    }
+
+    /** Pixels inside the field whose colour is [tint], the glyphs of a command being drawn in it (see [pixelsOfTint]). */
+    private fun pixelsOfTintInField(tint: Color): Int = pixelsOfTint(field.fetchSemanticsNode().boundsInWindow, tint)
+
     /**
-     * Pixels of the brand orange (#F54E00) inside the field, anti-aliased against either canvas: far more red than
-     * blue, and red well ahead of green — which no shade of the near-white or near-black text, of the placeholder,
-     * or of either background is. The window is rasterised the way Roborazzi does it, by drawing the decor view.
+     * Pixels of [tint] inside [bounds]: the ones fully covered by a glyph drawn in it, which come out as the colour
+     * itself — anti-aliased edges are blends and are not counted, so the count is only ever of the colour asked
+     * for. The window is rasterised the way Roborazzi does it, by drawing the decor view.
      */
-    private fun orangePixelsInField(): Int {
-        val bounds = field.fetchSemanticsNode().boundsInWindow
+    private fun pixelsOfTint(bounds: Rect, tint: Color): Int {
         val window = compose.runOnIdle {
             val view = compose.activity.window.decorView
             Bitmap.createBitmap(view.width, view.height, Bitmap.Config.ARGB_8888).also { view.draw(Canvas(it)) }
@@ -364,9 +383,12 @@ class ComposerPillsTest {
         for (y in bounds.top.toInt() until bounds.bottom.toInt()) {
             for (x in bounds.left.toInt() until bounds.right.toInt()) {
                 val c = Color(window.getPixel(x, y))
-                if (c.red - c.blue > 0.45f && c.red - c.green > 0.25f) count++
+                if (abs(c.red - tint.red) < Tolerance && abs(c.green - tint.green) < Tolerance && abs(c.blue - tint.blue) < Tolerance) count++
             }
         }
         return count
     }
 }
+
+/** How far a channel may be from the tint's and still be the tint: a rounding step of 8-bit colour, not a blend. */
+private const val Tolerance = 2.5f / 255f

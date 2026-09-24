@@ -20,6 +20,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -42,6 +43,7 @@ import com.cursorforandroid.domain.ChangedFileStatus
 import com.cursorforandroid.domain.CheckConclusion
 import com.cursorforandroid.domain.CheckRun
 import com.cursorforandroid.domain.EnvType
+import com.cursorforandroid.domain.FileFormat
 import com.cursorforandroid.domain.PullRequestView
 import com.cursorforandroid.domain.RepoEntry
 import com.cursorforandroid.domain.ReviewVerdict
@@ -50,18 +52,24 @@ import com.cursorforandroid.domain.TokenUsage
 import com.cursorforandroid.domain.ToolNames
 import com.cursorforandroid.domain.ToolPayload
 import com.cursorforandroid.domain.TranscriptContent
+import com.cursorforandroid.ui.components.AudioChip
 import com.cursorforandroid.ui.components.CursorButton
 import com.cursorforandroid.ui.components.CursorIcons
 import com.cursorforandroid.ui.components.ImageBlock
+import com.cursorforandroid.ui.components.LocalRunStopConfirmation
 import com.cursorforandroid.ui.components.MarkdownText
 import com.cursorforandroid.ui.components.Pill
 import com.cursorforandroid.ui.components.PullRequestPill
+import com.cursorforandroid.ui.components.RunInterruption
 import com.cursorforandroid.ui.components.VideoBlock
+import com.cursorforandroid.ui.components.askOrRun
 import com.cursorforandroid.ui.components.cursorSurface
 import com.cursorforandroid.ui.components.pressable
 import com.cursorforandroid.ui.conversation.DiffBlock
 import com.cursorforandroid.ui.conversation.LineCounts
 import com.cursorforandroid.ui.conversation.QuestionCard
+import com.cursorforandroid.ui.files.rememberFileOpener
+import com.cursorforandroid.ui.media.thumbnailSlot
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.util.TimeFormat
 
@@ -158,12 +166,14 @@ private fun MachineFact(state: PanelState, actions: PanelActions) {
 
 /**
  * Pause or resume the turn (`PauseBackgroundComposer` / `ResumeBackgroundComposer`), stop it (the documented cancel)
- * and wake the machine (`WakeBackgroundComposer`); each says when it is on its way.
+ * and wake the machine (`WakeBackgroundComposer`); each says when it is on its way. Pause and Stop ask first while
+ * Settings › Confirm before stopping is on, as the composer's Stop does.
  */
 @Composable
 internal fun RunControlsRow(state: PanelState, actions: PanelActions, modifier: Modifier = Modifier) {
     val controls = state.controls
     val running = state.isRunning
+    val confirmation = LocalRunStopConfirmation.current
     Row(
         modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp).testTag("run-controls"),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -172,9 +182,9 @@ internal fun RunControlsRow(state: PanelState, actions: PanelActions, modifier: 
         if (controls.isPaused == true) {
             ControlButton("Resume", CursorIcons.Play, busy = controls.isBusy("resume"), onClick = actions::resumeRun)
         } else {
-            ControlButton("Pause", CursorIcons.Pause, busy = controls.isBusy("pause"), enabled = running, onClick = actions::pauseRun)
+            ControlButton("Pause", CursorIcons.Pause, busy = controls.isBusy("pause"), enabled = running, onClick = { confirmation.askOrRun(RunInterruption.Pause, state.agentId, actions::pauseRun) })
         }
-        if (running) ControlButton("Stop", CursorIcons.Stop, onClick = actions::stopRun)
+        if (running) ControlButton("Stop", CursorIcons.Stop, onClick = { confirmation.askOrRun(RunInterruption.Stop, state.agentId, actions::stopRun) })
         ControlButton("Wake", CursorIcons.Lightning, busy = controls.isBusy("wake"), enabled = !running, onClick = actions::wake)
     }
 }
@@ -565,21 +575,27 @@ private fun TouchedFiles(state: PanelState, actions: PanelActions) {
     }
     val colors = CursorTheme.colors
     touched.forEach { file ->
-        PanelRow(
-            title = file.name,
-            icon = CursorIcons.File,
-            iconTint = if (file.wasChanged) colors.gitModified else colors.iconTertiary,
-            subtitle = file.path.takeIf { it != file.name },
-            trailing = {
-                Text(
-                    file.kinds.joinToString(", ") { it.name },
-                    style = CursorTheme.typography.small,
-                    color = colors.textQuaternary,
-                )
-            },
-            onClick = { actions.openTouched(file.path) },
-            modifier = Modifier.testTag("touched-file"),
-        )
+        key(file.path) {
+            // A picture, a recording or a sound opens the media viewer — the read's own picture first, else the file
+            // read off the agent's machine — never the text viewer (Bennett's 2026-09-22 frames of /tmp/*.jpg).
+            val media = FileFormat.ofName(file.path)?.isMedia == true
+            val opener = if (media) rememberFileOpener(file.path, carried = file.carried) else null
+            PanelRow(
+                title = file.name,
+                icon = if (media) CursorIcons.Image else CursorIcons.File,
+                iconTint = if (file.wasChanged) colors.gitModified else colors.iconTertiary,
+                subtitle = file.path.takeIf { it != file.name },
+                trailing = {
+                    Text(
+                        file.kinds.joinToString(", ") { it.name },
+                        style = CursorTheme.typography.small,
+                        color = colors.textQuaternary,
+                    )
+                },
+                onClick = opener?.open ?: { actions.openTouched(file.path) },
+                modifier = Modifier.testTag("touched-file").then(opener?.slot?.let { Modifier.thumbnailSlot(it) } ?: Modifier),
+            )
+        }
     }
 }
 
@@ -663,6 +679,7 @@ internal fun mediaTiles(state: PanelState): List<MediaTile> {
         when (artifact.kind) {
             Artifact.Kind.Image -> tiles += MediaTile.Image(artifact.vmPath, artifact.name, "Artifact")
             Artifact.Kind.Video -> tiles += MediaTile.Video(artifact.vmPath, artifact.name, "Artifact")
+            Artifact.Kind.Audio -> tiles += MediaTile.Audio(artifact.vmPath, artifact.name, "Artifact")
             else -> Unit
         }
     }
@@ -675,7 +692,7 @@ internal fun mediaTiles(state: PanelState): List<MediaTile> {
 
 /** The artifacts that are not pictures or recordings — notes, logs, anything else the agent published — listed under the gallery. */
 internal fun artifactFiles(state: PanelState): List<Artifact> =
-    state.artifacts.valueOrNull.orEmpty().filter { it.kind != Artifact.Kind.Image && it.kind != Artifact.Kind.Video }
+    state.artifacts.valueOrNull.orEmpty().filter { it.kind != Artifact.Kind.Image && it.kind != Artifact.Kind.Video && it.kind != Artifact.Kind.Audio }
 
 /** How tall a gallery tile may be: a portrait screenshot is shrunk to it rather than taking the panel over. */
 private val MediaTileHeight = 180.dp
@@ -686,6 +703,7 @@ internal sealed interface MediaTile {
     val kind: String
     data class Image(override val src: String, override val caption: String, override val kind: String) : MediaTile
     data class Video(override val src: String, override val caption: String, override val kind: String) : MediaTile
+    data class Audio(override val src: String, override val caption: String, override val kind: String) : MediaTile
 }
 
 /**
@@ -710,6 +728,7 @@ internal fun ArtifactsSection(state: PanelState, actions: PanelActions) {
                             when (tile) {
                                 is MediaTile.Image -> ImageBlock(tile.src, alt = tile.caption, heightCap = MediaTileHeight)
                                 is MediaTile.Video -> VideoBlock(tile.src, poster = null, heightCap = MediaTileHeight)
+                                is MediaTile.Audio -> AudioChip(tile.src, tile.caption, subtitle = null, modifier = Modifier.fillMaxWidth())
                             }
                             Text(tile.caption, style = type.small, color = colors.textSecondary, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 4.dp))
                             Text(tile.kind, style = type.tiny, color = colors.textQuaternary, maxLines = 1)
@@ -744,6 +763,7 @@ private fun ArtifactRow(artifact: Artifact, onOpen: () -> Unit) {
         icon = when (artifact.kind) {
             Artifact.Kind.Image -> CursorIcons.Image
             Artifact.Kind.Video -> CursorIcons.Video
+            Artifact.Kind.Audio -> CursorIcons.Music
             Artifact.Kind.Markdown, Artifact.Kind.Text -> CursorIcons.Book
             Artifact.Kind.Other -> CursorIcons.File
         },

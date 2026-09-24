@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -23,7 +24,6 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Snackbar
 import androidx.compose.material3.SnackbarHost
@@ -32,8 +32,10 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -43,6 +45,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.scale
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.testTag
@@ -55,23 +58,33 @@ import com.cursorforandroid.AppGraph
 import com.cursorforandroid.data.api.CursorEndpoints
 import com.cursorforandroid.data.repo.ConversationState
 import com.cursorforandroid.data.repo.TraceStatus
+import com.cursorforandroid.data.repo.RecordFallback
 import com.cursorforandroid.domain.AssistantMessage
+import com.cursorforandroid.domain.CarriedFile
+import com.cursorforandroid.domain.FileOpenRequest
+import com.cursorforandroid.domain.NoticeCard
 import com.cursorforandroid.domain.TranscriptRow
 import com.cursorforandroid.domain.DesktopEligibility
-import com.cursorforandroid.domain.GoalTranscript
 import com.cursorforandroid.domain.EnvType
 import com.cursorforandroid.share.ShareTarget
 import com.cursorforandroid.domain.RunStatus
+import com.cursorforandroid.domain.Subscriptions
 import com.cursorforandroid.domain.StorePath
-import com.cursorforandroid.ui.agents.MenuItem
+import com.cursorforandroid.domain.SubagentPlacement
 import com.cursorforandroid.ui.agents.RenameChatDialog
 import com.cursorforandroid.ui.agents.SnoozeChatDialog
+import com.cursorforandroid.ui.components.ChatHeader
 import com.cursorforandroid.ui.components.ComposerBox
-import com.cursorforandroid.ui.components.CursorHeader
 import com.cursorforandroid.ui.components.CursorIcons
+import com.cursorforandroid.ui.components.CursorMenu
+import com.cursorforandroid.ui.components.CursorMenuItem
 import com.cursorforandroid.ui.components.FlatIconButton
 import com.cursorforandroid.ui.components.LocalMarkdownMedia
+import com.cursorforandroid.ui.components.LocalRunStopConfirmation
 import com.cursorforandroid.ui.components.MarkdownMediaContext
+import com.cursorforandroid.ui.components.RunInterruption
+import com.cursorforandroid.ui.components.RunStopDialog
+import com.cursorforandroid.ui.components.rememberRunStopConfirmation
 import com.cursorforandroid.ui.components.ShimmerText
 import com.cursorforandroid.ui.components.SpinnerRing
 import com.cursorforandroid.ui.components.cursorSurface
@@ -82,6 +95,10 @@ import com.cursorforandroid.ui.components.rememberFilePicker
 import com.cursorforandroid.ui.components.rememberMediaPicker
 import com.cursorforandroid.ui.components.scrollEdgeFade
 import com.cursorforandroid.ui.compose.rememberComposerMenuActions
+import com.cursorforandroid.ui.files.FileOpenRequestSaver
+import com.cursorforandroid.ui.files.FullFileDialog
+import com.cursorforandroid.ui.files.FullFileResolver
+import com.cursorforandroid.ui.media.LocalMediaViewer
 import com.cursorforandroid.ui.home.ModelSheet
 import com.cursorforandroid.ui.media.ConversationMedia
 import com.cursorforandroid.ui.home.NoModelRow
@@ -89,6 +106,7 @@ import com.cursorforandroid.ui.navigation.LocalWindowPosture
 import com.cursorforandroid.ui.navigation.WindowPosture
 import com.cursorforandroid.ui.panel.ConversationPanel
 import com.cursorforandroid.ui.panel.DesktopDialog
+import com.cursorforandroid.ui.panel.DesktopState
 import com.cursorforandroid.ui.panel.LocalPanelGraph
 import com.cursorforandroid.ui.panel.PanelPane
 import com.cursorforandroid.ui.panel.PanelSectionId
@@ -98,7 +116,6 @@ import com.cursorforandroid.ui.panel.SidePanel
 import com.cursorforandroid.ui.panel.SidePanelState
 import com.cursorforandroid.ui.panel.rememberPanelActions
 import com.cursorforandroid.ui.panel.rememberSidePanelState
-import com.cursorforandroid.domain.Subscriptions
 import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
 import kotlinx.coroutines.launch
@@ -115,12 +132,22 @@ internal fun ConversationState.showsWorkingRow(): Boolean {
 }
 
 /**
- * One chat: header with the agent's name and repo · branch (and a button to its pull request once it has one), the
- * transcript, and the follow-up composer.
+ * The working row's words. "Starting…" is a run the account has started and that is still booting — never the turn
+ * under way while a message waits behind it on the card (Bennett's frame of 2026-09-22 19:42: his message to a
+ * Project's busy coordinator under "Starting…" while that turn ran on).
+ */
+internal fun ConversationState.workingCaption(): String = when {
+    runStatus == RunStatus.CREATING -> "Starting…"
+    isReconnecting -> "Reconnecting…"
+    else -> "Working…"
+}
+
+/**
+ * One chat: a header of controls alone (back, its pull request once it has one, the panel, the menu; the agent's name
+ * is the header's accessibility label and the panel's header), the transcript, and the follow-up composer.
  *
- * The transcript is a bottom-anchored (`reverseLayout`) list, which is what keeps it stable while a run streams: the
- * newest item grows upward from the bottom edge without moving anything the reader is looking at, and a reader who
- * has scrolled up stays put. New items snap the list back to the bottom only while the reader is following along.
+ * The transcript follows the newest row while the reader is at the bottom, bottom-anchored, and holds what is on
+ * screen, top-anchored, once they have scrolled away or opened a dropdown (see [TranscriptScroll]).
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -150,7 +177,6 @@ fun ConversationScreen(
     val presentedTranscript by viewModel.presented.collectAsStateWithLifecycle()
     val conversation = presentedTranscript.state
     val draft by viewModel.draftText.collectAsStateWithLifecycle()
-    val isSending by viewModel.isSending.collectAsStateWithLifecycle()
     val toast by viewModel.toastMessage.collectAsStateWithLifecycle()
     val isPinned by viewModel.isPinned.collectAsStateWithLifecycle()
     val isSnoozed by viewModel.isSnoozed.collectAsStateWithLifecycle()
@@ -163,13 +189,24 @@ fun ConversationScreen(
     val picker by viewModel.modelPicker.collectAsStateWithLifecycle()
     val commands by viewModel.commands.collectAsStateWithLifecycle()
     val goal by viewModel.goal.collectAsStateWithLifecycle()
+    val hiddenNotices by viewModel.hiddenNotices.collectAsStateWithLifecycle()
     val extendedMode by graph.extendedMode.enabled.collectAsStateWithLifecycle(initialValue = false)
     val capabilities by viewModel.capabilities.collectAsStateWithLifecycle()
-    val controls by viewModel.controls.collectAsStateWithLifecycle()
+    val accountControls by viewModel.controls.collectAsStateWithLifecycle()
+    // The account's queue as the card shows it, projected from the very frame the transcript is drawn from: a message
+    // the transcript files under its run leaves the card in the same composition, whatever the last queue read said
+    // (see QueuePlacement); read off two frames, the card and the bubble could both show it, as they did on Bennett's
+    // phone (2026-09-20).
+    val controls = remember(accountControls, conversation.queuePlacement) { accountControls.placed(conversation.queuePlacement) }
     val isDemo = graph.session.isDemo
     // A Project coordinator's cards name its workers by the list's live rows and open their chats (either mode).
     val agentList by graph.agents.state.collectAsStateWithLifecycle()
     val agentsById = remember(agentList.agents) { agentList.agents.associateBy { it.id } }
+    // A subagent's row names its model off the catalog, and draws where it runs against where this chat does.
+    val models by graph.catalog.models.collectAsStateWithLifecycle()
+    val placement = SubagentPlacement.of(agent?.envType)
+    val subagents = presentedTranscript.subagents
+    val subagentRuns = conversation.subagentRuns
     // The transcript's rows answer the question they show and stop the step they show through the account
     // (Extended mode); with the surfaces off the hands are null and the rows stay read-only.
     // A Project's coordinator speaks to the user through its SendMessage tool; its plain replies are its working
@@ -179,7 +216,11 @@ fun ConversationScreen(
     // (see [CoordinatorTranscript]). The list's word arrives late or not at all on a large account; the content is
     // in hand from the first frame. Decided with the rows, off the main thread (see [TranscriptPresenter]).
     val coordinatorMode = presentedTranscript.coordinatorMode
-    val transcriptControls = remember(controls, capabilities, agentsById, onOpenAgent, coordinatorMode) {
+    val outgoing by viewModel.outgoingStatuses.collectAsStateWithLifecycle()
+    // A file a tool call names, tapped: the full-file viewer over the chat (pictures, recordings and sounds open the
+    // media viewer from the row instead). Kept across a rotation and a process death, like the store sheet.
+    var openFile by rememberSaveable(agentId, stateSaver = FileOpenRequestSaver) { mutableStateOf<FileOpenRequest?>(null) }
+    val transcriptControls = remember(controls, capabilities, agentsById, onOpenAgent, coordinatorMode, outgoing, models, placement, subagents, subagentRuns) {
         TranscriptControls(
             state = controls,
             onAnswer = if (capabilities.interactions && !isDemo) ({ callId, answers -> viewModel.answerQuestion(callId, answers) }) else null,
@@ -187,6 +228,19 @@ fun ConversationScreen(
             onOpenAgent = onOpenAgent,
             agentById = { id -> agentsById[id] },
             coordinatorMode = coordinatorMode,
+            onReloadTranscript = viewModel::reloadTranscript,
+            // A message sent from here rides in the transcript from the tap: its send's progress and any failure on its bubble.
+            outgoing = outgoing,
+            onRetryOutgoing = viewModel::retryOutgoing,
+            onEditOutgoing = viewModel::editOutgoing,
+            onDismissNotice = viewModel::dismissInlineNotice,
+            onOpenFile = { openFile = it },
+            onAskToCopyFile = if (isDemo) null else viewModel::askToCopyFileIntoWorkspace,
+            models = models,
+            subagents = subagents,
+            placement = placement,
+            subagentActivity = graph.subagentActivity::of,
+            subagentRuns = subagentRuns,
         )
     }
     // The "+" menu's two pickers: the gallery — images alone in the default mode, images and videos as real files in
@@ -214,11 +268,15 @@ fun ConversationScreen(
     // The turns just past the top edge are composed ahead of time, so the keyboard leaving uncovers rows that are
     // already built rather than building them on the frames of its animation (see TranscriptPrefetchStrategy).
     val listState = rememberLazyListState(prefetchStrategy = remember { TranscriptPrefetchStrategy() })
+    val transcriptScroll = rememberTranscriptScroll(listState, agentId)
     val scope = rememberCoroutineScope()
     var menuOpen by rememberSaveable { mutableStateOf(false) }
     var modelSheet by rememberSaveable { mutableStateOf(false) }
     var renameOpen by rememberSaveable { mutableStateOf(false) }
     var snoozeOpen by rememberSaveable { mutableStateOf(false) }
+    // Every tap here that would stop, pause or interrupt the run asks first while the setting is on (see
+    // RunStopConfirmation): the composer's Stop, the menu's, the queues' Send now, the panel's controls.
+    val stopConfirmation = rememberRunStopConfirmation(graph.prefs)
     val uriHandler = LocalUriHandler.current
     val clipboard = LocalClipboardManager.current
 
@@ -244,47 +302,73 @@ fun ConversationScreen(
     // writes. Both come presented, a turn at a time, off the main thread (see [TranscriptPresenter]).
     val items = presentedTranscript.items
     val isActive = conversation.runStatus?.isActive == true || conversation.isStreaming
-    val rows = presentedTranscript.rows
+    LaunchedEffect(isActive) { if (!isActive) stopConfirmation.dismissFor(agentId) }
+    // The notices among the rows the reader has put away for this chat (see NoticeCard.dismissKey, NoticeDismissals) are left out.
+    val rows = remember(presentedTranscript, hiddenNotices) {
+        val closed = NoticeDismissals.inlineKeys(hiddenNotices)
+        if (closed.isEmpty()) presentedTranscript.rows else presentedTranscript.rows.filterNot { row -> row is TranscriptRow.Item && (row.item as? NoticeCard)?.dismissKey in closed }
+    }
     // A live stretch says "Working" itself; the caption below the list is for a run with nothing on screen yet, and
     // for a connection being re-established, which only it can say.
     val showWorking = conversation.showsWorkingRow() && (conversation.isReconnecting || (rows.lastOrNull() as? TranscriptRow.Stretch)?.live != true)
     val canReadStores = capabilities.projects && !isDemo
     var openStorePath by rememberSaveable(agentId) { mutableStateOf<String?>(null) }
 
-    // In a reversed list index 0 is the newest item, so "at the bottom" is "first item, (almost) no offset".
-    val atBottom by remember {
-        derivedStateOf { listState.firstVisibleItemIndex == 0 && listState.firstVisibleItemScrollOffset <= BottomTolerancePx }
-    }
-    // Whether the reader wants to follow the newest content. Only the reader's own scrolls change it: a new item
-    // arriving cannot knock the list out of follow mode.
-    var following by remember { mutableStateOf(true) }
-    LaunchedEffect(listState) {
-        snapshotFlow { listState.isScrollInProgress }.collect { scrolling -> if (!scrolling) following = atBottom }
-    }
-    val newestKey = rows.lastOrNull()?.key
-    LaunchedEffect(rows.size, newestKey, showWorking) {
-        if (following) listState.requestScrollToItem(0)
-    }
-    // The chat opens on its newest turns; the ones before them are paged in when the reader nears the top. In a
-    // reversed list the top is the highest index, so nearing it is the last visible item being within a few rows of
-    // the end. Asked once per approach: the repository ignores a request while one is under way.
     val hasOlder = conversation.hasOlder
     val isLoadingOlder = conversation.isLoadingOlder
+    val showTraces = items.isNotEmpty() && conversation.traceStatus.let { it.pending + it.expired + it.failed > 0 }
+    val loadingRow = conversation.isLoading && items.isEmpty()
+    val emptyRow = !conversation.isLoading && items.isEmpty()
+    // Everything the list holds, top to bottom: the rows between the items above them and the working caption below.
+    val order = remember(rows, showWorking, showTraces, hasOlder, loadingRow, emptyRow) {
+        TranscriptOrder(
+            above = listOfNotNull(
+                LOADING_KEY.takeIf { loadingRow },
+                EMPTY_KEY.takeIf { emptyRow },
+                OLDER_KEY.takeIf { hasOlder && items.isNotEmpty() },
+                TRACES_KEY.takeIf { showTraces },
+            ),
+            rows = rows,
+            below = listOfNotNull(WORKING_KEY.takeIf { showWorking }),
+        )
+    }
+    val following = transcriptScroll.following
+    // The order the list was last measured in, which is what its scroll bounds are in: the fades read the two together.
+    val listReversed by remember(listState) { derivedStateOf { listState.layoutInfo.reverseLayout } }
+    // Following, a new row lands past the bottom edge, where the list's keyed anchoring leaves it; the list is taken
+    // back to it. Pinned, it stays there.
+    LaunchedEffect(rows.size, rows.lastOrNull()?.key, showWorking) {
+        if (transcriptScroll.following) listState.requestScrollToItem(0)
+    }
+    // The chat opens on its newest turns; the ones before them are paged in when the reader scrolls up to them:
+    // nearing the top is having only a few items above the top-most one in view — and only the reader's scroll asks:
+    // a gesture arms one page, a fling under way keeps asking as its rows come into reach, and a transcript short
+    // enough to show its oldest row at rest asks for nothing until the reader moves it. Until 0.3.47 the list asked
+    // whenever its end was in view: a coordinator's turns fold into a few rows, so a Project of 240 turns paged itself
+    // in whole, page after page, every turn's log replayed behind it, and again on every reopen (Bennett,
+    // 2026-09-20). "Older messages" stays a tap away at rest.
+    var olderArmed by remember(agentId) { mutableStateOf(false) }
+    LaunchedEffect(listState) {
+        snapshotFlow { listState.isScrollInProgress }.collect { scrolling -> if (scrolling) olderArmed = true }
+    }
     LaunchedEffect(listState, hasOlder, isLoadingOlder) {
         if (!hasOlder || isLoadingOlder) return@LaunchedEffect
-        snapshotFlow { listState.layoutInfo.let { info -> (info.visibleItemsInfo.lastOrNull()?.index ?: -1) to info.totalItemsCount } }
-            .collect { (lastVisible, total) ->
-                if (total > 0 && lastVisible >= total - OlderTurnsPrefetchRows) viewModel.loadOlder()
+        snapshotFlow { listState.layoutInfo.let { info -> TranscriptScroll.itemsAbove(info) to info.totalItemsCount } }
+            .collect { (above, total) ->
+                if ((olderArmed || listState.isScrollInProgress) && total > 0 && above < OlderTurnsPrefetchRows) {
+                    olderArmed = false
+                    viewModel.loadOlder()
+                }
             }
     }
 
     // The right-side panel: the chat's files, changes, pull request, media, artifacts and usage, read off the same
-    // repositories as the transcript plus the documented reads only it needs. Opened by the header button or a swipe
-    // in from the end edge; it is per chat, like the view model behind it.
+    // repositories as the transcript plus the documented reads only it needs. Opened by the header button or a drag
+    // toward the start edge across the chat; it is per chat, like the view model behind it.
     val panelViewModel: PanelViewModel = viewModel(key = "panel-$agentId", factory = PanelViewModel.Factory(graph, agentId))
     val panelState = rememberSidePanelState()
     val panel by panelViewModel.state.collectAsStateWithLifecycle()
-    val panelActions = rememberPanelActions(panelViewModel, onToast = viewModel::showMessage, onOpenAgent = onOpenAgent)
+    val panelActions = rememberPanelActions(panelViewModel, onToast = viewModel::showMessage, onOpenAgent = onOpenAgent, onAskToCopyFile = if (isDemo) null else viewModel::askToCopyFileIntoWorkspace)
     // Replies reference screenshots and recordings by their VM path; resolving them needs this agent's id. A path
     // into an Agent Store (`/cursor/stores/…`, a Project's context) is read through the account in Extended mode and
     // opens in the document sheet; without the account it points at the Project on cursor.com. A tapped figure opens
@@ -333,8 +417,8 @@ fun ConversationScreen(
     val expandedPosture = if (panelExpanded) posture.copy(panelWidthDp = WindowPosture.PANEL_MAX_DP) else posture
     val panelContent: @Composable () -> Unit = {
         // The panel's figures — generated images, recordings, artifacts — resolve through the same media context and
-        // open into the same lightbox as the transcript's.
-        CompositionLocalProvider(LocalMarkdownMedia provides markdownMedia, LocalPanelGraph provides graph) {
+        // open into the same viewer as the transcript's, among the same pages.
+        CompositionLocalProvider(LocalMarkdownMedia provides markdownMedia, LocalPanelGraph provides graph, LocalRunStopConfirmation provides stopConfirmation) {
             ConversationPanel(
                 panel,
                 panelActions,
@@ -360,148 +444,153 @@ fun ConversationScreen(
         modifier = modifier,
     ) {
     Column(Modifier.fillMaxSize().background(colors.canvas)) {
-        if (!embedded) CursorHeader(
-            title = agent?.name ?: "Chat",
-            subtitle = agent?.let { a -> listOfNotNull(a.repoShortName, a.branchName).joinToString(" · ").ifBlank { null } },
+        val touchHeight = CursorDimens.minTouchTarget
+        if (!embedded) ChatHeader(
+            label = agent?.name ?: "Chat",
             leading = {
                 when {
-                    onBack != null -> FlatIconButton(CursorIcons.ChevronLeft, "Back", onClick = onBack)
-                    onOpenSidebar != null -> FlatIconButton(CursorIcons.Sidebar, "Open sidebar", onClick = onOpenSidebar)
+                    onBack != null -> FlatIconButton(CursorIcons.ChevronLeft, "Back", onClick = onBack, touchHeight = touchHeight)
+                    onOpenSidebar != null -> FlatIconButton(CursorIcons.Sidebar, "Open sidebar", onClick = onOpenSidebar, touchHeight = touchHeight)
                 }
             },
             trailing = {
-                // The menu, then the panel toggle at the far edge, as the web's header orders them.
+                // The pull request lives here and nowhere else in the chat: its own button beside the panel's, in the
+                // same green glyph the list rows use for it. It is the one thing a reader most often leaves the chat
+                // for, and the header stays in reach however long the transcript gets. The panel's header names the branch.
+                agent?.prUrl?.let { prUrl ->
+                    FlatIconButton(CursorIcons.GitPullRequest, "Open pull request", tint = colors.gitAdded, onClick = { uriHandler.openUri(prUrl) }, touchHeight = touchHeight)
+                }
+                // The panel's button: the sidebar glyph mirrored, for the sheet that comes in from the other side — and,
+                // where the panel is a pane beside the chat, the way to put it away again.
+                FlatIconButton(CursorIcons.Sidebar, if (panelState.isOpen) "Hide panel" else "Open panel", onClick = { scope.launch { panelState.toggle() } }, modifier = Modifier.scale(scaleX = -1f, scaleY = 1f), touchHeight = touchHeight)
                 Box {
-                    FlatIconButton(CursorIcons.More, "More", onClick = { menuOpen = true })
-                    DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }, containerColor = colors.elevated, shape = CursorTheme.shapes.lg) {
-                        MenuItem(if (isPinned) "Unpin" else "Pin", CursorIcons.Pin) { menuOpen = false; viewModel.togglePinned() }
+                    FlatIconButton(CursorIcons.More, "More", onClick = { menuOpen = true }, touchHeight = touchHeight)
+                    CursorMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                        CursorMenuItem(if (isPinned) "Unpin" else "Pin", CursorIcons.Pin) { menuOpen = false; viewModel.togglePinned() }
                         // The public API has no rename; the demo renames its in-memory row, Extended mode the account's.
-                        if (isDemo || extendedMode) MenuItem("Rename", CursorIcons.Pencil) { menuOpen = false; renameOpen = true }
-                        MenuItem("Refresh", CursorIcons.Refresh) { menuOpen = false; viewModel.reload() }
+                        if (isDemo || extendedMode) CursorMenuItem("Rename", CursorIcons.Pencil) { menuOpen = false; renameOpen = true }
                         // The chat's own facts — its changes, pull request, files, artifacts, side chats, usage — as the
                         // panel showed them before the Project surface: the sections, reachable from here for any chat.
-                        MenuItem("Chat details", CursorIcons.Layers) { menuOpen = false; panelActions.showSection(PanelSectionId.Header); scope.launch { panelState.open() } }
-                        agent?.prUrl?.let { prUrl -> MenuItem("Open pull request", CursorIcons.GitPullRequest) { menuOpen = false; uriHandler.openUri(prUrl) } }
-                        MenuItem("Reload transcript", CursorIcons.Refresh) { menuOpen = false; viewModel.reloadTranscript() }
-                        MenuItem("Open on cursor.com", CursorIcons.ExternalLink) { menuOpen = false; agent?.url?.let(uriHandler::openUri) }
-                        MenuItem("Copy link", CursorIcons.Copy) { menuOpen = false; agent?.url?.let { clipboard.setText(AnnotatedString(it)) } }
-                        MenuItem("Share…", CursorIcons.Link) { menuOpen = false; panelActions.shareText(agent?.url ?: CursorEndpoints.webUrl(agentId)) }
+                        CursorMenuItem("Chat details", CursorIcons.Layers) { menuOpen = false; panelActions.showSection(PanelSectionId.Header); scope.launch { panelState.open() } }
+                        CursorMenuItem("Reload transcript", CursorIcons.Refresh) { menuOpen = false; viewModel.reloadTranscript() }
+                        CursorMenuItem("Open on cursor.com", CursorIcons.ExternalLink) { menuOpen = false; agent?.url?.let(uriHandler::openUri) }
+                        CursorMenuItem("Copy link", CursorIcons.Copy) { menuOpen = false; agent?.url?.let { clipboard.setText(AnnotatedString(it)) } }
+                        CursorMenuItem("Share…", CursorIcons.Link) { menuOpen = false; panelActions.shareText(agent?.url ?: CursorEndpoints.webUrl(agentId)) }
                         // The load's redacted account of this chat (see [TranscriptDiagnostics]), from any chat that
                         // looks wrong — not only one that has failed outright: window bounds, runs and their order,
                         // each turn's trace state, the live follow, the last errors; no message text.
-                        MenuItem("Share diagnostics", CursorIcons.Warning) { menuOpen = false; scope.launch { panelActions.shareText(viewModel.loadDiagnosticsReport()) } }
+                        CursorMenuItem("Share diagnostics", CursorIcons.Warning) { menuOpen = false; scope.launch { panelActions.shareText(viewModel.loadDiagnosticsReport()) } }
                         // The agent's VM desktop (Extended mode): view it, or take control of it to try what it is
                         // building. A Remote Control chat's machine has no desktop to reach from here.
                         if (canOpenDesktop) {
-                            MenuItem("View desktop", CursorIcons.Eye) { menuOpen = false; panelActions.openDesktop(viewOnly = true) }
-                            MenuItem("Take control of desktop", CursorIcons.Desktop) { menuOpen = false; panelActions.openDesktop(viewOnly = false) }
+                            CursorMenuItem("View desktop", CursorIcons.Eye) { menuOpen = false; panelActions.openDesktop(viewOnly = true) }
+                            CursorMenuItem("Take control of desktop", CursorIcons.Desktop) { menuOpen = false; panelActions.openDesktop(viewOnly = false) }
                         }
-                        if (isActive) MenuItem("Stop", CursorIcons.Stop) { menuOpen = false; viewModel.cancelRun() }
+                        if (isActive) CursorMenuItem("Stop", CursorIcons.Stop) { menuOpen = false; stopConfirmation.ask(RunInterruption.Stop, agentId, viewModel::cancelRun) }
                         if (agent?.isArchived != true) {
                             if (isSnoozed) {
-                                MenuItem("Unsnooze", CursorIcons.Clock) { menuOpen = false; viewModel.unsnooze() }
+                                CursorMenuItem("Unsnooze", CursorIcons.Clock) { menuOpen = false; viewModel.unsnooze() }
                             } else {
-                                MenuItem("Snooze", CursorIcons.Clock) { menuOpen = false; snoozeOpen = true }
+                                CursorMenuItem("Snooze", CursorIcons.Clock) { menuOpen = false; snoozeOpen = true }
                             }
                         }
                         if (agent?.isArchived == true) {
-                            MenuItem("Unarchive", CursorIcons.Archive) { menuOpen = false; viewModel.unarchive() }
+                            CursorMenuItem("Unarchive", CursorIcons.Archive) { menuOpen = false; viewModel.unarchive() }
                         } else {
-                            MenuItem("Archive", CursorIcons.Archive) { menuOpen = false; viewModel.archive(onDone = { onBack?.invoke() }) }
+                            CursorMenuItem("Archive", CursorIcons.Archive) { menuOpen = false; viewModel.archive(onDone = { onBack?.invoke() }) }
                         }
                     }
                 }
-                // The panel's toggle, at the far right edge as on the web: the Project surface for a chat in a Project,
-                // the chat's own sections otherwise.
-                FlatIconButton(CursorIcons.PanelRight, if (panelState.isOpen) "Hide panel" else "Open panel", onClick = { scope.launch { panelState.toggle() } })
             },
         )
 
         Box(Modifier.weight(1f).fillMaxWidth()) {
             val paneWidth = Modifier.widthIn(max = CursorDimens.composerMaxWidth).fillMaxWidth()
-            // The media context is the same for every row, so it is provided once around the list rather than
-            // opening a provider scope per item.
-            CompositionLocalProvider(LocalMarkdownMedia provides markdownMedia, LocalTranscriptControls provides transcriptControls) {
-                LazyColumn(
-                    state = listState,
-                    reverseLayout = true,
-                    // Not fillMaxSize: a short transcript then sizes to its content and reads from the top. Once it
-                    // overflows, the items dissolve at whichever edge still has transcript past it rather than clipping
-                    // flat against the header or the composer. The fade is painted in the canvas colour: this list is
-                    // resized on every frame the keyboard moves, and an offscreen dissolve would re-allocate and
-                    // re-render a full-screen layer on each of them.
-                    modifier = Modifier.fillMaxWidth().align(Alignment.TopCenter).scrollEdgeFade(listState, reverseLayout = true, surface = colors.canvas),
-                    contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 6.dp, bottom = 12.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                ) {
-                    if (showWorking) {
-                        item("working") {
-                            // A dropped connection is not the run's problem: the agent keeps working while the stream
-                            // is re-established, so the caption keeps shimmering and only its wording says what is
-                            // going on. The caption is the whole indicator, as in the web chat: no glyph beside it.
-                            val caption = when {
-                                conversation.runStatus == RunStatus.CREATING -> "Starting…"
-                                conversation.isReconnecting -> "Reconnecting…"
-                                else -> "Working…"
-                            }
-                            Box(paneWidth) {
-                                ShimmerText(caption, style = type.base)
-                            }
+            // The items above and below the rows, by their keys in [order].
+            val edgeItem: @Composable (String) -> Unit = { key ->
+                when (key) {
+                    WORKING_KEY -> {
+                        // A dropped connection is not the run's problem: the agent keeps working while the stream
+                        // is re-established, so the caption keeps shimmering and only its wording says what is
+                        // going on. The caption is the whole indicator, as in the web chat: no glyph beside it.
+                        Box(paneWidth) {
+                            ShimmerText(conversation.workingCaption(), style = type.base)
                         }
-                    }
-                    // Without a content type the lazy layout offers a scrolled-off user bubble's slot to an activity
-                    // group, whose subtree shares nothing with it: the reuse always fails and costs more than it saves.
-                    items(rows.asReversed(), key = { it.key }, contentType = { it::class }) { row ->
-                        TranscriptRowView(row, paneWidth)
                     }
                     // Where the window's traces stand, when not every turn shown has its activity: the turns being
                     // read or replayed, the ones whose logs Cursor no longer has, the ones that could not be read
                     // this time (with a Retry). Above the oldest turn shown, where the missing activity would be
                     // noticed; nothing when every turn is whole.
-                    if (items.isNotEmpty() && conversation.traceStatus.let { it.pending + it.expired + it.failed > 0 }) {
-                        item("traces") {
-                            TraceStatusRow(conversation.traceStatus, onRetry = viewModel::retryTraces, modifier = paneWidth)
-                        }
-                    }
+                    TRACES_KEY -> TraceStatusRow(conversation.traceStatus, onRetry = viewModel::retryTraces, modifier = paneWidth)
                     // Past the oldest turn shown: the turns before it, being paged in, or a tap away when the
                     // reader's scroll did not reach far enough to ask for them.
-                    if (hasOlder && items.isNotEmpty()) {
-                        item("older") {
-                            OlderTurnsRow(isLoading = isLoadingOlder, onLoad = viewModel::loadOlder, modifier = paneWidth)
+                    OLDER_KEY -> OlderTurnsRow(isLoading = isLoadingOlder, onLoad = viewModel::loadOlder, modifier = paneWidth)
+                    EMPTY_KEY -> {
+                        val failure = conversation.error ?: conversation.transcriptError?.let { "Couldn't load the transcript: $it" }
+                        if (failure != null) {
+                            // Nothing loaded at all: the failure is the screen, with the same two ways out, at
+                            // the transcript's own margins rather than the dock's.
+                            LoadErrorRow(
+                                message = failure,
+                                onRetry = viewModel::reload,
+                                onShareDiagnostics = { scope.launch { panelActions.shareText(viewModel.loadDiagnosticsReport()) } },
+                                modifier = paneWidth.padding(top = 32.dp),
+                                docked = false,
+                            )
+                        } else {
+                            Text(
+                                if (conversation.transcriptUnavailable) "The transcript isn't available for this chat." else "Nothing here yet.",
+                                style = type.base,
+                                color = colors.textQuaternary,
+                                modifier = Modifier.padding(top = 32.dp),
+                            )
                         }
                     }
-                    if (!conversation.isLoading && items.isEmpty()) {
-                        item("empty") {
-                            val failure = conversation.error ?: conversation.transcriptError?.let { "Couldn't load the transcript: $it" }
-                            if (failure != null) {
-                                // Nothing loaded at all: the failure is the screen, with the same two ways out.
-                                LoadErrorRow(
-                                    message = failure,
-                                    onRetry = viewModel::reload,
-                                    onShareDiagnostics = { scope.launch { panelActions.shareText(viewModel.loadDiagnosticsReport()) } },
-                                    modifier = paneWidth.padding(top = 32.dp),
-                                )
-                            } else {
-                                Text(
-                                    if (conversation.transcriptUnavailable) "The transcript isn't available for this chat." else "Nothing here yet.",
-                                    style = type.base,
-                                    color = colors.textQuaternary,
-                                    modifier = Modifier.padding(top = 32.dp),
-                                )
-                            }
-                        }
-                    }
-                    if (conversation.isLoading && items.isEmpty()) {
-                        item("loading") {
-                            Row(Modifier.fillMaxWidth().padding(top = 24.dp), horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
-                                SpinnerRing(size = 14.dp)
-                                Spacer(Modifier.width(8.dp))
-                                Text("Loading…", style = type.base, color = colors.textQuaternary)
-                            }
-                        }
+                    LOADING_KEY -> Row(Modifier.fillMaxWidth().padding(top = 24.dp), horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
+                        SpinnerRing(size = 14.dp)
+                        Spacer(Modifier.width(8.dp))
+                        Text("Loading…", style = type.base, color = colors.textQuaternary)
                     }
                 }
+            }
+            // The media context is the same for every row, so it is provided once around the list rather than
+            // opening a provider scope per item.
+            CompositionLocalProvider(
+                LocalMarkdownMedia provides markdownMedia,
+                LocalTranscriptControls provides transcriptControls,
+                LocalDisclosureTaps provides transcriptScroll,
+            ) {
+                LazyColumn(
+                    state = listState,
+                    reverseLayout = following,
+                    // The reader's scroll is the transcript's own, the same way in both orders (see readerScrolling).
+                    userScrollEnabled = false,
+                    // Not fillMaxSize: a short transcript then sizes to its content and reads from the top. Once it
+                    // overflows, the items dissolve at whichever edge still has transcript past it rather than clipping
+                    // flat against the header or the composer. The fade is painted in the canvas colour: this list is
+                    // resized on every frame the keyboard moves, and an offscreen dissolve would re-allocate and
+                    // re-render a full-screen layer on each of them.
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .align(Alignment.TopCenter)
+                        .scrollEdgeFade(listState, reverseLayout = listReversed, surface = colors.canvas)
+                        .readerScrolling(transcriptScroll),
+                    contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 6.dp, bottom = 12.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    // A following list is declared bottom-up, the newest row first (see TranscriptScroll). Each kind of
+                    // item has one call site for both orders: a row declared from two would be a different group in
+                    // each, and every switch would rebuild every row on screen and drop what the reader had opened.
+                    fun edge(key: String) = item(key) { edgeItem(key) }
+                    val (before, after) = if (following) order.below.asReversed() to order.above.asReversed() else order.above to order.below
+                    before.forEach(::edge)
+                    // Without a content type the lazy layout offers a scrolled-off user bubble's slot to an activity
+                    // group, whose subtree shares nothing with it: the reuse always fails and costs more than it saves.
+                    items(if (following) rows.asReversed() else rows, key = { it.key }, contentType = { it::class }) { row -> TranscriptRowView(row, paneWidth) }
+                    after.forEach(::edge)
+                }
+                SideEffect { transcriptScroll.orient(following, order) }
             }
 
             androidx.compose.animation.AnimatedVisibility(
@@ -515,7 +604,7 @@ fun ConversationScreen(
                         // The flat icon-button box: one step up from the composer's round buttons it floats above.
                         .size(CursorDimens.iconButton)
                         .cursorSurface(colors.elevated, colors.strokeStrong, CircleShape)
-                        .pressable({ scope.launch { listState.animateScrollToItem(0) } }, CircleShape),
+                        .pressable({ scope.launch { transcriptScroll.jumpToBottom() } }, CircleShape),
                     contentAlignment = Alignment.Center,
                 ) {
                     Icon(CursorIcons.ArrowDown, "Scroll to latest", tint = colors.iconPrimary, modifier = Modifier.size(16.dp))
@@ -526,18 +615,6 @@ fun ConversationScreen(
             }
         }
 
-        // A fetch that did not go through, said under the transcript rather than swallowed, in the server's own words:
-        // the load's failure, or — with the runs answering and the transcript not — the transcript's, with the way to
-        // ask again and the load's diagnostics a tap away (the same redacted block Settings exports).
-        (conversation.error ?: conversation.transcriptError?.let { "Couldn't refresh the transcript: $it" })?.takeIf { items.isNotEmpty() }?.let { err ->
-            LoadErrorRow(
-                message = err,
-                onRetry = viewModel::reload,
-                onShareDiagnostics = { scope.launch { panelActions.shareText(viewModel.loadDiagnosticsReport()) } },
-                modifier = Modifier.widthIn(max = CursorDimens.composerMaxWidth).fillMaxWidth().align(Alignment.CenterHorizontally).padding(horizontal = 16.dp, vertical = 4.dp),
-            )
-        }
-
         val archived = agent?.isArchived == true
         // Extended mode keeps the queue on the account, where the desktop and the web keep theirs; otherwise on this device.
         val accountQueue = capabilities.accountQueue && !isDemo
@@ -545,7 +622,9 @@ fun ConversationScreen(
         // The composer and the strips over it dock at the bottom (composerDockPadding): the gutter at each side, and
         // under the box a gap a shade wider than the gutter, above the keyboard's edge while there is one and above
         // the navigation bar — or the window's edge — otherwise. The transcript above takes whatever height is left
-        // and keeps its newest turn on the composer through the change, being a bottom-anchored list.
+        // and keeps its newest turn on the composer through the change, being a bottom-anchored list. Every card in
+        // the stack is a dockedCard: stood in from the box's sides so its corners are concentric with the box's, the
+        // same gap between each, whether one is stacked or five.
         Column(
             Modifier.fillMaxWidth().composerDockPadding().testTag("composer-column"),
             horizontalAlignment = Alignment.CenterHorizontally,
@@ -563,6 +642,25 @@ fun ConversationScreen(
                     )
                 }
             }
+            // A fetch that did not go through, said rather than swallowed, in the server's own words: the load's
+            // failure, or — with the runs answering and the transcript not — the transcript's, and Extended mode's
+            // record refused with the documented endpoints standing in (never a quiet fallback that looks like the
+            // chat itself; Bennett's 2026-09-20 frame: a Project shown as run activity alone, nothing saying why) —
+            // each with the way to ask again and the load's diagnostics a tap away (the same redacted block Settings
+            // exports), and an X that puts it away (see LoadNotices, NoticeDismissals). First in the stack, at the
+            // seam between the transcript they are about and the strips under them: the queue keeps its place on the
+            // box it came from, as the desktop stacks its trays.
+            for (notice in LoadNotices.shown(conversation, hiddenNotices)) {
+                key(notice.identity) {
+                    LoadNoticeRow(
+                        notice = notice,
+                        onRetry = viewModel::reload,
+                        onShareDiagnostics = { scope.launch { panelActions.shareText(viewModel.loadDiagnosticsReport()) } },
+                        onDismiss = { viewModel.dismissNotice(notice) },
+                        modifier = Modifier.widthIn(max = CursorDimens.composerMaxWidth).padding(bottom = 4.dp),
+                    )
+                }
+            }
             // The chat's goal, when it has one, stands over whatever is queued: the order the desktop stacks its
             // trays in above the composer. Each strip keeps the same width and the same gap to the next.
             goal?.let { current ->
@@ -574,7 +672,10 @@ fun ConversationScreen(
                     queue = queue,
                     thumbnails = thumbnails,
                     onEdit = { viewModel.editQueued(it.id) },
-                    onSteer = { viewModel.steerQueued(it.id) },
+                    // Sent now while a turn is under way, a message cancels that turn for it.
+                    onSteer = { item ->
+                        if (isActive) stopConfirmation.ask(RunInterruption.SendNow, agentId) { viewModel.steerQueued(item.id) } else viewModel.steerQueued(item.id)
+                    },
                     onRemove = { viewModel.removeQueued(it.id) },
                     modifier = Modifier.widthIn(max = CursorDimens.composerMaxWidth).padding(bottom = 4.dp),
                 )
@@ -583,7 +684,10 @@ fun ConversationScreen(
                 AccountQueueRows(
                     queue = controls.queue,
                     inFlightIds = controls.inFlightQueueIds,
-                    onSendNow = { viewModel.queueSendNow(it.id) },
+                    // `SubmitPendingFollowupNow` sends the message in place of the turn under way.
+                    onSendNow = { item ->
+                        if (isActive) stopConfirmation.ask(RunInterruption.SendNow, agentId) { viewModel.queueSendNow(item.id) } else viewModel.queueSendNow(item.id)
+                    },
                     onRemove = { viewModel.queueDelete(it.id) },
                     onUpdate = { item, text -> viewModel.queueUpdate(item.id, text) },
                     onEditing = { item, editing -> viewModel.queueMarkEditing(item.id, editing) },
@@ -604,11 +708,10 @@ fun ConversationScreen(
                     else -> "Follow up…"
                 },
                 onSend = viewModel::send,
-                // Held only while an attached file is still going up: once every file carries its reference the send is instant.
-                canSend = (draft.isNotBlank() || attachments.isNotEmpty() || files.isNotEmpty()) && !isSending && !archived && uploadHint == null,
+                // Free the moment send is tapped: the message, its files' uploads and its send are the transcript's from then on.
+                canSend = (draft.isNotBlank() || attachments.isNotEmpty() || files.isNotEmpty()) && !archived,
                 isRunning = isActive,
-                onStop = viewModel::cancelRun,
-                isSending = isSending,
+                onStop = { stopConfirmation.ask(RunInterruption.Stop, agentId, viewModel::cancelRun) },
                 plusMenu = plusMenu,
                 commands = commands,
                 attachments = attachments,
@@ -620,6 +723,8 @@ fun ConversationScreen(
                 fileUploads = fileUploads,
                 onRetryFile = viewModel::retryFile,
                 sendHint = uploadHint,
+                mediaAgentId = agentId,
+                media = graph.media,
                 // The chip names the model the chat runs on and, like on cursor.com/agents, switches it for the next
                 // follow-up; an archived chat takes no follow-ups, so there is nothing to switch.
                 modelLabel = picker.chipLabel,
@@ -633,6 +738,19 @@ fun ConversationScreen(
             )
         }
     }
+    }
+
+    openFile?.let { request ->
+        val resolver = remember(graph) { FullFileResolver.of(graph.agentFileReads, { graph.extendedMode.capabilities().workspaceFiles && !graph.session.isDemo }, graph.media) }
+        val viewer = LocalMediaViewer.current
+        FullFileDialog(
+            request,
+            load = { ask -> resolver.resolve(agentId, request, CarriedFile.of(latestItems.value, request.path, request.callId), ask.force, ask.wake) },
+            onClose = { openFile = null },
+            // Bytes that turned out to be a picture, a recording or a sound are the media viewer's, never a text screen's.
+            onOpenMedia = viewer?.let { v -> { entry -> openFile = null; v.open(agentId, listOf(entry), entry.src, null, fallback = entry, autoplay = entry.isPlayable) } },
+            onAskToCopy = if (isDemo) null else { path -> openFile = null; viewModel.askToCopyFileIntoWorkspace(path) },
+        )
     }
 
     openStorePath?.let { text -> StorePath.parse(text)?.let { path -> storeRef(path, agentId) } }?.let { ref ->
@@ -652,7 +770,7 @@ fun ConversationScreen(
             unavailable = picker.unavailable,
             onPlanMode = viewModel::setPlanMode,
             onAutoCreatePr = null,
-            onRetry = viewModel::refreshModels,
+            onRefresh = viewModel::refreshModels,
             onSelect = viewModel::selectModel,
             onDismiss = { modelSheet = false },
             pinnedIds = picker.pinnedModelIds,
@@ -663,7 +781,10 @@ fun ConversationScreen(
             noModelRow = when {
                 picker.current != null -> null
                 picker.currentAssumed -> NoModelRow("Current model", "Auto, assumed: Cursor doesn't report this chat's model to the app. Follow-ups keep the model it has been using.")
-                else -> NoModelRow("Current model", picker.currentLabel ?: "Keep the model this chat has been using")
+                else -> NoModelRow(
+                    "Current model",
+                    picker.currentLabel?.let { label -> listOfNotNull(label, picker.currentDetail).joinToString(" · ") } ?: "Keep the model this chat has been using",
+                )
             },
         )
     }
@@ -681,6 +802,7 @@ fun ConversationScreen(
             onDismiss = { snoozeOpen = false },
         )
     }
+    RunStopDialog(stopConfirmation)
 }
 
 /**
@@ -688,6 +810,12 @@ fun ConversationScreen(
  * as a sheet over the chat (the phone's layout, [SidePanel]), or the chat alone when it is [embedded] in another
  * chat's panel. The sheet's state doubles as the pane's: open is open in either layout, so a Fold unfolding with the
  * sheet open finds the pane open.
+ *
+ * The chat is composed through the same sheet host in both layouts — as a pane the host is handed a state that
+ * never opens, its gestures off, and the pane stands beside it — so the layout flipping under a live chat (the
+ * sidebar dragged wider on a Fold's inner display, a window resized) changes the host's arguments and nothing in the
+ * tree: the composer keeps its focus and the keyboard, the transcript its scroll. Two branches would recompose the
+ * chat from scratch on every flip.
  */
 @Composable
 private fun ConversationFrame(
@@ -701,15 +829,24 @@ private fun ConversationFrame(
     modifier: Modifier,
     content: @Composable () -> Unit,
 ) {
+    if (embedded) {
+        Box(modifier.fillMaxSize()) { content() }
+        return
+    }
     val colors = CursorTheme.colors
-    when {
-        embedded -> Box(modifier.fillMaxSize()) { content() }
-        pane -> Row(modifier.fillMaxSize()) {
-            Box(Modifier.weight(1f).fillMaxSize()) { content() }
-            if (panelState.isOpen) PanelPane(width = paneWidth, onResize = onPanelResize) { panelContent() }
-        }
+    // The state the sheet host holds while the panel is a pane: closed, and nothing ever opens it.
+    val paneIdle = rememberSidePanelState()
+    Row(modifier.fillMaxSize()) {
         // The sheet sits on the canvas colour, as the web's panel does; the scrim behind it is what sets it off.
-        else -> SidePanel(state = panelState, modifier = modifier, expanded = panelExpanded, containerColor = colors.canvas, panelContent = panelContent) { content() }
+        SidePanel(
+            state = if (pane) paneIdle else panelState,
+            modifier = Modifier.weight(1f).fillMaxHeight(),
+            gesturesEnabled = !pane,
+            expanded = panelExpanded,
+            containerColor = colors.canvas,
+            panelContent = panelContent,
+        ) { content() }
+        if (pane && panelState.isOpen) PanelPane(width = paneWidth, onResize = onPanelResize) { panelContent() }
     }
 }
 
@@ -728,8 +865,12 @@ internal fun changesSummary(panel: PanelState): ConversationPillsState.ChangesSu
     return ConversationPillsState.ChangesSummary(additions, deletions, changes.size)
 }
 
-/** How far (px) the newest item may be scrolled past before the reader counts as having left the bottom. */
-private const val BottomTolerancePx = 48
+/** The keys of the list's items that are not rows of the transcript (see [TranscriptOrder]). */
+private const val WORKING_KEY = "working"
+private const val TRACES_KEY = "traces"
+private const val OLDER_KEY = "older"
+private const val EMPTY_KEY = "empty"
+private const val LOADING_KEY = "loading"
 
 /**
  * How many rows from the oldest one shown the reader may be before the turns before it are asked for: about a
@@ -739,36 +880,52 @@ private const val BottomTolerancePx = 48
 private const val OlderTurnsPrefetchRows = 6
 
 /**
- * A load that did not go through, under the transcript: the server's words, Retry, and "Share diagnostics" — the
- * redacted load block (window bounds, runs and their order, each turn's trace state, the live follow, the last
- * errors) handed to the share sheet, so a chat that would not load can be reported from where it failed.
+ * A load that did not go through: the server's words, Retry, and "Share diagnostics" — the redacted load block
+ * (window bounds, runs and their order, each turn's trace state, the live follow, the last errors) handed to the
+ * share sheet, so a chat that would not load can be reported from where it failed. A card over the composer
+ * ([LoadNoticeCard]) under a transcript that did load; the whole screen, in the transcript's place, when nothing did
+ * (not [docked]: there is no box edge for it to line up with there).
  */
 @Composable
-internal fun LoadErrorRow(message: String, onRetry: () -> Unit, onShareDiagnostics: () -> Unit, modifier: Modifier = Modifier) {
-    val colors = CursorTheme.colors
-    val type = CursorTheme.typography
-    Column(modifier.testTag("load-error")) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Icon(CursorIcons.Warning, null, tint = colors.red, modifier = Modifier.size(14.dp))
-            Spacer(Modifier.width(6.dp))
-            Text(message, style = type.small, color = colors.red, maxLines = 3, modifier = Modifier.weight(1f))
-        }
-        Row(Modifier.padding(start = 20.dp, top = 2.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-            Text(
-                "Retry",
-                style = type.small,
-                color = colors.textSecondary,
-                modifier = Modifier.pressable(onRetry, CursorTheme.shapes.base).padding(horizontal = 8.dp, vertical = 2.dp).testTag("load-retry"),
-            )
-            Text(
-                "Share diagnostics",
-                style = type.small,
-                color = colors.textSecondary,
-                modifier = Modifier.pressable(onShareDiagnostics, CursorTheme.shapes.base).padding(horizontal = 8.dp, vertical = 2.dp).testTag("share-diagnostics"),
-            )
-        }
-    }
+internal fun LoadErrorRow(message: String, onRetry: () -> Unit, onShareDiagnostics: () -> Unit, modifier: Modifier = Modifier, docked: Boolean = true, onDismiss: (() -> Unit)? = null) {
+    LoadNoticeRow(LoadNotice(LoadNotice.Kind.LoadError, message), onRetry, onShareDiagnostics, modifier, onDismiss = onDismiss, docked = docked)
 }
+
+/**
+ * The account's record refused or failed and the documented endpoints stand in for it (see
+ * [ConversationState.recordFallback]): what the server said, what is on screen because of it — the transcript's
+ * prompts and replies (a coordinator's messages among them) and the activity of the runs whose logs the server
+ * still has, not the activity of the older turns, which the record alone holds — and the two ways out: Retry,
+ * which asks the record again, and the diagnostics. In
+ * the same card as a failed load ([LoadNoticeCard]), quieter: a degradation, not a failure, so the glyph is not red.
+ * The words are [LoadNotices.recordFallback]'s.
+ */
+@Composable
+internal fun RecordFallbackRow(fallback: RecordFallback, onRetry: () -> Unit, onShareDiagnostics: () -> Unit, modifier: Modifier = Modifier, onDismiss: (() -> Unit)? = null) {
+    LoadNoticeRow(LoadNotices.recordFallback(fallback), onRetry, onShareDiagnostics, modifier, onDismiss = onDismiss)
+}
+
+/**
+ * What the row says when the account's record could not be read and the documented endpoints stand in. Precisely
+ * what the fallback lacks and nothing more: the prompts, the replies and a coordinator's messages are on screen
+ * from the documented transcript and the runs' logs (Bennett's frame of 2026-09-20 showed both under this row), so
+ * what is missing is the activity — the tool calls and thoughts — of turns whose log the server has let go (about
+ * a day after the run), which only the account's record still holds.
+ */
+internal const val RECORD_FALLBACK_TITLE = "Account transcript unavailable"
+/** Ahead of the request path and the server's answer, as sent and as received (see `RecordFallback.asked`). */
+internal const val RECORD_FALLBACK_ASKED = "Asked:"
+internal const val RECORD_FALLBACK_DETAIL = "Showing the transcript and the runs' logs. Turns older than about a day have no activity to show until the account's copy can be read again."
+
+/**
+ * The same row when Cursor's server failed to send the record, its retries spent (see `RecordFallback.serverError`):
+ * a 5xx — Bennett's frame of 2026-09-23, a bare `HTTP 502` from the load balancer on one blob — or, with no answer
+ * at all, a connection that kept dropping. The chat is not gone and the row does not say it is.
+ */
+internal const val RECORD_SERVER_ERROR_TITLE = "Cursor's server errored"
+internal const val RECORD_UNREACHABLE_TITLE = "Couldn't reach Cursor's server"
+internal const val RECORD_SERVER_ERROR_DETAIL = "Nothing is lost: the chat is still on the account, and the server failed to send it even after retrying. Showing the transcript and the runs' logs until it can be read again."
+internal const val RECORD_UNREACHABLE_DETAIL = "Nothing is lost: the chat is still on the account, and the connection to Cursor kept failing even after retrying. Showing the transcript and the runs' logs until it can be read again."
 
 /**
  * Where the activity of the turns shown stands when not every turn has it (see [TraceStatus]): "Loading the activity
@@ -817,9 +974,12 @@ internal fun TraceStatusRow(status: TraceStatus, onRetry: () -> Unit, modifier: 
 internal fun OlderTurnsRow(isLoading: Boolean, onLoad: () -> Unit, modifier: Modifier = Modifier) {
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
+    // Both lines are the same height: scrolled to the top, the row is the one the list holds still, and a load
+    // starting under the reader would otherwise move every row below it by the difference (22 px at 420 dpi).
+    val inset = 4.dp
     Box(modifier.padding(vertical = 6.dp).testTag(if (isLoading) "loading-older" else "load-older"), contentAlignment = Alignment.Center) {
         if (isLoading) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
+            Row(Modifier.padding(vertical = inset), verticalAlignment = Alignment.CenterVertically) {
                 SpinnerRing(size = 12.dp)
                 Spacer(Modifier.width(8.dp))
                 Text("Loading older…", style = type.small, color = colors.textQuaternary)
@@ -829,7 +989,7 @@ internal fun OlderTurnsRow(isLoading: Boolean, onLoad: () -> Unit, modifier: Mod
                 "Older messages",
                 style = type.small,
                 color = colors.textTertiary,
-                modifier = Modifier.pressable(onLoad, CursorTheme.shapes.base).padding(horizontal = 12.dp, vertical = 4.dp),
+                modifier = Modifier.pressable(onLoad, CursorTheme.shapes.base).padding(horizontal = 12.dp, vertical = inset),
             )
         }
     }

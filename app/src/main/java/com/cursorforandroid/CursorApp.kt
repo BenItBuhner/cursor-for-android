@@ -3,7 +3,9 @@ package com.cursorforandroid
 import android.app.Application
 import android.content.Context
 import androidx.work.Configuration
+import com.cursorforandroid.data.api.DeviceNetwork
 import com.cursorforandroid.update.UpdateJobService
+import com.cursorforandroid.widget.WidgetSync
 
 class CursorApp : Application(), Configuration.Provider {
     lateinit var graph: AppGraph
@@ -22,7 +24,12 @@ class CursorApp : Application(), Configuration.Provider {
 
     override fun onCreate() {
         super.onCreate()
+        DeviceNetwork.install(this)
         graph = AppGraph(this)
+        // Placed home-screen widgets follow the list, pins, filters, theme and session for as long as this process
+        // lives — whichever way it was started: the app, the live notification's service, the finish watchdog's job
+        // or a widget render. One question to the launcher off the main thread; nothing more without a widget.
+        WidgetSync.start(this, graph)
     }
 
     private companion object {

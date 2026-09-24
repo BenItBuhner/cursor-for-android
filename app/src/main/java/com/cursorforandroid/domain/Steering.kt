@@ -69,9 +69,73 @@ data class PendingFollowup(
      */
     val files: List<PendingAttachment> = emptyList(),
     val imageCount: Int = 0,
+    /**
+     * A word of this device's under the row, never the account's: set when the message was put back on the card after
+     * the transcript had shown it under a run that ended without it (see [QueuePlacement.returned]).
+     */
+    val note: String? = null,
 ) {
     /** The line a card shows: the message, or a word for one that carries only attachments. */
     val previewText: String get() = text.ifBlank { attachmentOnlyText(imageCount, files.size) }
+}
+
+/**
+ * Where each message the account took into its queue stands between the two places it can be shown — the card above
+ * the composer and the transcript — as the transcript's state says it (see `ConversationRepository.expectDelivery`).
+ * At any instant a message is in exactly one of them: on the card until the transcript files it under the run the
+ * account delivered it on, in the transcript from that moment, whatever the last read of the account's queue said
+ * (Bennett's frame of 2026-09-20: his message as a sent bubble with "Starting…" under it and, at the same instant,
+ * on the card with the cloud glyph — the card reflecting a queue read from before the run started). Carried on the
+ * transcript's state so the screen projects the card from the very frame it draws the transcript from
+ * ([ConversationControls.placed]); a card drawn from another frame's word could show both.
+ */
+data class QueuePlacement(
+    /** The account's followup ids filed in the transcript: the card leaves them out until the account's list no longer names them. */
+    val deliveredIds: Set<String> = emptySet(),
+    /** The same for messages the transcript knows by their words alone (a message queued without an id of the account's), as [textKey]s. */
+    val deliveredTexts: Set<String> = emptySet(),
+    /**
+     * Messages put back on the card, by followup id, with the card's word for it: the transcript had filed them under
+     * a run that ended while the account still listed them as waiting, so the run did not carry them after all.
+     */
+    val returned: Map<String, String> = emptyMap(),
+    /**
+     * Messages this device queued on the account that the transcript does not show yet: the card shows them from the
+     * moment they were queued — before the account's list has been read again to name them, and on after the
+     * account has consumed one and dropped it from the list while the transcript is still filing it — so a message
+     * is never in neither place. A message the list names too is shown once, the list's row standing.
+     */
+    val waiting: List<PendingFollowup> = emptyList(),
+    /**
+     * Messages the transcript shows as bubbles ahead of their requests — the composer's, from the tap until the send
+     * is answered (see `ConversationRepository.sendStagedVia`) — by the account's followup id when the send minted
+     * one, and by their [textKey]s: the account may already list one, its send's reply still on its way back, before
+     * the bubble has come down for the card to take it. The bubble is its place; the card leaves the row out.
+     */
+    val shownIds: Set<String> = emptySet(),
+    val shownTexts: Set<String> = emptySet(),
+) {
+    val isEmpty: Boolean get() = deliveredIds.isEmpty() && deliveredTexts.isEmpty() && returned.isEmpty() && waiting.isEmpty() && shownIds.isEmpty() && shownTexts.isEmpty()
+
+    /** Whether [followup] is in the transcript now — filed under its run, or standing as the composer's bubble — and so not on the card. */
+    fun holds(followup: PendingFollowup): Boolean =
+        followup.id in deliveredIds || followup.id in shownIds || textKey(followup.text).let { it in deliveredTexts || it in shownTexts }
+
+    companion object {
+        val NONE = QueuePlacement()
+        /** The id a [waiting] row carries for a message queued without an id of the account's: its staged copy's own, so prefixed. */
+        const val LOCAL_ID_PREFIX = "local:"
+
+        /** The words of a message as they compare across the card, the transcript and the account: whitespace folded. */
+        fun textKey(text: String): String = text.replace(WHITESPACE, " ").trim()
+
+        private val WHITESPACE = Regex("\\s+")
+
+        /** What the card says under a message put back on it (see [returned]). */
+        const val RETURNED_NOTE = "Still queued on your account: the last turn ended without it."
+        /** What the card says under a message the account has taken from its list and the transcript is about to show (see [waiting]). */
+        const val DELIVERING_NOTE = "Being delivered to the agent."
+    }
 }
 
 /** A file on a queued follow-up as the account describes it (an `agent.v1.SelectedDocument`'s `filename` and `mime_type`); the bytes stay on the server. */
@@ -148,6 +212,29 @@ data class ConversationControls(
 
     /** The queued messages an edit, a removal or a send is out for, by id. */
     val inFlightQueueIds: Set<String> get() = inFlight.filter { it.startsWith(QUEUE_ACTION_PREFIX) }.mapTo(HashSet()) { it.removePrefix(QUEUE_ACTION_PREFIX) }
+
+    /**
+     * The queue as the card shows it against the transcript's frame [placement] belongs to: a message the transcript
+     * has filed under its run is left out, whatever the account's last read said of it, and one put back on the card
+     * carries the word for it (see [QueuePlacement]). The same controls when nothing is placed.
+     */
+    fun placed(placement: QueuePlacement): ConversationControls {
+        if (placement.isEmpty) return this
+        var changed = false
+        val shown = queue.mapNotNull { item ->
+            when {
+                placement.holds(item) -> { changed = true; null }
+                placement.returned[item.id] != null -> { changed = true; item.copy(note = placement.returned[item.id]) }
+                else -> item
+            }
+        }
+        // This device's queued messages the list does not name (yet, or any more): kept on the card until the transcript
+        // shows them. By id; by words only for one queued without an id of the account's (the list's row for it is the
+        // account's own name for the same message) — the same words are other queued messages' too.
+        val kept = placement.waiting.filter { w -> shown.none { it.id == w.id || (w.id.startsWith(QueuePlacement.LOCAL_ID_PREFIX) && QueuePlacement.textKey(it.text) == QueuePlacement.textKey(w.text)) } }
+        if (kept.isNotEmpty()) changed = true
+        return if (changed) copy(queue = shown + kept) else this
+    }
 
     companion object {
         val EMPTY = ConversationControls()

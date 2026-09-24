@@ -35,7 +35,7 @@ import com.cursorforandroid.domain.Goal
 import com.cursorforandroid.domain.GoalStatus
 import com.cursorforandroid.ui.components.CursorIcons
 import com.cursorforandroid.ui.components.HairlineDivider
-import com.cursorforandroid.ui.components.cursorSurface
+import com.cursorforandroid.ui.components.dockedCard
 import com.cursorforandroid.ui.components.pressable
 import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
@@ -45,7 +45,8 @@ import kotlinx.coroutines.delay
 
 /**
  * The chat's goal, above the composer while there is one: the strip Cursor's own clients keep there (the desktop's
- * goal tray, above its queue), in the surface the queue's follow-ups sit in so the two stack as one family. A small
+ * goal tray, above its queue), in the surface the queue's follow-ups sit in ([dockedCard], concentric with the
+ * composer's corners) so the two stack as one family. A small
  * line says where the goal stands — "Goal active", "Goal paused", "Goal updated", "Goal completed" — with the active
  * time counting up beside it every second while the goal is active (`1h 2m 3s`, as the desktop formats it), and
  * under that the objective, verbatim, on one line. A tap opens the strip onto the whole objective and a line on what
@@ -84,7 +85,7 @@ fun GoalStrip(
     Column(
         modifier
             .fillMaxWidth()
-            .cursorSurface(colors.elevated, colors.strokeSubtle, CursorTheme.shapes.xl)
+            .dockedCard()
             .pressable({ expanded = !expanded }, CursorTheme.shapes.xl, role = Role.Button)
             .animateContentSize()
             .semantics { contentDescription = "${goal.label}${elapsed?.let { " for $it" } ?: ""}: ${goal.objective}" }

@@ -21,9 +21,11 @@ import com.cursorforandroid.domain.CursorUser
 import com.cursorforandroid.domain.DeviceTarget
 import com.cursorforandroid.domain.EnvType
 import com.cursorforandroid.domain.ListPreferences
+import com.cursorforandroid.domain.NewChatHome
 import com.cursorforandroid.domain.ProjectNotificationPrefs
 import com.cursorforandroid.domain.LocalAgentState
 import com.cursorforandroid.domain.SignInMethod
+import com.cursorforandroid.domain.TranscriptEngine
 import com.cursorforandroid.ui.theme.ThemeMode
 import com.cursorforandroid.util.AppClock
 import kotlinx.coroutines.CoroutineScope
@@ -111,6 +113,10 @@ class PreferencesStore(
         val pinned = stringSetPreferencesKey("pinned_ids")
         val readMarkers = stringPreferencesKey("read_markers")
         val launchedHere = stringSetPreferencesKey("launched_here_ids")
+        /** The chats this phone has started or opened, least recently touched first (a JSON list; see [markTouchedHere]). */
+        val touchedHere = stringPreferencesKey("touched_here_ids")
+        /** Settings › "Unread only for chats from this phone"; absent is on. */
+        val unreadOnlyTouchedHere = booleanPreferencesKey("unread_only_touched_here")
         val snoozedUntil = stringPreferencesKey("snoozed_until")
         val snoozedAt = stringPreferencesKey("snoozed_at")
         val demoMode = booleanPreferencesKey("demo_mode")
@@ -139,6 +145,8 @@ class PreferencesStore(
         val updateLastCheckedAt = longPreferencesKey("update_last_checked_at")
         val pendingUpdateVersionCode = intPreferencesKey("update_pending_version_code")
         val notifiedUpdateVersionCode = intPreferencesKey("update_notified_version_code")
+        /** The versionName whose What's new page has been opened on this device. */
+        val whatsNewReadVersion = stringPreferencesKey("whats_new_read_version")
         val pinsMigrated = booleanPreferencesKey("pins_migrated")
         val pendingPins = stringPreferencesKey("pending_pin_changes")
         val pinnedModels = stringPreferencesKey("pinned_model_ids")
@@ -146,6 +154,8 @@ class PreferencesStore(
         val extendedModeAcknowledgedAt = longPreferencesKey("extended_mode_acknowledged_at")
         val extendedModeIntroduced = booleanPreferencesKey("extended_mode_introduced")
         val extendedModeNoticePending = booleanPreferencesKey("extended_mode_notice_pending")
+        /** Which engine renders transcripts in Extended mode (`stable` / `beta`, see `domain/TranscriptEngine.kt`); absent is Stable. */
+        val transcriptEngine = stringPreferencesKey("transcript_engine")
         val crashReports = booleanPreferencesKey("crash_reports")
         val railMedium = stringPreferencesKey("layout_rail_medium")
         val railExpanded = stringPreferencesKey("layout_rail_expanded")
@@ -153,6 +163,18 @@ class PreferencesStore(
         val sidebarWidthExpanded = intPreferencesKey("layout_sidebar_width_expanded")
         val panelWidthDp = intPreferencesKey("layout_panel_width_dp")
         val modeChoicePending = booleanPreferencesKey("mode_choice_pending")
+        /** The sidebar groups the reader has folded closed, by section key ("projects", "pinned", "date:Today", …). */
+        val collapsedSidebarSections = stringSetPreferencesKey("sidebar_collapsed_sections")
+        /** Settings › Appearance › Shorten long Projects list; absent reads as on (see [shortenSidebarLists]). */
+        val shortenSidebarLists = booleanPreferencesKey("sidebar_shorten_long_lists")
+        /** Settings › New chat page: what the New Chat pane lists under its composer (`recent` / `projects`); absent is Recent. */
+        val newChatHome = stringPreferencesKey("new_chat_home")
+        /** The transcript notices closed over each chat's composer: `agentId -> identities` (see `LoadNotice.identity`). */
+        val dismissedNotices = stringPreferencesKey("dismissed_notices")
+        /** Settings › Confirm before stopping; absent reads as on (see [confirmStop]). */
+        val confirmStop = booleanPreferencesKey("confirm_stop")
+        /** The widget kinds whose picker previews the system holds, each with the build and boot it was published on (see `WidgetPreviews`). */
+        val widgetPreviewsPublished = stringSetPreferencesKey("widget_previews_published")
     }
 
     /** What [clearSession] removes: everything here belongs to the account rather than to the device. */
@@ -166,7 +188,9 @@ class PreferencesStore(
         Keys.pinned,
         Keys.readMarkers,
         Keys.launchedHere,
+        Keys.touchedHere,
         Keys.modeChoicePending,
+        Keys.dismissedNotices,
     )
 
     /**
@@ -243,6 +267,17 @@ class PreferencesStore(
 
     suspend fun setIncludePreReleases(include: Boolean) = edit { it[Keys.includePreReleases] = include }
 
+    // ---- home-screen widgets (device-level: the launcher's, not the account's) ------------------------------------
+
+    /**
+     * The widgets' Android 15 picker previews the system holds: one entry per widget kind, stamped with the installed
+     * build and the boot it was published on, as `WidgetPreviews` writes them. The system keeps two publishes an hour
+     * per widget and forgets every preview on a reboot, so this is what says which are due.
+     */
+    val widgetPreviewsPublished: Flow<Set<String>> = data.map { it[Keys.widgetPreviewsPublished] ?: emptySet() }
+
+    suspend fun setWidgetPreviewsPublished(entries: Set<String>) = edit { it[Keys.widgetPreviewsPublished] = entries }
+
     // ---- crash reports (device-level; a consent, so it outlives the account and is never assumed) ----------------
 
     /** Send anonymous crash reports (crash/CrashReporting.kt). Off until the user turns it on; nothing is sent before. */
@@ -260,6 +295,25 @@ class PreferencesStore(
         if (versionCode == null) p.remove(Keys.notifiedUpdateVersionCode) else p[Keys.notifiedUpdateVersionCode] = versionCode
     }
 
+    /**
+     * The version whose What's new page has been opened on this device (`0.3.37`), or null when none has. One value,
+     * not a set: the installed version only ever moves on, and the surfaces that lead to the page show while the
+     * installed version is not this one — so they come back, by themselves, with the next release installed.
+     */
+    val whatsNewReadVersion: Flow<String?> = data.map { it[Keys.whatsNewReadVersion] }
+
+    suspend fun setWhatsNewReadVersion(versionName: String) = edit { it[Keys.whatsNewReadVersion] = versionName }
+
+    // ---- chats (device-level; deliberately untouched by clearSession) --------------------------------------------
+
+    /**
+     * Whether a tap that would stop, pause or interrupt a running agent asks first (see `RunStopConfirmation`). On by
+     * default, and on for every install that predates the setting: only the user turning it off here writes it off.
+     */
+    val confirmStop: Flow<Boolean> = data.map { it[Keys.confirmStop] ?: true }
+
+    suspend fun setConfirmStop(enabled: Boolean) = edit { it[Keys.confirmStop] = enabled }
+
     // ---- Extended mode (device-level; deliberately untouched by clearSession) ------------------------------------
 
     /**
@@ -276,6 +330,14 @@ class PreferencesStore(
 
     /** True while the notice about features that now need Extended mode has yet to be shown to an upgraded install. */
     val extendedModeNoticePending: Flow<Boolean> = data.map { it[Keys.extendedModeNoticePending] ?: false }
+
+    /**
+     * The transcript engine Extended mode renders with (see `TranscriptEngine`): Stable unless Beta was chosen here —
+     * for every install, upgrades included; it is never inferred from what an earlier build did.
+     */
+    val transcriptEngine: Flow<TranscriptEngine> = data.map { TranscriptEngine.parse(it[Keys.transcriptEngine]) }
+
+    suspend fun setTranscriptEngine(engine: TranscriptEngine) = edit { it[Keys.transcriptEngine] = engine.key }
 
     suspend fun setExtendedMode(enabled: Boolean) = edit { it[Keys.extendedMode] = enabled }
 
@@ -363,6 +425,63 @@ class PreferencesStore(
         }
     }
 
+    /**
+     * The sidebar's groups the reader has folded closed, by section key. A device preference like the theme: it
+     * survives restarts and sign-outs alike, since which groups sit closed is about how this reader reads the list,
+     * not about the account.
+     */
+    val collapsedSidebarSections: Flow<Set<String>> = data.map { it[Keys.collapsedSidebarSections] ?: emptySet() }
+
+    /** Folds the sidebar group [sectionKey] closed, or opens it again; idempotent, so a repeated tap settles rather than flips. */
+    suspend fun setSidebarSectionCollapsed(sectionKey: String, collapsed: Boolean) = edit { p ->
+        val current = p[Keys.collapsedSidebarSections] ?: emptySet()
+        val next = if (collapsed) current + sectionKey else current - sectionKey
+        if (next.isEmpty()) p.remove(Keys.collapsedSidebarSections) else p[Keys.collapsedSidebarSections] = next
+    }
+
+    /**
+     * Whether a long Projects or Pinned group lists only its first five rows until "Show N more" is tapped. On by
+     * default; a device preference like the folds, kept across sign-outs. Which rows are listed in full is never kept.
+     */
+    val shortenSidebarLists: Flow<Boolean> = data.map { it[Keys.shortenSidebarLists] ?: true }
+
+    suspend fun setShortenSidebarLists(enabled: Boolean) = edit { it[Keys.shortenSidebarLists] = enabled }
+
+    /**
+     * Settings › New chat page: the recent chats under the New Chat composer, or the Projects (see [NewChatHome]).
+     * Recent until changed; a device preference, kept across sign-outs like the sidebar's folds.
+     */
+    val newChatHome: Flow<NewChatHome> = data.map { NewChatHome.parse(it[Keys.newChatHome]) }.distinctUntilChanged()
+
+    suspend fun setNewChatHome(home: NewChatHome) = edit { it[Keys.newChatHome] = home.key }
+
+    /**
+     * The notices about a transcript's load the reader has closed, by chat (`agentId -> identities`, see
+     * `LoadNotice.identity`): what the dock over that chat's composer leaves out until the notice's words change or
+     * its condition clears and comes back (see `NoticeDismissals`). The account's, like its pins and read markers —
+     * a closed notice is about the account's chat — so a sign-out takes them with it.
+     */
+    val dismissedNotices: Flow<Map<String, Set<String>>> = accountData.map { p ->
+        p[Keys.dismissedNotices]?.let(::decodeDismissedNotices)?.mapValues { it.value.toSet() } ?: emptyMap()
+    }
+
+    /**
+     * Records [identity] as closed over [agentId] — or, with [dismissed] false, forgets it — in one transaction
+     * against what is stored, so closing two notices in quick succession keeps both. Bounded: a chat keeps its newest
+     * [MAX_DISMISSED_NOTICES_PER_CHAT], and only the [MAX_DISMISSED_NOTICE_CHATS] chats most recently written keep
+     * any, so a notice whose words change on every read cannot grow the file.
+     */
+    suspend fun setNoticeDismissed(agentId: String, identity: String, dismissed: Boolean) = edit { p ->
+        val current = p[Keys.dismissedNotices]?.let(::decodeDismissedNotices) ?: emptyMap()
+        val forChat = current[agentId] ?: emptyList()
+        val nextForChat = if (dismissed) (forChat.filterNot { it == identity } + identity).takeLast(MAX_DISMISSED_NOTICES_PER_CHAT) else forChat.filterNot { it == identity }
+        // The chat written last goes last, so the oldest chats are the ones the cap drops.
+        val next = LinkedHashMap(current - agentId)
+        if (nextForChat.isNotEmpty()) next[agentId] = nextForChat
+        val bounded = if (next.size > MAX_DISMISSED_NOTICE_CHATS) next.entries.toList().takeLast(MAX_DISMISSED_NOTICE_CHATS).associate { it.key to it.value } else next
+        if (bounded.isEmpty()) p.remove(Keys.dismissedNotices) else p[Keys.dismissedNotices] = encodeDismissedNotices(bounded)
+    }
+
     /** Project / synced skill names the user typed into the "+" menu, most recent first, so they stay one tap away. */
     val recentSkills: Flow<List<String>> = data.map { p ->
         p[Keys.recentSkills]?.let { runCatching { CursorJson.decodeFromString(ListSerializer(String.serializer()), it) }.getOrNull() } ?: emptyList()
@@ -416,8 +535,19 @@ class PreferencesStore(
             launchedHereIds = p[Keys.launchedHere] ?: emptySet(),
             snoozedUntil = p[Keys.snoozedUntil]?.let { decodeMarkers(it) } ?: emptyMap(),
             snoozedAt = p[Keys.snoozedAt]?.let { decodeMarkers(it) } ?: emptyMap(),
+            touchedHereIds = p.touchedHere().toSet(),
+            // The demo's backend runs on this phone: every chat in it is this phone's own.
+            unreadOnlyTouchedHere = (p[Keys.unreadOnlyTouchedHere] ?: true) && p[Keys.demoMode] != true,
         )
     }
+
+    /**
+     * Settings › "Unread only for chats from this phone" (see `LocalAgentState.unreadOnlyTouchedHere`). On by default;
+     * the device's, like the theme: it is about what this phone shows, so a sign-out leaves it as it was.
+     */
+    val unreadOnlyTouchedHere: Flow<Boolean> = data.map { it[Keys.unreadOnlyTouchedHere] ?: true }
+
+    suspend fun setUnreadOnlyTouchedHere(enabled: Boolean) = edit { it[Keys.unreadOnlyTouchedHere] = enabled }
 
     val demoMode: Flow<Boolean> = accountData.map { it[Keys.demoMode] ?: false }
 
@@ -532,8 +662,28 @@ class PreferencesStore(
         if (changed) p[Keys.readMarkers] = encodeMarkers(next)
     }
 
+    /** [agentId] was started from this install; a chat started here is also touched here (see [markTouchedHere]). */
     suspend fun markLaunchedHere(agentId: String) = edit { p ->
         p[Keys.launchedHere] = (p[Keys.launchedHere] ?: emptySet()) + agentId
+        p.touch(agentId)
+    }
+
+    /**
+     * [agentId] was opened on this phone, or started from it by a path that does not go through the launch (a side
+     * chat, a Project). The account's, like the read markers, and bounded: the [MAX_TOUCHED_HERE] chats touched most
+     * recently are kept, a touch moving the chat to the newest end.
+     */
+    suspend fun markTouchedHere(agentId: String) = edit { it.touch(agentId) }
+
+    /**
+     * The touched chats, least recently touched first. Until the first touch is written the chats launched here stand
+     * for them, so an install that predates the list starts with every chat it ever started.
+     */
+    private fun Preferences.touchedHere(): List<String> =
+        this[Keys.touchedHere]?.let(::decodeIdList) ?: this[Keys.launchedHere].orEmpty().toList()
+
+    private fun MutablePreferences.touch(agentId: String) {
+        this[Keys.touchedHere] = encodeIdList((touchedHere().filterNot { it == agentId } + agentId).takeLast(MAX_TOUCHED_HERE))
     }
 
     /** Silences [agentId] on this device until [untilMillis] (`Long.MAX_VALUE` until they unsnooze). */
@@ -667,6 +817,11 @@ class PreferencesStore(
     private fun encodeMarkers(map: Map<String, Long>): String =
         CursorJson.encodeToString(MapSerializer(String.serializer(), Long.serializer()), map)
 
+    private fun decodeIdList(raw: String): List<String> =
+        runCatching { CursorJson.decodeFromString(ListSerializer(String.serializer()), raw) }.getOrDefault(emptyList())
+
+    private fun encodeIdList(ids: List<String>): String = CursorJson.encodeToString(ListSerializer(String.serializer()), ids)
+
     private fun decodePendingPins(raw: String): Map<String, Boolean> =
         runCatching { CursorJson.decodeFromString(MapSerializer(String.serializer(), Boolean.serializer()), raw) }.getOrDefault(emptyMap())
 
@@ -679,8 +834,19 @@ class PreferencesStore(
     private fun encodeStringMap(map: Map<String, String>): String =
         CursorJson.encodeToString(MapSerializer(String.serializer(), String.serializer()), map)
 
+    /** Decoded into a map that keeps the file's order, which is the order the chats were last written in. */
+    private fun decodeDismissedNotices(raw: String): Map<String, List<String>> =
+        runCatching { CursorJson.decodeFromString(MapSerializer(String.serializer(), ListSerializer(String.serializer())), raw) }.getOrDefault(emptyMap())
+
+    private fun encodeDismissedNotices(map: Map<String, List<String>>): String =
+        CursorJson.encodeToString(MapSerializer(String.serializer(), ListSerializer(String.serializer())), map)
+
     private companion object {
         const val MAX_RECENT_SKILLS = 8
+        const val MAX_DISMISSED_NOTICES_PER_CHAT = 8
+        const val MAX_DISMISSED_NOTICE_CHATS = 200
+        /** Weeks of chats opened on a phone; far fewer than an account starts elsewhere, which are never in it. */
+        const val MAX_TOUCHED_HERE = 1_000
         const val TAG = "PreferencesStore"
 
         fun storedDevice(typeName: String?, name: String?): DeviceTarget {

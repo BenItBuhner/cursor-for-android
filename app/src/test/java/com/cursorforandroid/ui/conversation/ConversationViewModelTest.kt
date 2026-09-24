@@ -136,14 +136,15 @@ class ConversationViewModelTest {
         assertThat(picker.chipLabel).isEqualTo("GPT-5.6")
     }
 
-    /** A record's id the catalogue no longer lists still names the chip; an alias resolves like the id. */
+    /** A record's id the catalogue no longer lists still names the chip, read as a name; an alias resolves like the id. */
     @Test
-    fun `a record the catalogue cannot place labels the chip with its own name, an alias with the model's`() {
+    fun `a record the catalogue cannot place labels the chip with the name its id spells, an alias with the model's`() {
         graph.agents.patch(IDLE) { it.copy(accountModel = AccountModel("claude-9-preview")) }
-        val unplaced = open(IDLE).picker { it.currentLabel == "claude-9-preview" }
+        val unplaced = open(IDLE).picker { it.currentLabel == "Claude 9 Preview" }
         assertThat(unplaced.current).isNull()
         assertThat(unplaced.currentAssumed).isFalse()
-        assertThat(unplaced.chipLabel).isEqualTo("claude-9-preview")
+        assertThat(unplaced.chipLabel).isEqualTo("Claude 9 Preview")
+        assertThat(unplaced.currentDetail).isEqualTo("claude-9-preview")
 
         graph.agents.patch(IDLE) { it.copy(accountModel = AccountModel("composer-latest", listOf(ModelParam("fast", "false")))) }
         val aliased = open(IDLE).picker { it.current?.model?.id == "composer-2.5" }
@@ -306,8 +307,11 @@ class ConversationViewModelTest {
         assertThat(queued.error).isNull()
         // Nothing reached the server: the row still knows no model.
         assertThat(graph.agents.agent(RUNNING)?.modelId).isNull()
-        // The pick stays for the next message too, as on the desktop.
-        assertThat(vm.picker().override).isEqualTo(ModelChoice(gemini, gemini.defaultVariant))
+        // The pick stays for the next message too, as on the desktop. Read once the picker shows a pick: `modelPicker`
+        // is shared `WhileSubscribed(5_000)`, and a new collector is handed the value it last shared before the
+        // upstream restarts — on a run slow enough for the sharing to have lapsed since the pick (a loaded machine),
+        // that value predates it (the stress loop caught a null here). A screen collects continuously and sees the pick.
+        assertThat(vm.picker { it.override != null }.override).isEqualTo(ModelChoice(gemini, gemini.defaultVariant))
     }
 
     @Test
@@ -368,19 +372,26 @@ class ConversationViewModelTest {
     }
 
     /**
-     * A busy agent's follow-up is queued; anything else the server refuses comes back to the composer. The composer
-     * stays editable while it is in flight, so the one that came back must not undo what was typed since.
+     * A busy agent's follow-up is queued; anything else the server refuses stays in the transcript as the bubble it
+     * was shown in, with the reason and a retry on it (see [OutgoingMessages]) — it does not come back to the
+     * composer, which was emptied at the tap and may hold a new draft by now, and it is not a toast that vanishes.
      */
     @Test
-    fun `a refused follow-up does not overwrite a draft typed while it was in flight`() = runBlocking {
+    fun `a refused follow-up shows on its bubble and does not touch a draft typed while it was in flight`() = runBlocking {
         val vm = open(ARCHIVED)
         vm.setDraft("Try it")
         vm.send()
+        assertThat(vm.draftText.value).isEmpty()
         vm.setDraft("Actually, do this instead")
         withTimeout(10_000) { vm.isSending.first { !it } }
 
         assertThat(vm.draftText.value).isEqualTo("Actually, do this instead")
-        assertThat(vm.toastMessage.value).isNotNull()
+        val failed = vm.outgoingStatuses.value.values.single()
+        assertThat(failed).isInstanceOf(OutgoingStatus.Failed::class.java)
+        val bubble = graph.conversations.state(ARCHIVED).value.items.filterIsInstance<com.cursorforandroid.domain.UserMessage>().single { it.isPending }
+        assertThat(bubble.text).isEqualTo("Try it")
+        assertThat(vm.outgoingStatuses.value).containsKey(bubble.id)
+        assertThat(vm.toastMessage.value).isNull()
     }
 
     /**

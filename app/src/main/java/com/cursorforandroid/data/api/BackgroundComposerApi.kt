@@ -151,6 +151,15 @@ data class RootScan(
     val truncated: Boolean = false,
     /** Every record the pages carried, by id: what the registry is re-validated against (a record seen as neither a Project nor a manager). */
     val seenIds: Set<String> = emptySet(),
+    /** The pass stopped at the first page older than every known Project (see [RootScanApi.scanRoots] with a floor): read no further, and nothing failed. */
+    val stoppedEarly: Boolean = false,
+    /**
+     * Every record the pages carried, once each: the roots and the children among them, and every other chat's — its
+     * name, archive flag, source, times and the fields the desktop's predicates read. The pages are read for the
+     * roots; what else they carry is the rows' records, which would otherwise be asked for one by one (see
+     * `AgentRepository.materializeRecords`), a call per row — the one cost that grew with the account.
+     */
+    val snapshots: List<ComposerSnapshot> = emptyList(),
 ) {
     /** The coordinators the workers' records name, whether or not their own record was among the pages. */
     val managers: Set<String> get() = children.mapNotNullTo(LinkedHashSet()) { it.parent?.takeIf { p -> p.kind == AgentParentKind.PROJECT_WORKER }?.id }
@@ -159,6 +168,14 @@ data class RootScan(
 /** The root discovery pass over the account list (see [RootScan]). */
 interface RootScanApi {
     suspend fun scanRoots(maxPages: Int): RootScan
+
+    /**
+     * The same pass, stopped early: the list is read newest first, and once a page's oldest record was last active
+     * before [stopBelowActivityMillis] — older than every Project the registry already knows — the pages behind it
+     * are not read; the pass ends there, [RootScan.stoppedEarly]. Null reads to the end as [scanRoots] does. Sources
+     * that cannot date their pages read as before.
+     */
+    suspend fun scanRoots(maxPages: Int, stopBelowActivityMillis: Long?): RootScan = scanRoots(maxPages)
 }
 
 interface PinsApi {
@@ -210,20 +227,38 @@ class BackgroundComposerApi(
      * Projects' own records and every record that hangs off another chat. Independent of how far the sidebar has
      * paged; what the Projects group is drawn from, so a Project whose row no page holds is listed all the same.
      */
-    override suspend fun scanRoots(maxPages: Int): RootScan {
+    override suspend fun scanRoots(maxPages: Int): RootScan = scanRoots(maxPages, null)
+
+    /** One page, asked for a second time after a moment when the first ask failed in passing (not a refusal the throttle already retried, not a 4xx). */
+    private suspend fun pageWithRetry(cursor: ListCursor?): ListBackgroundComposersResponseDto = try {
+        page(cursor)
+    } catch (e: CancellationException) {
+        throw e
+    } catch (t: Throwable) {
+        val passing = t is java.io.IOException && (t !is ConnectRpcException || t.httpCode >= 500)
+        if (!passing) throw t
+        kotlinx.coroutines.delay(PAGE_RETRY_DELAY_MS)
+        page(cursor)
+    }
+
+    override suspend fun scanRoots(maxPages: Int, stopBelowActivityMillis: Long?): RootScan {
         val roots = ArrayList<ComposerSnapshot>()
         val children = ArrayList<ComposerSnapshot>()
+        val all = ArrayList<ComposerSnapshot>()
         val seen = HashSet<String>()
         var cursor: ListCursor? = null
         var pages = 0
         var complete = false
         var records = 0
         var failure: String? = null
+        var stoppedEarly = false
         do {
             // Each page stands on its own: a page that fails leaves the ones before it read and the pass to be
-            // finished later, rather than throwing away what the account already said.
+            // finished later, rather than throwing away what the account already said. A page that failed in passing
+            // (a dropped connection) is asked for once more first: a pass tried again later starts from the first
+            // page, so one lost page of twenty-five cost the account list read twice over.
             val response = try {
-                page(cursor)
+                pageWithRetry(cursor)
             } catch (e: CancellationException) {
                 throw e
             } catch (t: Throwable) {
@@ -232,13 +267,25 @@ class BackgroundComposerApi(
             }
             pages++
             var added = 0
+            var oldest: Long? = null
             for (composer in response.composers) {
                 val snap = snapshot(composer) ?: continue
                 records++
+                snap.activityAtMillis?.let { oldest = minOf(oldest ?: it, it) }
                 if (!seen.add(snap.id)) continue
                 added++
+                all += snap
                 if (snap.scope == AgentScope.PROJECT_ROOT) roots += snap
                 if (snap.parent != null) children += snap
+            }
+            // The list is newest first: once a page's oldest record was last active before every Project the registry
+            // knows, the pages behind it hold nothing newer, and the next page is not asked for. A page that dates
+            // nothing is read as before.
+            val floor = stopBelowActivityMillis
+            if (floor != null && oldest != null && oldest!! < floor && pages < maxPages && response.hasMore) {
+                stoppedEarly = true
+                cursor = null
+                break
             }
             when {
                 !response.hasMore -> { cursor = null; complete = true }
@@ -250,7 +297,7 @@ class BackgroundComposerApi(
                 }
             }
         } while (cursor != null && pages < maxPages)
-        return RootScan(roots.distinctBy { it.id }, children.distinctBy { it.id }, pages, complete, records, failure, truncated = cursor != null && failure == null, seenIds = seen)
+        return RootScan(roots.distinctBy { it.id }, children.distinctBy { it.id }, pages, complete, records, failure, truncated = cursor != null && failure == null, seenIds = seen, stoppedEarly = stoppedEarly, snapshots = all)
     }
 
     override suspend fun list(): AccountList = accountList(page(null), first = true)
@@ -311,13 +358,21 @@ class BackgroundComposerApi(
      * did not reach: its Project flag and appearance, its manager, its side-chat or subagent parent. Null when the
      * service knows no such chat, or answered with another.
      */
-    override suspend fun record(id: String): ComposerSnapshot? {
+    override suspend fun record(id: String): ComposerSnapshot? = one(id, includeStatus = false)
+
+    /**
+     * One chat's record by id with its status and last activity, as the list's own pages carry them: what an open,
+     * idle chat is told a turn started elsewhere by under the Stable transcript engine, which reads no private record.
+     */
+    suspend fun status(id: String): ComposerSnapshot? = one(id, includeStatus = true)
+
+    private suspend fun one(id: String, includeStatus: Boolean): ComposerSnapshot? {
         val response = call(
             "ListBackgroundComposers",
             ListBackgroundComposersRequestDto(
                 n = 1,
                 includeArchived = true,
-                includeStatus = false,
+                includeStatus = includeStatus,
                 includePinnedState = false,
                 includeHiddenSources = HIDDEN_SOURCES.map { it.wireName },
                 includeWorkers = true,
@@ -534,6 +589,8 @@ class BackgroundComposerApi(
     private class EmptyResponseDto
 
     companion object {
+        /** The wait before a page that failed in passing is asked for again (see [pageWithRetry]). */
+        private const val PAGE_RETRY_DELAY_MS = 750L
         const val SERVICE = "aiserver.v1.BackgroundComposerService"
 
         /**

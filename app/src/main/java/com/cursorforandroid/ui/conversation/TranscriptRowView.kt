@@ -26,7 +26,7 @@ import com.cursorforandroid.ui.theme.CursorTheme
 
 /**
  * One row of the transcript (see [TranscriptRow]): the messages as themselves, a coordinator's update as a reply, a
- * worker's card, a step's pictures, the question a run waits on, an injected turn as its line and a run of silent
+ * subagent's row, a step's pictures, the question a run waits on, an injected turn as its line and a run of silent
  * ones behind one ([EventGroupView]) — and everything else between two messages as one [StretchView].
  */
 @Composable
@@ -36,7 +36,7 @@ fun TranscriptRowView(row: TranscriptRow, modifier: Modifier = Modifier) {
     when (row) {
         is TranscriptRow.Item -> TimelineItemView(row.item, modifier)
         is TranscriptRow.Message -> CoordinatorMessageView(row.call, row.call.payload as ToolPayload.CoordinatorMessage, modifier)
-        is TranscriptRow.Worker -> WorkerTaskCard(row.call, row.call.payload as ToolPayload.WorkerAction, modifier)
+        is TranscriptRow.Subagent -> SubagentRowView(row.call, row.subagent, modifier)
         is TranscriptRow.Media -> GroupMediaStrip(row.group, modifier)
         is TranscriptRow.Question -> {
             val agentId = LocalMarkdownMedia.current?.agentId
@@ -46,6 +46,7 @@ fun TranscriptRowView(row: TranscriptRow, modifier: Modifier = Modifier) {
         is TranscriptRow.Stretch -> StretchView(row, modifier)
         is TranscriptRow.Event -> EventRow(row.notification, row.count, modifier)
         is TranscriptRow.Events -> EventGroupView(row, modifier)
+        is TranscriptRow.Failure -> RunFailureRow(row.footer, modifier)
     }
 }
 
@@ -93,6 +94,7 @@ private fun EntryView(entry: TranscriptRow.Entry) {
         is TranscriptRow.Entry.Line -> SummaryLine(entry.row.label, entry.row.value)
         is TranscriptRow.Entry.Event -> EventRow(entry.row.notification, entry.row.count, Modifier.padding(vertical = 2.dp))
         is TranscriptRow.Entry.Events -> EventGroupView(entry.group, Modifier.padding(vertical = 2.dp))
+        is TranscriptRow.Entry.Failure -> RunFailureRow(entry.footer, Modifier.padding(vertical = 2.dp))
     }
 }
 
@@ -124,6 +126,8 @@ private fun SingleEntry(entry: TranscriptRow.Entry, modifier: Modifier) {
         is TranscriptRow.Entry.Event -> EventRow(entry.row.notification, entry.row.count, modifier)
         // Never alone: a run of events is behind the stretch's own summary (see [TranscriptRow.Stretch.single]).
         is TranscriptRow.Entry.Events -> EventGroupView(entry.group, modifier)
+        // A failed run with nothing else in its stretch: its line, the footer's duration in it (see [TranscriptRow.Stretch.single]).
+        is TranscriptRow.Entry.Failure -> RunFailureRow(entry.footer, modifier)
     }
 }
 

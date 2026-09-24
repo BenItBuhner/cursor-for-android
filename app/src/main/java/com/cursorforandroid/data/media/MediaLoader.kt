@@ -8,6 +8,7 @@ import android.util.LruCache
 import androidx.core.net.toUri
 import coil3.ImageLoader
 import coil3.decode.BitmapFactoryDecoder
+import coil3.disk.DiskCache
 import coil3.network.HttpException
 import coil3.network.okhttp.OkHttpNetworkFetcherFactory
 import coil3.request.ErrorResult
@@ -16,9 +17,17 @@ import coil3.request.SuccessResult
 import coil3.request.allowHardware
 import coil3.size.Precision
 import coil3.size.Scale
+import coil3.svg.SvgDecoder
 import coil3.toBitmap
+import com.cursorforandroid.data.api.userMessage
+import com.cursorforandroid.data.local.DiskSweep
+import com.cursorforandroid.data.repo.AgentFileRepository
 import com.cursorforandroid.data.repo.ArtifactRepository
+import com.cursorforandroid.data.repo.FileRead
 import com.cursorforandroid.data.repo.StoreFileRepository
+import com.cursorforandroid.domain.ArtifactPaths
+import com.cursorforandroid.domain.FileBytes
+import com.cursorforandroid.domain.FileFormat
 import com.cursorforandroid.domain.MediaRef
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -27,8 +36,10 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okio.Path.Companion.toOkioPath
 import java.io.File
 import java.io.IOException
+import java.security.MessageDigest
 
 /** A frame from early in a video plus its length; [frame] is null when the file could not be probed. */
 class VideoPoster(val frame: Bitmap?, val durationMs: Long?)
@@ -37,96 +48,200 @@ class VideoPoster(val frame: Bitmap?, val durationMs: Long?)
  * Fetches the pixels behind a [MediaRef]. Images go through Coil (downsampling to the requested bounds, memory and
  * disk caches keyed by the artifact rather than its rotating presigned URL); video posters come from
  * [MediaMetadataRetriever], which reads only the ranges it needs instead of downloading the recording.
+ *
+ * Every failure reaches the caller as a [MediaProblemException] naming what went wrong in the reader's words: the
+ * bytes are looked at before they are given to a decoder — a base64 or `data:` or JSON wrapper taken off, a Git LFS
+ * pointer or a web page behind an image link named as such — and an SVG is drawn rather than refused.
  */
 class MediaLoader(
     private val context: Context,
     private val okHttp: OkHttpClient,
     private val artifacts: ArtifactRepository,
+    /** The reads behind a path of the agent's own machine or repository ([MediaRef.Workspace]); null where none is wired. */
+    private val files: () -> AgentFileRepository? = { null },
     /**
      * The Agent Store reads behind `/cursor/stores/…` paths (Extended mode); null where no account is wired. Looked
      * up per use, so that building the loader — which a sign-out does, to wipe Coil's disk cache — builds nothing else.
      */
     private val stores: () -> StoreFileRepository? = { null },
 ) {
-    // BitmapFactory for every decode, registered ahead of Coil's ImageDecoder default: the bitmaps are software ones
-    // anyway (allowHardware false), the downsampling is the same, and it is the one path that also runs under the JVM
-    // test renderer, so a fetched URL — cached as a file, which ImageDecoder there cannot open — decodes like an asset.
+    // BitmapFactory for every raster decode, registered ahead of Coil's ImageDecoder default: the bitmaps are software
+    // ones anyway (allowHardware false), the downsampling is the same, and it is the one path that also runs under the
+    // JVM test renderer, so a fetched URL — cached as a file, which ImageDecoder there cannot open — decodes like an
+    // asset. The SVG decoder goes first: it answers only for SVG, which BitmapFactory would refuse.
     private val imageLoader: ImageLoader = ImageLoader.Builder(context)
         .components {
+            add(SvgDecoder.Factory())
             add(BitmapFactoryDecoder.Factory())
             add(OkHttpNetworkFetcherFactory(okHttp))
         }
+        .diskCache { imageDiskCache(context.cacheDir) }
         .build()
 
     private val posters = LruCache<String, VideoPoster>(12)
 
-    /** Decodes [ref] to fit within [maxWidthPx] x [maxHeightPx] (downsampling only, never upscaling). */
-    suspend fun image(ref: MediaRef, maxWidthPx: Int, maxHeightPx: Int): Bitmap = onMain { decodeImage(ref, maxWidthPx, maxHeightPx) }
+    /**
+     * Decodes [ref] to fit within [maxWidthPx] x [maxHeightPx] (downsampling only, never upscaling). With [wake], a
+     * file of the agent's machine found asleep is read again once the machine is woken (see [AgentFileRepository.read]).
+     */
+    suspend fun image(ref: MediaRef, maxWidthPx: Int, maxHeightPx: Int, wake: Boolean = false): Bitmap = onMain { named { decodeImage(ref, maxWidthPx, maxHeightPx, wake) } }
 
-    private suspend fun decodeImage(ref: MediaRef, maxWidthPx: Int, maxHeightPx: Int): Bitmap {
-        val data = dataFor(ref)
-        val first = decode(ref, data, maxWidthPx, maxHeightPx)
+    private suspend fun decodeImage(ref: MediaRef, maxWidthPx: Int, maxHeightPx: Int, wake: Boolean): Bitmap = when (ref) {
+        is MediaRef.Remote, is MediaRef.Artifact -> decodeUrl(ref, maxWidthPx, maxHeightPx)
+        else -> decodeBytes(ref, bytesFor(ref, wake), maxWidthPx, maxHeightPx)
+    }
+
+    private suspend fun decodeUrl(ref: MediaRef, maxWidthPx: Int, maxHeightPx: Int): Bitmap {
+        val first = decode(ref, urlFor(ref), maxWidthPx, maxHeightPx)
         if (first is SuccessResult) return first.image.toBitmap()
-        val error = (first as ErrorResult).throwable
+        var error = (first as ErrorResult).throwable
         // A presigned URL that expired between resolution and fetch: ask for a fresh one exactly once.
         if (ref is MediaRef.Artifact && error.isStaleUrl()) {
             artifacts.invalidate(ref.agentId, ref.path)
-            val retry = decode(ref, dataFor(ref), maxWidthPx, maxHeightPx)
+            val retry = decode(ref, urlFor(ref), maxWidthPx, maxHeightPx)
             if (retry is SuccessResult) return retry.image.toBitmap()
-            throw (retry as ErrorResult).throwable
+            error = (retry as ErrorResult).throwable
         }
-        throw error
+        if (error is HttpException) throw MediaProblemException(MediaProblem.Failed("The server answered ${error.response.code} for this image."), error)
+        if (error is IOException) throw MediaProblemException(MediaProblem.Failed(error.userMessage()), error)
+        // The fetch came back and no decoder took it: what came back is looked at, unwrapped, and named if it is not a picture.
+        return decodeBytes(ref, download(urlFor(ref), MAX_DIAGNOSE_BYTES), maxWidthPx, maxHeightPx)
     }
 
-    /** The URL ExoPlayer should open for a video; resolved at play time so it is never an expired one. */
-    suspend fun playbackUrl(ref: MediaRef): String = onMain { resolvePlaybackUrl(ref) }
+    private suspend fun decodeBytes(ref: MediaRef, raw: ByteArray, maxWidthPx: Int, maxHeightPx: Int): Bitmap {
+        val plain = unwrapped(raw, ref.label, expected = "an image") { it.isImage }
+        val result = decode(ref, plain.bytes, maxWidthPx, maxHeightPx)
+        if (result is SuccessResult) return result.image.toBitmap()
+        throw MediaProblemException(MediaProblem.undecodable(plain.format), (result as ErrorResult).throwable)
+    }
 
-    private suspend fun resolvePlaybackUrl(ref: MediaRef): String = when (ref) {
-        is MediaRef.Remote -> ref.url
+    /** [raw] with its wrapper taken off, or the problem that it is not what [accepts] takes. */
+    private fun unwrapped(raw: ByteArray, name: String, expected: String, accepts: (FileFormat) -> Boolean): FileBytes.Plain {
+        if (raw.isEmpty()) throw MediaProblemException(MediaProblem.Damaged(FileFormat.ofName(name)))
+        val plain = when (val read = FileBytes.of(raw, name)) {
+            is FileBytes.LfsPointer -> throw MediaProblemException(MediaProblem.LfsPointer)
+            is FileBytes.Plain -> read
+        }
+        val format = plain.format
+        if (format != null && !accepts(format)) throw MediaProblemException(MediaProblem.NotMedia(expected, format))
+        if (format == null && FileBytes.looksLikeText(plain.bytes)) throw MediaProblemException(MediaProblem.NotMedia(expected, null))
+        return plain
+    }
+
+    /** The URL ExoPlayer should open for a video or a sound; resolved at play time so it is never an expired one. */
+    suspend fun playbackUrl(ref: MediaRef, wake: Boolean = false): String = onMain { named { resolvePlaybackUrl(ref, wake) } }
+
+    private suspend fun resolvePlaybackUrl(ref: MediaRef, wake: Boolean = false): String = when (ref) {
+        is MediaRef.Remote -> RemoteUrls.fetchable(ref.url)
         is MediaRef.Artifact -> artifacts.downloadUrl(ref.agentId, ref.path)
         is MediaRef.Store -> storeUrl(ref)
-        is MediaRef.Local -> "file://${ref.path}"
-        is MediaRef.Inline -> throw IOException("Embedded videos aren't supported.")
-        is MediaRef.Unavailable -> throw IOException("This video isn't available.")
+        is MediaRef.Local -> localPlaybackUrl(ref)
+        // The workspace hands out bytes, not a URL: they are kept as a file of the cache and played from there.
+        is MediaRef.Workspace -> "file://${materialize(ref, ref.label, wake).absolutePath}"
+        is MediaRef.Inline -> throw MediaProblemException(MediaProblem.NotReadable("Embedded recordings aren't supported", null))
+        is MediaRef.Unavailable -> throw MediaProblemException(MediaProblem.NotReadable("This file isn't available", unavailableDetail(ref)))
     }
 
-    /** A poster frame and duration for the video at [ref]; null (and remembered as such) when unavailable. */
+    /**
+     * A poster frame and duration for the video at [ref], fitting [maxPx] square; null when unavailable, and
+     * remembered as such once the file was there to probe. Kept per size: a tile's small poster is not the viewer's.
+     */
     suspend fun videoPoster(ref: MediaRef, maxPx: Int): VideoPoster? = onMain {
-        posters.get(ref.cacheKey)?.let { return@onMain it }
+        val key = "${ref.cacheKey}@$maxPx"
+        posters.get(key)?.let { return@onMain it }
         val url = runCatching { resolvePlaybackUrl(ref) }.getOrElse { return@onMain null }
         val poster = probe(url, maxPx) ?: VideoPoster(frame = null, durationMs = null)
-        posters.put(ref.cacheKey, poster)
+        posters.put(key, poster)
         poster
     }
 
     /**
-     * The bytes behind [ref] as a file of this app's cache (`cache/media/`), for handing to another app — the share
-     * sheet, a viewer, the gallery — through the `FileProvider`. Fetched once per artifact and kept; a copy already
-     * there is answered without a request. [fileName] gives the copy its name and so its type, as the other app
-     * reads it.
+     * A file of this device, for the player: named as gone when it is not there rather than handed on for the player
+     * to fail on. An APK asset is the player's own to open.
      */
-    suspend fun file(ref: MediaRef, fileName: String): File = onMain { materialize(ref, fileName) }
+    private suspend fun localPlaybackUrl(ref: MediaRef.Local): String {
+        val url = "file://${ref.path}"
+        if (url.startsWith(ASSET_PREFIX)) return url
+        if (!withContext(Dispatchers.IO) { File(ref.path).isFile }) throw MediaProblemException(MediaProblem.NotReadable(NOT_ON_DEVICE, null))
+        return url
+    }
 
-    private suspend fun materialize(ref: MediaRef, fileName: String): File = withContext(Dispatchers.IO) {
+    /**
+     * The bytes behind [ref] as a file of this app's cache (`cache/media/`), for handing to another app — the share
+     * sheet, a viewer, the gallery — through the `FileProvider`. Fetched once per artifact and kept while it is among
+     * the most recently used ([MEDIA_MAX_BYTES]); a copy already there is answered without a request. [fileName] gives
+     * the copy its name and so its type, as the other app reads it.
+     */
+    suspend fun file(ref: MediaRef, fileName: String): File = onMain { named { materialize(ref, fileName) } }
+
+    /**
+     * Keeps [bytes] — a file the panel or the file viewer already holds — as a file of the cache and answers the
+     * `file://` reference the media viewer opens it by. The same bytes under the same name are one file.
+     */
+    suspend fun keep(bytes: ByteArray, fileName: String): String = withContext(Dispatchers.Main.immediate) {
+        withContext(Dispatchers.IO) {
+            val digest = MessageDigest.getInstance("SHA-1").digest(bytes).joinToString("") { "%02x".format(it) }.take(16)
+            val dir = File(context.cacheDir, "$MEDIA_DIR/$OPENED_DIR").apply { mkdirs() }
+            val target = File(dir, "$digest-${safeName(fileName)}")
+            if (target.isFile && target.length() == bytes.size.toLong()) {
+                target.setLastModified(System.currentTimeMillis())
+            } else {
+                val partial = File(dir, "${target.name}.part")
+                partial.writeBytes(bytes)
+                if (!partial.renameTo(target)) partial.copyTo(target, overwrite = true).also { partial.delete() }
+                trimCopies(dir, OPENED_MAX_BYTES, System.currentTimeMillis())
+            }
+            "file://${target.absolutePath}"
+        }
+    }
+
+    /**
+     * Where [ref] can be seen outside this app, for a row that cannot show it: the link itself, an artifact's
+     * presigned URL, the Project on cursor.com for a store file, the repository's page for a workspace file.
+     */
+    suspend fun browserUrl(ref: MediaRef): String? = onMain {
+        try {
+            when (ref) {
+                is MediaRef.Remote -> ref.url
+                is MediaRef.Artifact -> artifacts.downloadUrl(ref.agentId, ref.path)
+                is MediaRef.Store -> ref.webUrl
+                is MediaRef.Workspace -> files()?.webUrl(ref.agentId, ref.path)
+                is MediaRef.Local, is MediaRef.Inline, is MediaRef.Unavailable -> null
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Throwable) {
+            null
+        }
+    }
+
+    private suspend fun materialize(ref: MediaRef, fileName: String, wake: Boolean = false): File = withContext(Dispatchers.IO) {
         val dir = File(context.cacheDir, MEDIA_DIR).apply { mkdirs() }
-        val safeName = fileName.replace(Regex("""[^A-Za-z0-9._-]"""), "_").ifBlank { "media" }
-        val target = File(dir, "${ref.cacheKey.hashCode().toUInt().toString(16)}-$safeName")
-        if (target.isFile && target.length() > 0L) return@withContext target
+        val target = File(dir, "${ref.cacheKey.hashCode().toUInt().toString(16)}-${safeName(fileName)}")
+        if (target.isFile && target.length() > 0L) {
+            target.setLastModified(System.currentTimeMillis())
+            return@withContext target
+        }
         val partial = File(dir, "${target.name}.part")
         try {
             when (ref) {
-                is MediaRef.Local -> File(ref.path).takeIf { it.isFile }?.copyTo(partial, overwrite = true) ?: throw IOException("This file is no longer on this device.")
+                is MediaRef.Local -> File(ref.path).takeIf { it.isFile }?.copyTo(partial, overwrite = true) ?: throw MediaProblemException(MediaProblem.NotReadable(NOT_ON_DEVICE, null))
                 is MediaRef.Inline -> partial.writeBytes(ref.bytes)
                 is MediaRef.Store -> partial.writeBytes(storeReads().readBytes(ref))
+                is MediaRef.Workspace -> partial.writeBytes(unwrappedFile(workspaceBytes(ref, wake), ref.label))
                 is MediaRef.Remote, is MediaRef.Artifact -> download(resolvePlaybackUrl(ref), partial)
-                is MediaRef.Unavailable -> throw IOException("This file isn't available.")
+                is MediaRef.Unavailable -> throw MediaProblemException(MediaProblem.NotReadable("This file isn't available", unavailableDetail(ref)))
             }
             if (!partial.renameTo(target)) partial.copyTo(target, overwrite = true)
+            trimCopies(dir, MEDIA_MAX_BYTES, System.currentTimeMillis())
             target
         } finally {
             partial.delete()
         }
     }
+
+    /** A workspace file's bytes as they are meant, a wrapper taken off; a pointer or text stays as it came. */
+    private fun unwrappedFile(raw: ByteArray, name: String): ByteArray = (FileBytes.of(raw, name) as? FileBytes.Plain)?.bytes ?: raw
 
     private fun download(url: String, into: File) {
         if (url.startsWith(ASSET_PREFIX)) {
@@ -138,10 +253,30 @@ class MediaLoader(
             return
         }
         okHttp.newCall(Request.Builder().url(url).build()).execute().use { response ->
-            if (!response.isSuccessful) throw IOException("The download answered ${response.code}.")
-            val body = response.body ?: throw IOException("The download was empty.")
+            if (!response.isSuccessful) throw MediaProblemException(MediaProblem.Failed("The download answered ${response.code}."))
+            val body = response.body ?: throw MediaProblemException(MediaProblem.Failed("The download was empty."))
             into.outputStream().use { body.byteStream().copyTo(it) }
         }
+    }
+
+    /** Up to [max] bytes behind [url], for looking at what a decoder refused. */
+    private suspend fun download(url: String, max: Int): ByteArray = withContext(Dispatchers.IO) {
+        if (url.startsWith(ASSET_PREFIX)) return@withContext context.assets.open(url.removePrefix(ASSET_PREFIX)).use { it.readAtMost(max) }
+        okHttp.newCall(Request.Builder().url(url).build()).execute().use { response ->
+            if (!response.isSuccessful) throw MediaProblemException(MediaProblem.Failed("The server answered ${response.code} for this image."))
+            response.body?.byteStream()?.use { it.readAtMost(max) } ?: ByteArray(0)
+        }
+    }
+
+    private fun java.io.InputStream.readAtMost(max: Int): ByteArray {
+        val out = java.io.ByteArrayOutputStream()
+        val buffer = ByteArray(64 * 1024)
+        while (out.size() < max) {
+            val read = read(buffer, 0, minOf(buffer.size, max - out.size()))
+            if (read < 0) break
+            out.write(buffer, 0, read)
+        }
+        return out.toByteArray()
     }
 
     /** Forgets everything fetched for the signed-out account; the disk cache is wiped off the main thread. */
@@ -155,34 +290,76 @@ class MediaLoader(
     }
 
     /**
-     * Runs [block] and hands its answer (or its failure) back on the main thread. Every caller is a composition
-     * effect, and Coil, the retriever and the downloads all complete on their own threads: resuming a composition's
-     * coroutine on one of those puts snapshot writes and, under the test harness's unconfined effect dispatcher,
-     * whole frames on a worker thread while the main thread is mid-layout.
+     * Runs [block] confined to the main thread: it starts there (inline when the caller already is there, as a
+     * composition effect is), every hop it makes — Coil's fetch and decode, the retriever, a download — comes back
+     * to the main thread through the main looper, and the caller resumes there. Every caller is a composition
+     * coroutine; one that resumed on a worker thread instead would carry the composition with it — a snapshot write
+     * off the main thread, and under the test harness's unconfined effect dispatcher whole frames performed on a
+     * worker while the main thread is mid-layout, or a wake-up that races the main thread's and is lost.
+     *
+     * Wrapping the whole of [block] rather than only its answer matters: with the answer alone hopped to the main
+     * thread, the caller's continuation still ran on the worker up to that hop, and the harness's interceptors with it.
      */
-    private suspend fun <T> onMain(block: suspend () -> T): T {
-        val result = runCatching { block() }
-        return withContext(Dispatchers.Main.immediate) { result.getOrThrow() }
+    private suspend fun <T> onMain(block: suspend () -> T): T = withContext(Dispatchers.Main.immediate) { block() }
+
+    /** [block], with whatever it throws named as a [MediaProblem]: a raw decoder or HTTP message never reaches a row. */
+    private suspend fun <T> named(block: suspend () -> T): T = try {
+        block()
+    } catch (e: CancellationException) {
+        throw e
+    } catch (t: Throwable) {
+        throw t as? MediaProblemException ?: MediaProblemException(problemOf(t), t)
     }
 
-    private fun storeReads(): StoreFileRepository = stores() ?: throw IOException(StoreFileRepository.NOT_AVAILABLE)
+    private fun storeReads(): StoreFileRepository = stores() ?: throw MediaProblemException(MediaProblem.NotReadable("In the Project's context", StoreFileRepository.NOT_AVAILABLE))
 
     private suspend fun storeUrl(ref: MediaRef.Store): String = storeReads().downloadUrl(ref)
 
-    private suspend fun dataFor(ref: MediaRef): Any = when (ref) {
-        is MediaRef.Remote -> ref.url
+    private suspend fun urlFor(ref: MediaRef): String = when (ref) {
+        is MediaRef.Remote -> RemoteUrls.fetchable(ref.url)
         is MediaRef.Artifact -> artifacts.downloadUrl(ref.agentId, ref.path)
+        else -> error("Not a URL: $ref")
+    }
+
+    private suspend fun bytesFor(ref: MediaRef, wake: Boolean = false): ByteArray = when (ref) {
         // Bytes, fetched and kept by the repository (its own disk cache, a dead URL asked for again), decoded like
         // an inline image: the same path as a file of this device, and one the JVM test renderer can take.
         is MediaRef.Store -> storeReads().readBytes(ref)
         // Read here rather than handed to Coil as a file: for a file Coil decodes through ImageDecoder, which the
         // JVM test renderer lacks, while bytes go through BitmapFactory like an inline image. The files are small.
         is MediaRef.Local -> withContext(Dispatchers.IO) {
-            File(ref.path).takeIf { it.isFile }?.readBytes() ?: throw IOException("This image is no longer on this device.")
+            File(ref.path).takeIf { it.isFile }?.readBytes() ?: throw MediaProblemException(MediaProblem.NotReadable(NOT_ON_DEVICE, null))
         }
         is MediaRef.Inline -> ref.bytes
-        is MediaRef.Unavailable -> throw IOException("This image isn't available.")
+        is MediaRef.Workspace -> workspaceBytes(ref, wake)
+        is MediaRef.Unavailable -> throw MediaProblemException(MediaProblem.NotReadable("This image isn't available", unavailableDetail(ref)))
+        is MediaRef.Remote, is MediaRef.Artifact -> error("Fetched by URL: $ref")
     }
+
+    private suspend fun workspaceBytes(ref: MediaRef.Workspace, wake: Boolean = false): ByteArray {
+        val where = if (AgentFileRepository.isInWorkspace(ref.path, null)) IN_WORKSPACE else ON_MACHINE
+        val reads = files() ?: throw MediaProblemException(MediaProblem.NotReadable(where, null))
+        return when (val read = reads.read(ref.agentId, ref.path, force = wake, wake = wake)) {
+            is FileRead.Loaded -> read.file.bytes
+            is FileRead.NotReadable -> throw MediaProblemException(MediaProblem.NotReadable(where, read.reason))
+            // A picture the machine would not give may still be one the agent published as an artifact of the same name.
+            is FileRead.Failed -> artifactBytes(ref.agentId, ref.path) ?: throw MediaProblemException(problemOf(read))
+        }
+    }
+
+    /**
+     * The bytes of an artifact whose file name matches [path]'s, or null when none does or it cannot be fetched: a
+     * generated or saved picture the agent published (`GET /v1/agents/{id}/artifacts`) is a documented copy of a file
+     * that lived outside the workspace. The newest match wins (the listing is newest-first).
+     */
+    private suspend fun artifactBytes(agentId: String, path: String): ByteArray? {
+        val name = ArtifactPaths.fileName(path).ifBlank { return null }
+        val match = runCatching { artifacts.list(agentId) }.getOrNull()?.firstOrNull { it.name == name } ?: return null
+        val url = runCatching { artifacts.downloadUrl(agentId, match.path) }.getOrNull() ?: return null
+        return runCatching { download(url, MAX_DIAGNOSE_BYTES) }.getOrNull()?.takeIf { it.isNotEmpty() }
+    }
+
+    private fun unavailableDetail(ref: MediaRef.Unavailable): String? = ref.src.takeIf { it.isNotBlank() && !it.startsWith("data:") }
 
     private suspend fun decode(ref: MediaRef, data: Any, maxWidthPx: Int, maxHeightPx: Int) = imageLoader.execute(
         ImageRequest.Builder(context)
@@ -240,9 +417,97 @@ class MediaLoader(
         const val ASSET_PREFIX = "file:///android_asset/"
         /** Under the cache: the copies [file] makes for other apps; `file_paths.xml` lets the FileProvider hand them out. */
         const val MEDIA_DIR = "media"
-        private const val POSTER_AT_MS = 1_500L
+        /** Under [MEDIA_DIR]: the files the panel and the file viewer hand to the media viewer ([keep]). */
+        private const val OPENED_DIR = "opened"
+        /**
+         * The copies [file] makes at most, least recently used going first. They are for handing a file to another
+         * app or the player, a few at a time; kept past that they were a second copy of every artifact ever shared.
+         */
+        private const val MEDIA_MAX_BYTES = 64L shl 20
+        /** [keep]'s copies at most: bytes the app already held, written again at no cost. */
+        private const val OPENED_MAX_BYTES = 32L shl 20
+        /** A copy nothing has asked for in this long goes at the next start ([sweepCopies]): the other app has long read it. */
+        private const val COPY_MAX_AGE_MS = 24 * 60 * 60 * 1000L
+        /**
+         * A copy used this recently counts against its bound but is never what the bound takes: it may still be on
+         * screen (a player reopens its file to seek), or the app it was shared to may not have read it yet.
+         */
+        private const val IN_USE_MS = 60 * 60 * 1000L
+        /**
+         * Coil's own default directory, so the entries a build without a bound wrote are adopted and trimmed rather than
+         * left behind; its default size was 2% of the disk, up to 250 MB, for pictures the memory cache already holds.
+         */
+        private const val IMAGE_CACHE_DIR = "coil3_disk_cache"
+        private const val IMAGE_CACHE_BYTES = 64L shl 20
+
+        /** One per directory for the process, as Coil's own default is: two caches over one journal corrupt each other. */
+        private val imageDiskCaches = HashMap<File, DiskCache>()
+
+        private fun imageDiskCache(cacheDir: File): DiskCache = synchronized(imageDiskCaches) {
+            imageDiskCaches.getOrPut(cacheDir) {
+                DiskCache.Builder().directory(File(cacheDir, IMAGE_CACHE_DIR).toOkioPath()).maxSizeBytes(IMAGE_CACHE_BYTES).build()
+            }
+        }
+
+        private fun isPartial(file: File): Boolean = file.name.endsWith(".part")
+
+        private fun trimCopies(dir: File, maxBytes: Long, nowMillis: Long) {
+            DiskSweep.trimToBytes(dir, maxBytes, keepAfterMillis = nowMillis - IN_USE_MS, skip = ::isPartial)
+        }
+
+        /**
+         * At start: the copies made for other apps and the viewer that nothing has asked for in a day, and a transfer's
+         * leftover `.part`, then what is left held to the bounds. Blocking; call off the main thread.
+         */
+        fun sweepCopies(cacheDir: File, nowMillis: Long = System.currentTimeMillis()) {
+            val media = File(cacheDir, MEDIA_DIR)
+            val opened = File(media, OPENED_DIR)
+            for ((dir, max) in listOf(media to MEDIA_MAX_BYTES, opened to OPENED_MAX_BYTES)) {
+                DiskSweep.deleteOlderThan(dir, nowMillis - COPY_MAX_AGE_MS)
+                trimCopies(dir, max, nowMillis)
+            }
+        }
+        /** Where into a recording its poster is read: a third of the way in, at most this far. A tile's poster is read at the same frame. */
+        internal const val POSTER_AT_MS = 1_500L
+        /** A file of this device that is not there (any more): the one thing [MediaRef.Local] can go wrong with. */
+        const val NOT_ON_DEVICE = "This file is no longer on this device"
         /** A header and one frame's worth of range requests; anything slower than this is a network that has gone. */
         private const val PROBE_TIMEOUT_MS = 15_000L
+        /** What is read again of a response no decoder took, to say what it was: more than any page or wrapper needs. */
+        private const val MAX_DIAGNOSE_BYTES = 24 * 1024 * 1024
         private val STALE_URL_CODES = setOf(400, 401, 403, 404)
+        private const val IN_WORKSPACE = "In the agent's workspace"
+        private const val ON_MACHINE = "On the agent's machine"
+
+        /** A failed read of a file of the agent's machine or repository, in the words the row or the viewer page says it with. */
+        fun problemOf(read: FileRead.Failed): MediaProblem = when (read.reason) {
+            FileRead.Reason.MachineAsleep -> MediaProblem.MachineAsleep(read.asked)
+            FileRead.Reason.MachineGone -> MediaProblem.MachineGone(read.asked)
+            FileRead.Reason.NotFound -> MediaProblem.Failed("The agent's machine has no such file", "It was moved or deleted, or went with a machine that was replaced.", asked = read.asked)
+            FileRead.Reason.OutsideWorkspace -> MediaProblem.OutsideWorkspace(read.asked)
+            FileRead.Reason.Other -> MediaProblem.Failed("Couldn't read this file", read.message, retryable = read.retryable, asked = read.asked)
+        }
+
+        private fun safeName(fileName: String): String = fileName.replace(Regex("""[^A-Za-z0-9._-]"""), "_").ifBlank { "media" }
+
+        /** Any failure as the reader's words: a named one as it is, the network's in its words, anything else as unreadable. */
+        fun problemOf(t: Throwable): MediaProblem = when (t) {
+            is MediaProblemException -> t.problem
+            is HttpException -> MediaProblem.Failed("The server answered ${t.response.code}.")
+            is IOException -> MediaProblem.Failed(t.userMessage())
+            else -> MediaProblem.Damaged(null)
+        }
+    }
+}
+
+/** Links the web shows a file at, turned into the link its bytes are at: GitHub's `blob` page into the raw file. */
+object RemoteUrls {
+    private val GITHUB_BLOB = Regex("""^https?://(?:www\.)?github\.com/([^/]+)/([^/]+)/blob/(.+)$""", RegexOption.IGNORE_CASE)
+
+    fun fetchable(url: String): String {
+        val match = GITHUB_BLOB.matchEntire(url.trim()) ?: return url
+        val (owner, repo, rest) = match.destructured
+        val path = rest.substringBefore('?').substringBefore('#')
+        return "https://github.com/$owner/$repo/raw/$path"
     }
 }

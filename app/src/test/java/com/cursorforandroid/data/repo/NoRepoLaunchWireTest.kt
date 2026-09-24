@@ -372,6 +372,11 @@ class DocumentedCloudAgentsServer : Dispatcher() {
         return json(201, buildJsonObject { put("agent", created.body); put("run", created.run) })
     }
 
+    /** A chat the account created outside this API (an account-service start): listed here under [id] with a fresh run, the way the API lists it a moment later. */
+    fun registerStarted(id: String, name: String, env: JsonObject? = null, repos: JsonArray? = null) {
+        register(id, name, buildJsonObject { put("name", name) }, env = env, repos = repos)
+    }
+
     private fun register(agentId: String?, text: String, json: JsonObject, env: JsonObject?, repos: JsonArray?): Agent {
         val id = agentId ?: "bc-00000000-0000-0000-0000-%012d".format(ids.incrementAndGet())
         val runId = "run-00000000-0000-0000-0000-%012d".format(ids.incrementAndGet())

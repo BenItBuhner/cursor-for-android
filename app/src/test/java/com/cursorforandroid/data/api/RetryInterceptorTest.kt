@@ -36,7 +36,8 @@ class RetryInterceptorTest {
         maxAttempts = 3,
         baseDelayMs = 100,
         now = { now },
-        sleeper = { ms, _ -> sleeps += ms; onSleep(ms) },
+        // Sleeping is time passing: the clock the interceptor reads moves with it, as it does on a device.
+        sleeper = { ms, _ -> sleeps += ms; now += ms; onSleep(ms) },
         random = { 1.0 },
     )
 
@@ -105,6 +106,36 @@ class RetryInterceptorTest {
 
         assertThat(runCatching { call.execute().close() }.isFailure).isTrue()
         assertThat(server.requestCount).isEqualTo(1)
+    }
+
+    /**
+     * A `429` on one call is the host's word to every call of this client: the ones that follow within the wait hold
+     * before going out — a write too, which is never retried but need not run into the same refusal — rather than
+     * each meeting the refusal and backing off on its own. Once the wait has passed, nothing holds.
+     */
+    @Test
+    fun `a rate limit heard on one call holds the client's other calls for the rest of the wait`() {
+        server.enqueue(MockResponse().setResponseCode(429).setHeader("Retry-After", "3"))
+        server.enqueue(MockResponse().setResponseCode(200))
+        client.newCall(get()).execute().use { response -> assertThat(response.code).isEqualTo(200) }
+        assertThat(sleeps).containsExactly(3_000L)
+
+        // The retried call slept the wait out itself; time has passed, so a call now is not held.
+        sleeps.clear()
+        server.enqueue(MockResponse().setResponseCode(200))
+        client.newCall(get()).execute().use { response -> assertThat(response.code).isEqualTo(200) }
+        assertThat(sleeps).isEmpty()
+
+        // A refusal answered on the last attempt (returned as is) leaves the pause standing for the next call, a write included.
+        server.enqueue(MockResponse().setResponseCode(429).setHeader("Retry-After", "5"))
+        server.enqueue(MockResponse().setResponseCode(429).setHeader("Retry-After", "5"))
+        server.enqueue(MockResponse().setResponseCode(429).setHeader("Retry-After", "5"))
+        client.newCall(get()).execute().use { response -> assertThat(response.code).isEqualTo(429) }
+        sleeps.clear()
+        server.enqueue(MockResponse().setResponseCode(200))
+        val post = Request.Builder().url(server.url("/v1/agents")).post("{}".toRequestBody("application/json".toMediaType())).build()
+        client.newCall(post).execute().use { response -> assertThat(response.code).isEqualTo(200) }
+        assertThat(sleeps).containsExactly(5_000L)
     }
 
     @Test

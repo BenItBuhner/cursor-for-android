@@ -39,7 +39,16 @@ object HeadlessTranscript {
      * [projectMode] says the prompt was sent in Project mode (`agent_mode = AGENT_MODE_PROJECT`): the chat is a coordinator's.
      * [promptShape] is the prompt step's shape, kept for the diagnostics (see [shape]).
      */
-    class Turn(val prompt: String?, val steps: List<HeadlessStep>, val projectMode: Boolean = false, val promptShape: StepShape? = null)
+    class Turn(
+        val prompt: String?,
+        val steps: List<HeadlessStep>,
+        val projectMode: Boolean = false,
+        val promptShape: StepShape? = null,
+        /** The turn's whole-chat index when the record was read by turns (see [HeadlessStep.turnIndex]); null for the step-indexed record. */
+        val turnIndex: Int? = null,
+        /** The prompt was delivered into the turn under way rather than starting one (see [HeadlessStep.steer]). */
+        val steer: Boolean = false,
+    )
 
     /**
      * The last [count] turns of the record, oldest first, read from its end a page at a time until [count] whole turns
@@ -48,6 +57,8 @@ object HeadlessTranscript {
      */
     suspend fun tailTurns(api: ConversationRecordApi, agentId: String, count: Int, pageSize: Int = PAGE_SIZE): List<Turn>? {
         if (count <= 0) return emptyList()
+        // The blob-backed record: the newest [count] turns by their blobs (see RecordPager.tailTurns).
+        if (api.readsTurns) return RecordPager.tailTurns(api, agentId, count)?.let { split(it.steps) }
         TranscriptPerf.session(agentId).network("record")
         val probe = api.fetch(agentId, startIndex = 0, limit = 1)
         val total = probe.totalResponses
@@ -75,22 +86,30 @@ object HeadlessTranscript {
         var prompt: String? = null
         var promptShape: StepShape? = null
         var projectMode = false
+        var steer = false
+        var turnIndex: Int? = null
         var current = ArrayList<HeadlessStep>()
         var started = false
         for (step in steps) {
-            if (step.userMessage != null) {
-                if (started) turns += Turn(prompt, current, projectMode, promptShape)
+            // A new turn at a prompt — and, for a record read by turns, at a step of the next turn whatever it is: a
+            // turn whose prompt could not be read is still a turn of its own, not the previous turn's tail.
+            val newTurn = step.userMessage != null || (step.turnIndex != null && turnIndex != null && step.turnIndex != turnIndex)
+            if (newTurn) {
+                if (started) turns += Turn(prompt, current, projectMode, promptShape, turnIndex, steer)
                 prompt = step.userMessage
-                promptShape = step.shape
+                promptShape = step.shape?.takeIf { step.userMessage != null }
                 projectMode = step.projectMode
+                steer = step.steer
+                turnIndex = step.turnIndex
                 current = ArrayList()
                 started = true
-                continue
+                if (step.userMessage != null) continue
             }
+            if (turnIndex == null) turnIndex = step.turnIndex
             current += step
             started = true
         }
-        if (started) turns += Turn(prompt, current, projectMode, promptShape)
+        if (started) turns += Turn(prompt, current, projectMode, promptShape, turnIndex, steer)
         return turns
     }
 
@@ -102,22 +121,35 @@ object HeadlessTranscript {
     fun trace(turn: Turn, run: RunDto, images: GeneratedImageSink? = null): List<TimelineItem> {
         val replayed = replay(turn, run.id, images)
         replayed.live.apply(RunStreamEvent.Result(run.id, run.statusEnum(), run.result, run.durationMs, run.git))
-        // The accumulator's footer is what a stream's result event gives; the run's record is the authority here.
-        return replayed.items().filterNot { it is RunFooter } + TimelineBuilder.footer(run)
+        // The accumulator's footer is what a stream's result event gives; the run's record is the authority here —
+        // except for the reason of a failure the record does not carry, which the accumulator read off the
+        // record's error step (see [errorMessage]).
+        val items = replayed.items()
+        val footer = TimelineBuilder.footer(run)
+        val reason = footer.reason ?: items.filterIsInstance<RunFooter>().lastOrNull()?.reason
+        return items.filterNot { it is RunFooter } + (if (footer.isFailure && reason != null) footer.copy(reason = reason) else footer)
     }
 
     /**
      * The turn's trace without a footer, its items named after [key]: what the record says the agent did, closed as
      * a finished turn (a reply the record ends on is complete, a call without its result stays as the record left
-     * it) — or as a failed one, with the server's reason as its notice, when the record ends the turn on an error.
-     * The footer is the run's, or the timing's, to add when either is known (see [RecordTranscript]).
+     * it). The footer is the run's, or the timing's, to add when either is known (see [RecordTranscript]) — and so
+     * is the word that the turn failed: an `error` step in the record ([errorMessage]) is the server's account of
+     * what went wrong, not of how the run ended; a run that logged one and went on finished, and only the run's own
+     * status makes the turn a failure (0.3.26–0.3.40 read the step as one and showed "Run failed" for turns that continued).
      */
     fun body(turn: Turn, key: String, images: GeneratedImageSink? = null): List<TimelineItem> {
         val replayed = replay(turn, key, images)
-        val status = if (turn.steps.any { it.error != null }) RunStatus.ERROR else RunStatus.FINISHED
-        replayed.live.apply(RunStreamEvent.Result(key, status, null, null, null))
+        replayed.live.apply(RunStreamEvent.Result(key, RunStatus.FINISHED, null, null, null))
         return replayed.items().filterNot { it is RunFooter }
     }
+
+    /**
+     * The last error the record logged for the turn (`HeadlessAgenticComposerResponse.error.message`), for the
+     * footer's reason when the run's own record says it failed (see `RecordTurn.errorMessage`). Null for a turn
+     * without one.
+     */
+    fun errorMessage(turn: Turn): String? = turn.steps.lastOrNull { it.error != null }?.error?.trim()?.takeIf { it.isNotEmpty() }
 
     /**
      * The turn's calls as the replay resolves them, and its steps' shapes, for the transcript diagnostics (see

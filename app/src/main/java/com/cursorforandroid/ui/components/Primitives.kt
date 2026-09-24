@@ -40,6 +40,7 @@ import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.drawWithContent
@@ -56,6 +57,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.disabled
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.semantics.toggleableState
@@ -77,15 +79,21 @@ fun Modifier.cursorSurface(fill: Color, border: Color, shape: Shape): Modifier =
     this.clip(shape).background(fill, shape).then(if (border.alpha > 0f) Modifier.border(CursorDimens.hairline, border, shape) else Modifier)
 
 /**
- * Takes every pointer event that reaches this node and answers none of them. For a surface drawn over the shell
- * rather than in place of it: an opaque background paints the shell out but leaves its drags and taps live
- * underneath, and a hit that finds no pointer node here goes on to whatever is at those coordinates below.
+ * A pointer node that takes nothing and answers nothing. For a surface drawn over the shell rather than in place
+ * of it: an opaque background paints the shell out but leaves its drags and taps live underneath, and a hit that
+ * finds no pointer node on the surface goes on to whatever is at those coordinates below. Hit testing stops at the
+ * topmost sibling that has a pointer node under the finger, so this alone keeps a tap on the surface's blank band,
+ * or a drag that would have pulled the drawer, from reaching the shell.
+ *
+ * It consumes nothing — and a surface over the shell must not, however natural taking every event looks. A parent
+ * that consumes a move is read by a child's touch-slop detection — on the Final pass, for each move short of the
+ * slop — as someone else having taken the gesture, so a scrollable or a pager inside would only ever take a drag
+ * fast enough to clear the slop on its first move: the media viewer's pager (#220) and the share picker's list both
+ * lost every slow drag to a root that consumed. There is no consuming variant of this any more, for that reason.
  */
-fun Modifier.opaqueToPointerInput(): Modifier = this.pointerInput(Unit) {
+fun Modifier.hitTestBoundary(): Modifier = this.pointerInput(Unit) {
     awaitPointerEventScope {
-        while (true) {
-            awaitPointerEvent().changes.forEach { it.consume() }
-        }
+        while (true) awaitPointerEvent()
     }
 }
 
@@ -103,7 +111,8 @@ fun Modifier.pressable(onClick: () -> Unit, shape: Shape, enabled: Boolean = tru
 
 /**
  * Cursor's icon button: no fill, no border, a ~14px glyph at 66 % (`--cursor-icon-secondary`). Nothing is painted
- * until pressed, when the 32dp box shows a soft rounded highlight; touches are accepted over 44dp.
+ * until pressed, when the 32dp box shows a soft rounded highlight; touches are accepted over 44dp, or over
+ * [touchHeight] vertically in a row shorter than the target (see [ChatHeader]).
  */
 @Composable
 fun FlatIconButton(
@@ -115,18 +124,19 @@ fun FlatIconButton(
     iconSize: Dp = CursorDimens.headerIcon,
     tint: Color = CursorTheme.colors.iconSecondary,
     enabled: Boolean = true,
+    touchHeight: Dp = CursorDimens.touchTarget,
 ) {
     // The label sits on the control that takes the tap, not on the glyph: inside a tappable row the glyph's own node
     // would merge into the row's, and the button would read as part of the row rather than as one of its own.
-    TouchTarget(size = size, touchSize = CursorDimens.touchTarget, shape = CursorTheme.shapes.lg, onClick = onClick, enabled = enabled, modifier = modifier, contentDescription = contentDescription) {
+    TouchTarget(size = size, touchSize = CursorDimens.touchTarget, touchHeight = touchHeight, shape = CursorTheme.shapes.lg, onClick = onClick, enabled = enabled, modifier = modifier, contentDescription = contentDescription) {
         Icon(icon, null, tint = if (enabled) tint else tint.copy(alpha = tint.alpha * 0.4f), modifier = Modifier.size(iconSize))
     }
 }
 
 /**
- * A control that occupies [size] in the layout but accepts touches over [touchSize]: the larger hit layer uses
- * `requiredSize`, so it overflows the visual box symmetrically without changing measured bounds. The press
- * ripple stays on the visual box. [contentDescription] names the control itself (the hit layer), so it stays a
+ * A control that occupies [size] in the layout but accepts touches over [touchSize] ([touchHeight] tall): the larger
+ * hit layer uses `requiredSize`, so it overflows the visual box symmetrically without changing measured bounds. The
+ * press ripple stays on the visual box. [contentDescription] names the control itself (the hit layer), so it stays a
  * node of its own wherever it sits.
  */
 @Composable
@@ -139,13 +149,14 @@ fun TouchTarget(
     enabled: Boolean = true,
     role: Role? = Role.Button,
     contentDescription: String? = null,
+    touchHeight: Dp = touchSize,
     content: @Composable () -> Unit,
 ) {
     val interaction = remember { MutableInteractionSource() }
     Box(modifier.size(size), contentAlignment = Alignment.Center) {
         Box(
             Modifier
-                .requiredSize(maxOf(size, touchSize))
+                .requiredSize(width = maxOf(size, touchSize), height = maxOf(size, touchHeight))
                 .then(if (contentDescription != null) Modifier.semantics { this.contentDescription = contentDescription } else Modifier)
                 .clickable(interactionSource = interaction, indication = null, enabled = enabled, role = role, onClick = onClick),
         )
@@ -188,7 +199,9 @@ fun ComposerRoundButton(
     val tint by animateColorAsState(targetTint, tween(160), label = "tint")
     TouchTarget(size = size, touchSize = 40.dp, shape = CircleShape, onClick = onClick, enabled = enabled, modifier = modifier) {
         Box(Modifier.size(size).background(fill, CircleShape), contentAlignment = Alignment.Center) {
-            Icon(icon, contentDescription, tint = tint, modifier = Modifier.size(CursorDimens.roundButtonGlyph))
+            // The name is on the glyph rather than the hit layer (the composer's insets line up with the glyph), so
+            // the glyph says when the button takes no tap too: a "Send" that cannot send yet must not read as ready.
+            Icon(icon, contentDescription, tint = tint, modifier = Modifier.size(CursorDimens.roundButtonGlyph).then(if (enabled) Modifier else Modifier.semantics { disabled() }))
         }
     }
 }
@@ -310,17 +323,21 @@ fun PullRequestPill(state: PullRequestState?, modifier: Modifier = Modifier) {
     )
 }
 
-/** Cursor's flat toggle at a tappable size (36 x 20): green track when on, 14 % fill when off, white knob. */
+/**
+ * Cursor's flat toggle at a tappable size (36 x 20): green track when on, 14 % fill when off, white knob. Not
+ * [enabled], it keeps showing the value at 40 % and takes no taps.
+ */
 @Composable
-fun CursorToggle(checked: Boolean, onCheckedChange: (Boolean) -> Unit, modifier: Modifier = Modifier) {
+fun CursorToggle(checked: Boolean, onCheckedChange: (Boolean) -> Unit, modifier: Modifier = Modifier, enabled: Boolean = true) {
     val colors = CursorTheme.colors
     val track by animateColorAsState(if (checked) colors.green else colors.fillMedium, tween(160), label = "track")
     val knobOffset by animateDpAsState(if (checked) 18.dp else 2.dp, label = "knob")
     Box(
         modifier
             .size(width = 36.dp, height = 20.dp)
+            .alpha(if (enabled) 1f else 0.4f)
             .background(track, CircleShape)
-            .pressable({ onCheckedChange(!checked) }, CircleShape, role = Role.Switch)
+            .pressable({ onCheckedChange(!checked) }, CircleShape, enabled = enabled, role = Role.Switch)
             // On / off for TalkBack (and for tests that wait for the switch itself, not the preference behind it).
             .semantics { toggleableState = ToggleableState(checked) },
     ) {

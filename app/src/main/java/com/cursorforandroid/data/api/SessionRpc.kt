@@ -15,13 +15,40 @@ suspend fun <I, O> ConnectJsonClient.unaryWithSession(
     body: I,
     requestSerializer: KSerializer<I>,
     responseSerializer: KSerializer<O>,
+    /** Whether a rate limit is waited out and the call made once more (see `ApiThrottle.call`); off for a call with a fallback. */
+    retryRefusals: Boolean = true,
+    /** The throttle's lane the call waits in (see `ApiThrottle.Lane`). */
+    lane: ApiThrottle.Lane = ApiThrottle.Lane.CONTROL,
 ): O {
     val token = tokens.accessToken()
     return try {
-        unary(service, method, token, body, requestSerializer, responseSerializer)
+        unary(service, method, token, body, requestSerializer, responseSerializer, retryRefusals, lane)
     } catch (e: ConnectRpcException) {
         if (!e.isUnauthenticated) throw e
         tokens.invalidate()
-        unary(service, method, tokens.accessToken(), body, requestSerializer, responseSerializer)
+        unary(service, method, tokens.accessToken(), body, requestSerializer, responseSerializer, retryRefusals, lane)
+    }
+}
+
+/** [ConnectJsonClient.serverStream] with the account session, renewed once on `unauthenticated` (see [unaryWithSession]). */
+suspend fun <I> ConnectJsonClient.serverStreamWithSession(
+    service: String,
+    method: String,
+    tokens: SessionTokenProvider,
+    body: I,
+    requestSerializer: KSerializer<I>,
+    retryRefusals: Boolean = false,
+    /** The throttle's lane, and for a stream meant to stay open its silence limit (see [ConnectJsonClient.serverStream]). */
+    lane: ApiThrottle.Lane = ApiThrottle.Lane.CONTROL,
+    silenceMs: Long? = null,
+    onMessage: (kotlinx.serialization.json.JsonObject) -> Boolean,
+): Int {
+    val token = tokens.accessToken()
+    return try {
+        serverStream(service, method, token, body, requestSerializer, retryRefusals, lane, silenceMs, onMessage)
+    } catch (e: ConnectRpcException) {
+        if (!e.isUnauthenticated) throw e
+        tokens.invalidate()
+        serverStream(service, method, tokens.accessToken(), body, requestSerializer, retryRefusals, lane, silenceMs, onMessage)
     }
 }

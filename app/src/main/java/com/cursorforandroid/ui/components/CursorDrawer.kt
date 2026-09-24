@@ -33,6 +33,7 @@ import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.Saver
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -66,6 +67,13 @@ import kotlinx.coroutines.launch
  * Letting go commits or rewinds the slide from wherever the finger left it, over a duration in proportion to the
  * distance still to go, so there is no jump in speed at the hand-over.
  *
+ * Shut, a drag anywhere pulls the sheet in, except one that starts in either of the window's back-gesture strips
+ * ([BackGestureEdges]): from the start edge that is the system's back swipe, which runs the same way as the open drag,
+ * and the drawer does not so much as twitch for it. The side panel leaves the same strips to back from the other side.
+ *
+ * Committed to opening, the drawer takes the keyboard from a field in the content under it, the composer's draft left
+ * as it was; committed to closing, from a field in the drawer itself, the sidebar's search ([SheetFocus]).
+ *
  * Material's `ModalNavigationDrawer` answers the gesture by scaling the sheet down and nudging it toward the swipe's
  * edge, and keeps the drawer's offset to itself, so it cannot be made to simply follow the finger.
  */
@@ -86,21 +94,25 @@ fun CursorDrawer(
     val widthPx = with(density) { drawerWidth.toPx() }
     val flingThreshold = with(density) { FlingThreshold.toPx() } / widthPx
     val rtl = LocalLayoutDirection.current == LayoutDirection.Rtl
+    val edges = rememberBackGestureEdges()
+    val drag = remember(state, edges) { DrawerDrag(state, edges) }
+    val focus = rememberSheetFocus { state.isOpen }
     SideEffect { state.widthPx = widthPx }
 
     Box(
         modifier
             .fillMaxSize()
+            .backGestureEdges(edges)
             .draggable(
-                state = state.draggableState,
+                state = drag,
                 orientation = Orientation.Horizontal,
                 enabled = gesturesEnabled,
                 reverseDirection = rtl,
                 startDragImmediately = state.isAnimating,
-                onDragStopped = { velocity -> state.settle(velocity / widthPx, flingThreshold) },
+                onDragStopped = { velocity -> if (!drag.lettingBe) state.settle(velocity / widthPx, flingThreshold) },
             ),
     ) {
-        Box { content() }
+        Box(Modifier.coveredFocus(focus)) { content() }
 
         // With the drawer open over a screen that can itself go back, back closes the drawer before it pops anything.
         // The content is expected to stand its own handler down while the drawer is open, rather than this relying on
@@ -128,6 +140,7 @@ fun CursorDrawer(
                 .fillMaxHeight()
                 .width(drawerWidth)
                 .offset { IntOffset((-(1f - state.fraction) * widthPx).roundToInt(), 0) }
+                .sheetFocus(focus)
                 .semantics {
                     paneTitle = NavigationMenu
                     if (state.isOpen) {
@@ -257,6 +270,29 @@ fun rememberCursorDrawerState(initialValue: DrawerValue = DrawerValue.Closed): C
     rememberSaveable(saver = CursorDrawerState.Saver) { CursorDrawerState(initialValue) }
 
 private val DrawerValue.fraction: Float get() = if (this == DrawerValue.Open) 1f else 0f
+
+/**
+ * The drawer's drag, which lets one kind be: a drag whose finger went down in a back-gesture strip while the drawer was
+ * shut is the system's back swipe, and moves nothing, not even the few pixels the app is handed before the system
+ * takes the pointer. It is decided as the drag begins, and such a drag takes no hold of the sheet either, so a slide
+ * already under way plays on.
+ */
+private class DrawerDrag(private val state: CursorDrawerState, private val edges: BackGestureEdges) : DraggableState {
+    /** Whether the drag under way, or the last one, is one the drawer lets be. */
+    var lettingBe = false
+        private set
+
+    override suspend fun drag(dragPriority: MutatePriority, block: suspend DragScope.() -> Unit) {
+        lettingBe = edges.gestureStartedInEdge && !state.isOpen
+        if (lettingBe) StandStill.block() else state.draggableState.drag(dragPriority, block)
+    }
+
+    override fun dispatchRawDelta(delta: Float) = state.draggableState.dispatchRawDelta(delta)
+}
+
+private object StandStill : DragScope {
+    override fun dragBy(pixels: Float) = Unit
+}
 
 /** Darkens the content behind the sheet in step with how far open it is; a tap on it closes the drawer. */
 @Composable

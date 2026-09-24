@@ -25,22 +25,25 @@ class TranscriptRowsTest {
         when (row) {
             is TranscriptRow.Item -> "item:${row.item::class.simpleName}"
             is TranscriptRow.Message -> "message:${row.call.callId}"
-            is TranscriptRow.Worker -> "worker:${row.call.callId}"
+            is TranscriptRow.Subagent -> "subagent:${row.subagent.source}:${row.call.callId}"
             is TranscriptRow.Media -> "media"
             is TranscriptRow.Question -> "question:${row.call.callId}"
             is TranscriptRow.Stretch -> if (row.single != null) "single:${row.single!!.key}" else "stretch:${row.summary.text}"
             is TranscriptRow.Event -> "event:${row.line.text}" + if (row.count > 1) " ×${row.count}" else ""
             is TranscriptRow.Events -> "events:${row.summary.text}"
+            is TranscriptRow.Failure -> "failure:${row.footer.id}" + (row.footer.reason?.let { ":$it" } ?: "")
         }
     }
 
     @Test
-    fun `a coordinator's turn is its messages, its worker's card, and one stretch between each pair of them`() {
+    fun `a coordinator's turn is its messages, its workers' subagent rows, and one stretch between each pair of them`() {
         val rows = TranscriptRows.of(coordinatorItems(), coordinatorMode = true)
         assertThat(kinds(rows)).containsExactly(
             // The injected turn (its remark folded under its line), its run's footer, and the coordinator's first
-            // note, thought and message to the worker: everything before the first update, one stretch.
-            "stretch:Worked 41s · 1 event · 1 agent · 1 thought",
+            // note and thought: everything before its first call to a worker, one stretch.
+            "stretch:Worked 41s · 1 event · 1 thought · 1 note",
+            // The follow-up it queued for the release worker: the worker's row, as the desktop draws it.
+            "subagent:Queued:c1",
             "message:c2",
             // Its edit and its second note, before the next updates.
             "stretch:1 edit · 1 note",
@@ -50,7 +53,7 @@ class TranscriptRowsTest {
             // The failed send is a row of its own, then the older tool's message and the worker it created.
             "single:activity-run-coord-001-3:c7",
             "message:c8",
-            "worker:c9",
+            "subagent:Created:c9",
             // The status check and the run's footer close the turn.
             "stretch:Worked 1m 21s · 1 agent",
         ).inOrder()
@@ -58,13 +61,13 @@ class TranscriptRowsTest {
         assertThat(closing.listed.map { it.key }).containsExactly("activity-run-coord-001-3:c10").inOrder()
         assertThat(closing.summary.busy).isFalse()
         assertThat(closing.summary.lineStats).isNull()
-        val edits = rows[2] as TranscriptRow.Stretch
+        val edits = rows[3] as TranscriptRow.Stretch
         assertThat(edits.summary.lineStats).isEqualTo("+2 -1")
         assertThat(edits.entries.map { it::class.simpleName }).containsExactly("Call", "Note").inOrder()
-        // The opening stretch: the event's line first, then the footer (carried by the summary, not listed), the note, the thought, the call.
+        // The opening stretch: the event's line first, then the footer (carried by the summary, not listed), the note, the thought.
         val opening = rows[0] as TranscriptRow.Stretch
-        assertThat(opening.entries.map { it::class.simpleName }).containsExactly("Event", "Footer", "Note", "Thought", "Call").inOrder()
-        assertThat(opening.listed.map { it::class.simpleName }).containsExactly("Event", "Note", "Thought", "Call").inOrder()
+        assertThat(opening.entries.map { it::class.simpleName }).containsExactly("Event", "Footer", "Note", "Thought").inOrder()
+        assertThat(opening.listed.map { it::class.simpleName }).containsExactly("Event", "Note", "Thought").inOrder()
         assertThat((opening.entries.first() as TranscriptRow.Entry.Event).row.notification.narration).startsWith("Noted;")
         // Keys are stable and unique.
         assertThat(rows.map { it.key }).containsNoDuplicates()
@@ -72,12 +75,14 @@ class TranscriptRowsTest {
     }
 
     @Test
-    fun `the message rows carry the coordinator's words, the worker row its card`() {
+    fun `the message rows carry the coordinator's words, the subagent rows its calls to its workers`() {
         val rows = TranscriptRows.of(coordinatorItems(), coordinatorMode = true)
         val first = rows.filterIsInstance<TranscriptRow.Message>().first()
         assertThat((first.call.payload as ToolPayload.CoordinatorMessage).message).isEqualTo(update)
-        val worker = rows.filterIsInstance<TranscriptRow.Worker>().single()
-        assertThat((worker.call.payload as ToolPayload.WorkerAction).kind).isEqualTo(ToolPayload.WorkerAction.Kind.Created)
+        val subagents = rows.filterIsInstance<TranscriptRow.Subagent>()
+        assertThat(subagents.map { it.subagent.source }).containsExactly(SubagentCall.Source.Queued, SubagentCall.Source.Created).inOrder()
+        assertThat(subagents.map { it.subagent.title }).containsExactly("Land merge train and prep release", "Build Projects under Extended mode").inOrder()
+        assertThat((subagents.last().call.payload as ToolPayload.WorkerAction).kind).isEqualTo(ToolPayload.WorkerAction.Kind.Created)
         assertThat(rows.filterIsInstance<TranscriptRow.Media>()).isEmpty()
         assertThat(rows.filterIsInstance<TranscriptRow.Question>()).isEmpty()
     }
@@ -161,20 +166,76 @@ class TranscriptRowsTest {
         assertThat(capped.summary.text).isEqualTo("1 edit · 1 file · 1 search · 1 command · 1 failed")
     }
 
+    /**
+     * A run the server says failed, with nothing after it: its failure is one compact row of its own after the
+     * stretch — the reason and the time on it — never a banner, and the stretch's verb stays what the run did. The
+     * banner a build before 0.3.41 wrote for it, still in the trace on disk, is not drawn; its reason goes to the footer.
+     */
     @Test
-    fun `in an agent's chat a coordinator's note is a message, a run that failed says so in its footer`() {
+    fun `in an agent's chat a coordinator's note is a message, and the newest run's failure is a row of its own with the server's reason`() {
         val items = listOf(
             UserMessage("u1", "Go."),
             ActivityGroup("g1", listOf(ToolCall("r1", "read_file", ToolKind.Read, "completed", "A.kt"))),
             AssistantMessage("a1", "Looked, nothing to do."),
-            RunFooter("f1", "run-1", RunStatus.ERROR, 12_000, emptyList()),
-            NoticeCard("n1", "Run failed", "Out of credits", NoticeTone.Error),
+            // As every build wrote them: the banner, then the footer.
+            NoticeCard("n1", NoticeCard.RUN_FAILED, "Out of credits", NoticeTone.Error),
+            RunFooter("f1", "run-1", RunStatus.ERROR, 12_000, emptyList(), endedAtMillis = 1_789_600_000_000L),
         )
         val agent = TranscriptRows.of(items, coordinatorMode = false)
-        assertThat(kinds(agent)).containsExactly("item:UserMessage", "single:g1:r1", "item:AssistantMessage", "single:f1", "item:NoticeCard").inOrder()
-        // The same items in a coordinator's chat: the reply is a note, folded with the read and the footer.
+        // The footer alone would have been a "Worked 12s" line over a "Run failed" line: the failure row stands for both.
+        assertThat(kinds(agent)).containsExactly("item:UserMessage", "single:g1:r1", "item:AssistantMessage", "failure:f1:Out of credits").inOrder()
+        assertThat(agent.filterIsInstance<TranscriptRow.Item>().none { it.item is NoticeCard }).isTrue()
+        // The same items in a coordinator's chat: the reply is a note, folded with the read and the footer; the failure follows the stretch.
         val coordinator = TranscriptRows.of(items, coordinatorMode = true)
-        assertThat(kinds(coordinator)).containsExactly("item:UserMessage", "stretch:Failed after 12s · 1 file · 1 note", "item:NoticeCard").inOrder()
+        assertThat(kinds(coordinator)).containsExactly("item:UserMessage", "stretch:Worked 12s · 1 file · 1 note", "failure:f1:Out of credits").inOrder()
+        val failure = coordinator.last() as TranscriptRow.Failure
+        assertThat(failure.footer.endedAtMillis).isEqualTo(1_789_600_000_000L)
+        // A footer that carries its own reason keeps it over a banner's.
+        val own = TranscriptRows.of(listOf(NoticeCard("n1", NoticeCard.RUN_FAILED, "Older words", NoticeTone.Error), RunFooter("f1", "run-1", RunStatus.ERROR, null, emptyList(), reason = "Out of credits")), coordinatorMode = true)
+        assertThat(kinds(own)).containsExactly("failure:f1:Out of credits")
+        // A banner filed after its footer, should a copy ever hold one so, is read too.
+        val after = TranscriptRows.of(listOf(RunFooter("f1", "run-1", RunStatus.ERROR, null, emptyList()), NoticeCard("n1", NoticeCard.RUN_FAILED, "Out of credits", NoticeTone.Error)), coordinatorMode = true)
+        assertThat(kinds(after)).containsExactly("failure:f1:Out of credits")
+    }
+
+    /**
+     * Bennett's v0.3.39 coordinator: its previous turn was cut off by an infrastructure error mid-tool-call ("Tool
+     * result not found") and the server recorded that run as failed; the conversation went on. The failure is then
+     * a line inside its stretch — listed when the stretch opens, the summary ending "· failed" — not a banner and
+     * not a row; the chat's newest run is the one that says how the chat stands. While the run is the newest and the
+     * chat idle, the same failure is the row of its own; the moment the chat runs again, or a newer turn lands, it demotes.
+     */
+    @Test
+    fun `a failure the conversation moved past is a line inside its stretch, and the newest run's is a row until the chat moves on`() {
+        val t = 1_789_600_000_000L
+        val failed = listOf(
+            UserMessage("u1", "Resume the six paused workers.", t),
+            AssistantMessage("a1", "Resuming them where they stopped."),
+            ActivityGroup("g1", listOf(ToolCall("s1", "sendToAgent", ToolKind.Coordinator, ToolCall.STATUS_INTERRUPTED, "bc-w1"))),
+            RunFooter("f1", "run-1", RunStatus.ERROR, 41_000, emptyList(), endedAtMillis = t + 41_000, reason = "Tool result not found"),
+        )
+        // Newest, the chat idle: the row of its own; the stretch is the work, and the interrupted send the worker's row.
+        val current = TranscriptRows.of(failed, coordinatorMode = true)
+        assertThat(kinds(current)).containsExactly("item:UserMessage", "stretch:1 note", "subagent:Messaged:s1", "failure:f1:Tool result not found").inOrder()
+        assertThat((current[1] as TranscriptRow.Stretch).entries.none { it is TranscriptRow.Entry.Failure }).isTrue()
+        // The chat running again (the next turn under way, nothing of it on screen yet): no longer the chat's state.
+        // The failure follows the worker's row, so it demotes to a line of its own there.
+        val running = TranscriptRows.of(failed, coordinatorMode = true, runActive = true)
+        assertThat(kinds(running)).containsExactly("item:UserMessage", "stretch:1 note", "subagent:Messaged:s1", "single:failure:f1").inOrder()
+        val inside = (running[3] as TranscriptRow.Stretch)
+        assertThat(inside.failures.single().footer.reason).isEqualTo("Tool result not found")
+        assertThat(inside.single).isInstanceOf(TranscriptRow.Entry.Failure::class.java)
+        assertThat(inside.live).isFalse()
+        // A newer turn after it: the same, and the newer turn's stretch is the live one.
+        val movedOn = failed + UserMessage("u2", "Keep going.", t + 90_000) + ActivityGroup("g2", listOf(ToolCall("s2", "getAgentStatus", ToolKind.Coordinator, "running", "6 agents")))
+        val rows = TranscriptRows.of(movedOn, coordinatorMode = true, runActive = true)
+        assertThat(kinds(rows)).containsExactly("item:UserMessage", "stretch:1 note", "subagent:Messaged:s1", "single:failure:f1", "item:UserMessage", "single:g2:s2").inOrder()
+        assertThat(rows.none { it is TranscriptRow.Failure }).isTrue()
+        // A failed run with nothing else in its turn, moved past: its line alone stands for the turn.
+        val bare = TranscriptRows.of(listOf(UserMessage("u1", "Go.", t), RunFooter("f1", "run-1", RunStatus.ERROR, 3_000, emptyList()), UserMessage("u2", "Again.", t + 5_000)), coordinatorMode = true)
+        assertThat(kinds(bare)).containsExactly("item:UserMessage", "single:failure:f1", "item:UserMessage").inOrder()
+        assertThat(rows.map { it.key }).containsNoDuplicates()
+        assertThat(current.map { it.key }).containsNoDuplicates()
     }
 
     /**

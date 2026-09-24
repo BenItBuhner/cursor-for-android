@@ -89,6 +89,39 @@ class JsonDiskCacheTest {
     }
 
     @Test
+    fun `pruning to a byte bound keeps the newest entries that fit, and always the newest`() = runBlocking<Unit> {
+        val dir = folder.newFolder("prune-bytes")
+        val cache = cache(dir)
+        listOf("a", "b", "c").forEachIndexed { i, key ->
+            cache.write(key, String.serializer(), 1, "x".repeat(1_000))
+            File(dir, "$key.json").setLastModified(System.currentTimeMillis() - (3 - i) * 10_000L)
+        }
+        val one = File(dir, "a.json").length()
+
+        cache.prune(maxEntries = 10, maxBytes = one * 2)
+        assertThat(cache.keys()).containsExactly("c", "b").inOrder()
+
+        cache.prune(maxEntries = 10, maxBytes = 1)
+        assertThat(cache.keys()).containsExactly("c")
+    }
+
+    @Test
+    fun `a touched entry outlives ones written after it`() = runBlocking<Unit> {
+        val dir = folder.newFolder("touch")
+        val cache = cache(dir)
+        cache.write("old", Int.serializer(), 1, 1)
+        File(dir, "old.json").setLastModified(System.currentTimeMillis() - 60_000)
+        cache.write("new", Int.serializer(), 1, 2)
+        File(dir, "new.json").setLastModified(System.currentTimeMillis() - 30_000)
+
+        cache.touch("old")
+        cache.touch("missing")
+        cache.prune(1)
+
+        assertThat(cache.keys()).containsExactly("old")
+    }
+
+    @Test
     fun `a write that is under way when the cache is wiped does not land`() = runBlocking<Unit> {
         val dir = folder.newFolder("wiped")
         val root = cache(dir)

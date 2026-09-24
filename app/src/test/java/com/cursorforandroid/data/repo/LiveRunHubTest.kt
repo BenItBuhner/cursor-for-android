@@ -197,10 +197,12 @@ class LiveRunHubTest {
 
         awaitUntil { snapshot()?.finished == true }
         assertThat(current().status).isEqualTo(RunStatus.ERROR)
-        val notice = current().items.filterIsInstance<NoticeCard>().single()
-        assertThat(notice.title).isEqualTo("Run failed")
-        assertThat(notice.subtitle).isEqualTo("Worker disconnected")
-        assertThat((current().items.last() as RunFooter).durationMs).isEqualTo(9_000L)
+        // The failure is the footer's to say, with the stream's reason — no banner among the items.
+        assertThat(current().items.filterIsInstance<NoticeCard>()).isEmpty()
+        val footer = current().items.last() as RunFooter
+        assertThat(footer.isFailure).isTrue()
+        assertThat(footer.reason).isEqualTo("Worker disconnected")
+        assertThat(footer.durationMs).isEqualTo(9_000L)
         subscription.cancel()
     }
 
@@ -223,6 +225,57 @@ class LiveRunHubTest {
         assertThat((current().items.first() as AssistantMessage).markdown).isEqualTo("Done.")
         assertThat(connections()).isEqualTo(1)
         subscription.cancel()
+    }
+
+    /**
+     * The order of a finish: the list hears it — the run remembered as ended, the row idle with the finish's stamp —
+     * before the terminal snapshot goes out. The subscriber here is unconfined, so the hub's own thread runs it the
+     * moment the snapshot is published, inside `finish`: what it reads of the row then is what any subscriber can
+     * read at the earliest. Published first, as it used to be, the row still said running about the run that had
+     * just ended, and a chat's collector that read it then kept the chat at RUNNING (the conversation's own test of
+     * a status this build cannot read flaked on exactly that). Both ways a run ends here — its stream's own `result`,
+     * and a record read when the stream is gone for good — keep the order.
+     */
+    @Test
+    fun `by the time anyone sees the finished snapshot, the row is idle and the list remembers the run ended`() = runBlocking<Unit> {
+        api.addRunningAgent("bc-1", "Agent", "run-1")
+        api.addRunningAgent("bc-2", "Other", "run-2")
+        agents.refresh()
+        assertThat(agents.agent("bc-1")!!.isRunning).isTrue()
+        assertThat(agents.agent("bc-2")!!.isRunning).isTrue()
+        val seen = CopyOnWriteArrayList<String>()
+        val unconfined = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
+        fun subscribe(agentId: String, runId: String) = unconfined.launch {
+            hub.snapshots(agentId, runId).collect { snapshot ->
+                if (snapshot.finished) {
+                    val row = agents.agent(agentId)!!
+                    seen += "$agentId row=${row.runStatus} running=${row.isRunning} touched=${row.updatedAtMillis == snapshot.finishedAtMillis} ended=${agents.endedStatus(agentId, runId)}"
+                }
+            }
+        }
+        val first = subscribe("bc-1", "run-1")
+        val second = subscribe("bc-2", "run-2")
+        awaitUntil { streamer.connections.contains("run-1") && streamer.connections.contains("run-2") }
+
+        // On its own stream's result.
+        streamer.emit("run-1", RunStreamEvent.Status("run-1", RunStatus.RUNNING))
+        streamer.emit("run-1", RunStreamEvent.Result("run-1", RunStatus.FINISHED, "Done.", 5_000, null))
+        streamer.emit("run-1", RunStreamEvent.Done)
+        // Off the record, the stream gone for good.
+        api.runs["run-2"] = api.runs.getValue("run-2").copy(status = "CANCELLED", updatedAt = "2026-04-13T18:45:00.000Z")
+        streamer.emit("run-2", RunStreamEvent.Error(RunStreamEvent.Error.STREAM_EXPIRED, "This run's live stream has expired."))
+        streamer.emit("run-2", RunStreamEvent.Done)
+        awaitUntil { seen.size == 2 }
+        first.cancel()
+        second.cancel()
+        unconfined.cancel()
+
+        assertThat(seen).containsExactly(
+            "bc-1 row=FINISHED running=false touched=true ended=FINISHED",
+            "bc-2 row=CANCELLED running=false touched=true ended=CANCELLED",
+        )
+        // And the finish is reported once both are in place, the same snapshot.
+        assertThat(current().finished).isTrue()
     }
 
     @Test
@@ -321,6 +374,51 @@ class LiveRunHubTest {
         awaitUntil { (snapshot()?.items?.lastOrNull() as? AssistantMessage)?.markdown == "One again" }
         assertThat(current().reconnecting).isFalse()
         second.cancel()
+    }
+
+    /**
+     * A resume position rejected mid-run starts a rebuild from the first event; the rebuild's connection dies before
+     * it delivers anything, and by the time the record is read again the run is over. The run's end used to go out
+     * on the rebuild's accumulator — empty — and the finished snapshot, which stands in for the run until its replay
+     * lands, took every tool call and every word the screen had shown of the turn off it (Bennett, 2026-09-20: "it
+     * is removing all assistant verbatim and tool-calls pertaining to it"). The end goes under the story shown.
+     */
+    @Test
+    fun `a run settled off its record while a rebuild is behind the story ends on the story, not on the fragment`() = runBlocking {
+        api.addRunningAgent("bc-1", "Agent", "run-1")
+        streamer.emit("run-1", RunStreamEvent.Status("run-1", RunStatus.RUNNING))
+        streamer.emit("run-1", RunStreamEvent.Thinking("Looking."))
+        streamer.emit("run-1", tool("c1", "read_file", "running", "README.md"))
+        streamer.emit("run-1", tool("c1", "read_file", "completed", "README.md"))
+        streamer.emit("run-1", RunStreamEvent.Assistant("Hi"))
+        // The first connection delivers the story and has its position rejected; the rebuild's connection delivers nothing.
+        streamer.dropNextConnection("run-1", RunStreamEvent.Error.INVALID_LAST_EVENT_ID, "Unknown event id", afterEvents = 5)
+        streamer.dropNextConnection("run-1", "stream_unavailable", "Run stream is no longer available", afterEvents = 0)
+        // Each read of the record is held until the test lets it go: the first finds the run going, the second over.
+        api.getRunGate = kotlinx.coroutines.CompletableDeferred()
+        val sizes = CopyOnWriteArrayList<Int>()
+        val subscription = scope.launch { hub.snapshots("bc-1", "run-1").collect { s -> sizes += s.items.sumOf { if (it is ActivityGroup) it.steps.size else 1 } } }
+        awaitUntil { api.getRunCalls == 1 }
+        val gate = api.getRunGate!!
+        api.getRunGate = kotlinx.coroutines.CompletableDeferred()
+        gate.complete(Unit)
+        awaitUntil { api.getRunCalls == 2 }
+        api.runs["run-1"] = api.runs.getValue("run-1").copy(status = "FINISHED", result = "Done.", durationMs = 4_000)
+        api.getRunGate!!.complete(Unit)
+        awaitUntil { snapshot()?.finished == true }
+
+        val ended = current()
+        assertThat(ended.streamed).isFalse()
+        // The story the screen had — the thought, the read, the reply — with the record's end under it.
+        val work = ended.items.filterIsInstance<ActivityGroup>().single()
+        assertThat(work.thoughts.map { it.text }).containsExactly("Looking.")
+        assertThat(work.calls.map { it.callId }).containsExactly("c1")
+        assertThat(ended.items.filterIsInstance<AssistantMessage>().map { it.markdown }).containsExactly("Hi", "Done.").inOrder()
+        assertThat(ended.items.last()).isInstanceOf(RunFooter::class.java)
+        assertThat((ended.items.last() as RunFooter).durationMs).isEqualTo(4_000L)
+        // And no snapshot on the way said less than the one before it.
+        assertThat(sizes.zipWithNext().all { (a, b) -> b >= a }).isTrue()
+        subscription.cancel()
     }
 
     /**

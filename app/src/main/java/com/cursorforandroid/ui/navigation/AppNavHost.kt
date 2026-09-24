@@ -12,11 +12,13 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.movableContentOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalConfiguration
@@ -25,23 +27,27 @@ import androidx.lifecycle.compose.LifecycleStartEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.cursorforandroid.AppGraph
+import com.cursorforandroid.data.repo.NewChatDrafts
 import com.cursorforandroid.domain.AgentRow
 import com.cursorforandroid.domain.CursorUser
+import com.cursorforandroid.domain.NewChatHome
 import com.cursorforandroid.domain.UpdateState
 import com.cursorforandroid.notifications.NotificationPermissionPrompt
 import com.cursorforandroid.ui.agents.AgentListUiState
 import com.cursorforandroid.ui.agents.AgentRowActions
 import com.cursorforandroid.ui.agents.AgentsViewModel
+import com.cursorforandroid.ui.agents.DraftRow
 import com.cursorforandroid.ui.agents.Sidebar
 import com.cursorforandroid.ui.agents.SidebarCallbacks
 import com.cursorforandroid.ui.agents.SidebarDestination
+import com.cursorforandroid.ui.agents.SidebarShortLists
 import com.cursorforandroid.ui.components.CursorDrawer
 import com.cursorforandroid.ui.components.rememberCursorDrawerState
 import com.cursorforandroid.ui.conversation.ConversationScreen
 import com.cursorforandroid.ui.customize.CustomizeSheet
 import com.cursorforandroid.share.ShareTarget
 import com.cursorforandroid.ui.components.SpinnerRing
-import com.cursorforandroid.ui.components.opaqueToPointerInput
+import com.cursorforandroid.ui.components.hitTestBoundary
 import com.cursorforandroid.ui.home.HomeScreen
 import com.cursorforandroid.ui.media.MediaViewerHost
 import com.cursorforandroid.ui.media.rememberMediaViewerState
@@ -50,6 +56,8 @@ import com.cursorforandroid.ui.projects.ProjectEditorHost
 import com.cursorforandroid.ui.projects.ProjectEditorTarget
 import com.cursorforandroid.ui.settings.SettingsScreen
 import com.cursorforandroid.ui.settings.UpdateCopy
+import com.cursorforandroid.ui.settings.WhatsNewCopy
+import com.cursorforandroid.ui.settings.WhatsNewScreen
 import com.cursorforandroid.ui.share.ShareDestinationScreen
 import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
@@ -69,6 +77,8 @@ fun AppNavHost(
     onDeepLinkConsumed: () -> Unit,
     newChatRequested: Boolean = false,
     onNewChatConsumed: () -> Unit = {},
+    searchRequested: Boolean = false,
+    onSearchConsumed: () -> Unit = {},
 ) {
     // The window's size, as the configuration reports it: the activity handles size changes itself, so a Fold
     // unfolding or a phone turning is a new configuration here, not a new activity (see WindowPosture).
@@ -83,8 +93,49 @@ fun AppNavHost(
         onDeepLinkConsumed = onDeepLinkConsumed,
         newChatRequested = newChatRequested,
         onNewChatConsumed = onNewChatConsumed,
+        searchRequested = searchRequested,
+        onSearchConsumed = onSearchConsumed,
     )
 }
+
+/**
+ * [AppShell] by the layout flag the shell took before the window posture, for the tests written against it: [wide] is
+ * a foldable's inner display (856 dp, where the sidebar is a column and the panel over the chat is still a sheet),
+ * compact a phone in portrait.
+ */
+@Composable
+internal fun AppShell(
+    graph: AppGraph,
+    user: CursorUser,
+    isDemo: Boolean,
+    wide: Boolean,
+    deepLinkAgentId: String?,
+    onDeepLinkConsumed: () -> Unit,
+    newChatRequested: Boolean = false,
+    onNewChatConsumed: () -> Unit = {},
+    searchRequested: Boolean = false,
+    onSearchConsumed: () -> Unit = {},
+) {
+    AppShell(
+        graph = graph,
+        user = user,
+        isDemo = isDemo,
+        windowWidthDp = if (wide) WIDE_FLAG_WIDTH_DP else COMPACT_FLAG_WIDTH_DP,
+        windowHeightDp = if (wide) WIDE_FLAG_HEIGHT_DP else COMPACT_FLAG_HEIGHT_DP,
+        deepLinkAgentId = deepLinkAgentId,
+        onDeepLinkConsumed = onDeepLinkConsumed,
+        newChatRequested = newChatRequested,
+        onNewChatConsumed = onNewChatConsumed,
+        searchRequested = searchRequested,
+        onSearchConsumed = onSearchConsumed,
+    )
+}
+
+/** The windows the layout flag stands for: a Galaxy Z Fold's inner display upright, and a phone in portrait. */
+private const val WIDE_FLAG_WIDTH_DP = 856
+private const val WIDE_FLAG_HEIGHT_DP = 949
+private const val COMPACT_FLAG_WIDTH_DP = 411
+private const val COMPACT_FLAG_HEIGHT_DP = 914
 
 /** [AppNavHost] with the window's size handed in, so a test can flip the layout without a configuration change. */
 @Composable
@@ -98,6 +149,8 @@ internal fun AppShell(
     onDeepLinkConsumed: () -> Unit,
     newChatRequested: Boolean = false,
     onNewChatConsumed: () -> Unit = {},
+    searchRequested: Boolean = false,
+    onSearchConsumed: () -> Unit = {},
 ) {
     val stack = rememberSaveable(saver = NavStack.Saver) { NavStack(Screen.Home) }
     val agentsViewModel: AgentsViewModel = viewModel(factory = AgentsViewModel.Factory(graph))
@@ -109,6 +162,8 @@ internal fun AppShell(
     var customizeOpen by remember { mutableStateOf(false) }
     // The Project editor, opened from the Projects group's plus or a Project row's menu; kept up across a rotation.
     var projectEditor by rememberSaveable { mutableStateOf<ProjectEditorTarget?>(null) }
+    // The long groups the reader listed in full, for this visit to the sidebar: not saved, cut back on leaving.
+    val shortLists = remember { SidebarShortLists() }
     val colors = CursorTheme.colors
 
     // The layout decision (see WindowPosture): the width class from the window, the rail's state from what the
@@ -152,11 +207,25 @@ internal fun AppShell(
     fun hideSidebarFromDrag() {
         sidebarWidthChoice = sidebarWidthChoice - widthClass.name
         setRail(RailState.Hidden)
+        shortLists.reset()
     }
 
     fun closeDrawer() {
         if (drawerState.isOpen) scope.launch { drawerState.close() }
     }
+
+    /**
+     * The reader left the sidebar — a chat or a Project opened, another destination: its long groups go back to five
+     * rows. A drawer still on screen is cut back once it is off it (below), so its rows do not jump while it slides.
+     */
+    fun leaveSidebar() {
+        if (wide || (!drawerState.isOpen && drawerState.fraction == 0f)) shortLists.reset()
+    }
+    LaunchedEffect(drawerState) {
+        snapshotFlow { !drawerState.isOpen && drawerState.fraction == 0f }.collect { shut -> if (shut) shortLists.reset() }
+    }
+    // Back, a launch that failed, anything else that changes what is on top is leaving too.
+    LaunchedEffect(stack.top) { leaveSidebar() }
 
     // The activity handles size and orientation changes itself, so unfolding a Fold, or turning a phone on its side,
     // swaps the drawer for the rail in place, and the two must agree: a drawer the user had open (or was opening)
@@ -167,6 +236,8 @@ internal fun AppShell(
             setRail(RailState.Expanded)
             drawerState.snapTo(DrawerValue.Closed)
         }
+        // Folding back puts the rail away behind a shut drawer.
+        if (!wide) shortLists.reset()
     }
 
     // The navigation callbacks below read the stack when they run, never `topScreen` / `selectedAgentId` as they were
@@ -182,6 +253,8 @@ internal fun AppShell(
     fun openAgent(id: String) {
         closeDrawer()
         stack.openAgent(id)
+        // Also when the chat was already on top, which changes nothing on the stack.
+        leaveSidebar()
     }
 
     fun openRow(row: AgentRow) = openAgent(row.agent.id)
@@ -189,6 +262,26 @@ internal fun AppShell(
     fun navigateTop(screen: Screen) {
         closeDrawer()
         stack.resetTo(screen)
+        leaveSidebar()
+    }
+
+    /** "New chat": a fresh composer; what the composer held stays in the sidebar as a draft. */
+    fun startNewChat() {
+        graph.newChatDrafts.request(NewChatDrafts.Request.Fresh)
+        navigateTop(Screen.Home)
+    }
+
+    /** A draft's row: the New Chat composer opens it, with everything it was written with. */
+    fun openDraft(row: DraftRow) {
+        graph.newChatDrafts.request(NewChatDrafts.Request.Open(row.id))
+        navigateTop(Screen.Home)
+    }
+
+    /** The What's new page, over whatever is on top — Settings' row or the sidebar's card is where it was asked for. */
+    fun openWhatsNew() {
+        closeDrawer()
+        if (stack.top.screen != Screen.WhatsNew) stack.push(Screen.WhatsNew)
+        leaveSidebar()
     }
 
     /** A chat opened on its launch that did not go through: back to the composer, if the user is still looking at it. */
@@ -209,11 +302,27 @@ internal fun AppShell(
             onDeepLinkConsumed()
         }
     }
-    // The widget's "+": the New Chat pane, as the sidebar's "+" reaches it.
+    // The widget's "+": a fresh New Chat pane, as the sidebar's "+" reaches it.
     LaunchedEffect(newChatRequested) {
         if (newChatRequested) {
-            navigateTop(Screen.Home)
+            startNewChat()
             onNewChatConsumed()
+        }
+    }
+    LaunchedEffect(Unit) { graph.newChatDrafts.load() }
+    val draftsState by graph.newChatDrafts.state.collectAsStateWithLifecycle()
+    val openDraftId by graph.newChatDrafts.open.collectAsStateWithLifecycle()
+    // The draft open in the New Chat pane is the one being written while the pane is on screen; left, it is listed.
+    val draftRows = remember(draftsState, openDraftId, topScreen) { DraftRow.listed(draftsState.drafts, open = openDraftId.takeIf { topScreen == Screen.Home }) }
+    // The widget's search button: the list surface with the sidebar's search field open. Counted rather than
+    // flagged so the sidebar sees a second request after the first was closed.
+    var searchRequests by rememberSaveable { mutableIntStateOf(0) }
+    LaunchedEffect(searchRequested) {
+        if (searchRequested) {
+            navigateTop(Screen.Home)
+            if (!wide) drawerState.open() else setRail(RailState.Expanded)
+            searchRequests++
+            onSearchConsumed()
         }
     }
     // Coming back to the foreground (runs that finished meanwhile would otherwise stay "Working" until a manual
@@ -240,6 +349,8 @@ internal fun AppShell(
     // has been read the shell assumes the default, which only ever hides what the setting would allow.
     val extendedMode by graph.extendedMode.enabled.collectAsStateWithLifecycle(initialValue = false)
     val extendedNoticePending by graph.extendedMode.noticePending.collectAsStateWithLifecycle(initialValue = false)
+    // Null until read, so a pane set to Projects never shows the recents for a frame first.
+    val newChatHome by graph.prefs.newChatHome.collectAsStateWithLifecycle(initialValue = null)
     if (extendedNoticePending && !isDemo) {
         ExtendedModeUpgradeNotice(
             onOpenSettings = {
@@ -268,7 +379,7 @@ internal fun AppShell(
     val destination = when (topScreen) {
         Screen.Home -> SidebarDestination.NewChat
         Screen.Settings -> SidebarDestination.Settings
-        is Screen.Agent -> null
+        Screen.WhatsNew, is Screen.Agent -> null
     }
     val updateState by graph.updates.state.collectAsStateWithLifecycle()
     val updateHint = when (val s = updateState) {
@@ -277,6 +388,9 @@ internal fun AppShell(
         is UpdateState.Installing -> if (s.awaitingConfirmation) "Update waiting for your confirmation" else null
         else -> null
     }
+    // The installed version's notes, until the page has been opened once; the Settings row reads the same flow.
+    val whatsNewUnread by graph.whatsNew.unread.collectAsStateWithLifecycle(initialValue = null)
+    val whatsNewHint = whatsNewUnread?.let { WhatsNewCopy.title(it.versionName) }
 
     @Composable
     fun sidebar(inDrawer: Boolean, modifier: Modifier = Modifier) {
@@ -287,18 +401,28 @@ internal fun AppShell(
             selectedAgentId = selectedAgentId,
             selectedDestination = destination,
             updateHint = updateHint,
+            whatsNewHint = whatsNewHint,
             extendedMode = extendedMode && !isDemo,
             onQueryChange = agentsViewModel::setQuery,
+            drafts = draftRows,
+            shortLists = shortLists,
+            searchRequests = searchRequests,
             callbacks = SidebarCallbacks(
-                onNewChat = { navigateTop(Screen.Home) },
+                onNewChat = ::startNewChat,
                 onSettings = { navigateTop(Screen.Settings) },
+                onWhatsNew = ::openWhatsNew,
                 onCustomize = { customizeOpen = true },
                 // The sidebar's top-left toggle hides the column; the content header's brings it back.
-                onToggleSidebar = if (inDrawer) ({ closeDrawer() }) else ({ setRail(RailState.Hidden) }),
+                onToggleSidebar = if (inDrawer) ({ closeDrawer() }) else ({ setRail(RailState.Hidden); shortLists.reset() }),
                 onRefresh = agentsViewModel::refresh,
                 rowActions = rowActions,
                 onLoadMore = { agentsViewModel.loadMore() },
                 onNewProject = if (isDemo || extendedMode) ({ closeDrawer(); projectEditor = ProjectEditorTarget.Create }) else null,
+                onSectionCollapsed = agentsViewModel::setSectionCollapsed,
+                onVisibleRows = agentsViewModel::rowsVisible,
+                onRetryLoadMore = { agentsViewModel.retryLoadMore() },
+                onOpenDraft = ::openDraft,
+                onDeleteDraft = { row -> scope.launch { graph.newChatDrafts.remove(row.id) } },
             ),
             modifier = modifier,
         )
@@ -327,6 +451,10 @@ internal fun AppShell(
                         onOpenAgent = pane.onOpenAgent,
                         onLaunchOpen = ::openAgent,
                         rowActions = pane.rowActions,
+                        home = pane.newChatHome,
+                        projectsAvailable = pane.projectsAvailable,
+                        onNewProject = pane.onNewProject,
+                        onOpenSettings = { navigateTop(Screen.Settings) },
                     )
                     Screen.Settings -> SettingsScreen(
                         graph = graph,
@@ -334,7 +462,11 @@ internal fun AppShell(
                         isDemo = pane.isDemo,
                         onOpenSidebar = pane.openSidebar,
                         onBack = pane.onBack,
+                        onOpenWhatsNew = ::openWhatsNew,
+                        newChatList = pane.listState,
                     )
+                    // A page of its own under Settings (or the sidebar's card); back is the stack's in either layout.
+                    Screen.WhatsNew -> WhatsNewScreen(graph = graph, onBack = { stack.pop() })
                     is Screen.Agent -> ConversationScreen(
                         graph = graph,
                         agentId = screen.id,
@@ -358,6 +490,9 @@ internal fun AppShell(
         rowActions = rowActions,
         backEnabled = !drawerState.isOpen,
         onPanelResize = ::setPanelWidth,
+        newChatHome = newChatHome,
+        projectsAvailable = isDemo || extendedMode,
+        onNewProject = if (isDemo || extendedMode) ({ projectEditor = ProjectEditorTarget.Create }) else null,
     )
 
     CompositionLocalProvider(LocalWindowPosture provides posture) {
@@ -404,7 +539,7 @@ internal fun AppShell(
     val pendingShare = shareOffer
     when {
         shareLoading -> {
-            Box(Modifier.fillMaxSize().background(colors.canvas).opaqueToPointerInput(), contentAlignment = Alignment.Center) {
+            Box(Modifier.fillMaxSize().background(colors.canvas).hitTestBoundary(), contentAlignment = Alignment.Center) {
                 SpinnerRing(size = 22.dp, strokeWidth = 2.dp)
             }
         }
@@ -442,4 +577,9 @@ private class DetailPane(
     val backEnabled: Boolean,
     /** The reader resized the panel's pane; the shell keeps the width. */
     val onPanelResize: (Int) -> Unit,
+    /** Settings › New chat page; null until the preference has been read. */
+    val newChatHome: NewChatHome?,
+    /** Projects exist to pin: Extended mode is on, or this is the demo. */
+    val projectsAvailable: Boolean,
+    val onNewProject: (() -> Unit)?,
 )

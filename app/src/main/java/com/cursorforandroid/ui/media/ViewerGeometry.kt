@@ -92,18 +92,35 @@ object ViewerGeometry {
     private fun clamp(value: Float, limit: Float): Float = if (limit <= 0f) 0f else value.coerceIn(-limit, limit)
 
     /**
-     * [pan] moved by [delta] with the rubber band on: a move that stays within [limit] is taken whole, one that goes
-     * past it (or starts past it) is taken at [factor] of its length, so the picture resists at the edge instead of
-     * either stopping dead or leaving the screen. Where nothing hangs past the viewport the axis does not move at all.
+     * [value] moved by [delta] along one axis, inside ±[limit]: the new value, and the part of [delta] that did not
+     * fit — the overflow past the edge, in finger pixels, for the caller to hand on (to the pager) or to give to the
+     * rubber band. Inside the edges the finger is followed exactly, up to the edge. A value already stretched past
+     * an edge (by the band) takes nothing further out; a move back toward the inside is taken at the band's rate,
+     * so the stretch is undone the way it was made, and whatever is left once the edge is reached continues inside.
+     * Where nothing hangs past the viewport ([limit] 0) there is no edge to move within: everything is overflow.
      */
-    fun rubberBandPan(pan: Offset, delta: Offset, limit: Offset, factor: Float = RubberBandFactor): Offset =
-        Offset(rubberBand(pan.x, delta.x, limit.x, factor), rubberBand(pan.y, delta.y, limit.y, factor))
-
-    private fun rubberBand(value: Float, delta: Float, limit: Float, factor: Float): Float {
-        if (limit <= 0f) return 0f
-        val proposed = value + delta
-        return if (abs(proposed) <= limit) proposed else value + delta * factor
+    fun panWithin(value: Float, delta: Float, limit: Float, band: Float = RubberBandFactor): AxisPan {
+        if (delta == 0f) return AxisPan(value, 0f)
+        if (limit <= 0f) return AxisPan(value, delta)
+        val stretch = abs(value) - limit
+        if (stretch > EdgeEpsilon) {
+            if (sign(delta) == sign(value)) return AxisPan(value, delta)
+            // Back toward the edge at the band's rate; the finger has stretch / band to travel before it is there.
+            val fingerToEdge = stretch / band
+            if (abs(delta) <= fingerToEdge) return AxisPan(value + delta * band, 0f)
+            return panWithin(sign(value) * limit, delta - sign(delta) * fingerToEdge, limit, band)
+        }
+        val room = if (delta > 0f) limit - value else value + limit
+        if (room <= 0f) return AxisPan(value, delta)
+        return if (abs(delta) <= room) AxisPan(value + delta, 0f) else AxisPan(value + sign(delta) * room, delta - sign(delta) * room)
     }
+
+    /** One axis of a pan: where the picture is now, and what the finger moved that it did not take. */
+    data class AxisPan(val value: Float, val overflow: Float)
+
+    /** The overflow a picture keeps as a rubber band: [factor] of it, past its edge, until the release springs it back. */
+    fun stretch(value: Float, overflow: Float, limit: Float, factor: Float = RubberBandFactor): Float =
+        if (limit <= 0f) value else value + overflow * factor
 
     /** A pinch past the zoom range keeps going at [factor] of its rate; [settle] brings it back. */
     fun rubberBandScale(scale: Float, min: Float, max: Float, factor: Float = RubberBandFactor): Float = when {
@@ -122,7 +139,7 @@ object ViewerGeometry {
         return centroid - (centroid - pan) * ratio
     }
 
-    /** Whether a horizontal drag of [dx] moves the picture rather than being the pager's: the picture is zoomed and not yet at that edge. */
+    /** Whether a horizontal drag of [dx] starts on the picture rather than on the pager: the picture is zoomed and not yet at that edge. */
     fun canPanHorizontally(pan: Offset, limit: Offset, dx: Float): Boolean {
         if (limit.x <= 0f || dx == 0f) return false
         return if (dx > 0f) pan.x < limit.x - EdgeEpsilon else pan.x > -limit.x + EdgeEpsilon
@@ -150,6 +167,8 @@ object ViewerGeometry {
     const val DoubleTapStep = 2.5f
     const val MinScale = 1f
     const val MaxScale = 5f
+    /** How far the pager has to be pulled, as a share of a page, before the lift commits to the page pulled in. */
+    const val PageCommitShare = 0.4f
     private const val EdgeEpsilon = 0.5f
     /** A drag over this much of the viewport's height dismisses whatever the speed. */
     private const val DismissDistanceShare = 0.28f

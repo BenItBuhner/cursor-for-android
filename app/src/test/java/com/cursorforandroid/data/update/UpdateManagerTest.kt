@@ -720,6 +720,68 @@ class UpdateManagerTest {
     }
 
     @Test
+    fun `the next start deletes the APK of an update that was installed without the manager, and every stray`() = runBlocking {
+        val before = manager()
+        before.check()
+        before.download()
+        assertThat(File(downloads, "20099.apk").isFile).isTrue()
+        File(downloads, "10050.apk").writeBytes(ByteArray(1_000))
+        File(downloads, "30001.apk.part").writeBytes(ByteArray(1_000))
+        File(downloads, "leftover.tmp").writeBytes(ByteArray(10))
+
+        // Sideloaded over the top: no pending record says an install happened, only the installed versionCode does.
+        platform.installedVersionCode = 20099
+        platform.installedVersionName = "0.2.0"
+        val after = manager()
+        after.ensureRestored()
+        assertThat(downloads.listFiles()!!.toList()).isEmpty()
+        assertThat(cache.readVerified()).isNull()
+        assertThat(after.state.value).isInstanceOf(UpdateState.UpToDate::class.java)
+    }
+
+    @Test
+    fun `the startup sweep keeps a verified download of a newer build and deletes the rest`() = runBlocking {
+        val before = manager()
+        before.check()
+        before.download()
+        File(downloads, "10000.apk").writeBytes(ByteArray(1_000))
+        File(downloads, "20099.apk.part").writeBytes(ByteArray(1_000))
+        File(downloads, "10099.apk").writeBytes(ByteArray(1_000))
+
+        val after = manager()
+        after.ensureRestored()
+        assertThat(downloads.listFiles()!!.map { it.name }).containsExactly("20099.apk")
+        assertThat(cache.readVerified()?.versionCode).isEqualTo(20099)
+        assertThat(after.state.value).isInstanceOf(UpdateState.Downloaded::class.java)
+    }
+
+    @Test
+    fun `the startup sweep drops a download that no longer matches what verified it`() = runBlocking {
+        val before = manager()
+        before.check()
+        before.download()
+        File(downloads, "20099.apk").writeBytes(ByteArray(10))
+
+        val after = manager()
+        after.ensureRestored()
+        assertThat(downloads.listFiles()!!.toList()).isEmpty()
+        assertThat(cache.readVerified()).isNull()
+        assertThat(after.state.value).isInstanceOf(UpdateState.Available::class.java)
+    }
+
+    @Test
+    fun `the startup sweep runs on the foreground pass even with automatic updates off`() = runBlocking {
+        prefs.setAutoUpdate(false)
+        File(downloads, "10099.apk").writeBytes(ByteArray(1_000))
+        File(downloads, "10098.apk").writeBytes(ByteArray(1_000))
+        File(downloads, "10099.apk.part").writeBytes(ByteArray(1_000))
+
+        manager().onAppStarted()
+        assertThat(downloads.listFiles()!!.toList()).isEmpty()
+        assertThat(listRequests).isEmpty()
+    }
+
+    @Test
     fun `a fresh process picks up a download its predecessor never got to install`() = runBlocking {
         val before = manager()
         before.check()

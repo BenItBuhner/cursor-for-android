@@ -69,16 +69,15 @@ import androidx.compose.ui.text.drawText
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.cursorforandroid.data.media.MediaLoader
 import com.cursorforandroid.domain.SlashCatalog
 import com.cursorforandroid.domain.SlashCommand
 import com.cursorforandroid.domain.SlashCommands
-import com.cursorforandroid.ui.theme.CursorColors
 import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
-import kotlinx.coroutines.Dispatchers
+import com.cursorforandroid.util.ioThenMain
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 
 /**
  * Cursor's prompt box as measured on cursor.com/agents: `--cursor-editor` surface, 8 % stroke (20 % focused),
@@ -91,7 +90,7 @@ import kotlinx.coroutines.withContext
  * controls ([CursorDimens.roundButton] beside [CursorTypography.input]), as on the web; the chips sit in between.
  * Typing `/` opens the [SlashCommandPopover] under the cursor with [commands] — `/goal`, the skills, the machine's
  * commands — narrowed by what follows the slash; the same catalog backs the "+" menu's Skills page. A `/command`
- * standing in the text is painted in the Cursor orange ([CommandOrange]) over the field's own glyphs, without
+ * standing in the text is painted in the Plan pill's tint ([slashCommandTint]) over the field's own glyphs, without
  * the field editing anything differently. A few commands are not text at all but pills right of "+", as on the web
  * ([ModePills]): `/multitask`, which the owner's [value] still carries in front so the request is unchanged, and
  * the modes — `/plan`, and with [extendedModes] `/ask` and `/debug` — which are [modePill]. Typing one with a space
@@ -108,8 +107,13 @@ import kotlinx.coroutines.withContext
  * The field is a [TextFieldState] editor so Android can paste images into it — from the clipboard, the keyboard
  * clipboard, or an IME `commitContent`. Those become [PendingAttachment]s through the same path as Files. In
  * Extended mode the "+" menu also attaches [files] of any type ([PendingFile]), shown as chips with their name, kind
- * and size under the image strip; each goes up the moment it is attached, its chip filling meanwhile, and the owner
- * holds send — saying why in [sendHint] — only while one is still going up.
+ * and size. Images and files share one row above the text ([ComposerAttachments]) that scrolls sideways, its ends
+ * fading, once it runs past the composer's width; each file goes up the moment it is attached, its chip filling
+ * meanwhile, the footer saying so in [sendHint]. The chat's composer sends regardless — the message finishes its
+ * uploads on its own bubble — and empties at the tap; the New Chat composer holds its launch until the files are up.
+ *
+ * A physical keyboard's Enter presses send whenever send could be tapped, and does nothing otherwise; Shift+Enter, and
+ * the on-screen keyboard's Enter, put in a newline ([sendOnHardwareEnter]).
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -133,17 +137,21 @@ fun ComposerBox(
     /** Clipboard / IME image paste; null leaves the field text-only. */
     onAddAttachments: ((List<PendingAttachment>) -> Unit)? = null,
     onAttachmentError: ((String) -> Unit)? = null,
-    /** Files of any type attached in Extended mode, as chips under the image strip; see [FileChips]. */
+    /** Files of any type attached in Extended mode, as chips in the attachment row beside the images; see [FileChip]. */
     files: List<PendingFile> = emptyList(),
     onRemoveFile: ((PendingFile) -> Unit)? = null,
     /** Where each file's upload stands, by [PendingFile.id], from the moment it is attached; a failed one offers [onRetryFile]. */
     fileUploads: Map<String, FileUploadState> = emptyMap(),
     onRetryFile: ((PendingFile) -> Unit)? = null,
     /**
-     * Why send is held, in a few words beside the model chip — "Uploading 2 of 3…" while a file is still going up;
-     * null when nothing holds it. The owner turns [canSend] off for the same reason.
+     * Where the attached files stand, in a few words beside the model chip — "Uploading 2 of 3…" while one is still
+     * going up; null when none is. Whether send waits on it is the owner's ([canSend]): the New Chat composer holds
+     * its launch; the chat's composer sends, the uploads finishing on the message's bubble.
      */
     sendHint: String? = null,
+    /** For the attachment row's pictures and recordings opening in the app's viewer: the chat they belong to, and the loader that reads a restored recording's poster. */
+    mediaAgentId: String? = null,
+    media: MediaLoader? = null,
     modelLabel: String? = null,
     onModel: (() -> Unit)? = null,
     /**
@@ -156,6 +164,11 @@ fun ComposerBox(
     extendedModes: Boolean = false,
     footerExtra: (@Composable RowScope.() -> Unit)? = null,
     minLines: Int = 1,
+    /**
+     * Takes focus — and so the keyboard — as it first appears: for a composer that is the whole point of its screen
+     * (the quick composer over the launcher). Off, arriving on a screen never throws the keyboard up.
+     */
+    focusOnOpen: Boolean = false,
 ) {
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
@@ -169,7 +182,7 @@ fun ComposerBox(
     // had it. The want is taken from it once, before the field has reported its own state over the top; a field that
     // was not focused is never given focus, since arriving on a screen must not throw the keyboard up.
     var focused by rememberSaveable(saver = FocusedSaver) { mutableStateOf(false) }
-    var wantsFocus by remember { mutableStateOf(focused) }
+    var wantsFocus by remember { mutableStateOf(focused || focusOnOpen) }
     var menuOpen by rememberSaveable { mutableStateOf(false) }
     val focus = remember { FocusRequester() }
     // Waits for the "+" menu to be gone: its popup holds focus while it is up, and a request made under it is lost.
@@ -187,6 +200,9 @@ fun ComposerBox(
             cancelOffered = true
         }
     }
+    // Exactly when the send slot below is an enabled Send: a physical Enter presses it then and at no other time, so
+    // it never stops a run, cancels a launch, or sends past files still going up.
+    val sendsNow = canSend && !isSending
     val pad = CursorDimens.composerPadding
     val border by animateColorAsState(if (focused) colors.strokeStrong else colors.strokeSubtle, tween(160), label = "border")
     // The field owns the text and the selection; [value] only says what the owner last made of it. Comparing the two
@@ -209,6 +225,7 @@ fun ComposerBox(
         }
     }
     val textScroll = rememberScrollState()
+    val commandTint = slashCommandTint()
     val receiveImages = rememberImagePasteReceiver(
         enabled = onAddAttachments != null,
         currentCount = attachments.size,
@@ -286,16 +303,27 @@ fun ComposerBox(
             .cursorSurface(colors.elevated, border, shape)
             .padding(start = pad, end = pad, top = pad, bottom = pad - 2.dp),
     ) {
-        if (attachments.isNotEmpty() && onRemoveAttachment != null) {
-            AttachmentStrip(attachments, onRemoveAttachment)
-        }
-        if (files.isNotEmpty() && onRemoveFile != null) {
-            FileChips(files, onRemove = onRemoveFile, uploads = fileUploads, onRetry = onRetryFile, modifier = Modifier.padding(bottom = 8.dp))
+        // Everything attached, in one row that scrolls sideways past the composer's width; nothing at all when nothing is.
+        val shownImages = if (onRemoveAttachment != null) attachments else emptyList()
+        val shownFiles = if (onRemoveFile != null) files else emptyList()
+        if (shownImages.isNotEmpty() || shownFiles.isNotEmpty()) {
+            ComposerAttachments(
+                images = shownImages,
+                onRemoveImage = { onRemoveAttachment?.invoke(it) },
+                files = shownFiles,
+                onRemoveFile = { onRemoveFile?.invoke(it) },
+                surface = colors.elevated,
+                uploads = fileUploads,
+                onRetryFile = onRetryFile,
+                agentId = mediaAgentId,
+                media = media,
+                modifier = Modifier.padding(bottom = 8.dp),
+            )
         }
         // The Box is the popover's anchor: it drops from the text, over the footer, like the web's.
         // The extra inset is on the Box so the popover stays under the glyphs, not under the corner,
-        // and the top/bottom air matches the left/right.
-        Box(Modifier.padding(CursorDimens.composerTextInset)) {
+        // and the top/bottom air matches the left/right. It is also where a pen writes, out to the box's rounded edge.
+        Box(Modifier.stylusWriting().padding(CursorDimens.composerTextInset)) {
             // The field's layout, handed over as it is measured and read back as the command highlight draws.
             val textLayout = remember { TextLayoutHandle() }
             BasicTextField(
@@ -325,6 +353,7 @@ fun ComposerBox(
                     .fillMaxWidth()
                     // One line of `input` at the default font scale, so the box does not shrink under a small system font.
                     .heightIn(min = 22.dp)
+                    .sendOnHardwareEnter(field, onSend = onSend.takeIf { sendsNow }, onEdited = { publish(it) })
                     .then(if (receiveImages != null) Modifier.contentReceiver(receiveImages) else Modifier)
                     .focusRequester(focus)
                     .onFocusChanged { focused = it.isFocused },
@@ -333,7 +362,7 @@ fun ComposerBox(
                         // The field's own text, not the owner's: a placeholder that follows a lagging owner blinks
                         // back over the first character typed.
                         if (field.text.isEmpty()) Text(placeholder, style = type.input, color = colors.textTertiary, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        Box(Modifier.slashCommandHighlight(layout = { textLayout.get?.invoke() }, scroll = textScroll, color = CommandOrange)) {
+                        Box(Modifier.slashCommandHighlight(layout = { textLayout.get?.invoke() }, scroll = textScroll, color = commandTint)) {
                             inner()
                         }
                     }
@@ -406,7 +435,7 @@ fun ComposerBox(
                 isSending && cancelOffered && onCancelSend != null -> ComposerRoundButton(CursorIcons.Stop, "Cancel sending", onClick = onCancelSend, prominent = true)
                 isSending -> ComposerBusyButton()
                 isRunning && onStop != null && !canSend -> ComposerRoundButton(CursorIcons.Stop, "Stop", onClick = onStop, prominent = true)
-                else -> ComposerRoundButton(CursorIcons.ArrowUp, "Send", onClick = onSend, prominent = canSend, enabled = canSend)
+                else -> ComposerRoundButton(CursorIcons.ArrowUp, "Send", onClick = onSend, prominent = canSend, enabled = sendsNow)
             }
         }
     }
@@ -431,12 +460,6 @@ private fun ComposerBusyButton(modifier: Modifier = Modifier) {
 private const val CancelOfferDelayMillis = 2_500L
 
 /**
- * `--cursor-brand` (#F54E00), the Cursor orange the web and desktop composers paint `/commands` in; the same in
- * every theme, so it is not a [CursorColors] token here. (main carries it as `CursorColors.brand`; this is that value.)
- */
-internal val CommandOrange = Color(0xFFF54E00)
-
-/**
  * Where a text field leaves its layout provider: set from `onTextLayout` during the field's measure, read while the
  * command highlight draws. Not snapshot state on purpose — the provider itself reads the field's layout result, which
  * is, so the draw is invalidated by the layout changing rather than by a write made in the middle of measuring.
@@ -446,11 +469,12 @@ private class TextLayoutHandle {
 }
 
 /**
- * Paints the `/command` tokens of a text field in [color] — the Cursor orange — the way cursor.com/agents and the
- * desktop composer set a command apart from the request. Purely a matter of drawing: the field lays its text out
- * once and hands the result over through `onTextLayout` ([layout]); after the field has drawn, the same layout is
- * drawn again in [color], clipped to the box of each token ([SlashCommands.tokenRanges] of the laid-out text), so
- * the orange glyphs land exactly on the field's own. Nothing about editing, selection or the caret changes. The
+ * Paints the `/command` tokens of a text field in [color] — the Plan pill's tint ([slashCommandTint]) — the way
+ * cursor.com/agents and the desktop composer set a command apart from the request. Purely a matter of drawing: the
+ * field lays its text out once and hands the result over through `onTextLayout` ([layout]); after the field has
+ * drawn, the same layout is drawn again in [color], clipped to the box of each token ([SlashCommands.tokenRanges] of
+ * the laid-out text), so the tinted glyphs land exactly on the field's own. Nothing about editing, selection or the
+ * caret changes; the same rule and tint paint the message once sent (see [highlightSlashCommands]). The
  * field draws its text in the space of its scrolled content (its core node places that content at `-scroll` and
  * draws there), so the repaint follows [scroll] the same way and is clipped to the field's bounds like the field.
  */
@@ -520,7 +544,8 @@ internal fun rememberImagePasteReceiver(
             val add = addAttachments.value
             val taken = count.value
             scope.launch {
-                val imported = withContext(Dispatchers.IO) { importAttachments(context, uris, taken) }
+                // The import off the main thread, the callbacks below back on it (see ioThenMain).
+                val imported = ioThenMain { importAttachments(context, uris, taken) }
                 if (imported.attachments.isNotEmpty()) add(imported.attachments)
                 imported.error?.let { attachmentError.value?.invoke(it) }
             }

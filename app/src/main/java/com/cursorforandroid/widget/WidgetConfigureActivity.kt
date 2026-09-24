@@ -3,61 +3,43 @@ package com.cursorforandroid.widget
 import android.appwidget.AppWidgetManager
 import android.content.Intent
 import android.os.Bundle
+import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.glance.GlanceId
 import androidx.glance.appwidget.GlanceAppWidgetManager
-import androidx.glance.appwidget.state.getAppWidgetState
-import androidx.glance.appwidget.state.updateAppWidgetState
-import androidx.glance.state.PreferencesGlanceStateDefinition
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import androidx.lifecycle.lifecycleScope
 import com.cursorforandroid.R
 import com.cursorforandroid.appGraph
-import com.cursorforandroid.domain.WidgetMode
-import com.cursorforandroid.ui.components.CursorCard
 import com.cursorforandroid.ui.components.CursorHeader
 import com.cursorforandroid.ui.components.CursorIcons
 import com.cursorforandroid.ui.components.FlatIconButton
-import com.cursorforandroid.ui.components.HairlineDivider
+import com.cursorforandroid.ui.components.fadingVerticalScroll
 import com.cursorforandroid.ui.components.pressable
-import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
-import com.cursorforandroid.ui.theme.ThemeMode
-import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.combine
 
 /**
- * Chooses what one widget lists. The launcher opens this when the widget is placed (and, from Android 9, from its
- * reconfigure affordance); the widget's own title opens it too. Picking a row applies at once, like the app's
- * picker sheets; backing out leaves a widget being placed unplaced, as the platform expects.
+ * The settings of one home-screen widget. The launcher opens this when a widget is placed (and, from Android 9,
+ * from its reconfigure affordance); a widget's own title opens it too. Which widget kind it is comes from the
+ * receiver the launcher names for the instance ([WidgetKinds]); the kind supplies the body — its preview and its
+ * options, which apply as they change — and this activity the chrome around it: the header, Done, and the result
+ * the launcher waits for. Backing out leaves a widget being placed unplaced, as the platform expects.
  */
 class WidgetConfigureActivity : ComponentActivity() {
 
@@ -72,97 +54,87 @@ class WidgetConfigureActivity : ComponentActivity() {
             return
         }
         val graph = appGraph
-        val glanceId = GlanceAppWidgetManager(this).getGlanceIdBy(appWidgetId)
 
         setContent {
-            val themeMode by graph.prefs.themeMode.collectAsStateWithLifecycle(initialValue = ThemeMode.System)
-            val oledBlack by graph.prefs.oledBlack.collectAsStateWithLifecycle(initialValue = false)
-            // Null until the widget's stored choice has been read: a fresh widget starts on the default.
-            var selected by remember { mutableStateOf<WidgetMode?>(null) }
-            LaunchedEffect(Unit) {
-                selected = WidgetMode.parse(getAppWidgetState(this@WidgetConfigureActivity, PreferencesGlanceStateDefinition, glanceId)[ChatsWidget.MODE_KEY])
-            }
-            CursorTheme(mode = themeMode, oledBlack = oledBlack) {
-                WidgetConfigureScreen(
-                    selected = selected,
-                    onPick = { mode ->
-                        selected = mode
-                        lifecycleScope.launch {
-                            updateAppWidgetState(this@WidgetConfigureActivity, glanceId) { it[ChatsWidget.MODE_KEY] = mode.name }
-                            ChatsWidget().update(this@WidgetConfigureActivity, glanceId)
-                            setResult(RESULT_OK, Intent().putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, appWidgetId))
-                            finish()
-                        }
-                    },
-                    onClose = { finish() },
-                )
-            }
-        }
-    }
-}
-
-/** Settings-page idiom: header, a 12sp group label, a bordered card of rows with the accent check on the chosen one. */
-@Composable
-fun WidgetConfigureScreen(selected: WidgetMode?, onPick: (WidgetMode) -> Unit, onClose: () -> Unit, modifier: Modifier = Modifier) {
-    val colors = CursorTheme.colors
-    val type = CursorTheme.typography
-    Column(modifier.fillMaxSize().background(colors.canvas)) {
-        CursorHeader(
-            title = stringResource(R.string.widget_configure_title),
-            subtitle = stringResource(R.string.widget_configure_subtitle),
-            leading = { FlatIconButton(CursorIcons.Close, "Close", onClick = onClose) },
-        )
-        Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp).navigationBarsPadding().padding(bottom = 24.dp)) {
-            Text(
-                stringResource(R.string.widget_configure_group),
-                style = type.small,
-                color = colors.textTertiary,
-                modifier = Modifier.padding(top = 18.dp, bottom = 6.dp, start = 2.dp),
-            )
-            CursorCard(Modifier.fillMaxWidth().widthIn(max = 640.dp)) {
-                WidgetMode.entries.forEachIndexed { index, mode ->
-                    ModeRow(mode, icon = mode.icon(), checked = selected == mode, onClick = { onPick(mode) })
-                    if (index != WidgetMode.entries.lastIndex) HairlineDivider(Modifier.padding(horizontal = 14.dp))
+            // Nothing is drawn until the widget is known to the system and the theme is known: a first frame in the
+            // default theme that flips to the chosen one is a jump. The window behind it already wears the app's
+            // night mode.
+            val appearance by remember { combine(graph.prefs.themeMode, graph.prefs.oledBlack, ::Pair) }.collectAsStateWithLifecycle(initialValue = null)
+            val bound by produceState<Bound?>(null) { value = awaitBinding(appWidgetId) ?: return@produceState finish() }
+            val (themeMode, oledBlack) = appearance ?: return@setContent
+            val (glanceId, kind) = bound ?: return@setContent
+            val scope = remember(glanceId) {
+                WidgetConfigureScope(this, graph, glanceId, appWidgetId) {
+                    setResult(RESULT_OK, Intent().putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, appWidgetId))
+                    // The options were written as they changed; the render runs off the process's scope, so finishing
+                    // here cannot cut it short.
+                    WidgetSync.render(this, glanceId)
+                    finish()
                 }
             }
-            Text(
-                stringResource(R.string.widget_configure_note),
-                style = type.small,
-                color = colors.textQuaternary,
-                modifier = Modifier.padding(top = 8.dp, start = 2.dp),
-            )
+            CursorTheme(mode = themeMode, oledBlack = oledBlack) {
+                WidgetConfigureScreen(title = kind.title, subtitle = kind.subtitle, onDone = scope.done, onClose = { finish() }) {
+                    kind.Configure(scope)
+                }
+            }
         }
+    }
+
+    private class Bound(val glanceId: GlanceId, val kind: WidgetKind) {
+        operator fun component1() = glanceId
+        operator fun component2() = kind
+    }
+
+    /**
+     * The widget as the system knows it: its provider (which names its kind) and its Glance id. The launcher binds
+     * the id to the provider before it opens this screen, but the binding is the system's to report and a launcher
+     * under load has been seen to open the screen a beat before the service would say so; asked again for a moment
+     * rather than taken for an error, since the alternative — Glance's `getGlanceIdBy` throwing — took the screen and
+     * the placement with it. Null when the id never becomes this app's, in which case there is nothing to configure.
+     */
+    private suspend fun awaitBinding(appWidgetId: Int): Bound? {
+        val manager = AppWidgetManager.getInstance(this)
+        val glance = GlanceAppWidgetManager(this)
+        repeat(BIND_ATTEMPTS) { attempt ->
+            val info = runCatching { manager.getAppWidgetInfo(appWidgetId) }.getOrNull()
+            if (info != null) {
+                val glanceId = runCatching { glance.getGlanceIdBy(appWidgetId) }.getOrNull()
+                if (glanceId != null) return Bound(glanceId, WidgetKinds.forReceiver(info.provider.className) ?: ChatsWidgetKind)
+            }
+            if (attempt == 0) Log.w(TAG, "Widget $appWidgetId is not bound to this app yet; waiting for the launcher")
+            delay(BIND_RETRY_MS)
+        }
+        Log.w(TAG, "Widget $appWidgetId never became this app's; nothing to configure")
+        return null
+    }
+
+    private companion object {
+        const val TAG = "WidgetConfigure"
+        const val BIND_ATTEMPTS = 20
+        const val BIND_RETRY_MS = 150L
     }
 }
 
-private fun WidgetMode.icon(): ImageVector = when (this) {
-    WidgetMode.Recent -> CursorIcons.Clock
-    WidgetMode.Running -> CursorIcons.Sparkle
-    WidgetMode.Pinned -> CursorIcons.Pin
-}
-
-/** A sheet-style row: 17dp glyph at 66 %, label with a 12sp detail line, accent check when chosen. */
+/** The chrome of the settings screen: header with Close and Done, then the kind's body in a scrolling column. */
 @Composable
-private fun ModeRow(mode: WidgetMode, icon: ImageVector, checked: Boolean, onClick: () -> Unit) {
+fun WidgetConfigureScreen(title: String, subtitle: String, onDone: () -> Unit, onClose: () -> Unit, modifier: Modifier = Modifier, body: @Composable () -> Unit) {
     val colors = CursorTheme.colors
-    val type = CursorTheme.typography
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .pressable(onClick, CursorTheme.shapes.lg)
-            .heightIn(min = CursorDimens.listRow)
-            .padding(horizontal = 14.dp, vertical = 8.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Icon(icon, null, tint = colors.iconSecondary, modifier = Modifier.size(17.dp))
-        Spacer(Modifier.width(12.dp))
-        Column(Modifier.weight(1f)) {
-            Text(mode.label, style = type.base, color = colors.textPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            Text(mode.detail, style = type.small, color = colors.textQuaternary, maxLines = 1, overflow = TextOverflow.Ellipsis)
-        }
-        if (checked) {
-            Spacer(Modifier.width(12.dp))
-            Icon(CursorIcons.Check, null, tint = colors.accent, modifier = Modifier.size(16.dp))
+    Column(modifier.fillMaxSize().background(colors.canvas)) {
+        CursorHeader(
+            title = title,
+            subtitle = subtitle,
+            leading = { FlatIconButton(CursorIcons.Close, "Close", onClick = onClose) },
+            trailing = {
+                Text(
+                    stringResource(R.string.widget_configure_done),
+                    style = CursorTheme.typography.baseMedium,
+                    color = colors.link,
+                    modifier = Modifier.pressable(onDone, CursorTheme.shapes.base).padding(horizontal = 10.dp, vertical = 8.dp),
+                )
+            },
+        )
+        Column(Modifier.fillMaxSize().navigationBarsPadding().fadingVerticalScroll(surface = colors.canvas).padding(horizontal = 16.dp).padding(bottom = 24.dp)) {
+            body()
         }
     }
 }

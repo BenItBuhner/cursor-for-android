@@ -11,9 +11,12 @@ import com.cursorforandroid.data.auth.SessionUnavailableException
 import com.cursorforandroid.domain.Capabilities
 import com.cursorforandroid.domain.ConversationControls
 import com.cursorforandroid.domain.InteractionResolution
+import com.cursorforandroid.domain.PendingFollowup
 import com.cursorforandroid.domain.QueueLoad
+import com.cursorforandroid.domain.QueuePlacement
 import com.cursorforandroid.domain.SteerOutcome
 import com.cursorforandroid.domain.ToolPayload
+import com.cursorforandroid.util.AppClock
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -23,12 +26,15 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.io.IOException
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * A chat's controls on the account service — what the desktop, the web and the iOS app can do to a running cloud
@@ -52,6 +58,21 @@ class SteeringRepository(
     private val goals: GoalStateApi? = null,
     /** Runs after an action the transcript should reflect (an answer, a hold): the conversation's revalidation. */
     private val afterAction: suspend (String) -> Unit = {},
+    /**
+     * Hands every read of the account's queue to the transcript (`ConversationRepository.noteAccountQueue`), with when
+     * the read began: the transcript files the messages the account has delivered and confirms the ones it has let go.
+     */
+    private val onQueueRead: suspend (agentId: String, pending: List<PendingFollowup>, readAtMillis: Long) -> Unit = { _, _, _ -> },
+    /** A queued message the reader deleted from the card, once the account has taken it off its queue (`ConversationRepository.queuedDeleted`). */
+    private val onQueuedDeleted: (agentId: String, followupId: String) -> Unit = { _, _ -> },
+    /** A queued message the reader edited on the card, once the account holds the new words (`ConversationRepository.queuedEdited`). */
+    private val onQueuedEdited: (agentId: String, followupId: String, text: String) -> Unit = { _, _, _ -> },
+    /**
+     * Where the transcript says each queued message stands (`ConversationRepository.queuePlacement`): a message it has
+     * just filed under a run is the moment the account's queue is read again, whatever the poll's clock says (see
+     * [QueuePlacement]). Null leaves the poll to its interval.
+     */
+    private val placement: ((agentId: String) -> StateFlow<QueuePlacement>)? = null,
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
     private val pollIntervalMs: Long = POLL_INTERVAL_MS,
     /** Whether the account's calls may be made (Extended mode). Everything, for tests of the calls themselves. */
@@ -60,6 +81,9 @@ class SteeringRepository(
     private val states = ConcurrentHashMap<String, MutableStateFlow<ConversationControls>>()
     private val attached = ConcurrentHashMap<String, Int>()
     private val pollers = ConcurrentHashMap<String, Job>()
+    /** Per chat: how many reads of its queue have begun, and the newest of them applied (see [applyQueueRead]). */
+    private val queueReads = ConcurrentHashMap<String, AtomicLong>()
+    private val queueApplied = HashMap<String, Long>()
 
     init {
         scope.launch { session.backend.drop(1).collect { reset() } }
@@ -83,6 +107,14 @@ class SteeringRepository(
         if (count > 1) return
         pollers[agentId]?.cancel()
         pollers[agentId] = scope.launch {
+            // A message the transcript files under its run has left the card in that very frame; the account's queue
+            // is read again at once, so the card's word and the account's agree without waiting on the poll.
+            placement?.let { placed ->
+                launch {
+                    placed(agentId).map { it.deliveredIds + it.deliveredTexts }.distinctUntilChanged().drop(1)
+                        .collect { delivered -> if (delivered.isNotEmpty()) refreshQueue(agentId) }
+                }
+            }
             var polls = 0
             while (isActive) {
                 refreshQueue(agentId)
@@ -140,30 +172,51 @@ class SteeringRepository(
             return
         }
         f.update { it.copy(queueLoad = QueueLoad.Loading) }
+        // When the read began, by the app's clock: the transcript reads the answer against what happened meanwhile.
+        val readAt = AppClock.now()
+        val read = queueReads.getOrPut(agentId) { AtomicLong() }.incrementAndGet()
         try {
             val pending = api.listPending(agentId)
-            f.update { it.copy(queue = pending, queueLoad = QueueLoad.Loaded) }
+            if (!applyQueueRead(agentId, read) { f.update { it.copy(queue = pending, queueLoad = QueueLoad.Loaded) } }) return
+            onQueueRead(agentId, pending, readAt)
         } catch (e: CancellationException) {
             throw e
         } catch (t: Throwable) {
-            f.update { it.copy(queueLoad = QueueLoad.Unavailable(describe(t))) }
+            applyQueueRead(agentId, read) { f.update { it.copy(queueLoad = QueueLoad.Unavailable(describe(t))) } }
         }
+    }
+
+    /**
+     * Applies read number [read] of [agentId]'s queue unless a read begun after it has been applied already: reads
+     * overlap (the poll, the one a filing asks for, the one after an edit), and an older answer landing last put a
+     * message the account had let go of — and the transcript had taken — back on the card beside it.
+     */
+    private inline fun applyQueueRead(agentId: String, read: Long, apply: () -> Unit): Boolean = synchronized(queueApplied) {
+        if (read < (queueApplied[agentId] ?: 0L)) return false
+        queueApplied[agentId] = read
+        apply()
+        true
     }
 
     /**
      * Files [followup] with the account. Behind a turn under way it joins the account's queue; on a free agent the
      * account starts its run and names it, which is returned. [now] sends it in place of the turn under way instead.
      */
-    suspend fun sendFollowup(agentId: String, followup: AccountFollowup, now: Boolean = false): Result<String?> =
+    /**
+     * Files [followup]; the queue is read again after, unless the caller asks to [refresh] it itself — the composer's
+     * send does, once the transcript has taken the message's bubble down, so the card and the bubble never show the
+     * message at the same instant (see `OutgoingMessages`, `QueuePlacement`).
+     */
+    suspend fun sendFollowup(agentId: String, followup: AccountFollowup, now: Boolean = false, refresh: Boolean = true): Result<String?> =
         action(agentId, "send", needs = { it.accountQueue || it.agentModes }, api = { queueApi }) { api ->
-            api.addFollowup(agentId, followup, synchronous = now).also { refreshQueue(agentId) }
+            api.addFollowup(agentId, followup, synchronous = now).also { if (refresh) refreshQueue(agentId) }
         }
 
     suspend fun updatePending(agentId: String, followupId: String, text: String): Result<Unit> =
-        queueEdit(agentId, followupId) { it.updatePending(agentId, followupId, text.trim()) }
+        queueEdit(agentId, followupId) { it.updatePending(agentId, followupId, text.trim()); onQueuedEdited(agentId, followupId, text.trim()) }
 
     suspend fun deletePending(agentId: String, followupId: String): Result<Unit> =
-        queueEdit(agentId, followupId) { it.deletePending(agentId, followupId) }
+        queueEdit(agentId, followupId) { it.deletePending(agentId, followupId); onQueuedDeleted(agentId, followupId) }
 
     /** Moves a queued message one place up (earlier) or down (later); nothing happens at either end. */
     suspend fun movePending(agentId: String, followupId: String, up: Boolean): Result<Unit> {

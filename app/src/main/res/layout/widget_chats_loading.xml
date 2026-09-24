@@ -1,21 +1,32 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  What the launcher shows between placing the widget and its first render: the sidebar surface with the sidebar's
-  "Loading chats…" line (12sp at 36 %). Follows the system theme; the render that replaces it follows the app's.
+  What the launcher shows between placing the widget and its first render: the sidebar surface, a small indeterminate
+  spinner and the sidebar's "Loading chats…" line (12sp at 36 %). The spinner is a ProgressBar, which drives its own
+  indeterminate animation — the one kind of motion a launcher-inflated layout can have. Follows the system theme; the
+  render that replaces it follows the app's.
 -->
-<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:id="@android:id/background"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:background="@drawable/widget_surface"
-    android:backgroundTint="@color/widget_surface">
+    android:backgroundTint="@color/widget_surface"
+    android:gravity="center"
+    android:orientation="vertical"
+    android:paddingHorizontal="16dp">
+
+    <ProgressBar
+        style="?android:attr/progressBarStyleSmall"
+        android:layout_width="18dp"
+        android:layout_height="18dp"
+        android:indeterminate="true"
+        android:indeterminateTint="@color/widget_icon_tertiary" />
 
     <TextView
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:layout_gravity="center"
-        android:paddingHorizontal="16dp"
+        android:layout_marginTop="8dp"
         android:text="@string/widget_loading"
         android:textColor="@color/widget_text_quaternary"
         android:textSize="12sp" />
-</FrameLayout>
+</LinearLayout>

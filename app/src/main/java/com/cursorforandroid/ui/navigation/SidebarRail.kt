@@ -10,7 +10,6 @@ import androidx.compose.foundation.gestures.draggable
 import androidx.compose.foundation.gestures.rememberDraggableState
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.width
@@ -34,6 +33,8 @@ import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
+import com.cursorforandroid.ui.components.rememberSheetFocus
+import com.cursorforandroid.ui.components.sheetFocus
 import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
 import kotlin.math.roundToInt
@@ -56,12 +57,17 @@ import kotlin.math.roundToInt
  * its minimum. Without [onResize] the edge is a plain hairline. The slide is skipped while a finger is on the grip
  * so the column follows it exactly.
  *
+ * Unlike the phone drawer it covers nothing: the pane reflows beside it, so a composer holding the keyboard keeps both
+ * while the rail comes back, where the drawer takes them. Collapsing, the rail is the drawer shutting: its own search,
+ * holding focus, lets it go and the keyboard is put away as the collapse begins, and a composer beside it that holds
+ * them keeps both ([com.cursorforandroid.ui.components.SheetFocus]).
+ *
  * First composition shows the rail at rest in its state, without a slide: that is what a Fold unfolding or a phone
  * rotating sees when the drawer layout is swapped for this one, and a rail that arrived by sliding in would read as
  * if it had opened on its own. Hidden, the content leaves the composition once the slide has finished.
  */
 @Composable
-fun RowScope.SidebarRail(
+fun SidebarRail(
     state: RailState,
     modifier: Modifier = Modifier,
     width: Dp = CursorDimens.sidebarWidth,
@@ -85,6 +91,9 @@ fun RowScope.SidebarRail(
     )
     // A drag that snapped the sidebar shut ends with its grip: the flag is cleared here so the next slide animates.
     LaunchedEffect(state) { if (state == RailState.Hidden) dragging = false }
+    // Around the slide rather than on it: hidden, the slide composes nothing, so nothing on it would stay to hear a
+    // focused search leave with it.
+    val focus = rememberSheetFocus { state != RailState.Hidden }
     val dragState = rememberDraggableState { delta ->
         askedPx += if (rtl) -delta else delta
         val askedDp = with(density) { askedPx.toDp() }.value
@@ -99,44 +108,46 @@ fun RowScope.SidebarRail(
     // column as it always has.
     val edge = if (onResize != null) GripWidth else CursorDimens.hairline
     val inset = if (onResize != null) GripWidth else 0.dp
-    if (shown > 0.dp || state != RailState.Hidden) {
-        Row(modifier.fillMaxHeight()) {
-            Box(Modifier.width((shown - inset).coerceAtLeast(0.dp)).fillMaxHeight().clipToBounds()) {
-                Box(Modifier.align(Alignment.CenterEnd).width((width - inset).coerceAtLeast(0.dp)).fillMaxHeight()) { content() }
-            }
-            if (shown > 0.dp) {
-                Box(
-                    Modifier
-                        .fillMaxHeight()
-                        .width(edge)
-                        .then(
-                            if (onResize != null) {
-                                Modifier
-                                    .draggable(
-                                        state = dragState,
-                                        orientation = Orientation.Horizontal,
-                                        onDragStarted = {
-                                            dragging = true
-                                            askedPx = with(density) { width.toPx() }
-                                        },
-                                        onDragStopped = {
-                                            dragging = false
-                                            if (state != RailState.Hidden) onResizeEnd?.invoke(with(density) { askedPx.toDp() }.value.roundToInt())
-                                        },
-                                    )
-                                    .semantics {
-                                        contentDescription = "Resize sidebar"
-                                        stateDescription = "${width.value.roundToInt()} dp"
-                                    }
-                                    .testTag("sidebar-grip")
-                            } else {
-                                Modifier
-                            },
-                        ),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Box(Modifier.fillMaxHeight().width(CursorDimens.hairline).background(colors.strokeSubtle))
-                    if (onResize != null) Box(Modifier.width(3.dp).height(28.dp).background(colors.strokeStrong, CircleShape))
+    Box(modifier.sheetFocus(focus)) {
+        if (shown > 0.dp || state != RailState.Hidden) {
+            Row(Modifier.fillMaxHeight()) {
+                Box(Modifier.width((shown - inset).coerceAtLeast(0.dp)).fillMaxHeight().clipToBounds()) {
+                    Box(Modifier.align(Alignment.CenterEnd).width((width - inset).coerceAtLeast(0.dp)).fillMaxHeight()) { content() }
+                }
+                if (shown > 0.dp) {
+                    Box(
+                        Modifier
+                            .fillMaxHeight()
+                            .width(edge)
+                            .then(
+                                if (onResize != null) {
+                                    Modifier
+                                        .draggable(
+                                            state = dragState,
+                                            orientation = Orientation.Horizontal,
+                                            onDragStarted = {
+                                                dragging = true
+                                                askedPx = with(density) { width.toPx() }
+                                            },
+                                            onDragStopped = {
+                                                dragging = false
+                                                if (state != RailState.Hidden) onResizeEnd?.invoke(with(density) { askedPx.toDp() }.value.roundToInt())
+                                            },
+                                        )
+                                        .semantics {
+                                            contentDescription = "Resize sidebar"
+                                            stateDescription = "${width.value.roundToInt()} dp"
+                                        }
+                                        .testTag("sidebar-grip")
+                                } else {
+                                    Modifier
+                                },
+                            ),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Box(Modifier.fillMaxHeight().width(CursorDimens.hairline).background(colors.strokeSubtle))
+                        if (onResize != null) Box(Modifier.width(3.dp).height(28.dp).background(colors.strokeStrong, CircleShape))
+                    }
                 }
             }
         }
@@ -145,7 +156,7 @@ fun RowScope.SidebarRail(
 
 /** The rail by a flag: expanded or hidden. */
 @Composable
-fun RowScope.SidebarRail(expanded: Boolean, modifier: Modifier = Modifier, content: @Composable () -> Unit) {
+fun SidebarRail(expanded: Boolean, modifier: Modifier = Modifier, content: @Composable () -> Unit) {
     SidebarRail(state = if (expanded) RailState.Expanded else RailState.Hidden, modifier = modifier, content = content)
 }
 

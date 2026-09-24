@@ -19,17 +19,22 @@ defaults:
     shell: bash # -eo pipefail, so a failing command inside a pipeline fails the step
 
 jobs:
+  # Every job below checks out and compiles on its own runner; they run side by side, so the wall time of a run is
+  # the slowest job, not the sum. The one status to require is `ci`, at the end.
   build:
-    name: Build & lint
+    name: Build
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-tags: true # the version is derived from the release tags (app/build.gradle.kts)
 
       - uses: ./.github/actions/android-toolchain
 
       # Dev builds report e.g. 0.1.0-dev.42+gabc1234 in Settings and the User-Agent so an installed build can be traced
-      # back to this run and commit. The base version stays whatever gradle.properties says.
+      # back to this run and commit. The base version is the one git derives (app/build.gradle.kts): the release after the
+      # highest tag; the stamp replaces its `-dev`.
       - name: Stamp dev version
         id: stamp
         env:
@@ -39,25 +44,18 @@ jobs:
           echo "short_sha=${short_sha}" >> "$GITHUB_OUTPUT"
           echo "suffix=-dev.${GITHUB_RUN_NUMBER}+g${short_sha}" >> "$GITHUB_OUTPUT"
 
-      # assembleRelease exercises R8 / resource shrinking on every change. The signing secrets are never passed to this
-      # job, so -Papp.allowUnsignedRelease=true opts in to the debug key; without it a release build now fails outright.
-      # The APK it produces is for verification only - it pins no certificate and cannot be published.
-      - name: Lint and build debug + release APKs
-        run: >
-          ./gradlew :app:lintDebug :app:assembleDebug :app:assembleRelease
-          -Papp.allowUnsignedRelease=true
-          -Papp.versionNameSuffix="${{ steps.stamp.outputs.suffix }}"
+      - name: Build debug APK
+        run: ./gradlew :app:assembleDebug -Papp.versionNameSuffix="${{ steps.stamp.outputs.suffix }}"
 
-      - name: Collect APKs
+      - name: Collect APK
         run: |
           version="$(./gradlew -q :app:printAppVersion -Papp.versionNameSuffix="${{ steps.stamp.outputs.suffix }}" | sed -n 's/^versionName=//p')"
           echo "Built version ${version}"
           mkdir -p dist
           cp app/build/outputs/apk/debug/app-debug.apk "dist/cursor-for-android-${version}-debug.apk"
-          cp app/build/outputs/apk/release/app-release.apk "dist/cursor-for-android-${version}-release-debugkey.apk"
           ls -l dist
 
-      - name: Upload APKs
+      - name: Upload APK
         uses: actions/upload-artifact@v7
         with:
           name: apks-${{ steps.stamp.outputs.short_sha }}
@@ -65,20 +63,93 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+  # assembleRelease exercises R8 / resource shrinking on every change (lint's release-build pass is off, see `lint {}`
+  # in app/build.gradle.kts; the `lint` job covers it). Its own runner: R8 alone takes two and a half minutes there,
+  # and beside the debug build the two Kotlin compiles slowed each other down. The signing secrets are never passed to
+  # this job, so -Papp.allowUnsignedRelease=true opts in to the debug key; without it a release build fails outright.
+  # The APK it produces is for verification only - it pins no certificate and cannot be published.
+  release-build:
+    name: Release build (R8)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-tags: true # the version is derived from the release tags (app/build.gradle.kts)
+
+      - uses: ./.github/actions/android-toolchain
+
+      - name: Stamp dev version
+        id: stamp
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          short_sha="${HEAD_SHA::7}"
+          echo "short_sha=${short_sha}" >> "$GITHUB_OUTPUT"
+          echo "suffix=-dev.${GITHUB_RUN_NUMBER}+g${short_sha}" >> "$GITHUB_OUTPUT"
+
+      - name: Build release APK with R8
+        run: ./gradlew :app:assembleRelease -Papp.allowUnsignedRelease=true -Papp.versionNameSuffix="${{ steps.stamp.outputs.suffix }}"
+
+      - name: Collect APK
+        run: |
+          version="$(./gradlew -q :app:printAppVersion -Papp.allowUnsignedRelease=true -Papp.versionNameSuffix="${{ steps.stamp.outputs.suffix }}" | sed -n 's/^versionName=//p')"
+          mkdir -p dist
+          cp app/build/outputs/apk/release/app-release.apk "dist/cursor-for-android-${version}-release-debugkey.apk"
+          ls -l dist
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v7
+        with:
+          name: apk-release-debugkey-${{ steps.stamp.outputs.short_sha }}
+          path: dist/*.apk
+          if-no-files-found: error
+          retention-days: 30
+
+  # Android lint over src/main and src/test (lintDebug: every check, not only the fatal ones). On its own runner: in
+  # one job with the build it shared a 3 GB daemon with R8 and a second lint pass, and the three took ten minutes
+  # between them where this alone takes under two.
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-tags: true # the version is derived from the release tags (app/build.gradle.kts)
+
+      - uses: ./.github/actions/android-toolchain
+
+      - name: Lint
+        run: ./gradlew :app:lintDebug
+
       - name: Upload lint report
         if: failure()
         uses: actions/upload-artifact@v7
         with:
-          name: lint-report-${{ steps.stamp.outputs.short_sha }}
+          name: lint-report
           path: app/build/reports/lint-results-debug.html
           if-no-files-found: ignore
 
+  # The ~2000 JVM unit tests over six runners, one test JVM each: five deterministic slices of the ordinary classes
+  # (`-Papp.testShard=I/5`, app/build.gradle.kts) and one for the benchmarks - the frame-time and throughput claims
+  # (`*BenchmarkTest`, `TranscriptPerf*`) - alone, so what they measure is the code and not a neighbour. One JVM
+  # because the runner's four vCPUs are two cores: with two or three test JVMs side by side the fault, benchmark and
+  # Compose UI tests, which assert on or wait for wall-clock behaviour, timed out on one shard job in five; alone in
+  # their JVM they never have. The checks are named "Unit tests (1/5)" .. "(5/5)" and "Unit tests (benchmarks)"; `ci`
+  # below folds them, and every other job, into the one check to require.
   unit-tests:
-    name: Unit tests
+    name: Unit tests (${{ matrix.shard }})
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ["1/5", "2/5", "3/5", "4/5", "5/5", "benchmarks"]
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-tags: true # the version is derived from the release tags (app/build.gradle.kts)
 
       - uses: ./.github/actions/android-toolchain
 
@@ -91,19 +162,28 @@ jobs:
         run: echo "suffix=-dev.${GITHUB_RUN_NUMBER}+g${HEAD_SHA::7}" >> "$GITHUB_OUTPUT"
 
       # The Roborazzi walkthrough is covered by the `screenshots` job below.
-      - name: Run JVM unit tests
+      - name: Run JVM unit tests (${{ matrix.shard }})
         run: >
-          ./gradlew :app:testDebugUnitTest -Papp.skipScreenshotTests=true
-          -Papp.versionNameSuffix="${{ steps.stamp.outputs.suffix }}"
+          ./gradlew :app:testDebugUnitTest -Papp.skipScreenshotTests=true -Papp.testShard=${{ matrix.shard }}
+          -Papp.testForks=1 -Papp.versionNameSuffix="${{ steps.stamp.outputs.suffix }}"
+
+      # The JUnit XML always (a megabyte): the per-class times are what the slices are balanced on. The HTML report
+      # only when something failed.
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: unit-tests-results-${{ strategy.job-index }}
+          path: app/build/test-results/testDebugUnitTest/
+          if-no-files-found: ignore
+          retention-days: 14
 
       - name: Upload test report
         if: failure()
         uses: actions/upload-artifact@v7
         with:
-          name: unit-test-report
-          path: |
-            app/build/reports/tests/testDebugUnitTest/
-            app/build/test-results/testDebugUnitTest/
+          name: unit-test-report-${{ strategy.job-index }}
+          path: app/build/reports/tests/testDebugUnitTest/
           if-no-files-found: ignore
 
   screenshots:
@@ -112,12 +192,19 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-tags: true # the version is derived from the release tags (app/build.gradle.kts)
 
       - uses: ./.github/actions/android-toolchain
 
       # Renders the demo walkthrough and the home-screen widget through Robolectric and compares them pixel-for-pixel
       # with screenshots/. When the UI changes on purpose, run the "Update screenshots" workflow (or
       # `./gradlew :app:recordRoborazziDebug`) and commit the result.
+      #
+      # Robolectric's android-all jars are Gradle dependencies served from the Gradle cache restored above ("Robolectric
+      # SDK jars" in app/build.gradle.kts), and the tests run with robolectric.offline=true. Maven Central trouble
+      # therefore shows up as a Gradle "Could not resolve org.robolectric:android-all-instrumented" failure while the task
+      # graph is being built - never as every test class failing in classMethod, which is a real regression.
       - name: Verify screenshots against screenshots/
         run: ./gradlew :app:verifyRoborazziDebug --tests '*ScreenshotTest*'
 
@@ -133,3 +220,24 @@ jobs:
             app/build/reports/roborazzi/
             app/build/reports/tests/testDebugUnitTest/
           if-no-files-found: ignore
+
+  # The one status to require in branch protection: "CI". It succeeds only when every job above did, so the set of
+  # jobs (and the number of unit-test shards) can change without touching the protection rule. `always()` makes it run
+  # after failures too; without it a failed dependency would leave it skipped, which branch protection reads as pending.
+  ci:
+    name: CI
+    if: always()
+    needs: [build, release-build, lint, unit-tests, screenshots]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check every job's result
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          echo "$RESULTS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
+          failed="$(echo "$RESULTS" | jq -r 'to_entries[] | select(.value.result != "success") | .key')"
+          if [[ -n "$failed" ]]; then
+            echo "::error::Not every job succeeded: $(echo "$failed" | paste -sd' ')"
+            exit 1
+          fi

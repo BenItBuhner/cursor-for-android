@@ -19,6 +19,7 @@ import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.isOn
+import androidx.compose.ui.test.isSelected
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onFirst
@@ -107,7 +108,7 @@ class AppScreenshotTest {
      */
     private fun appGraph(): AppGraph {
         val context = ApplicationProvider.getApplicationContext<Context>()
-        return AppGraph(context, SecureKeyStore(context) { context.getSharedPreferences("stand-in-secure", Context.MODE_PRIVATE) })
+        return AppGraph(context, SecureKeyStore(context) { context.getSharedPreferences("stand-in-secure", Context.MODE_PRIVATE) }, appVersion = SCREENSHOT_APP_VERSION)
     }
 
     @OptIn(ExperimentalMaterial3Api::class)
@@ -160,6 +161,11 @@ class AppScreenshotTest {
 
     private fun waitForText(text: String, timeoutMillis: Long = 20_000) {
         compose.waitUntil(timeoutMillis) { compose.onAllNodes(hasText(text, substring = true)).fetchSemanticsNodes().isNotEmpty() }
+    }
+
+    /** Until Settings' theme row [label] reads as the chosen one: the screen has recomposed from the preference. */
+    private fun waitForTheme(label: String) {
+        compose.waitUntil(20_000) { compose.onAllNodes(hasText(label) and isSelected()).fetchSemanticsNodes().isNotEmpty() }
     }
 
     /**
@@ -344,7 +350,7 @@ class AppScreenshotTest {
         compose.onNodeWithText("Demo User").performClick()
         waitForText("Appearance")
         compose.onNodeWithText("Cursor Dark").performClick()
-        waitForText("True-black surfaces instead of Cursor Dark's charcoal.")
+        waitForTheme("Cursor Dark")
         compose.waitForIdle()
         compose.onNodeWithContentDescription("Back").performClick()
 
@@ -449,7 +455,7 @@ class AppScreenshotTest {
         compose.onNodeWithText("Read all").performClick()
         // The row's own word is the UI's word that the write landed. Do not read DataStore from waitUntil:
         // that blocks the main thread and the mark-all coroutine never finishes.
-        waitForText("Nothing unread", 10_000)
+        waitForText("Nothing unread")
         compose.waitForIdle()
         // Nothing left to read: the action stays listed, dimmed, so the sheet reads the same either way.
         capture("58_chats_filter_all_read")
@@ -468,9 +474,9 @@ class AppScreenshotTest {
         compose.onNodeWithText("Demo User").performClick()
         waitForText("Appearance")
         compose.onNodeWithText("Cursor Dark").performClick()
-        // The preference is one thing, the screen having recomposed from it another: wait for the copy that only the
-        // dark theme shows, or a slow runner captures "Match system" still checked.
-        waitForText("True-black surfaces instead of Cursor Dark's charcoal.")
+        // The preference is one thing, the screen having recomposed from it another: wait for the row to read chosen,
+        // or a slow runner captures "Match system" still checked.
+        waitForTheme("Cursor Dark")
         capture("20_settings_dark")
         compose.onNodeWithText("OLED black").performClick()
         // The switch in the OLED row (its row merges the label into its semantics) reads on once the screen has caught up.
@@ -492,7 +498,7 @@ class AppScreenshotTest {
         compose.waitUntil(20_000) { compose.onAllNodes(hasContentDescription("New chat")).fetchSemanticsNodes().isNotEmpty() }
         waitForSidebarSections()
         // The Project's row in the sidebar (the recent card behind the drawer names it too) opens the coordinator's
-        // chat: a Project coordinator's transcript, whose steps are the workers it created (a card each), the status
+        // chat: a Project coordinator's transcript, whose steps are the workers it created (a row each), the status
         // check, its message to a worker, its own words to the user, and the worker's completion notice that
         // started the turn. There is no Project view in between.
         compose.onNode(hasText("Cesium billing launch") and hasAnyAncestor(sidebarList)).performClick()
@@ -509,8 +515,8 @@ class AppScreenshotTest {
         } finally {
             watching.cancel()
         }
-        // The earlier turn's worker cards sit above the current turn; bring the first of them into the frame.
-        compose.onAllNodes(hasScrollToNodeAction() and hasAnyDescendant(hasText("PR #215 (usage aggregation) is", substring = true))).onFirst().performScrollToNode(hasTestTag("worker-card"))
+        // The earlier turn's worker rows sit above the current turn; bring the first of them into the frame.
+        compose.onAllNodes(hasScrollToNodeAction() and hasAnyDescendant(hasText("PR #215 (usage aggregation) is", substring = true))).onFirst().performScrollToNode(hasTestTag("subagent-row"))
         compose.waitForIdle()
         capture("39_project_coordinator_transcript")
         // The Project itself is the chat's panel. A coordinator's opens on the Project panel (the notes, as on
@@ -548,9 +554,16 @@ class AppScreenshotTest {
         compose.onAllNodesWithText("Revenue Scaling Pipeline Research").onFirst().performClick()
         waitForText("Worked", 30_000)
         // The finished run's thinking / tool / subagent trace is replayed from its retained stream a beat after the
-        // transcript; capture once it has been spliced in.
+        // transcript; capture once it has been spliced in — the frame's word, not the state's: the state can hold the
+        // group a frame before the transcript draws it, and a trace still loading shows its row meanwhile (the frame
+        // used to be taken between the two, one run in three).
         val revenueId = graph.agents.state.value.agents.first { it.name == "Revenue Scaling Pipeline Research" }.id
-        compose.waitUntil(30_000) { graph.conversations.state(revenueId).value.items.any { it is ActivityGroup } }
+        compose.waitUntil(30_000) {
+            val state = graph.conversations.state(revenueId).value
+            state.items.any { it is ActivityGroup } && state.traceStatus.pending == 0 &&
+                compose.onAllNodes(hasText("Loading the activity", substring = true)).fetchSemanticsNodes().isEmpty() &&
+                compose.onAllNodes(hasText("1 thought", substring = true)).fetchSemanticsNodes().isNotEmpty()
+        }
         compose.waitForIdle()
         capture("10_tablet_conversation")
     }

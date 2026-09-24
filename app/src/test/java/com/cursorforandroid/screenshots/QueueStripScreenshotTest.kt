@@ -26,6 +26,7 @@ import com.cursorforandroid.ui.conversation.AccountQueueRows
 import com.cursorforandroid.ui.conversation.QueuedFollowUps
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.ui.theme.ThemeMode
+import com.cursorforandroid.util.AppClock
 import com.github.takahirom.roborazzi.RoborazziOptions
 import com.github.takahirom.roborazzi.captureScreenRoboImage
 import org.junit.Rule
@@ -61,9 +62,18 @@ class QueueStripScreenshotTest {
         PendingFollowup("fu-2", "And a changelog line under Unreleased", 2_000L, AgentSource.API),
     )
 
+    /** The clock the held card's "waited" line reads, pinned so the frame is the same on every run. */
+    private val now = 1_800_000_000_000L
+
     private val deviceQueue = listOf(
         QueuedFollowUp("q-1", "Then add a test for the light theme", queuedAtMillis = 1_000L),
         QueuedFollowUp("q-2", "Attach the before and after screenshots to the PR", images = listOf(DraftImage("img-1", PromptImage(ByteArray(0), "image/png"))), queuedAtMillis = 2_000L),
+        // Refused with a wait the server named: held, the card saying why in the server's words, tried again by itself.
+        QueuedFollowUp(
+            "q-3", "And bump the version once it is green", queuedAtMillis = 3_000L,
+            heldSinceMillis = now - 12_000L, notBeforeMillis = now + 18_000L,
+            holdReason = QueuedFollowUp.RATE_LIMITED, serverReason = "Too many requests from this key.", throttleRefusals = 1,
+        ),
     )
 
     @OptIn(ExperimentalMaterial3Api::class)
@@ -110,6 +120,7 @@ class QueueStripScreenshotTest {
     @OptIn(ExperimentalMaterial3Api::class)
     @Test
     fun deviceQueueStrip() {
+        AppClock.nowMillis = { now }
         compose.setContent {
             CursorTheme(mode = ThemeMode.Dark) {
                 CompositionLocalProvider(LocalRippleConfiguration provides null) {
@@ -143,5 +154,6 @@ class QueueStripScreenshotTest {
             }
         }
         capture("65_composer_device_queue_strip")
+        AppClock.nowMillis = System::currentTimeMillis
     }
 }

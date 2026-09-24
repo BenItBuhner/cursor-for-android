@@ -5,6 +5,7 @@ import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.cursorforandroid.data.local.PreferencesStore
 import com.cursorforandroid.domain.Capabilities
+import com.cursorforandroid.domain.TranscriptEngine
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
@@ -46,6 +47,46 @@ class ExtendedModeTest {
     }
 
     @Test
+    fun `the transcript engine is Stable for everyone until Beta is chosen, and only Beta reads the record`() = runBlocking<Unit> {
+        val mode = mode()
+        // The default, for a fresh install and an upgrade alike: nothing on the device says otherwise.
+        assertThat(mode.engine()).isEqualTo(TranscriptEngine.STABLE)
+        assertThat(mode.engine.first()).isEqualTo(TranscriptEngine.STABLE)
+        assertThat(mode.acknowledge()).isTrue()
+        assertThat(mode.enable()).isTrue()
+        // Extended mode on, Stable: every private surface but the record read and the goal it carries.
+        val stable = mode.capabilities()
+        assertThat(stable).isEqualTo(Capabilities.EXTENDED_STABLE)
+        assertThat(stable.accountTranscript).isFalse()
+        assertThat(stable.accountGoal).isFalse()
+        assertThat(stable.accountQueue).isTrue()
+        assertThat(stable.steering).isTrue()
+        assertThat(stable.projects).isTrue()
+        assertThat(stable.pinSync).isTrue()
+        assertThat(stable.anyExtended).isTrue()
+        assertThat(stable.copy(accountTranscript = true, accountGoal = true)).isEqualTo(Capabilities.EXTENDED)
+        // Beta: what 0.3.58 did, the record included; persisted, and read by the flow the screens collect.
+        assertThat(mode.setEngine(TranscriptEngine.BETA)).isTrue()
+        assertThat(mode.engine()).isEqualTo(TranscriptEngine.BETA)
+        assertThat(mode.capabilities()).isEqualTo(Capabilities.EXTENDED)
+        assertThat(mode.capabilities.first()).isEqualTo(Capabilities.EXTENDED)
+        assertThat(mode().engine()).isEqualTo(TranscriptEngine.BETA)
+        // Back to Stable.
+        assertThat(mode.setEngine(TranscriptEngine.STABLE)).isTrue()
+        assertThat(mode.capabilities()).isEqualTo(Capabilities.EXTENDED_STABLE)
+        // With the mode off the engine chooses nothing: the documented API alone, whatever it says.
+        assertThat(mode.setEngine(TranscriptEngine.BETA)).isTrue()
+        assertThat(mode.disable()).isTrue()
+        assertThat(mode.capabilities()).isEqualTo(Capabilities.DOCUMENTED)
+        assertThat(Capabilities.of(false, TranscriptEngine.BETA)).isEqualTo(Capabilities.DOCUMENTED)
+        // The one-argument form is the Beta set: the tests' shorthand for every private surface at once.
+        assertThat(Capabilities.of(true)).isEqualTo(Capabilities.EXTENDED)
+        assertThat(TranscriptEngine.parse("beta")).isEqualTo(TranscriptEngine.BETA)
+        assertThat(TranscriptEngine.parse("nonsense")).isEqualTo(TranscriptEngine.STABLE)
+        assertThat(TranscriptEngine.parse(null)).isEqualTo(TranscriptEngine.STABLE)
+    }
+
+    @Test
     fun `cannot be turned on until the warning has been acknowledged`() = runBlocking<Unit> {
         val mode = mode()
 
@@ -57,7 +98,8 @@ class ExtendedModeTest {
         assertThat(mode.acknowledgedAt.first()).isEqualTo(now)
         assertThat(mode.enable()).isTrue()
         assertThat(mode.isEnabled()).isTrue()
-        assertThat(mode.capabilities()).isEqualTo(Capabilities.EXTENDED)
+        // Every private surface but the record read, which the Stable transcript engine (the default) leaves off.
+        assertThat(mode.capabilities()).isEqualTo(Capabilities.EXTENDED_STABLE)
         assertThat(enabledRuns).isEqualTo(1)
         // Turning it on again does nothing more.
         assertThat(mode.enable()).isTrue()
@@ -144,7 +186,7 @@ class ExtendedModeTest {
 
         mode.acknowledge()
         mode.enable()
-        assertThat(mode.capabilities.first()).isEqualTo(Capabilities.EXTENDED)
+        assertThat(mode.capabilities.first()).isEqualTo(Capabilities.EXTENDED_STABLE)
         assertThat(mode.enabled.first()).isTrue()
 
         mode.disable()

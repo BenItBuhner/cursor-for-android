@@ -110,7 +110,12 @@ class MediaRefTest {
         assertThat(MediaRef.parse("/opt/cursor/artifacts/a.png", "bc-1")).isEqualTo(MediaRef.Artifact("bc-1", "artifacts/a.png"))
         // No agent to ask (rendered outside a conversation): the VM path cannot be fetched.
         assertThat(MediaRef.parse("/opt/cursor/artifacts/a.png", null)).isEqualTo(MediaRef.Unavailable("/opt/cursor/artifacts/a.png"))
-        assertThat(MediaRef.parse("docs/diagram.png", "bc-1")).isEqualTo(MediaRef.Unavailable("docs/diagram.png"))
+        // A path of the agent's own machine or repository: read from its workspace, else its repository at its branch.
+        assertThat(MediaRef.parse("docs/diagram.png", "bc-1")).isEqualTo(MediaRef.Workspace("bc-1", "docs/diagram.png"))
+        assertThat(MediaRef.parse("/workspace/screenshots/45.png", "bc-1")).isEqualTo(MediaRef.Workspace("bc-1", "/workspace/screenshots/45.png"))
+        assertThat(MediaRef.parse("docs/diagram.png", null)).isEqualTo(MediaRef.Unavailable("docs/diagram.png"))
+        assertThat(MediaRef.parse("#figure-2", "bc-1")).isEqualTo(MediaRef.Unavailable("#figure-2"))
+        assertThat(MediaRef.parse("mailto:a@b.c", "bc-1")).isEqualTo(MediaRef.Unavailable("mailto:a@b.c"))
 
         val inline = MediaRef.parse("data:image/png;base64,iVBORw0KGgo=", "bc-1")
         assertThat(inline).isInstanceOf(MediaRef.Inline::class.java)

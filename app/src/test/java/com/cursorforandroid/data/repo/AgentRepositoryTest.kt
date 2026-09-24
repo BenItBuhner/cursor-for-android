@@ -6,6 +6,7 @@ import com.cursorforandroid.data.FakeCursorApi
 import com.cursorforandroid.data.FakeRunStreamer
 import com.cursorforandroid.data.api.ComposerLifecycleApi
 import com.cursorforandroid.data.api.ComposerSnapshot
+import com.cursorforandroid.data.api.CursorApiException
 import com.cursorforandroid.data.api.dto.RunDto
 import com.cursorforandroid.data.api.dto.V0AgentDto
 import com.cursorforandroid.data.api.dto.V0TargetDto
@@ -15,6 +16,7 @@ import com.cursorforandroid.data.local.AttachmentStore
 import com.cursorforandroid.data.local.PreferencesStore
 import com.cursorforandroid.data.local.SecureKeyStore
 import com.cursorforandroid.domain.Agent
+import com.cursorforandroid.domain.PendingWork
 import com.cursorforandroid.domain.AgentLifecycle
 import com.cursorforandroid.domain.AgentParent
 import com.cursorforandroid.domain.AgentParentKind
@@ -25,6 +27,7 @@ import com.cursorforandroid.domain.EnvType
 import com.cursorforandroid.domain.ProjectAppearance
 import com.cursorforandroid.domain.RunStatus
 import com.cursorforandroid.util.AppClock
+import com.cursorforandroid.util.HeldDispatcher
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -120,6 +123,29 @@ class AgentRepositoryTest {
         summary = "Cached summary",
         modelDisplayName = "Claude",
     )
+
+    /**
+     * Two passes asking for the same row at once — the running scan's and the pin's, a root's and a membership's —
+     * share one read of `GET /v1/agents/{id}` rather than each making its own; a later ask reads again.
+     */
+    @Test
+    fun `concurrent fetches by id of one chat share one read`() = runBlocking<Unit> {
+        api.addIdleAgent("bc-shared", "Shared", "run-shared")
+        val repo = repository()
+        api.getAgentGate = kotlinx.coroutines.CompletableDeferred()
+        val before = api.getAgentCalls
+        val first = async { repo.loadDetail("bc-shared") }
+        val second = async { repo.loadDetail("bc-shared") }
+        awaitUntil { api.getAgentCalls == before + 1 }
+        api.getAgentGate!!.complete(Unit)
+        assertThat(first.await().isSuccess).isTrue()
+        assertThat(second.await().isSuccess).isTrue()
+        assertThat(api.getAgentCalls).isEqualTo(before + 1)
+        api.getAgentGate = null
+        // The shared read is over: the next ask is its own.
+        repo.loadDetail("bc-shared")
+        assertThat(api.getAgentCalls).isEqualTo(before + 2)
+    }
 
     @Test
     fun `the list restored from disk is on screen before the network answers, then revalidated`() = runBlocking<Unit> {
@@ -245,6 +271,123 @@ class AgentRepositoryTest {
         repo.refresh()
         assertThat(api.listAgentsCalls).isEqualTo(6)
         assertThat(repo.state.value.agents).hasSize(250)
+    }
+
+    /**
+     * The next page is marked from the ask: the row spins at once, the account's page is read ahead of the public
+     * one through the hook, once — a second ask while the page is on its way is a no-op rather than a second account
+     * page — and the mark is gone the moment the page has landed, with nothing left registered as in flight.
+     */
+    @Test
+    fun `the next page is marked from the ask, reads the account's page once ahead of it, and is one ask at a time`() = runBlocking<Unit> {
+        api.pageSize = 100
+        repeat(150) { i -> api.addIdleAgent("bc-$i", "Agent $i", "run-$i", createdAt = "2026-04-13T18:${(30 + i / 60) % 60}:${(i % 60).toString().padStart(2, '0')}.000Z") }
+        val repo = repository()
+        val accountPages = java.util.concurrent.atomic.AtomicInteger()
+        val accountGate = CompletableDeferred<Unit>()
+        repo.accountPage = { accountPages.incrementAndGet(); accountGate.await() }
+        repo.refresh()
+        assertThat(repo.state.value.hasMore).isTrue()
+
+        val first = scope.launch { repo.loadMore() }
+        awaitUntil { repo.state.value.isLoadingMore }
+        // Marked and registered from the ask, while the account's page is still on its way.
+        assertThat(repo.pending.items.map { it.name }).contains("older page")
+        assertThat(repo.pending.state.value.shown).isTrue()
+        assertThat(api.listAgentsCalls).isEqualTo(1)
+        // A second ask meanwhile is a no-op: no second account page, no second public page.
+        assertThat(repo.loadMore()).isEqualTo(RefreshOutcome.Skipped)
+        awaitUntil { accountPages.get() == 1 }
+        accountGate.complete(Unit)
+        first.join()
+        assertThat(accountPages.get()).isEqualTo(1)
+        assertThat(api.listAgentsCalls).isEqualTo(2)
+        assertThat(repo.state.value.agents).hasSize(150)
+        assertThat(repo.state.value.isLoadingMore).isFalse()
+        assertThat(repo.state.value.hasMore).isFalse()
+        assertThat(repo.state.value.loadMoreError).isNull()
+        awaitUntil { repo.pending.items.isEmpty() }
+        assertThat(repo.pending.state.value.shown).isFalse()
+    }
+
+    /**
+     * A page the server refuses ends in its words, in the tail's own field — the list above it stands, the refresh's
+     * error line is not written — with the mark gone and the page not asked for again until the next ask; that ask,
+     * once the server answers, clears the words and brings the page.
+     */
+    @Test
+    fun `a page that fails leaves the server's words for the tail, and the next ask clears them`() = runBlocking<Unit> {
+        api.pageSize = 100
+        repeat(150) { i -> api.addIdleAgent("bc-$i", "Agent $i", "run-$i", createdAt = "2026-04-13T18:${(30 + i / 60) % 60}:${(i % 60).toString().padStart(2, '0')}.000Z") }
+        val repo = repository()
+        repo.refresh()
+        assertThat(repo.state.value.agents).hasSize(100)
+
+        api.failListAgents = CursorApiException(429, "rate_limited", "Too many requests from this key.")
+        assertThat(repo.loadMore()).isEqualTo(RefreshOutcome.Failed)
+        val failed = repo.state.value
+        assertThat(failed.loadMoreError).isEqualTo("Rate limited by Cursor: Too many requests from this key. Try again in a moment.")
+        assertThat(failed.error).isNull()
+        assertThat(failed.isLoadingMore).isFalse()
+        assertThat(failed.hasMore).isTrue()
+        assertThat(failed.agents).hasSize(100)
+        assertThat(repo.pending.items).isEmpty()
+        val asked = api.listAgentsCalls
+
+        // Nothing asks again on its own.
+        delay(300)
+        assertThat(api.listAgentsCalls).isEqualTo(asked)
+
+        // The tap, once the server answers: the words go, the page comes.
+        api.failListAgents = null
+        assertThat(repo.loadMore()).isEqualTo(RefreshOutcome.Refreshed)
+        assertThat(repo.state.value.loadMoreError).isNull()
+        assertThat(repo.state.value.agents).hasSize(150)
+        assertThat(repo.state.value.hasMore).isFalse()
+    }
+
+    /** A refresh that goes through moots a page that failed before it: the window and its cursors are re-read. */
+    @Test
+    fun `a refresh clears the words of a page that failed before it`() = runBlocking<Unit> {
+        api.pageSize = 100
+        repeat(150) { i -> api.addIdleAgent("bc-$i", "Agent $i", "run-$i", createdAt = "2026-04-13T18:${(30 + i / 60) % 60}:${(i % 60).toString().padStart(2, '0')}.000Z") }
+        val repo = repository()
+        repo.refresh()
+        api.failListAgents = CursorApiException(503, "unavailable", "Try again later.")
+        assertThat(repo.loadMore()).isEqualTo(RefreshOutcome.Failed)
+        assertThat(repo.state.value.loadMoreError).isNotNull()
+        api.failListAgents = null
+        repo.refresh()
+        assertThat(repo.state.value.loadMoreError).isNull()
+        assertThat(repo.state.value.error).isNull()
+    }
+
+    /**
+     * Every pass a refresh makes registers itself for as long as it runs, and the pull raises the row once its first
+     * page is on screen; a silent refresh registers the same work and raises nothing. Nothing is left registered
+     * once the refresh is over.
+     */
+    @Test
+    fun `a refresh registers its passes as work in flight, shown for a pull and quiet for a poll`() = runBlocking<Unit> {
+        api.pageSize = 100
+        repeat(150) { i -> api.addIdleAgent("bc-$i", "Agent $i", "run-$i", createdAt = "2026-04-13T18:${(30 + i / 60) % 60}:${(i % 60).toString().padStart(2, '0')}.000Z") }
+        val repo = repository()
+        val seen = java.util.concurrent.CopyOnWriteArrayList<PendingWork.State>()
+        val watcher = scope.launch(start = kotlinx.coroutines.CoroutineStart.UNDISPATCHED) { repo.pending.state.collect { seen += it } }
+        repo.refresh()
+        awaitUntil { repo.pending.items.isEmpty() }
+        // The state flow conflates: the fake answers a page within a beat, so what a collector sees for certain is the
+        // fetch's own item, held for the whole refresh, and the row raised under it.
+        assertThat(seen.flatMap { it.items }.map { it.name }.distinct()).contains("list refresh (full)")
+        assertThat(seen.any { it.shown }).isTrue()
+        assertThat(repo.pending.state.value).isEqualTo(PendingWork.State())
+
+        seen.clear()
+        repo.refresh(silent = true, depth = RefreshDepth.Quick)
+        awaitUntil { repo.pending.items.isEmpty() }
+        assertThat(seen.flatMap { it.items }.map { it.name }.distinct()).contains("list refresh (quick, silent)")
+        assertThat(seen.none { it.shown }).isTrue()
+        watcher.cancel()
     }
 
     @Test
@@ -498,33 +641,154 @@ class AgentRepositoryTest {
         assertThat(repo.state.value.agents.single().summary).isEqualTo("Build failed")
     }
 
+    /**
+     * The run this device last saw end outranks every later word that calls it active — not only the run records
+     * read here (`known`), but anything that reaches the list: a patch from elsewhere, a legacy `/v0` status filling
+     * in a status this build could not read, a refresh's page. Applied at publication, so the row can never be seen
+     * running on a turn that is over. A newer run the server names is followed as it is.
+     */
+    @Test
+    fun `a row cannot be put back to running for the run the list saw end, whoever says so`() = runBlocking<Unit> {
+        api.addRunningAgent("bc-1", "Agent", "run-1")
+        val repo = repository()
+        repo.refresh()
+        assertThat(repo.agent("bc-1")!!.isRunning).isTrue()
+
+        // The hub saw the run end in a status this build cannot read; the row is settled as the hub does it.
+        repo.noteRunEnded("bc-1", "run-1", RunStatus.UNKNOWN)
+        repo.patch("bc-1") { it.copy(runStatus = RunStatus.UNKNOWN) }
+        assertThat(repo.agent("bc-1")!!.isRunning).isFalse()
+        assertThat(repo.endedStatus("bc-1", "run-1")).isEqualTo(RunStatus.UNKNOWN)
+        assertThat(repo.endedStatus("bc-1", "run-2")).isNull()
+
+        // A patch that calls the run active again lands as the run ended.
+        repo.patch("bc-1") { it.copy(runStatus = RunStatus.RUNNING) }
+        assertThat(repo.agent("bc-1")!!.runStatus).isEqualTo(RunStatus.UNKNOWN)
+        // So does a refresh whose legacy list, a poll behind, still calls the agent running — the one source that
+        // fills in a status this build could not read — and whose run record still says so.
+        repo.refresh()
+        assertThat(repo.agent("bc-1")!!.runStatus).isEqualTo(RunStatus.UNKNOWN)
+        assertThat(repo.agent("bc-1")!!.isRunning).isFalse()
+        // And a run record read by id.
+        assertThat(repo.loadDetail("bc-1").getOrThrow().isRunning).isFalse()
+
+        // A newer run is the server's word on a new turn, taken as it comes.
+        api.runs["run-2"] = api.runs.getValue("run-1").copy(id = "run-2", status = "RUNNING", createdAt = "2026-04-13T19:30:00.000Z", updatedAt = "2026-04-13T19:30:00.000Z")
+        api.agents["bc-1"] = api.agents.getValue("bc-1").copy(latestRunId = "run-2", updatedAt = "2026-04-13T19:30:00.000Z")
+        repo.refresh()
+        assertThat(repo.agent("bc-1")!!.let { it.isRunning && it.latestRunId == "run-2" }).isTrue()
+    }
+
+    /**
+     * An agent runs one turn at a time, so a run begun before the one this device saw end had ended before it began:
+     * a record that still calls the older run active — the run page a chat's load read before the Stop, landing after
+     * it — is over by that alone, whatever it says. Placed on the server's clock, from the records the list has read;
+     * a run the list never read the record of cannot be placed, and only its own end is remembered.
+     */
+    @Test
+    fun `a run begun before the one the list saw end is over too, whatever a record read before says`() = runBlocking<Unit> {
+        api.addRunningAgent("bc-1", "Agent", "run-1")
+        val repo = repository()
+        repo.refresh()
+        val older = api.runs.getValue("run-1")
+        // The turn moved on: run-2 began, and the list read its record — a settle of the row by the queue, a detail.
+        api.runs["run-2"] = older.copy(id = "run-2", createdAt = "2026-04-13T19:30:00.000Z", updatedAt = "2026-04-13T19:30:00.000Z")
+        api.agents["bc-1"] = api.agents.getValue("bc-1").copy(latestRunId = "run-2", updatedAt = "2026-04-13T19:30:00.000Z")
+        assertThat(repo.loadDetail("bc-1").getOrThrow().latestRunId).isEqualTo("run-2")
+        // Nothing has ended yet: run-1's record from before stands for what it says.
+        assertThat(repo.endedBefore("bc-1", older)).isFalse()
+
+        // Run-2 is stopped here. Run-1 began an hour before it, so it is over too; run-2 itself, and a run begun after it, are not "before".
+        assertThat(repo.cancelRun("bc-1", "run-2").isSuccess).isTrue()
+        assertThat(repo.endedStatus("bc-1", "run-2")).isEqualTo(RunStatus.CANCELLED)
+        assertThat(repo.endedStatus("bc-1", "run-1")).isNull()
+        assertThat(repo.endedBefore("bc-1", older)).isTrue()
+        assertThat(repo.endedBefore("bc-1", api.runs.getValue("run-2"))).isFalse()
+        assertThat(repo.endedBefore("bc-1", older.copy(id = "run-3", createdAt = "2026-04-13T20:30:00.000Z", updatedAt = "2026-04-13T20:30:00.000Z"))).isFalse()
+        // A record whose start cannot be read is not placed.
+        assertThat(repo.endedBefore("bc-1", older.copy(createdAt = ""))).isFalse()
+
+        // A detail read before the Stop lands after it, naming run-1 as the agent's latest and running: the row keeps
+        // its own word — the run it saw end, ended — and takes from the record only what is not about that.
+        api.agents["bc-1"] = api.agents.getValue("bc-1").copy(latestRunId = "run-1", updatedAt = older.updatedAt, name = "Renamed meanwhile")
+        api.runs["run-1"] = older
+        val settled = repo.loadDetail("bc-1").getOrThrow()
+        assertThat(settled.name).isEqualTo("Renamed meanwhile")
+        assertThat(settled.latestRunId).isEqualTo("run-2")
+        assertThat(settled.runStatus).isEqualTo(RunStatus.CANCELLED)
+        assertThat(settled.isRunning).isFalse()
+        assertThat(settled.updatedAtMillis).isEqualTo(parseIsoMillis("2026-04-13T19:30:00.000Z"))
+
+        // Run-1's own end, told late — its replay finishing, followed for its trace — is not the agent's last end:
+        // the memory keeps run-2's, whose stale records are the ones still on their way.
+        repo.noteRunEnded("bc-1", "run-1", RunStatus.FINISHED)
+        assertThat(repo.endedStatus("bc-1", "run-2")).isEqualTo(RunStatus.CANCELLED)
+        assertThat(repo.endedStatus("bc-1", "run-1")).isNull()
+        assertThat(repo.endedBefore("bc-1", older)).isTrue()
+
+        // A run the list never read the record of ends without a place in time: only its own end is remembered.
+        repo.noteRunEnded("bc-1", "run-9", RunStatus.FINISHED)
+        assertThat(repo.endedStatus("bc-1", "run-9")).isEqualTo(RunStatus.FINISHED)
+        assertThat(repo.endedBefore("bc-1", older)).isFalse()
+    }
+
+    /**
+     * The fetch's own publications, its bookkeeping and its write to the disk are all guarded, but by two different
+     * things: the repository's generation guards what is in memory, and the cache's generation guards the file — a
+     * write samples the list and the cache's generation under the publish lock and writes outside it, so a reset
+     * that lands in between cannot be seen by the write itself. The sign-out (see `AppGraph`) invalidates the caches
+     * before it resets the list and wipes them after, which is what makes the file safe; this test does the same,
+     * with the write held in flight across the reset so the order is the test's and not the scheduler's. Run with
+     * the reset alone it flaked on CI (35523594515): the held write landed after the reset, and the disk had the
+     * previous account's list for the next one to restore.
+     */
     @Test
     fun `a fetch that outlives a reset publishes nothing into the list that replaced it`() = runBlocking<Unit> {
-        api.addIdleAgent("bc-1", "Previous account", "run-1")
-        api.v0Gate = CompletableDeferred()
-        val repo = repository()
-        val refresh = scope.launch { repo.refresh() }
-        awaitUntil { repo.state.value.agents.size == 1 }
+        val disk = HeldDispatcher()
+        val diskCache = JsonDiskCache(folder.newFolder("held-agents"), dispatcher = disk.dispatcher)
+        val cache = AgentListCache(diskCache)
+        try {
+            api.addIdleAgent("bc-1", "Previous account", "run-1")
+            api.v0Gate = CompletableDeferred()
+            // The write follows the first page by half a second here, so the hold below is armed before it starts.
+            val repo = AgentRepository(session, prefs, AttachmentStore(ApplicationProvider.getApplicationContext()), cache, scope, persistDelayMs = 500)
+            val refresh = scope.launch { repo.refresh() }
+            awaitUntil { repo.state.value.agents.size == 1 }
+            // The first page is on its way to the disk: the write has sampled the list and waits for the disk.
+            disk.hold = true
+            awaitUntil { disk.heldCount > 0 }
 
-        repo.reset()
-        assertThat(repo.state.value).isEqualTo(AgentListState())
+            // The sign-out's order: the caches invalidated, then the list reset.
+            diskCache.invalidate()
+            repo.reset()
+            assertThat(repo.state.value).isEqualTo(AgentListState())
 
-        // Everything the fetch had left to do runs from here: its remaining pages, the legacy enrichment, the
-        // run-status pass and the bookkeeping that says a fetch completed. None of it belongs to this session.
-        api.v0Gate!!.complete(Unit)
-        refresh.join()
-        assertThat(repo.state.value).isEqualTo(AgentListState())
-        assertThat(repo.lastRefreshedAt).isEqualTo(0L)
-        // The cue the account's pins are synced on: the previous account's fetch must not be the one that gives it.
-        assertThat(repo.refreshCompleted.value).isEqualTo(0L)
-        // Nor may the old list have reached the disk for the next account to restore.
-        assertThat(cache.read()).isNull()
+            // Everything the fetch had left to do runs from here: its remaining pages, the legacy enrichment, the
+            // run-status pass and the bookkeeping that says a fetch completed — and the write it had in flight. None
+            // of it belongs to this session.
+            api.v0Gate!!.complete(Unit)
+            disk.release()
+            refresh.join()
+            assertThat(repo.state.value).isEqualTo(AgentListState())
+            assertThat(repo.lastRefreshedAt).isEqualTo(0L)
+            // The cue the account's pins are synced on: the previous account's fetch must not be the one that gives it.
+            assertThat(repo.refreshCompleted.value).isEqualTo(0L)
+            // Nor may the old list have reached the disk for the next account to restore: the held write met a wipe
+            // under way and was refused. (Without the invalidate above it lands here, the reset notwithstanding —
+            // the flake — and only the wipe below would take it off the disk.)
+            assertThat(cache.read()).isNull()
+            diskCache.clear()
+            assertThat(cache.read()).isNull()
 
-        // The next refresh belongs to the new session and lands normally.
-        repo.refresh()
-        assertThat(repo.state.value.agents.map { it.name }).containsExactly("Previous account")
-        assertThat(repo.state.value.isRefreshing).isFalse()
-        assertThat(repo.refreshCompleted.value).isEqualTo(1L)
+            // The next refresh belongs to the new session and lands normally, on disk too.
+            repo.refresh()
+            assertThat(repo.state.value.agents.map { it.name }).containsExactly("Previous account")
+            assertThat(repo.state.value.isRefreshing).isFalse()
+            assertThat(repo.refreshCompleted.value).isEqualTo(1L)
+            awaitUntil { cache.read()?.value?.map { it.name } == listOf("Previous account") }
+        } finally {
+            disk.close()
+        }
     }
 
     @Test

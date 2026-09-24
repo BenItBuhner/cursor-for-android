@@ -12,6 +12,7 @@ import android.provider.MediaStore
 import android.webkit.MimeTypeMap
 import androidx.core.content.FileProvider
 import com.cursorforandroid.data.media.MediaLoader
+import com.cursorforandroid.domain.FileFormat
 import com.cursorforandroid.domain.MediaRef
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -55,15 +56,23 @@ class MediaActions(private val context: Context, private val loader: MediaLoader
     suspend fun save(ref: MediaRef, entry: MediaEntry): Result<String> = runCatching {
         check(canSave) { "Saving needs Android 10 or newer." }
         val file = loader.file(ref, entry.fileName)
-        withContext(Dispatchers.IO) { insertIntoGallery(file, entry) }
-        if (entry.isVideo) "Saved to Movies" else "Saved to Pictures"
+        // Back on the main thread once written: the caller is the viewer's composition, which must not resume on a worker.
+        withContext(Dispatchers.Main.immediate) { withContext(Dispatchers.IO) { insertIntoGallery(file, entry) } }
+        when (entry.kind) {
+            MediaEntry.Kind.Video -> "Saved to Movies"
+            MediaEntry.Kind.Audio -> "Saved to Music"
+            MediaEntry.Kind.Image -> "Saved to Pictures"
+        }
     }
 
     private fun insertIntoGallery(file: File, entry: MediaEntry) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) throw IOException("Saving needs Android 10 or newer.")
         val resolver = context.contentResolver
-        val collection = if (entry.isVideo) MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY) else MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
-        val folder = if (entry.isVideo) Environment.DIRECTORY_MOVIES else Environment.DIRECTORY_PICTURES
+        val (collection, folder) = when (entry.kind) {
+            MediaEntry.Kind.Video -> MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY) to Environment.DIRECTORY_MOVIES
+            MediaEntry.Kind.Audio -> MediaStore.Audio.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY) to Environment.DIRECTORY_MUSIC
+            MediaEntry.Kind.Image -> MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY) to Environment.DIRECTORY_PICTURES
+        }
         val values = ContentValues().apply {
             put(MediaStore.MediaColumns.DISPLAY_NAME, entry.fileName)
             put(MediaStore.MediaColumns.MIME_TYPE, mimeType(entry))
@@ -102,7 +111,12 @@ class MediaActions(private val context: Context, private val loader: MediaLoader
             entry.mimeType?.takeIf { it.isNotBlank() }?.let { return it }
             val extension = entry.fileName.substringAfterLast('.', "").lowercase()
             return MimeTypeMap.getSingleton().getMimeTypeFromExtension(extension)
-                ?: if (entry.isVideo) "video/*" else "image/*"
+                ?: FileFormat.ofName(entry.fileName)?.mimeType
+                ?: when (entry.kind) {
+                    MediaEntry.Kind.Video -> "video/*"
+                    MediaEntry.Kind.Audio -> "audio/*"
+                    MediaEntry.Kind.Image -> "image/*"
+                }
         }
     }
 }

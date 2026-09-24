@@ -15,17 +15,16 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.selection.SelectionContainer
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
@@ -39,25 +38,36 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.cursorforandroid.domain.Agent
 import com.cursorforandroid.domain.ProjectAppearance
+import com.cursorforandroid.domain.PromptFile
 import com.cursorforandroid.ui.components.CursorButton
 import com.cursorforandroid.ui.components.CursorIcons
 import com.cursorforandroid.ui.components.CursorSheet
+import com.cursorforandroid.ui.components.FadingLazyColumn
 import com.cursorforandroid.ui.components.HairlineDivider
 import com.cursorforandroid.ui.components.SheetHeader
+import com.cursorforandroid.ui.components.fadingVerticalScroll
 import com.cursorforandroid.ui.components.pressable
+import com.cursorforandroid.ui.components.scrollEdgeFade
+import com.cursorforandroid.ui.components.sendOnHardwareEnter
+import com.cursorforandroid.ui.components.stylusWriting
 import com.cursorforandroid.ui.home.SheetRow
 import com.cursorforandroid.ui.home.SheetSearchField
 import com.cursorforandroid.ui.icons.ProjectIcons
+import com.cursorforandroid.ui.media.FileHandoff
 import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.ui.theme.ProjectPalette
+import java.io.File
 
 /** Which of the Project screen's sheets is open; a `Serializable`, so `rememberSaveable` keeps it up across a rotation. */
 sealed interface ProjectSheet : java.io.Serializable {
@@ -76,13 +86,15 @@ sealed interface ProjectSheet : java.io.Serializable {
 internal fun NewWorkerSheet(root: Agent?, onLaunch: (prompt: String, name: String?) -> Unit, onDismiss: () -> Unit) {
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
-    var prompt by rememberSaveable { mutableStateOf("") }
-    var name by rememberSaveable { mutableStateOf("") }
+    var prompt by rememberSaveable(stateSaver = TextFieldValue.Saver) { mutableStateOf(TextFieldValue()) }
+    var name by rememberSaveable(stateSaver = TextFieldValue.Saver) { mutableStateOf(TextFieldValue()) }
     CursorSheet(onDismiss = onDismiss) { dismiss ->
+        val start = { onLaunch(prompt.text, name.text); dismiss() }
+        val canStart = prompt.text.isNotBlank()
         SheetHeader("New primary")
         Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            SheetField(value = prompt, onValueChange = { prompt = it }, placeholder = "What should this agent do?", minLines = 4, label = "Prompt")
-            SheetField(value = name, onValueChange = { name = it }, placeholder = "Name (optional)", minLines = 1, label = "Name")
+            SheetField(value = prompt, onValueChange = { prompt = it }, placeholder = "What should this agent do?", minLines = 4, label = "Prompt", onSubmit = start, canSubmit = canStart)
+            SheetField(value = name, onValueChange = { name = it }, placeholder = "Name (optional)", minLines = 1, label = "Name", onSubmit = start, canSubmit = canStart)
             val where = listOfNotNull(root?.repoSlug, root?.startingRef?.takeIf { it.isNotBlank() }).joinToString(" \u00B7 ")
             Text(
                 if (where.isNotEmpty()) "Runs in $where, like the coordinator, and reports to it." else "Runs where the coordinator runs and reports to it.",
@@ -91,7 +103,7 @@ internal fun NewWorkerSheet(root: Agent?, onLaunch: (prompt: String, name: Strin
             Row(Modifier.fillMaxWidth().padding(top = 4.dp, bottom = 16.dp), horizontalArrangement = Arrangement.End) {
                 CursorButton("Cancel", onClick = dismiss)
                 Spacer(Modifier.width(8.dp))
-                CursorButton("Start", primary = true, enabled = prompt.isNotBlank(), onClick = { onLaunch(prompt, name); dismiss() })
+                CursorButton("Start", primary = true, enabled = canStart, onClick = start)
             }
         }
     }
@@ -109,7 +121,7 @@ internal fun AdoptSheet(candidates: List<Agent>, onPick: (String) -> Unit, onDis
         SheetSearchField(value = query, onValueChange = { query = it }, placeholder = "Search your chats")
         Spacer(Modifier.height(6.dp))
         val visible = candidates.filter { query.isBlank() || it.name.contains(query.trim(), ignoreCase = true) || it.repoSlug?.contains(query.trim(), ignoreCase = true) == true }
-        LazyColumn(Modifier.fillMaxWidth().weight(1f, fill = false), contentPadding = PaddingValues(bottom = 12.dp)) {
+        FadingLazyColumn(Modifier.fillMaxWidth().weight(1f, fill = false), contentPadding = PaddingValues(bottom = 12.dp)) {
             items(visible, key = { it.id }) { agent ->
                 SheetRow(title = agent.name, subtitle = listOfNotNull(agent.repoShortName, agent.branchName).joinToString(" \u00B7 ").ifBlank { null }, checked = false, icon = CursorIcons.Layers) {
                     onPick(agent.id)
@@ -134,7 +146,7 @@ internal fun MoveSheet(workerName: String, projects: List<Agent>, onPick: (Strin
     val type = CursorTheme.typography
     CursorSheet(onDismiss = onDismiss) { dismiss ->
         SheetHeader("Move $workerName under\u2026")
-        LazyColumn(Modifier.fillMaxWidth().weight(1f, fill = false), contentPadding = PaddingValues(bottom = 12.dp)) {
+        FadingLazyColumn(Modifier.fillMaxWidth().weight(1f, fill = false), contentPadding = PaddingValues(bottom = 12.dp)) {
             items(projects, key = { it.id }) { project ->
                 SheetRow(title = project.name, subtitle = project.repoSlug, checked = false, icon = CursorIcons.project(project.projectAppearance?.icon)) {
                     onPick(project.id)
@@ -153,7 +165,7 @@ internal fun MoveSheet(workerName: String, projects: List<Agent>, onPick: (Strin
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun NameSheet(title: String, placeholder: String, action: String, onConfirm: (String?) -> Unit, onDismiss: () -> Unit) {
-    var value by rememberSaveable { mutableStateOf("") }
+    var value by rememberSaveable(stateSaver = TextFieldValue.Saver) { mutableStateOf(TextFieldValue()) }
     CursorSheet(onDismiss = onDismiss) { dismiss ->
         SheetHeader(title)
         Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -161,7 +173,7 @@ internal fun NameSheet(title: String, placeholder: String, action: String, onCon
             Row(Modifier.fillMaxWidth().padding(top = 4.dp, bottom = 16.dp), horizontalArrangement = Arrangement.End) {
                 CursorButton("Cancel", onClick = dismiss)
                 Spacer(Modifier.width(8.dp))
-                CursorButton(action, primary = true, onClick = { onConfirm(value.takeIf { it.isNotBlank() }); dismiss() })
+                CursorButton(action, primary = true, onClick = { onConfirm(value.text.takeIf { it.isNotBlank() }); dismiss() })
             }
         }
     }
@@ -173,16 +185,18 @@ internal fun NameSheet(title: String, placeholder: String, action: String, onCon
 internal fun SteerSheet(workerName: String, onSteer: (String) -> Unit, onDismiss: () -> Unit) {
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
-    var text by rememberSaveable { mutableStateOf("") }
+    var text by rememberSaveable(stateSaver = TextFieldValue.Saver) { mutableStateOf(TextFieldValue()) }
     CursorSheet(onDismiss = onDismiss) { dismiss ->
+        val steer = { onSteer(text.text); dismiss() }
+        val canSteer = text.text.isNotBlank()
         SheetHeader("Steer $workerName")
         Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            SheetField(value = text, onValueChange = { text = it }, placeholder = "Change course without stopping the turn\u2026", minLines = 3, label = null)
+            SheetField(value = text, onValueChange = { text = it }, placeholder = "Change course without stopping the turn\u2026", minLines = 3, label = null, onSubmit = steer, canSubmit = canSteer)
             Text("Delivered into the running turn at the agent's next step; a follow-up would wait for the turn to end.", style = type.small, color = colors.textQuaternary)
             Row(Modifier.fillMaxWidth().padding(top = 4.dp, bottom = 16.dp), horizontalArrangement = Arrangement.End) {
                 CursorButton("Cancel", onClick = dismiss)
                 Spacer(Modifier.width(8.dp))
-                CursorButton("Steer", primary = true, enabled = text.isNotBlank(), onClick = { onSteer(text); dismiss() })
+                CursorButton("Steer", primary = true, enabled = canSteer, onClick = steer)
             }
         }
     }
@@ -227,9 +241,11 @@ internal fun AppearanceSheet(current: ProjectAppearance?, onPick: (ProjectAppear
         Spacer(Modifier.height(12.dp))
         SheetSearchField(value = query, onValueChange = { query = it }, placeholder = "Search ${ProjectIcons.ids.size} icons")
         Spacer(Modifier.height(6.dp))
+        val grid = rememberLazyGridState()
         LazyVerticalGrid(
             columns = GridCells.Adaptive(minSize = 44.dp),
-            modifier = Modifier.fillMaxWidth().weight(1f, fill = false).semantics { contentDescription = "Icons" },
+            state = grid,
+            modifier = Modifier.fillMaxWidth().weight(1f, fill = false).scrollEdgeFade(grid).semantics { contentDescription = "Icons" },
             contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp),
             horizontalArrangement = Arrangement.spacedBy(4.dp),
             verticalArrangement = Arrangement.spacedBy(4.dp),
@@ -302,16 +318,31 @@ internal fun IconCell(candidate: String, selected: Boolean, tone: Color, onPick:
     }
 }
 
-/** A file of the Project's shared context, as text. */
+/** A file of the Project's shared context, as text — or, for a document that is not text, named and handed to another app. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun ContextFileSheet(file: OpenContextFile, onDismiss: () -> Unit) {
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
+    val context = LocalContext.current
     CursorSheet(onDismiss = onDismiss) { _ ->
         SheetHeader(file.entry.name)
         Text(file.entry.relativePath, style = type.tiny, color = colors.textQuaternary, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(horizontal = 20.dp))
         HairlineDivider(Modifier.padding(horizontal = 20.dp, vertical = 8.dp))
+        val kept = file.keptPath
+        if (kept != null) {
+            var notice by remember(kept) { mutableStateOf<String?>(null) }
+            val mime = file.format?.mimeType ?: PromptFile.OCTET_STREAM
+            Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp).padding(bottom = 20.dp).testTag("context-binary")) {
+                Text(listOfNotNull(file.format?.label ?: "Binary file", file.entry.sizeBytes?.let { PromptFile.formatSize(it) }).joinToString(" \u00B7 "), style = type.base, color = colors.textSecondary)
+                Text(notice ?: "This app shows no page for it; open it in another app.", style = type.small, color = colors.textQuaternary, modifier = Modifier.padding(top = 2.dp))
+                Row(Modifier.padding(top = 10.dp), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                    Text("Open with\u2026", style = type.small, color = colors.link, modifier = Modifier.pressable({ FileHandoff.open(context, File(kept), file.entry.name, mime).onFailure { notice = it.message } }, CursorTheme.shapes.base).padding(vertical = 3.dp))
+                    Text("Share", style = type.small, color = colors.link, modifier = Modifier.pressable({ FileHandoff.share(context, File(kept), file.entry.name, mime).onFailure { notice = it.message } }, CursorTheme.shapes.base).padding(vertical = 3.dp))
+                }
+            }
+            return@CursorSheet
+        }
         SelectionContainer {
             Text(
                 file.text.ifBlank { "(empty file)" },
@@ -320,7 +351,7 @@ internal fun ContextFileSheet(file: OpenContextFile, onDismiss: () -> Unit) {
                 modifier = Modifier
                     .fillMaxWidth()
                     .weight(1f, fill = false)
-                    .verticalScroll(rememberScrollState())
+                    .fadingVerticalScroll()
                     .horizontalScroll(rememberScrollState())
                     .padding(horizontal = 20.dp)
                     .padding(bottom = 20.dp),
@@ -329,9 +360,20 @@ internal fun ContextFileSheet(file: OpenContextFile, onDismiss: () -> Unit) {
     }
 }
 
-/** The sheets' text field: a labelled box in the composer's idiom. */
+/**
+ * The sheets' text field: a labelled box in the composer's idiom. With [onSubmit], a physical keyboard's Enter presses
+ * the sheet's action as the composer's presses send, and does nothing while [canSubmit] is false (see [sendOnHardwareEnter]).
+ */
 @Composable
-private fun SheetField(value: String, onValueChange: (String) -> Unit, placeholder: String, minLines: Int, label: String?) {
+private fun SheetField(
+    value: TextFieldValue,
+    onValueChange: (TextFieldValue) -> Unit,
+    placeholder: String,
+    minLines: Int,
+    label: String?,
+    onSubmit: (() -> Unit)? = null,
+    canSubmit: Boolean = true,
+) {
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
     val shape = CursorTheme.shapes.base
@@ -340,6 +382,7 @@ private fun SheetField(value: String, onValueChange: (String) -> Unit, placehold
         Box(
             Modifier
                 .fillMaxWidth()
+                .stylusWriting()
                 .background(colors.fillFaint, shape)
                 .border(CursorDimens.hairline, colors.strokeSubtle, shape)
                 .heightIn(min = 38.dp)
@@ -351,9 +394,12 @@ private fun SheetField(value: String, onValueChange: (String) -> Unit, placehold
                 minLines = minLines,
                 textStyle = type.base.copy(color = colors.textPrimary),
                 cursorBrush = SolidColor(colors.textPrimary),
-                modifier = Modifier.fillMaxWidth().semantics { contentDescription = placeholder },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .then(if (onSubmit != null) Modifier.sendOnHardwareEnter(value, onValueChange, onSend = onSubmit.takeIf { canSubmit }) else Modifier)
+                    .semantics { contentDescription = placeholder },
                 decorationBox = { inner ->
-                    Box { if (value.isEmpty()) Text(placeholder, style = type.base, color = colors.textQuaternary); inner() }
+                    Box { if (value.text.isEmpty()) Text(placeholder, style = type.base, color = colors.textQuaternary); inner() }
                 },
             )
         }

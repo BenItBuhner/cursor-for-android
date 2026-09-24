@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The "Compose" shortcut widget: one line of the app's composer on the home screen — "+", the placeholder, send —
+  that opens the composer over the launcher. Four cells across and one tall by default; two rows tall it is the
+  composer box itself, and squeezed to one cell it is the round button (the same widget as widget_shortcut_info.xml,
+  offered in that shape). Its look and target are configured like the button's.
+-->
+<appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
+    android:configure="com.cursorforandroid.widget.WidgetConfigureActivity"
+    android:description="@string/compose_bar_widget_description"
+    android:initialLayout="@layout/widget_compose_bar_loading"
+    android:minWidth="180dp"
+    android:minHeight="40dp"
+    android:minResizeWidth="40dp"
+    android:minResizeHeight="40dp"
+    android:previewImage="@drawable/widget_compose_bar_preview"
+    android:previewLayout="@layout/widget_compose_bar_preview"
+    android:resizeMode="horizontal|vertical"
+    android:targetCellWidth="4"
+    android:targetCellHeight="1"
+    android:updatePeriodMillis="0"
+    android:widgetCategory="home_screen"
+    android:widgetFeatures="reconfigurable|configuration_optional" />
