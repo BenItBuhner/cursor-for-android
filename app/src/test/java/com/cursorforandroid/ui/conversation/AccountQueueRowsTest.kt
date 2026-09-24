@@ -4,6 +4,8 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.semantics.getOrNull
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.junit4.createComposeRule
@@ -13,10 +15,13 @@ import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performTextClearance
 import androidx.compose.ui.test.performTextInput
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.cursorforandroid.domain.AgentSource
 import com.cursorforandroid.domain.PendingFollowup
+import com.cursorforandroid.ui.components.Keyboard
+import com.cursorforandroid.ui.components.pressEnter
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.ui.theme.ThemeMode
 import com.google.common.truth.Truth.assertThat
@@ -68,6 +73,9 @@ class AccountQueueRowsTest {
 
     private fun shown(text: String) = compose.onAllNodesWithText(text, substring = true).fetchSemanticsNodes().isNotEmpty()
 
+    private fun edited(): String =
+        compose.onNodeWithTag("account-queue-edit").fetchSemanticsNode().config.getOrNull(SemanticsProperties.EditableText)?.text.orEmpty()
+
     @Test
     fun `each row carries send now, steer now, remove and edit, and none of them overlap`() {
         show()
@@ -107,6 +115,32 @@ class AccountQueueRowsTest {
         compose.onAllNodesWithContentDescription("Edit queued follow-up")[0].performClick()
         compose.onAllNodesWithContentDescription("Cancel editing")[0].performClick()
         assertThat(acted.last()).isEqualTo("editing:fu-1:false")
+    }
+
+    @Test
+    fun `a physical Enter saves an edited row, as submitting one does on the desktop`() {
+        show()
+        compose.onAllNodesWithContentDescription("Edit queued follow-up")[0].performClick()
+        compose.onNodeWithTag("account-queue-edit").performTextInput(", and dark")
+        compose.onNodeWithTag("account-queue-edit").pressEnter()
+        assertThat(acted.last()).isEqualTo("update:fu-1:Then add a test for the light theme, and dark")
+        assertThat(compose.onAllNodesWithTag("account-queue-edit").fetchSemanticsNodes()).isEmpty()
+    }
+
+    @Test
+    fun `in an edit Shift+Enter and the on-screen Enter break the line, and an emptied edit is not saved from the keyboard`() {
+        show()
+        compose.onAllNodesWithContentDescription("Edit queued follow-up")[0].performClick()
+        val edit = compose.onNodeWithTag("account-queue-edit")
+        edit.pressEnter(shift = true)
+        edit.pressEnter(Keyboard.OnScreen)
+        assertThat(edited()).isEqualTo("Then add a test for the light theme\n\n")
+        assertThat(acted.none { it.startsWith("update:") }).isTrue()
+
+        edit.performTextClearance()
+        edit.pressEnter()
+        assertThat(edited()).isEmpty()
+        assertThat(acted.none { it.startsWith("update:") }).isTrue()
     }
 
     @Test
