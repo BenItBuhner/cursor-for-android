@@ -136,7 +136,7 @@ class CoordinatorTranscriptScreenshotTest {
         assertThat(rows.filterIsInstance<TranscriptRow.Message>()).hasSize(3)
         assertThat(rows.filterIsInstance<TranscriptRow.Stretch>().flatMap { it.subagents }.map { it.subagent?.source }).containsExactly(com.cursorforandroid.domain.SubagentCall.Source.Queued)
         assertThat(rows.filterIsInstance<TranscriptRow.Stretch>().filter { it.single == null }.map { it.summary.text })
-            .containsExactly("TODO").inOrder()
+            .containsExactly("Worked 41s · 1 event · 1 agent · 1 thought", "1 edit · 1 note").inOrder()
 
         val controls = TranscriptControls(onOpenAgent = {}, agentById = { workers[it] }, coordinatorMode = true)
         compose.setContent {
