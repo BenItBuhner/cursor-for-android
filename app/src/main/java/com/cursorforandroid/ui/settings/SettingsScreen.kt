@@ -60,6 +60,8 @@ import com.cursorforandroid.ui.components.CursorIcons
 import com.cursorforandroid.ui.components.CursorSheet
 import com.cursorforandroid.ui.components.FlatIconButton
 import com.cursorforandroid.ui.components.HairlineDivider
+import com.cursorforandroid.ui.components.Haptic
+import com.cursorforandroid.ui.components.rememberHaptics
 import com.cursorforandroid.ui.components.RunStopCopy
 import com.cursorforandroid.ui.components.SheetHeader
 import com.cursorforandroid.ui.components.contentColumn
@@ -83,6 +85,8 @@ object SettingsCopy {
     const val UNREAD_THIS_PHONE_DETAIL = "Chats from elsewhere show as read until opened here."
     const val SHORTEN_PROJECTS = "Shorten long Projects list"
     const val SHORTEN_PROJECTS_DETAIL = "Shows 5 Projects until you tap Show more."
+    const val HAPTIC_FEEDBACK = "Haptic feedback"
+    const val HAPTIC_FEEDBACK_DETAIL = "Light taps as you send, hold and swipe."
     const val GROUP_UPDATES = "Version and updates"
     const val SIGN_OUT = "Sign out"
     const val LEAVE_DEMO = "Leave demo"
@@ -108,6 +112,7 @@ object SettingsTags {
     const val SIGN_OUT = "settings_sign_out"
     const val UNREAD_THIS_PHONE = "settings_unread_this_phone"
     const val SHORTEN_PROJECTS = "settings_shorten_projects"
+    const val HAPTIC_FEEDBACK = "settings_haptic_feedback"
     const val VERSION_ROW = "settings_version"
     const val WHATS_NEW_ROW = "settings_whats_new"
     const val DEBUG_SHEET = "settings_debug_sheet"
@@ -209,6 +214,8 @@ fun SettingsScreen(
                 }
                 HairlineDivider()
                 ShortenProjectsRow(graph)
+                HairlineDivider()
+                HapticFeedbackRow(graph)
             }
 
             Group(NewChatHomePickerCopy.GROUP)
@@ -372,6 +379,30 @@ private fun ShortenProjectsRow(graph: AppGraph) {
         checked = enabled,
         onCheckedChange = { scope.launch { graph.prefs.setShortenSidebarLists(it) } },
         modifier = Modifier.testTag(SettingsTags.SHORTEN_PROJECTS),
+    )
+}
+
+/**
+ * Whether the app plays its haptics ([com.cursorforandroid.ui.components.Haptics]); the system's touch feedback switch
+ * silences them either way. Turned on, the switch plays its own click, so the reader feels what came back; turned off,
+ * it plays nothing, having just been told not to.
+ */
+@Composable
+private fun HapticFeedbackRow(graph: AppGraph) {
+    val scope = rememberCoroutineScope()
+    val haptics = rememberHaptics()
+    // On the main dispatcher for the reason the Extended mode switch is (see SettingsScreen).
+    val enabled by graph.prefs.hapticFeedback.collectAsStateWithLifecycle(initialValue = true, context = Dispatchers.Main.immediate)
+    SettingsToggleRow(
+        title = SettingsCopy.HAPTIC_FEEDBACK,
+        description = SettingsCopy.HAPTIC_FEEDBACK_DETAIL,
+        checked = enabled,
+        onCheckedChange = { on ->
+            if (on) haptics.preview(Haptic.ToggleOn)
+            scope.launch { graph.prefs.setHapticFeedback(on) }
+        },
+        modifier = Modifier.testTag(SettingsTags.HAPTIC_FEEDBACK),
+        felt = false,
     )
 }
 

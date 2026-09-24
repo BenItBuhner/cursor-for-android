@@ -40,8 +40,9 @@ class QuickComposerActivity : ComponentActivity() {
         setContent {
             val themeMode by graph.prefs.themeMode.collectAsStateWithLifecycle(initialValue = ThemeMode.System)
             val oledBlack by graph.prefs.oledBlack.collectAsStateWithLifecycle(initialValue = false)
+            val haptics by graph.prefs.hapticFeedback.collectAsStateWithLifecycle(initialValue = true)
             // The window stays translucent: the launcher shows through the scrim around the sheet.
-            CursorTheme(mode = themeMode, oledBlack = oledBlack, paintWindow = false) {
+            CursorTheme(mode = themeMode, oledBlack = oledBlack, paintWindow = false, haptics = haptics) {
                 QuickComposerHost(
                     graph = graph,
                     onComposer = { composer = it },
