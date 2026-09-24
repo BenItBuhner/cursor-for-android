@@ -22,6 +22,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
+import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -44,6 +45,7 @@ import com.cursorforandroid.ui.components.CursorHeader
 import com.cursorforandroid.ui.components.CursorIcons
 import com.cursorforandroid.ui.components.FlatIconButton
 import com.cursorforandroid.ui.components.GroupLabel
+import com.cursorforandroid.ui.components.PullRefreshHaptics
 import com.cursorforandroid.ui.components.contentColumn
 import com.cursorforandroid.ui.components.hitTestBoundary
 import com.cursorforandroid.ui.components.pressable
@@ -96,7 +98,9 @@ fun ShareDestinationScreen(
             leading = { FlatIconButton(CursorIcons.Close, "Close", onClick = onDismiss) },
         )
         SearchField(value = query, onValueChange = { query = it }, onClear = { query = "" })
-        PullToRefreshBox(isRefreshing = listState.isRefreshing, onRefresh = onRefresh, modifier = Modifier.weight(1f)) {
+        val pull = rememberPullToRefreshState()
+        PullRefreshHaptics(pull, listState.isRefreshing)
+        PullToRefreshBox(isRefreshing = listState.isRefreshing, onRefresh = onRefresh, modifier = Modifier.weight(1f), state = pull) {
             val scroll = rememberLazyListState()
             LazyColumn(
                 Modifier.fillMaxSize().scrollEdgeFade(scroll).navigationBarsPadding(),

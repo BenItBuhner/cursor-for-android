@@ -76,13 +76,17 @@ import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.unit.dp
 import com.cursorforandroid.ui.components.BackGestureEdges
+import com.cursorforandroid.ui.components.Haptics
 import com.cursorforandroid.ui.components.LocalScrollFadeSurface
 import com.cursorforandroid.ui.components.PaneResizeHandle
 import com.cursorforandroid.ui.components.PaneResizeHandleWidth
 import com.cursorforandroid.ui.components.PaneSide
 import com.cursorforandroid.ui.components.backGestureEdges
 import com.cursorforandroid.ui.components.coveredFocus
+import com.cursorforandroid.ui.components.feltOnCommit
+import com.cursorforandroid.ui.components.halfwayCrossing
 import com.cursorforandroid.ui.components.rememberBackGestureEdges
+import com.cursorforandroid.ui.components.rememberHaptics
 import com.cursorforandroid.ui.components.rememberSheetFocus
 import com.cursorforandroid.ui.components.sheetFocus
 import com.cursorforandroid.ui.theme.CursorTheme
@@ -148,8 +152,10 @@ fun SidePanelHost(
     // either lets go of a field of its own as it shuts.
     val covered = rememberSheetFocus { state.isOpen && !state.isPinned }
     val sheet = rememberSheetFocus { state.isOpen }
+    val haptics = rememberHaptics()
     SideEffect {
         state.widthPx = widthPx
+        state.haptics = haptics
         opening.update(swipes, rtl, flingThreshold)
         closing.update(swipes, rtl, flingThreshold)
     }
@@ -182,7 +188,7 @@ fun SidePanelHost(
         PredictiveBackHandler(enabled = state.isOpen && !beside) { events ->
             val start = state.fraction
             try {
-                events.collect { state.seek(start * (1f - it.progress)) }
+                events.feltOnCommit(haptics).collect { state.seek(start * (1f - it.progress)) }
             } catch (_: CancellationException) {
                 scope.launch { state.slideTo(SidePanelValue.Open) }
                 return@PredictiveBackHandler
@@ -357,6 +363,9 @@ class SidePanelState(initialValue: SidePanelValue) {
     /** Whether the panel is a pane beside the chat rather than a sheet over it. */
     val isPinned: Boolean get() = pin != null
 
+    /** Plays the drag's half-way threshold (see [halfwayCrossing]); set by the [SidePanel] showing this state. */
+    internal var haptics: Haptics? = null
+
     private val mutex = MutatorMutex()
 
     /** Pinned, the window keeps it open for every chat, as [close] keeps it shut. */
@@ -426,7 +435,10 @@ class SidePanelState(initialValue: SidePanelValue) {
     internal val draggableState: DraggableState = object : DraggableState {
         private val dragScope = object : DragScope {
             override fun dragBy(pixels: Float) {
-                if (widthPx > 0f) fraction = (fraction + pixels / widthPx).coerceIn(0f, 1f)
+                if (widthPx <= 0f) return
+                val before = fraction
+                fraction = (fraction + pixels / widthPx).coerceIn(0f, 1f)
+                halfwayCrossing(before, fraction, restingOpen = isOpen)?.let { haptics?.perform(it) }
             }
         }
 

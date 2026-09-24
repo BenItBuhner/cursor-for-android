@@ -97,7 +97,11 @@ fun CursorDrawer(
     val edges = rememberBackGestureEdges()
     val drag = remember(state, edges) { DrawerDrag(state, edges) }
     val focus = rememberSheetFocus { state.isOpen }
-    SideEffect { state.widthPx = widthPx }
+    val haptics = rememberHaptics()
+    SideEffect {
+        state.widthPx = widthPx
+        state.haptics = haptics
+    }
 
     Box(
         modifier
@@ -120,7 +124,7 @@ fun CursorDrawer(
         PredictiveBackHandler(enabled = state.isOpen) { events ->
             val start = state.fraction
             try {
-                events.collect { state.seek(start * (1f - it.progress)) }
+                events.feltOnCommit(haptics).collect { state.seek(start * (1f - it.progress)) }
             } catch (_: CancellationException) {
                 // The handler's own coroutine is the one cancelled; the rewind has to run somewhere that outlives it.
                 scope.launch { state.slideTo(DrawerValue.Open) }
@@ -175,6 +179,9 @@ class CursorDrawerState(initialValue: DrawerValue) {
         private set
 
     internal var widthPx = 0f
+
+    /** Plays the drag's half-way threshold (see [halfwayCrossing]); set by the [CursorDrawer] showing this state. */
+    internal var haptics: Haptics? = null
 
     private val mutex = MutatorMutex()
 
@@ -249,7 +256,10 @@ class CursorDrawerState(initialValue: DrawerValue) {
     internal val draggableState: DraggableState = object : DraggableState {
         private val dragScope = object : DragScope {
             override fun dragBy(pixels: Float) {
-                if (widthPx > 0f) fraction = (fraction + pixels / widthPx).coerceIn(0f, 1f)
+                if (widthPx <= 0f) return
+                val before = fraction
+                fraction = (fraction + pixels / widthPx).coerceIn(0f, 1f)
+                halfwayCrossing(before, fraction, restingOpen = isOpen)?.let { haptics?.perform(it) }
             }
         }
 

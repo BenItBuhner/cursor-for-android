@@ -1,7 +1,5 @@
 package com.cursorforandroid.ui.home
 
-import android.os.Build
-import android.view.HapticFeedbackConstants
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.AnimationVector2D
@@ -41,7 +39,6 @@ import androidx.compose.ui.input.pointer.PointerInputScope
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.layout.layoutId
-import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.CustomAccessibilityAction
 import androidx.compose.ui.semantics.Role
@@ -61,6 +58,8 @@ import com.cursorforandroid.domain.AgentListOrganizer
 import com.cursorforandroid.domain.AgentRow
 import com.cursorforandroid.ui.agents.AgentRowActions
 import com.cursorforandroid.ui.agents.ChatRowMenu
+import com.cursorforandroid.ui.components.Haptic
+import com.cursorforandroid.ui.components.rememberHaptics
 import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
 import kotlinx.coroutines.CoroutineScope
@@ -302,33 +301,13 @@ internal fun Modifier.endsArrangingOnTap(state: ProjectGridState): Modifier = po
 }
 
 /** A step of a shortcut's hold and drag, each felt as its own kind of tick. */
-internal enum class ShortcutHaptic { Menu, Lift, Slot, Drop }
+internal enum class ShortcutHaptic(val haptic: Haptic) { Menu(Haptic.LongPress), Lift(Haptic.DragStart), Slot(Haptic.SlotTick), Drop(Haptic.GestureEnd) }
 
 @Composable
 private fun rememberShortcutHaptics(): (ShortcutHaptic) -> Unit {
-    val view = LocalView.current
-    return remember(view) { { haptic -> view.performHapticFeedback(haptic.feedback) } }
+    val haptics = rememberHaptics()
+    return remember(haptics) { { step -> haptics.perform(step.haptic) } }
 }
-
-internal val ShortcutHaptic.feedback: Int
-    get() = when (this) {
-        ShortcutHaptic.Menu -> HapticFeedbackConstants.LONG_PRESS
-        ShortcutHaptic.Lift -> when {
-            Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE -> HapticFeedbackConstants.DRAG_START
-            Build.VERSION.SDK_INT >= Build.VERSION_CODES.R -> HapticFeedbackConstants.GESTURE_START
-            else -> HapticFeedbackConstants.LONG_PRESS
-        }
-        ShortcutHaptic.Slot -> when {
-            Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE -> HapticFeedbackConstants.SEGMENT_TICK
-            Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1 -> HapticFeedbackConstants.TEXT_HANDLE_MOVE
-            else -> HapticFeedbackConstants.CLOCK_TICK
-        }
-        ShortcutHaptic.Drop -> when {
-            Build.VERSION.SDK_INT >= Build.VERSION_CODES.R -> HapticFeedbackConstants.GESTURE_END
-            Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1 -> HapticFeedbackConstants.VIRTUAL_KEY_RELEASE
-            else -> HapticFeedbackConstants.KEYBOARD_TAP
-        }
-    }
 
 /** What the grid's gestures read at the moment they act, rather than when the gesture began; never read while composing. */
 private class GridInput(

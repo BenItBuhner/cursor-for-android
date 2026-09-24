@@ -36,6 +36,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
+import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -77,6 +78,7 @@ import com.cursorforandroid.domain.MediaRef
 import com.cursorforandroid.domain.NestedRow
 import com.cursorforandroid.ui.components.CursorIcons
 import com.cursorforandroid.ui.components.FlatIconButton
+import com.cursorforandroid.ui.components.PullRefreshHaptics
 import com.cursorforandroid.ui.components.pressable
 import com.cursorforandroid.ui.components.SpinnerRing
 import com.cursorforandroid.ui.components.scrollEdgeFade
@@ -224,7 +226,9 @@ fun Sidebar(
         }
         if (searching) LaunchedEffect(Unit) { focusRequester.requestFocus() }
 
-        PullToRefreshBox(isRefreshing = state.isRefreshing, onRefresh = callbacks.onRefresh, modifier = Modifier.weight(1f)) {
+        val pull = rememberPullToRefreshState()
+        PullRefreshHaptics(pull, state.isRefreshing)
+        PullToRefreshBox(isRefreshing = state.isRefreshing, onRefresh = callbacks.onRefresh, modifier = Modifier.weight(1f), state = pull) {
             // Rows dissolve at the top and bottom of the pane while more of the list sits past that edge; there is no
             // rule above the footer, the fade is what separates the two.
             val listState = rememberLazyListState()

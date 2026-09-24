@@ -42,6 +42,8 @@ import androidx.lifecycle.ViewModelStore
 import androidx.lifecycle.ViewModelStoreOwner
 import androidx.lifecycle.viewmodel.compose.LocalViewModelStoreOwner
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.cursorforandroid.ui.components.feltOnCommit
+import com.cursorforandroid.ui.components.rememberHaptics
 import com.cursorforandroid.ui.theme.CursorTheme
 import kotlin.coroutines.cancellation.CancellationException
 import kotlin.math.abs
@@ -128,6 +130,7 @@ fun CursorNavHost(
         }
     }
 
+    val haptics = rememberHaptics()
     PredictiveBackHandler(enabled = backEnabled && stack.canPop) { events ->
         val under = stack.underTop
         if (under == null) {
@@ -148,7 +151,7 @@ fun CursorNavHost(
         var originY: Float? = null
         try {
             scene.beginGesture(under)
-            events.collect { event ->
+            events.feltOnCommit(haptics).collect { event ->
                 if (originY == null) {
                     originY = event.touchY
                     scene.edge = event.swipeEdge
