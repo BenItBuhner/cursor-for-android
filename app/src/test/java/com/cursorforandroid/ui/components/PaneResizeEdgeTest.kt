@@ -246,27 +246,44 @@ class PaneResizeEdgeTest {
 
     @OptIn(ExperimentalTestApi::class)
     @Test
-    fun `a mouse over the strip shows the resize cursor, and a mouse drags the edge too`() {
+    fun `a mouse over the strip shows the resize cursor and keeps it through a drag that starts at once and runs past the clamp`() {
         show()
         val resizeCursor = AndroidPointerIcon.getSystemIcon(compose.activity, AndroidPointerIcon.TYPE_HORIZONTAL_DOUBLE_ARROW)
         compose.onRoot().performMouseInput { moveTo(Offset(edgeX - 150f, 300f)) }
         compose.waitForIdle()
         assertThat(composeView().pointerIcon).isNotEqualTo(resizeCursor)
 
-        compose.onRoot().performMouseInput { moveTo(Offset(edgeX + 5f, 300f)) }
+        compose.onRoot().performMouseInput { moveTo(Offset(edgeX + 5f, rowY(6))) }
         compose.waitForIdle()
         assertThat(composeView().pointerIcon).isEqualTo(resizeCursor)
 
+        // A click there is still the row's under it.
+        compose.onRoot().performMouseInput { click(Offset(edgeX + 5f, rowY(6))) }
+        compose.waitForIdle()
+        assertThat(tapped).containsExactly("end-6")
+
+        // No slop to clear and no call on direction: a mouse drags nothing else here, so its first move across is the edge's.
         compose.onRoot().performMouseInput {
             press()
-            repeat(5) { moveBy(Offset(-20f, 0f)) }
-            release()
+            moveBy(Offset(0f, 3f))
+            moveBy(Offset(-4f, 0f))
         }
         compose.waitForIdle()
-        assertWidth(200.dp)
-        assertThat(kept.map { it.value }).containsExactly(200f)
+        assertWidth(296.dp)
+        assertThat(composeView().pointerIcon).isEqualTo(resizeCursor)
 
-        compose.onRoot().performMouseInput { moveTo(Offset(edgeX + 150f, 300f)) }
+        // One move far faster than the edge can follow, and on past where the pane stops: still the resize cursor.
+        compose.onRoot().performMouseInput { moveBy(Offset(480f, 0f)) }
+        compose.waitForIdle()
+        assertWidth(MaxWidth)
+        assertThat(composeView().pointerIcon).isEqualTo(resizeCursor)
+
+        // Let go out there: the width is kept, and the next move off the strip shows the ordinary cursor again.
+        compose.onRoot().performMouseInput { release() }
+        compose.waitForIdle()
+        assertThat(kept.map { it.value }).containsExactly(600f)
+        assertThat(tapped).containsExactly("end-6")
+        compose.onRoot().performMouseInput { moveBy(Offset(0f, 10f)) }
         compose.waitForIdle()
         assertThat(composeView().pointerIcon).isNotEqualTo(resizeCursor)
     }

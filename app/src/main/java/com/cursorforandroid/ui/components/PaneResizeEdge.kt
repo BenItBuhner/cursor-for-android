@@ -22,15 +22,19 @@ import androidx.compose.ui.input.pointer.PointerEvent
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.PointerIcon
 import androidx.compose.ui.input.pointer.PointerId
+import androidx.compose.ui.input.pointer.PointerInputChange
+import androidx.compose.ui.input.pointer.PointerType
 import androidx.compose.ui.input.pointer.SuspendingPointerInputModifierNode
 import androidx.compose.ui.input.pointer.changedToUpIgnoreConsumed
 import androidx.compose.ui.input.pointer.pointerHoverIcon
 import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.input.pointer.positionChangeIgnoreConsumed
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.node.DelegatingNode
 import androidx.compose.ui.node.ModifierNodeElement
 import androidx.compose.ui.node.PointerInputModifierNode
 import androidx.compose.ui.platform.InspectorInfo
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.semantics.CustomAccessibilityAction
@@ -42,6 +46,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.offset
 import androidx.compose.ui.util.fastFirstOrNull
 import com.cursorforandroid.ui.theme.CursorTheme
 import kotlin.math.abs
@@ -62,8 +67,9 @@ enum class PaneSide { Start, End }
  * window's back-gesture strips ([edges]) is left to back, and one cancelled from outside — the system taking it —
  * puts the pane back as the drag found it and keeps nothing.
  *
- * A mouse over the strip shows the resize cursor, the divider is lit only while a drag is under way, and TalkBack widens
- * or narrows the pane by a step through its actions.
+ * A mouse over the strip shows the resize cursor and, pressed there, keeps it until the button comes up; its drag starts
+ * at the first move across. The divider is lit only while a drag is under way, and TalkBack widens or narrows the pane
+ * by a step through its actions.
  */
 @Composable
 fun PaneResizeEdge(
@@ -84,8 +90,10 @@ fun PaneResizeEdge(
     val resize by rememberUpdatedState(onResize)
     val done by rememberUpdatedState(onResizeDone)
     var dragging by remember { mutableStateOf(false) }
+    var mouseHeld by remember { mutableStateOf(false) }
     val lit by animateFloatAsState(if (dragging) 1f else 0f, tween(if (dragging) LightMillis else DimMillis), label = "paneEdgeLit")
     val drag = remember { DragFromStart() }
+    val reach = LocalConfiguration.current.screenWidthDp.dp
     Box(
         modifier
             .fillMaxHeight()
@@ -100,9 +108,27 @@ fun PaneResizeEdge(
                     )
                 }
             }
+            .semantics {
+                this.contentDescription = contentDescription
+                stateDescription = "${width().value.roundToInt()} dp wide"
+                customActions = listOf(
+                    CustomAccessibilityAction(WIDEN) { resize(width() + AccessibilityStep); done(); true },
+                    CustomAccessibilityAction(NARROW) { resize(width() - AccessibilityStep); done(); true },
+                )
+            }
+            // While a mouse holds the strip, what hears the pointer from here in reaches a window's width either side, so
+            // the mouse is over the strip wherever it goes until the button comes up: the cursor stays the resize cursor
+            // however far one move outruns the edge, and on past where the pane stops. What is drawn and what TalkBack
+            // reads stay the strip.
+            .layout { measurable, constraints ->
+                val extra = if (mouseHeld) reach.roundToPx() else 0
+                val placeable = measurable.measure(constraints.offset(horizontal = 2 * extra))
+                layout(placeable.width - 2 * extra, placeable.height) { placeable.place(-extra, 0) }
+            }
             .pointerHoverIcon(PointerIcon(android.view.PointerIcon.TYPE_HORIZONTAL_DOUBLE_ARROW))
             .dragAcross(
                 edges = edges,
+                onMouseHeld = { mouseHeld = it },
                 onStart = {
                     dragging = true
                     drag.start(width())
@@ -116,15 +142,7 @@ fun PaneResizeEdge(
                     dragging = false
                     resize(drag.from)
                 },
-            )
-            .semantics {
-                this.contentDescription = contentDescription
-                stateDescription = "${width().value.roundToInt()} dp wide"
-                customActions = listOf(
-                    CustomAccessibilityAction(WIDEN) { resize(width() + AccessibilityStep); done(); true },
-                    CustomAccessibilityAction(NARROW) { resize(width() - AccessibilityStep); done(); true },
-                )
-            },
+            ),
     )
 }
 
@@ -150,27 +168,31 @@ private class DragFromStart {
  * reaches unless that one shares, and this one does, so the panes go on hearing every event; and it listens on the
  * initial pass, so a drag across is its own once past touch slop, consumed before something under the strip that
  * scrolls sideways — a code view running to the panel's edge — would take it. It consumes nothing before then, and
- * gives the gesture up at once if it crosses touch slop no further across than up or down.
+ * gives the gesture up at once if it crosses touch slop no further across than up or down. [onMouseHeld] hears a mouse
+ * button go down on the strip (true) and that gesture end (false), whether or not it became a drag.
  */
 private fun Modifier.dragAcross(
     edges: BackGestureEdges?,
+    onMouseHeld: (Boolean) -> Unit,
     onStart: () -> Unit,
     onDrag: (Float) -> Unit,
     onStop: () -> Unit,
     onCancel: () -> Unit,
-): Modifier = this then DragAcrossElement(edges, onStart, onDrag, onStop, onCancel)
+): Modifier = this then DragAcrossElement(edges, onMouseHeld, onStart, onDrag, onStop, onCancel)
 
 private data class DragAcrossElement(
     val edges: BackGestureEdges?,
+    val onMouseHeld: (Boolean) -> Unit,
     val onStart: () -> Unit,
     val onDrag: (Float) -> Unit,
     val onStop: () -> Unit,
     val onCancel: () -> Unit,
 ) : ModifierNodeElement<DragAcrossNode>() {
-    override fun create() = DragAcrossNode(edges, onStart, onDrag, onStop, onCancel)
+    override fun create() = DragAcrossNode(edges, onMouseHeld, onStart, onDrag, onStop, onCancel)
 
     override fun update(node: DragAcrossNode) {
         node.edges = edges
+        node.onMouseHeld = onMouseHeld
         node.onStart = onStart
         node.onDrag = onDrag
         node.onStop = onStop
@@ -184,6 +206,7 @@ private data class DragAcrossElement(
 
 private class DragAcrossNode(
     var edges: BackGestureEdges?,
+    var onMouseHeld: (Boolean) -> Unit,
     var onStart: () -> Unit,
     var onDrag: (Float) -> Unit,
     var onStop: () -> Unit,
@@ -195,10 +218,16 @@ private class DragAcrossNode(
                 val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
                 // An ancestor heard this down first, on the same pass: [edges] already knows whether it began in a strip.
                 if (edges?.gestureStartedInEdge == true) return@awaitEachGesture
-                val across = awaitDragAcross(down.id, viewConfiguration.touchSlop) ?: return@awaitEachGesture
-                onStart()
-                onDrag(across)
-                if (followAcross(down.id) { onDrag(it) }) onStop() else onCancel()
+                val mouse = down.type == PointerType.Mouse
+                if (mouse) onMouseHeld(true)
+                try {
+                    val across = awaitDragAcross(down) ?: return@awaitEachGesture
+                    onStart()
+                    onDrag(across)
+                    if (followAcross(down.id) { onDrag(it) }) onStop() else onCancel()
+                } finally {
+                    if (mouse) onMouseHeld(false)
+                }
             }
         },
     )
@@ -210,18 +239,28 @@ private class DragAcrossNode(
     override fun sharePointerInputWithSiblings() = true
 }
 
-/** The travel across once [pointer] is past [slop] further across than up or down, consumed; null for anything else. */
-private suspend fun AwaitPointerEventScope.awaitDragAcross(pointer: PointerId, slop: Float): Float? {
+/**
+ * The travel across once [down]'s pointer is past slop, consumed; null for anything else. A finger has to clear touch
+ * slop further across than up or down, so a scroll that wanders sideways stays the pane's. A mouse drags nothing else
+ * here — a list doesn't scroll to one — and the cursor has already said what the strip is, so its first move across is
+ * the edge's, whatever it did before.
+ */
+private suspend fun AwaitPointerEventScope.awaitDragAcross(down: PointerInputChange): Float? {
+    val mouse = down.type == PointerType.Mouse
+    val slop = viewConfiguration.touchSlop * if (mouse) MouseSlopRatio else 1f
     var travel = Offset.Zero
     while (true) {
-        val change = awaitPointerEvent(PointerEventPass.Initial).changes.fastFirstOrNull { it.id == pointer } ?: return null
+        val change = awaitPointerEvent(PointerEventPass.Initial).changes.fastFirstOrNull { it.id == down.id } ?: return null
         if (!change.pressed || change.isConsumed) return null
         travel += change.positionChange()
-        if (travel.getDistance() > slop) {
+        if (mouse) {
+            if (abs(travel.x) <= slop) continue
+        } else {
+            if (travel.getDistance() <= slop) continue
             if (abs(travel.x) <= abs(travel.y)) return null
-            change.consume()
-            return travel.x
         }
+        change.consume()
+        return travel.x
     }
 }
 
@@ -244,6 +283,9 @@ private suspend fun AwaitPointerEventScope.followAcross(pointer: PointerId, onDr
 
 /** The strip the edge takes over the boundary, half either side: nothing is drawn there at rest. */
 val PaneResizeEdgeWidth = 16.dp
+
+/** How much of touch slop a mouse has to clear: it holds still where a finger wobbles. */
+private const val MouseSlopRatio = 0.125f / 18f
 
 private val HighlightWidth = 2.dp
 private const val HighlightAlpha = 0.6f
