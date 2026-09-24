@@ -95,4 +95,32 @@ class ModePillsTest {
         val alone = SlashTokens.at("/plan", 5)!!
         assertThat(ModePills.consumeToken("/plan", alone)).isEqualTo(TextFieldValue("", TextRange(0)))
     }
+
+    /** Where Shift+Tab goes from [start], pressed [times] times, over the modes [available]. */
+    private fun cycle(start: Pill?, times: Int, available: Set<Pill>): List<Pill?> {
+        var at = start
+        return List(times) {
+            at = ModePills.next(at) { pill -> pill in available }
+            at
+        }
+    }
+
+    @Test
+    fun `Shift+Tab steps from no mode through the desktop's order and back, over the modes this composer can wear`() {
+        assertThat(Pill.desktopOrder).containsExactly(Pill.Plan, Pill.Debug, Pill.Multitask, Pill.Ask).inOrder()
+        val all = Pill.entries.toSet()
+        assertThat(cycle(null, 5, all)).containsExactly(Pill.Plan, Pill.Debug, Pill.Multitask, Pill.Ask, null).inOrder()
+        // Without Extended mode: Plan and Multitask alone.
+        assertThat(cycle(null, 3, setOf(Pill.Plan, Pill.Multitask))).containsExactly(Pill.Plan, Pill.Multitask, null).inOrder()
+        // Without a mode to set (no owner for it): Multitask and back.
+        assertThat(ModePills.next(null) { it == Pill.Multitask }).isEqualTo(Pill.Multitask)
+        assertThat(ModePills.next(Pill.Multitask) { it == Pill.Multitask }).isNull()
+    }
+
+    @Test
+    fun `a worn mode outside the cycle starts it over, and with nothing to cycle there is no next`() {
+        assertThat(ModePills.next(Pill.Ask) { it == Pill.Plan || it == Pill.Multitask }).isEqualTo(Pill.Plan)
+        assertThat(ModePills.next(null) { false }).isNull()
+        assertThat(ModePills.next(Pill.Plan) { false }).isNull()
+    }
 }

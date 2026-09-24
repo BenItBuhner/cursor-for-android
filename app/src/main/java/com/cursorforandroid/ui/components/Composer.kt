@@ -59,7 +59,16 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.drawscope.clipPath
 import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEvent
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.isAltPressed
+import androidx.compose.ui.input.key.isCtrlPressed
+import androidx.compose.ui.input.key.isMetaPressed
+import androidx.compose.ui.input.key.isShiftPressed
+import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
@@ -120,7 +129,7 @@ import kotlinx.coroutines.launch
  * A physical keyboard's Enter presses send whenever send could be tapped, and does nothing otherwise; Shift+Enter, and
  * the on-screen keyboard's Enter, put in a newline ([sendOnHardwareEnter]). While the `/` popover is up the keyboard
  * drives it instead, as on the desktop: the arrows move its highlight, Enter or Tab picks the highlighted row, Esc
- * closes it ([popoverKeys]).
+ * closes it ([popoverKeys]). Otherwise Shift+Tab steps through the modes, as the desktop's Cycle Mode does.
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -277,6 +286,8 @@ fun ComposerBox(
     val currentOnMode by rememberUpdatedState(onModePill)
     val currentMode by rememberUpdatedState(modePill)
     val currentExtended by rememberUpdatedState(extendedModes)
+    val currentWorn by rememberUpdatedState(wornPill)
+    val currentOfferedModes by rememberUpdatedState(offeredModes)
     val currentOnPickModel by rememberUpdatedState(onPickModel)
 
     /** Hands the owner the field's text in its own shape — `/multitask ` in front while that pill is on. */
@@ -355,6 +366,26 @@ fun ComposerBox(
         }
     }
 
+    /**
+     * Shift+Tab from a physical keyboard steps the mode on, as the desktop's Cycle Mode does: no mode, then each mode
+     * this composer can wear in the desktop's order ([ModePills.next]), then no mode again. While the `/` popover is up
+     * it has Shift+Tab ([popoverKeys] comes first); plain Tab and every other key are left alone.
+     */
+    fun cycleMode(event: KeyEvent): Boolean {
+        if (!event.isFromHardwareKeyboard || event.key != Key.Tab || !event.isShiftPressed) return false
+        if (event.isCtrlPressed || event.isAltPressed || event.isMetaPressed || field.composition != null) return false
+        val offered = currentOfferedModes
+        if (offered.isEmpty()) return false
+        if (event.type == KeyEventType.KeyDown) {
+            val text = field.text.toString()
+            when (val next = ModePills.next(currentWorn) { it in offered }) {
+                null -> takeOff(text)
+                else -> turnOn(next, text)
+            }
+        }
+        return true
+    }
+
     Column(
         modifier
             .fillMaxWidth()
@@ -413,6 +444,7 @@ fun ComposerBox(
                     .heightIn(min = 22.dp)
                     .onPreviewKeyEvent { if (it.isFromHardwareKeyboard) physicalKeys = true; false }
                     .popoverKeys(slashOpen, slash.selection, composing = { field.composition != null }, onPick = { pick(it) }, onDismiss = { dismissedToken = slashToken })
+                    .onPreviewKeyEvent { cycleMode(it) }
                     .sendOnHardwareEnter(field, onSend = onSend.takeIf { sendsNow }, onEdited = { publish(it) })
                     .then(if (receiveImages != null) Modifier.contentReceiver(receiveImages) else Modifier)
                     .focusRequester(focus)
