@@ -212,6 +212,36 @@ class PinnedPanelFlowTest {
     }
 
     @Test
+    fun `the pinned panel slides open and shut rather than appearing, the chat reflowing into the room as it goes`() {
+        showShell()
+        openChat(CLI)
+        compose.mainClock.autoAdvance = false
+
+        compose.onNodeWithContentDescription(OPEN_PANEL).performClick()
+        compose.mainClock.advanceTimeBy(SLIDE_MS / 2)
+        val opening = chatBounds().right
+        assertThat(opening).isGreaterThan(880.5f)
+        assertThat(opening).isLessThan(1279.5f)
+        assertThat(panelBounds().left).isWithin(1f).of(opening)
+        compose.mainClock.advanceTimeBy(SLIDE_MS)
+        assertThat(chatBounds().right).isWithin(0.5f).of(880f)
+        assertThat(panelBounds().left).isWithin(0.5f).of(880f)
+
+        compose.onNodeWithContentDescription(HIDE_PANEL).performClick()
+        compose.mainClock.advanceTimeBy(SLIDE_MS / 2)
+        val shutting = chatBounds().right
+        assertThat(shutting).isGreaterThan(880.5f)
+        assertThat(shutting).isLessThan(1279.5f)
+        assertThat(panelBounds().left).isWithin(1f).of(shutting)
+        compose.mainClock.advanceTimeBy(SLIDE_MS)
+        assertThat(chatBounds().right).isWithin(0.5f).of(1280f)
+
+        compose.mainClock.autoAdvance = true
+        compose.waitUntil(10_000) { !panelShown() && described(OPEN_PANEL) }
+        assertKept(false) { prefs.panelOpen(PaneWidthClass.Expanded).first() }
+    }
+
+    @Test
     fun `back is the chat's beside a pinned panel, which stands open for the next chat until it is hidden`() {
         showShell()
         openChat(CLI)
@@ -397,6 +427,8 @@ class PinnedPanelFlowTest {
         const val SEARCH_CHATS = "Search chats"
         const val OPEN_SIDEBAR = "Open sidebar"
         const val CLOSE_DRAWER = "Close navigation menu"
+        /** The panel's slide end to end (SidePanel's SlideMillis). */
+        const val SLIDE_MS = 300L
         const val Draft = "Half a thought about the"
     }
 }

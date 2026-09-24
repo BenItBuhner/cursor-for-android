@@ -369,22 +369,22 @@ class SidePanelState(initialValue: SidePanelValue) {
     private val mutex = MutatorMutex()
 
     /** Pinned, the window keeps it open for every chat, as [close] keeps it shut. */
-    suspend fun open() {
-        pin?.setOpen(true)
-        slideTo(SidePanelValue.Open)
-    }
+    suspend fun open() = slideTo(SidePanelValue.Open) { pin?.setOpen(true) }
 
-    suspend fun close() {
-        pin?.setOpen(false)
-        slideTo(SidePanelValue.Closed)
-    }
+    suspend fun close() = slideTo(SidePanelValue.Closed) { pin?.setOpen(false) }
 
     suspend fun toggle() = if (isOpen) close() else open()
 
-    internal suspend fun slideTo(value: SidePanelValue) {
+    /**
+     * [heading] runs once the panel is headed for [value] and before it moves: where a pinned panel tells the shell.
+     * Told any sooner, the shell's word can reach [PinnedPanelSync] while the panel still heads the other way, and the
+     * panel is snapped to where it was about to slide.
+     */
+    internal suspend fun slideTo(value: SidePanelValue, heading: () -> Unit = {}) {
         val target = value.fraction
         mutex.mutate {
             targetValue = value
+            heading()
             val distance = abs(target - fraction)
             if (distance < 0.001f) {
                 fraction = target
