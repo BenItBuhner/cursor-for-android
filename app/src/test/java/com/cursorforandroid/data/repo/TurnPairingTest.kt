@@ -134,6 +134,43 @@ class TurnPairingTest {
         assertThat(pairing.turns.map { (it.prompt?.id ?: "-") to (it.run?.id ?: "-") }).containsExactly("u1" to "-", "u2" to "r1", "-" to "r2").inOrder()
     }
 
+    /** Bennett, 2026-09-23: a worker's report the coordinator is answering, its prompt not in the transcript yet. */
+    private val reportUnderWay = listOf(
+        V0ConversationMessageDto("u1", "user_message", "Where are we on the scanner?"),
+        V0ConversationMessageDto("a1", "assistant_message", "Day two: forty markets read."),
+        V0ConversationMessageDto("u2", "user_message", "The replies vanish again."),
+        V0ConversationMessageDto("a2", "assistant_message", "A worker is on it."),
+    )
+
+    private fun reportRuns(results: Boolean) = listOf(
+        RunDto("r1", "a", "FINISHED", "2026-09-23T09:00:00Z", "2026-09-23T09:01:00Z", 60_000, result = "Day two: forty markets read.".takeIf { results }),
+        RunDto("r2", "a", "FINISHED", "2026-09-23T09:10:00Z", "2026-09-23T09:11:00Z", 60_000, result = "A worker is on it.".takeIf { results }),
+        RunDto("r-report", "a", "RUNNING", "2026-09-23T09:11:02Z", "2026-09-23T09:11:02Z", null),
+    )
+
+    @Test
+    fun `a worker's report under way that the transcript has no prompt for takes no prompt's run, results or not`() {
+        for (results in listOf(false, true)) {
+            val pairing = TurnPairing.pair(reportUnderWay, reportRuns(results))
+            assertThat(pairing.turns.map { (it.prompt?.id ?: "-") to (it.run?.id ?: "-") }).containsExactly("u1" to "r1", "u2" to "r2", "-" to "r-report").inOrder()
+            assertThat(pairing.evidenceOf.getValue("r2")).isEqualTo(if (results) TurnPairing.Evidence.RESULT else TurnPairing.Evidence.POSITION)
+        }
+    }
+
+    @Test
+    fun `past a run no prompt started, the newest prompt still heads its run under way where the runs say their replies`() {
+        val messages = reportUnderWay + V0ConversationMessageDto("u3", "user_message", "Ship the fix.")
+        val runs = listOf(
+            RunDto("r1", "a", "FINISHED", "2026-09-23T09:00:00Z", "2026-09-23T09:01:00Z", 60_000, result = "Day two: forty markets read."),
+            RunDto("r2", "a", "FINISHED", "2026-09-23T09:10:00Z", "2026-09-23T09:11:00Z", 60_000, result = "A worker is on it."),
+            RunDto("r-silent", "a", "FINISHED", "2026-09-23T09:11:02Z", "2026-09-23T09:11:05Z", 3_000),
+            RunDto("r3", "a", "RUNNING", "2026-09-23T09:20:00Z", "2026-09-23T09:20:00Z", null),
+        )
+        val pairing = TurnPairing.pair(messages, runs)
+        assertThat(pairing.turns.map { (it.prompt?.id ?: "-") to (it.run?.id ?: "-") }).containsExactly("u1" to "r1", "u2" to "r2", "-" to "r-silent", "u3" to "r3").inOrder()
+        assertThat(pairing.evidenceOf.getValue("r3")).isEqualTo(TurnPairing.Evidence.LIVE)
+    }
+
     private fun assertEveryPromptOnceInOrder(pairing: TurnPairing.Pairing) {
         val expected = messages.filter { it.type == "user_message" }.map { it.id }
         assertThat(pairing.turns.mapNotNull { it.prompt?.id }).containsExactlyElementsIn(expected).inOrder()
