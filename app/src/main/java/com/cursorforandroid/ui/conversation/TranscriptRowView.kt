@@ -70,7 +70,7 @@ internal fun StretchView(stretch: TranscriptRow.Stretch, modifier: Modifier = Mo
     var expanded by rememberSaveable(stretch.key) { mutableStateOf(false) }
     val coordinator = LocalTranscriptControls.current.coordinatorMode
     val subagents = subagentStates(stretch)
-    val working = subagents.mapNotNull { (entry, state) -> state.look.takeIf { SubagentRows.isWorking(entry.subagent!!, it) } }
+    val working = subagents.mapNotNull { (entry, state) -> state.look.takeIf { SubagentRows.isWorking(entry.subagent!!, it, state.child, stretch.live) } }
     val summary = if (working.isEmpty()) stretch.summary else remember(stretch, working, coordinator) { StretchSummary.of(stretch, working, coordinator) }
     CompositionLocalProvider(LocalSubagentStates provides subagents.associate { (entry, state) -> entry.call.callId to state }) {
         Column(modifier.fillMaxWidth().testTag("stretch")) {

@@ -139,16 +139,27 @@ class StretchViewTest {
         RunFooter("f1", "run-1", RunStatus.FINISHED, 38_000, emptyList()),
     )
 
-    /** [taskTurn] with the task's child standing as [child] says. */
-    private fun showTurn(coordinatorMode: Boolean, child: MutableStateFlow<SubagentChild?>) {
+    /** [items] with the task's child standing as [child] says. */
+    private fun showTurn(coordinatorMode: Boolean, child: MutableStateFlow<SubagentChild?>, items: List<TimelineItem> = taskTurn) {
         val controls = TranscriptControls(coordinatorMode = coordinatorMode, subagentActivity = { child })
         compose.setContent {
             CursorTheme(mode = ThemeMode.Dark) {
                 CompositionLocalProvider(LocalTranscriptControls provides controls) {
-                    androidx.compose.foundation.layout.Column { TranscriptRows.of(taskTurn, coordinatorMode = coordinatorMode).forEach { TranscriptRowView(it) } }
+                    androidx.compose.foundation.layout.Column { TranscriptRows.of(items, coordinatorMode = coordinatorMode).forEach { TranscriptRowView(it) } }
                 }
             }
         }
+    }
+
+    @Test
+    fun `a task call its ended run left running, with nothing known of the child, does not hold the stretch open`() {
+        val stale = taskTurn.map { item ->
+            if (item !is ActivityGroup) item else item.copy(steps = item.steps.map { step -> if (step is ToolCall && step.callId == "t1") step.copy(status = ToolCall.STATUS_RUNNING) else step })
+        }
+        showTurn(coordinatorMode = true, MutableStateFlow(null), stale)
+        compose.onNodeWithText("Worked 38s").assertIsDisplayed()
+        assertThat(compose.onAllNodesWithText("1 Working").fetchSemanticsNodes()).isEmpty()
+        assertThat(compose.onAllNodesWithText(com.cursorforandroid.domain.SubagentRows.PLANNING).fetchSemanticsNodes()).isEmpty()
     }
 
     @Test

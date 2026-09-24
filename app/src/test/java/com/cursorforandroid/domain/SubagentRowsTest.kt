@@ -161,7 +161,8 @@ class SubagentRowsTest {
 
     @Test
     fun `the group a row sits in counts it as working while it runs, starts or waits, not while it stops`() {
-        fun working(call: ToolCall, child: SubagentChild? = null, latest: Boolean = true) = SubagentRows.isWorking(SubagentCall.of(call)!!, look(call, child, latest))
+        fun working(call: ToolCall, child: SubagentChild? = null, latest: Boolean = true, live: Boolean = true) =
+            SubagentRows.isWorking(SubagentCall.of(call)!!, look(call, child, latest), child, live)
         assertThat(working(task(), SubagentChild(SubagentChild.Status.Running, step = "Wiring the hover state"))).isTrue()
         assertThat(working(task())).isTrue()
         assertThat(working(created(agentId = null, status = ToolCall.STATUS_RUNNING))).isTrue()
@@ -171,6 +172,21 @@ class SubagentRowsTest {
         assertThat(working(created(), SubagentChild(SubagentChild.Status.Failed))).isFalse()
         // A later row speaks for the worker: this one no longer holds the group open.
         assertThat(working(created(), SubagentChild(SubagentChild.Status.Running), latest = false)).isFalse()
+    }
+
+    @Test
+    fun `once its run has ended, only a child reported at work holds the group open, not a call left running`() {
+        fun working(call: ToolCall, child: SubagentChild? = null) = SubagentRows.isWorking(SubagentCall.of(call)!!, look(call, child), child, live = false)
+        // The run ended with the call never closed and nothing known of the child: the row still says where the call
+        // stood, but the group settles.
+        assertThat(look(task()).indicator).isEqualTo(SubagentLook.Indicator.Running)
+        assertThat(working(task())).isFalse()
+        assertThat(working(created(agentId = null, status = ToolCall.STATUS_RUNNING))).isFalse()
+        assertThat(working(task(), SubagentChild(name = "Explorer"))).isFalse()
+        // A child the list or its stream reports at work, or waiting on the reader, still does.
+        assertThat(working(task(), SubagentChild(SubagentChild.Status.Running, step = "Wiring the hover state"))).isTrue()
+        assertThat(working(created(), SubagentChild(SubagentChild.Status.Running))).isTrue()
+        assertThat(working(created(), SubagentChild(waiting = true))).isTrue()
     }
 
     // -- the action line ------------------------------------------------------------------------------------------

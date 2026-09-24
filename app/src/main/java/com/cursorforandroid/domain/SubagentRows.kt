@@ -234,9 +234,14 @@ object SubagentRows {
     /**
      * Whether the row's child is still at work, as the group it sits in counts it (the desktop's running tasks,
      * `composerWorkGroupRunningTasks`): working, starting up, or waiting on the reader. A stop under way is not.
+     * The desktop always knows its children; here a call can be left running by a run that ended without closing
+     * it, so only a [child] reported running or waiting says so once the group is no longer [live].
      */
-    fun isWorking(subagent: SubagentCall, look: SubagentLook): Boolean =
-        subagent.source != SubagentCall.Source.Stopped && (look.indicator == SubagentLook.Indicator.Running || look.indicator == SubagentLook.Indicator.Attention)
+    fun isWorking(subagent: SubagentCall, look: SubagentLook, child: SubagentChild?, live: Boolean): Boolean {
+        if (subagent.source == SubagentCall.Source.Stopped) return false
+        if (look.indicator != SubagentLook.Indicator.Running && look.indicator != SubagentLook.Indicator.Attention) return false
+        return live || child?.waiting == true || child?.status == SubagentChild.Status.Running
+    }
 
     /** The desktop's status text while the child works (`gRa`): its own step, else its latest action, else planning. */
     private fun running(child: SubagentChild?): SubagentLook {
