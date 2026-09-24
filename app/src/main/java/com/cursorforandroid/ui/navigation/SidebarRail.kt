@@ -29,6 +29,9 @@ import com.cursorforandroid.ui.theme.CursorTheme
  * The detail pane beside it reflows into the room the rail gives up, as on cursor.com. The hairline that separates the
  * two rides inside the animated box so it always marks the boundary while it moves.
  *
+ * Unlike the phone drawer it covers nothing: the pane reflows beside it, so a composer holding the keyboard keeps both
+ * while the rail comes back, where the drawer takes them ([com.cursorforandroid.ui.components.CoveredFocus]).
+ *
  * First composition with [expanded] true shows the rail at once, without a slide: that is what a Fold unfolding or a
  * phone rotating sees when the drawer layout is swapped for this one, and a rail that arrived by sliding in would
  * read as if it had opened on its own. Hidden, the content leaves the composition, as it did when the rail was a
