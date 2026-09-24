@@ -873,7 +873,7 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
 
     /**
      * A load already under way — the chat's first read, just opened — is waited for before the chat is taken as it
-     * was: what that load brings was never the refresh's to count, as the pull's catch-up counts it.
+     * was: what that load brings was never the refresh's to count, as [catchUp] counts it.
      */
     private fun refreshWithWord(start: () -> Unit) {
         refreshWordJob = viewModelScope.launch {

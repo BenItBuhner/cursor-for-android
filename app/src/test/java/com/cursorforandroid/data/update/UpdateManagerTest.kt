@@ -5,8 +5,10 @@ import android.content.Intent
 import android.content.pm.PackageInstaller
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.cursorforandroid.data.api.CursorJson
 import com.cursorforandroid.data.local.JsonDiskCache
 import com.cursorforandroid.data.local.PreferencesStore
+import com.cursorforandroid.domain.AppRelease
 import com.cursorforandroid.domain.UpdatePhase
 import com.cursorforandroid.domain.UpdateState
 import com.google.common.truth.Truth.assertThat
@@ -23,6 +25,8 @@ import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.builtins.ListSerializer
 import okhttp3.OkHttpClient
 import okhttp3.mockwebserver.Dispatcher
 import okhttp3.mockwebserver.MockResponse
@@ -58,14 +62,16 @@ class UpdateManagerTest {
     private lateinit var prefs: PreferencesStore
     private lateinit var platform: FakeUpdatePlatform
     private lateinit var downloads: File
+    private lateinit var diskCache: JsonDiskCache
     private lateinit var cache: UpdateCache
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var now = 1_788_900_000_000L
 
-    /** The stable APK and the release candidate served by the mock; the digests in the release list match them. */
+    /** The stable APK served by the mock; the digest in the release list matches it. */
     private val stableApk = ByteArray(200_000) { (it % 199).toByte() }
-    private val rcApk = ByteArray(150_000) { (it % 97).toByte() }
     private var stableApkBytes: ByteArray = stableApk
+    /** Whether the release list carries the stable APK's GitHub asset digest; without it, its `SHA256SUMS.txt` is the proof. */
+    private var stableApkDigest = true
     // Appended from MockWebServer's dispatcher thread while tests assert; copy-on-write keeps the reads race-free.
     private val listRequests = CopyOnWriteArrayList<RecordedRequest>()
     private val downloadRequests = CopyOnWriteArrayList<String>()
@@ -79,7 +85,8 @@ class UpdateManagerTest {
         prefs = PreferencesStore(context)
         platform = FakeUpdatePlatform()
         downloads = folder.newFolder("updates")
-        cache = UpdateCache(JsonDiskCache(folder.newFolder("update-check"), dispatcher = Dispatchers.Unconfined))
+        diskCache = JsonDiskCache(folder.newFolder("update-check"), dispatcher = Dispatchers.Unconfined)
+        cache = UpdateCache(diskCache)
         server.dispatcher = object : Dispatcher() {
             override fun dispatch(request: RecordedRequest): MockResponse {
                 val path = request.path ?: return MockResponse().setResponseCode(404)
@@ -93,16 +100,14 @@ class UpdateManagerTest {
                             MockResponse().setHeader("ETag", releasesEtag).setBody(
                                 GitHubFixtures.releasesJson(
                                     downloads = server.url("/download").toString().trimEnd('/'),
-                                    apk020Sha256 = sha256(stableApk),
+                                    apk020Sha256 = sha256(stableApk).takeIf { stableApkDigest },
                                     apk020Size = stableApk.size.toLong(),
-                                    rcSize = rcApk.size.toLong(),
                                 ),
                             )
                         }
                     }
                     path.endsWith("/v0.2.0/cursor-for-android-0.2.0.apk") -> { downloadRequests += path; MockResponse().setBody(Buffer().write(stableApkBytes)) }
-                    path.endsWith("/v0.3.0-rc.1/cursor-for-android-0.3.0-rc.1.apk") -> { downloadRequests += path; MockResponse().setBody(Buffer().write(rcApk)) }
-                    path.endsWith("/v0.3.0-rc.1/SHA256SUMS.txt") -> { downloadRequests += path; MockResponse().setBody("${sha256(rcApk)}  cursor-for-android-0.3.0-rc.1.apk\n") }
+                    path.endsWith("/v0.2.0/SHA256SUMS.txt") -> { downloadRequests += path; MockResponse().setBody("${sha256(stableApk)}  cursor-for-android-0.2.0.apk\n") }
                     else -> MockResponse().setResponseCode(404)
                 }
             }
@@ -205,15 +210,15 @@ class UpdateManagerTest {
 
     @Test
     fun `without an asset digest the release's SHA256SUMS file verifies the download`() = runBlocking {
-        prefs.setIncludePreReleases(true)
+        stableApkDigest = false
         val manager = manager()
         val available = manager.check() as UpdateState.Available
-        assertThat(available.release.tagName).isEqualTo("v0.3.0-rc.1")
+        assertThat(available.release.tagName).isEqualTo("v0.2.0")
         assertThat(available.release.apk.sha256).isNull()
 
         val downloaded = manager.download() as UpdateState.Downloaded
-        assertThat(downloaded.apk).isEqualTo(apk(30051))
-        assertThat(downloadRequests).containsExactly("/download/v0.3.0-rc.1/SHA256SUMS.txt", "/download/v0.3.0-rc.1/cursor-for-android-0.3.0-rc.1.apk").inOrder()
+        assertThat(downloaded.apk).isEqualTo(apk(20099))
+        assertThat(downloadRequests).containsExactly("/download/v0.2.0/SHA256SUMS.txt", "/download/v0.2.0/cursor-for-android-0.2.0.apk").inOrder()
     }
 
     @Test
@@ -340,32 +345,34 @@ class UpdateManagerTest {
     }
 
     @Test
-    fun `the pre-release channel follows the installed build until chosen, and switching it fetches a fresh list`() = runBlocking {
-        val manager = manager()
-        assertThat(manager.includePreReleases.first()).isFalse()
-        assertThat((manager.check() as UpdateState.Available).release.tagName).isEqualTo("v0.2.0")
+    fun `only stable releases are offered, even to a build that is itself a pre-release`() = runBlocking {
+        platform.installedVersionName = "0.2.0-dev.42+gabc1234"
+        platform.installedVersionCode = 20024
+        assertThat((manager().check() as UpdateState.Available).release.tagName).isEqualTo("v0.2.0")
 
-        manager.setIncludePreReleases(true)
-        val rc = manager.awaitState { it is UpdateState.Available && it.release.tagName == "v0.3.0-rc.1" }
-        assertThat((rc as UpdateState.Available).release.isPreRelease).isTrue()
-        // The cached decision was for the other channel, so the second request went without an ETag.
-        assertThat(listRequests).hasSize(2)
-        assertThat(listRequests[1].getHeader("If-None-Match")).isNull()
-
-        // An explicit choice wins over the build's own channel.
-        prefs.setIncludePreReleases(false)
-        platform.installedVersionName = "0.3.0-rc.1"
-        assertThat(manager().includePreReleases.first()).isFalse()
+        // Past every stable release: the newer v0.3.0-rc.1 is not an update.
+        platform.installedVersionName = "0.2.1-rc.1"
+        platform.installedVersionCode = 20151
+        assertThat(manager().check()).isInstanceOf(UpdateState.UpToDate::class.java)
     }
 
     @Test
-    fun `a build that is itself a pre-release sees pre-releases until told otherwise`() = runBlocking {
-        platform.installedVersionName = "0.2.0-dev.42+gabc1234"
-        platform.installedVersionCode = 20024
+    fun `a check cached while pre-releases could be switched on is dropped and read afresh`() = runBlocking {
+        val rc = CursorJson.decodeFromString(ListSerializer(GitHubReleaseDto.serializer()), GitHubFixtures.releasesJson).firstNotNullOf(ReleaseCatalog::toRelease)
+        assertThat(rc.isPreRelease).isTrue()
+        diskCache.write("latest", LegacyCheck.serializer(), 1, LegacyCheck(releasesEtag, now, rc, includePreReleases = true))
+
         val manager = manager()
-        assertThat(manager.includePreReleases.first()).isTrue()
-        assertThat((manager.check() as UpdateState.Available).release.tagName).isEqualTo("v0.3.0-rc.1")
+        manager.ensureRestored()
+        assertThat(manager.state.value).isEqualTo(UpdateState.Idle)
+        // The old decision was the rc; its ETag would have answered this check with it.
+        assertThat((manager.check() as UpdateState.Available).release.tagName).isEqualTo("v0.2.0")
+        assertThat(listRequests.single().getHeader("If-None-Match")).isNull()
     }
+
+    /** [CachedUpdateCheck] as version 1 of the cache wrote it, with the channel its decision was made for. */
+    @Serializable
+    private data class LegacyCheck(val etag: String?, val checkedAtMs: Long, val candidate: AppRelease?, val includePreReleases: Boolean)
 
     @Test
     fun `a repeat check is a conditional request and keeps the decision`() = runBlocking {

@@ -83,12 +83,12 @@ object ReleaseCatalog {
     }
 
     /**
-     * The newest release the installed build should move to, or null when it is current. Pre-releases only count
-     * when asked for; the comparison is by versionCode, so a `-rc.1` tag never beats its final build.
+     * The newest stable release the installed build should move to, or null when it is current. Pre-releases never
+     * count, whatever the installed build is; the comparison is by versionCode.
      */
-    fun newest(releases: List<AppRelease>, installedVersionCode: Int, includePreReleases: Boolean): AppRelease? =
+    fun newest(releases: List<AppRelease>, installedVersionCode: Int): AppRelease? =
         releases.asSequence()
-            .filter { includePreReleases || !it.isPreRelease }
+            .filter { !it.isPreRelease }
             .filter { it.versionCode > installedVersionCode }
             .maxWithOrNull(compareBy<AppRelease> { it.versionCode }.thenBy { it.publishedAtMs })
 

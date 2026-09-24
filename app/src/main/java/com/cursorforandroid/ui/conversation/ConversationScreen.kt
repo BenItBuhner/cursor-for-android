@@ -37,6 +37,7 @@ import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -62,6 +63,7 @@ import com.cursorforandroid.data.api.CursorEndpoints
 import com.cursorforandroid.data.repo.ConversationState
 import com.cursorforandroid.data.repo.TraceStatus
 import com.cursorforandroid.data.repo.RecordFallback
+import com.cursorforandroid.domain.AgentListOrganizer
 import com.cursorforandroid.domain.AssistantMessage
 import com.cursorforandroid.domain.CarriedFile
 import com.cursorforandroid.domain.FileOpenRequest
@@ -158,6 +160,13 @@ fun ConversationScreen(
     onOpenSidebar: (() -> Unit)? = null,
     /** Where the transcript's worker cards and the panel send the reader: another chat (a primary, a side chat, a Project's coordinator). */
     onOpenAgent: ((String) -> Unit)? = null,
+    /**
+     * The chat was switched to from the hardware keyboard (Ctrl+Tab, Ctrl+1 … Ctrl+0): the composer takes the caret,
+     * and [onComposerFocused] says the ask was taken. The keyboard app decides whether its own keys come up, which
+     * with a hardware keyboard attached they do not.
+     */
+    focusComposer: Boolean = false,
+    onComposerFocused: () -> Unit = {},
 ) {
     val viewModel: ConversationViewModel = viewModel(key = "conversation-$agentId", factory = ConversationViewModel.Factory(graph, agentId))
     val colors = CursorTheme.colors
@@ -370,6 +379,13 @@ fun ConversationScreen(
     val panelActions = rememberPanelActions(panelViewModel, onToast = viewModel::showMessage, onOpenAgent = onOpenAgent, onAskToCopyFile = if (isDemo) null else viewModel::askToCopyFileIntoWorkspace)
     ChatKeyboardShortcuts(agentId, viewModel, panelState)
     TranscriptHitScroll(agentId, rows, conversation, transcriptScroll, viewModel)
+    var composerFocusRequests by remember { mutableIntStateOf(0) }
+    LaunchedEffect(focusComposer) {
+        if (focusComposer) {
+            composerFocusRequests++
+            onComposerFocused()
+        }
+    }
     // Replies reference screenshots and recordings by their VM path; resolving them needs this agent's id. A path
     // into an Agent Store (`/cursor/stores/…`, a Project's context) is read through the account in Extended mode and
     // opens in the document sheet; without the account it points at the Project on cursor.com. A tapped figure opens
@@ -445,7 +461,7 @@ fun ConversationScreen(
                 Box {
                     FlatIconButton(CursorIcons.More, "More", onClick = { menuOpen = true }, touchHeight = touchHeight)
                     CursorMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
-                        CursorMenuItem(if (isPinned) "Unpin" else "Pin", CursorIcons.Pin) { menuOpen = false; viewModel.togglePinned() }
+                        if (agent?.let(AgentListOrganizer::canPin) != false) CursorMenuItem(if (isPinned) "Unpin" else "Pin", CursorIcons.Pin) { menuOpen = false; viewModel.togglePinned() }
                         // The public API has no rename; the demo renames its in-memory row, Extended mode the account's.
                         if (isDemo || extendedMode) CursorMenuItem("Rename", CursorIcons.Pencil) { menuOpen = false; renameOpen = true }
                         CursorMenuItem("Reload transcript", CursorIcons.Refresh) { menuOpen = false; viewModel.reloadTranscript() }
@@ -724,6 +740,7 @@ fun ConversationScreen(
                 modePill = picker.modePill,
                 onModePill = viewModel::setModePill,
                 extendedModes = capabilities.agentModes && !isDemo,
+                focusRequests = composerFocusRequests,
                 modifier = Modifier.widthIn(max = CursorDimens.composerMaxWidth).then(headerClearance.composerColumn).testTag("follow-up-composer"),
             )
         }

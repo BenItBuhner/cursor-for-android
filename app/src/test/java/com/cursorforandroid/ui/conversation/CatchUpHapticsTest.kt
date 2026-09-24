@@ -1,7 +1,6 @@
 package com.cursorforandroid.ui.conversation
 
 import android.content.Context
-import android.view.HapticFeedbackConstants
 import android.view.View
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -12,10 +11,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.Text
 import androidx.compose.runtime.CompositionLocalProvider
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalDensity
@@ -37,7 +33,6 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
-import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
 
 /**
@@ -45,7 +40,7 @@ import org.robolectric.annotation.Config
  * pull crosses it and again if it drops back under (`PullRefreshHaptics`), a confirm as an armed pull is let go (and
  * never an un-arming for the release, nor a crossing as the indicator springs to the threshold and home), and one cue
  * per answer as it arrives, none for an answer already up when the screen comes back. Played through `Haptics`, so
- * Settings › Haptic feedback silences all of it.
+ * the system's touch feedback switch silences all of it.
  */
 @RunWith(AndroidJUnit4::class)
 @Config(sdk = [35])
@@ -56,21 +51,15 @@ class CatchUpHapticsTest {
 
     private val recorder = RecordingView(ApplicationProvider.getApplicationContext())
     private val status = MutableStateFlow<CatchUpStatus>(CatchUpStatus.Idle)
-    private var hapticsOn by mutableStateOf(true)
     private lateinit var pull: CatchUpPull
-    private lateinit var view: View
 
     /** What was felt, as the [Haptic]s that play those constants. */
     private fun felt(vararg haptics: Haptic) = haptics.map { it.constant() }
 
-    /**
-     * The chat with the pull under it, felt on [recorder]; or, [throughSetting], on the screen's own view as the app's
-     * theme is given Settings › Haptic feedback ([hapticsOn]).
-     */
-    private fun chat(throughSetting: Boolean = false) {
+    /** The chat with the pull under it, felt on [recorder]. */
+    private fun chat() {
         compose.setContent {
-            view = LocalView.current
-            CursorTheme(mode = ThemeMode.Dark, haptics = hapticsOn) {
+            CursorTheme(mode = ThemeMode.Dark) {
                 val density = LocalDensity.current
                 pull = remember { with(density) { CatchUpPull(CatchUpPullThreshold.toPx()) } }
                 val list = rememberLazyListState()
@@ -86,13 +75,8 @@ class CatchUpHapticsTest {
                     ) {
                         items(60, key = { it }) { Text("Row $it", Modifier.fillMaxWidth().height(56.dp)) }
                     }
-                    val indicator = Modifier.align(Alignment.BottomCenter)
-                    if (throughSetting) {
-                        CatchUpIndicator(pull, status, onSettled = {}, modifier = indicator)
-                    } else {
-                        CompositionLocalProvider(LocalView provides recorder) {
-                            CatchUpIndicator(pull, status, onSettled = {}, modifier = indicator)
-                        }
+                    CompositionLocalProvider(LocalView provides recorder) {
+                        CatchUpIndicator(pull, status, onSettled = {}, modifier = Modifier.align(Alignment.BottomCenter))
                     }
                 }
             }
@@ -162,23 +146,22 @@ class CatchUpHapticsTest {
     }
 
     @Test
-    fun `with Settings › Haptic feedback off a pull still catches up and nothing is felt, and turned back on the next is`() {
-        hapticsOn = false
-        chat(throughSetting = true)
-        val before = shadowOf(view).lastHapticFeedbackPerformed()
+    fun `with the system's touch feedback off a pull still catches up and nothing is felt, and turned back on the next is`() {
+        recorder.isHapticFeedbackEnabled = false
+        chat()
         pullUp()
         assertThat(status.value).isEqualTo(CatchUpStatus.Checking)
-        assertThat(shadowOf(view).lastHapticFeedbackPerformed()).isEqualTo(before)
+        assertThat(recorder.played).isEmpty()
 
         status.value = CatchUpStatus.Idle
-        hapticsOn = true
+        recorder.isHapticFeedbackEnabled = true
         compose.waitForIdle()
         pullUp()
         assertThat(status.value).isEqualTo(CatchUpStatus.Checking)
-        assertThat(shadowOf(view).lastHapticFeedbackPerformed()).isEqualTo(HapticFeedbackConstants.CONFIRM)
+        assertThat(recorder.played.last()).isEqualTo(Haptic.Confirm.constant())
     }
 
-    /** A view that keeps every haptic it is asked for. */
+    /** A view that keeps every haptic it is asked for, as the system's switch lets it. */
     private class RecordingView(context: Context) : View(context) {
         val played = mutableListOf<Int>()
 

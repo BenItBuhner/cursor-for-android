@@ -39,7 +39,10 @@ class MainActivity : ComponentActivity() {
     /** Set by an [ACTION_SEARCH] launch (the widget's corner button); the nav host opens the sidebar's search and clears it. */
     private var pendingSearch by mutableStateOf(false)
 
-    /** The hardware keyboard's shortcuts, read here before any view sees the key (see [dispatchKeyEvent]). */
+    /**
+     * The hardware keyboard's shortcuts: read by the shell before the IME is given the key (`Modifier.shortcutsBeforeIme`),
+     * and here where nothing in the shell holds the focus (see [dispatchKeyEvent]).
+     */
     private val shortcuts by lazy { KeyboardShortcuts(lifecycleScope) }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -57,8 +60,7 @@ class MainActivity : ComponentActivity() {
         setContent {
             val themeMode by graph.prefs.themeMode.collectAsStateWithLifecycle(initialValue = ThemeMode.System)
             val oledBlack by graph.prefs.oledBlack.collectAsStateWithLifecycle(initialValue = false)
-            val haptics by graph.prefs.hapticFeedback.collectAsStateWithLifecycle(initialValue = true)
-            CursorTheme(mode = themeMode, oledBlack = oledBlack, haptics = haptics) {
+            CursorTheme(mode = themeMode, oledBlack = oledBlack) {
                 CompositionLocalProvider(LocalKeyboardShortcuts provides shortcuts) {
                     CursorRoot(
                         graph = graph,
@@ -84,8 +86,9 @@ class MainActivity : ComponentActivity() {
     }
 
     /**
-     * A hardware keyboard's shortcut is taken here, ahead of the focused view — the composer's field included — so it
-     * works wherever the focus is; every other key, and every key of the on-screen keyboard, goes on as before.
+     * A hardware keyboard's shortcut with nothing in the shell focused is taken here, ahead of any view; with a node
+     * focused the IME is handed the key before this, so the shell reads it earlier (`Modifier.shortcutsBeforeIme`),
+     * and one it read there is not read again here. Every other key, and every key of the on-screen keyboard, goes on.
      *
      * `Activity.dispatchKeyEvent` is the platform's public API; androidx.core's `ComponentActivity` re-declares it
      * restricted to its own library group, which lint reads as this override calling a restricted method.

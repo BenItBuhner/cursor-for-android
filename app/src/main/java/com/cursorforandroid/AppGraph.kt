@@ -875,11 +875,13 @@ class AppGraph(
 
     /**
      * Deletes what an earlier process left in the cache directory and nothing will ever read again: media copies past
-     * their budget, composer previews and staged prompts of sends that never finished, old diagnostics exports. Once
-     * per process; each sweep stands alone, so one directory that cannot be listed leaves the others to theirs.
+     * their budget, composer previews and staged prompts of sends that never finished, old diagnostics exports — and
+     * the values of settings that no longer exist. Once per process; each sweep stands alone, so one directory that
+     * cannot be listed leaves the others to theirs.
      */
     suspend fun sweepLeftovers() {
         if (!swept.compareAndSet(false, true)) return
+        prefs.forgetRetiredSettings()
         withContext(Dispatchers.IO) {
             val now = System.currentTimeMillis()
             runCatching { MediaLoader.sweepCopies(app.cacheDir, now) }

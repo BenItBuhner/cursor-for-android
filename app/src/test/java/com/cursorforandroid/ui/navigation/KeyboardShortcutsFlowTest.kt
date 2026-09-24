@@ -6,23 +6,28 @@ import android.view.InputDevice
 import android.view.KeyEvent
 import androidx.activity.ComponentActivity
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.semantics.getOrNull
 import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsFocused
 import androidx.compose.ui.test.assertIsSelected
+import androidx.compose.ui.test.getBoundsInRoot
 import androidx.compose.ui.test.hasAnyAncestor
+import androidx.compose.ui.test.hasClickAction
 import androidx.compose.ui.test.hasContentDescription
 import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.isFocused
 import androidx.compose.ui.test.isSelected
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onFirst
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.test.performTextInput
 import androidx.lifecycle.lifecycleScope
 import androidx.test.core.app.ApplicationProvider
@@ -38,6 +43,7 @@ import com.cursorforandroid.ui.settings.SettingsTags
 import com.cursorforandroid.ui.shortcuts.KeyboardShortcuts
 import com.cursorforandroid.ui.shortcuts.LocalKeyboardShortcuts
 import com.cursorforandroid.ui.shortcuts.PaletteTags
+import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.ui.theme.ThemeMode
 import kotlinx.coroutines.runBlocking
@@ -53,8 +59,8 @@ import org.robolectric.annotation.GraphicsMode
 import java.time.Duration
 
 /**
- * The hardware keyboard in the running shell, on the demo, each key read first by [KeyboardShortcuts] and handed on
- * to the window when it is not the app's, as `MainActivity.dispatchKeyEvent` does: the search palette finding a chat
+ * The hardware keyboard in the running shell, on the demo, each key handed on as the platform hands it (see [send]) —
+ * with a field focused, a keyboard app that answers Ctrl chords itself among the ways: the search palette finding a chat
  * by its transcript and opening it on the hit, the quick switcher, the rail and the drawer, the chat's panel, the
  * sidebar's numbers, New Chat, Settings' page of shortcuts, and a chat's Ctrl+R and Ctrl+Shift+R.
  */
@@ -114,13 +120,40 @@ class KeyboardShortcutsFlowTest {
 
     private fun chatOpen(name: String) = exists(hasTestTag("chat-header") and hasContentDescription(name))
 
-    /** A key from a hardware keyboard: the app's reader first, then the window, as the activity dispatches it. */
+    /** Whether the keyboard app answers a key itself, while a text field has the focus (see [send]); none, by default. */
+    private var imeAnswers: (KeyEvent) -> Boolean = { false }
+
+    /** The keys the keyboard app was handed. */
+    private val imeHeard = mutableListOf<Int>()
+
+    /**
+     * Samsung Keyboard and Gboard as far as Ctrl goes, at their most possessive: Ctrl itself and every chord on it
+     * pressed in a field are theirs, and the window hears nothing of them after.
+     */
+    private val answersCtrlChords: (KeyEvent) -> Boolean = { it.isCtrlPressed || KeyEvent.isModifierKey(it.keyCode) }
+
+    private var eventTime = 0L
+
+    /**
+     * A key from a hardware keyboard, handed on as the platform hands it: the views' pass before the IME (the shell's
+     * reader among them), then — a text field focused — the keyboard app, then the activity, which reads it as
+     * `MainActivity.dispatchKeyEvent` does before the window has it.
+     */
     private fun send(action: Int, code: Int, ctrl: Boolean = false, shift: Boolean = false, repeat: Int = 0) {
         var meta = 0
         if (ctrl) meta = meta or KeyEvent.META_CTRL_ON or KeyEvent.META_CTRL_LEFT_ON
         if (shift) meta = meta or KeyEvent.META_SHIFT_ON or KeyEvent.META_SHIFT_LEFT_ON
-        val event = KeyEvent(0L, 0L, action, code, repeat, meta, 7, 0, 0, InputDevice.SOURCE_KEYBOARD)
-        compose.runOnUiThread { if (!keys.onKeyEvent(event)) compose.activity.dispatchKeyEvent(event) }
+        val at = ++eventTime
+        val event = KeyEvent(at, at, action, code, repeat, meta, 7, 0, 0, InputDevice.SOURCE_KEYBOARD)
+        val fieldFocused = exists(isFocused() and hasSetTextAction())
+        compose.runOnUiThread {
+            if (compose.activity.window.decorView.dispatchKeyEventPreIme(event)) return@runOnUiThread
+            if (fieldFocused) {
+                imeHeard += code
+                if (imeAnswers(event)) return@runOnUiThread
+            }
+            if (!keys.onKeyEvent(event)) compose.activity.dispatchKeyEvent(event)
+        }
         compose.waitForIdle()
     }
 
@@ -319,6 +352,295 @@ class KeyboardShortcutsFlowTest {
         assertTrue(showsWhileClockHeld(UP_TO_DATE) { chord(KeyEvent.KEYCODE_R, shift = true) })
     }
 
+    @Test
+    fun `typing in the composer, with a keyboard app that answers Ctrl chords itself, Ctrl+R and Ctrl+Shift+R still reach the chat`() {
+        showShell(wide = true)
+        searchAndOpen("House environment", HOUSE)
+        imeAnswers = answersCtrlChords
+        val composer = compose.onNode(hasSetTextAction() and hasText(CHAT_PLACEHOLDER, substring = true))
+        composer.performClick()
+        composer.assertIsFocused()
+        // The field's own chords are still the keyboard app's.
+        chord(KeyEvent.KEYCODE_A)
+        assertTrue(KeyEvent.KEYCODE_A in imeHeard)
+
+        assertTrue(showsWhileClockHeld(UP_TO_DATE) { chord(KeyEvent.KEYCODE_R) })
+        assertTrue(showsWhileClockHeld(UP_TO_DATE) { chord(KeyEvent.KEYCODE_R, shift = true) })
+        assertFalse(KeyEvent.KEYCODE_R in imeHeard)
+    }
+
+    @Test
+    fun `typing in the composer, with that keyboard app, the shell's other chords are the shell's too, and Esc still reaches it`() {
+        showShell(wide = true)
+        searchAndOpen("House environment", HOUSE)
+        imeAnswers = answersCtrlChords
+        val composer = compose.onNode(hasSetTextAction() and hasText(CHAT_PLACEHOLDER, substring = true))
+        composer.performClick()
+        composer.assertIsFocused()
+
+        chord(KeyEvent.KEYCODE_B, shift = true)
+        compose.waitUntil(10_000) { displayed(hasTestTag("conversation-panel")) }
+        chord(KeyEvent.KEYCODE_B, shift = true)
+        compose.waitUntil(10_000) { !displayed(hasTestTag("conversation-panel")) }
+        chord(KeyEvent.KEYCODE_B)
+        compose.waitUntil(10_000) { !displayed(hasContentDescription("Search chats")) }
+        chord(KeyEvent.KEYCODE_K)
+        compose.waitUntil(10_000) { exists(hasTestTag(PaletteTags.CARD)) }
+        paletteField.assertIsFocused()
+        press(KeyEvent.KEYCODE_ESCAPE)
+        compose.waitUntil(5_000) { !exists(hasTestTag(PaletteTags.CARD)) }
+        assertTrue(listOf(KeyEvent.KEYCODE_B, KeyEvent.KEYCODE_K).none { it in imeHeard })
+    }
+
+    @Test
+    fun `typing in the composer, with that keyboard app, Ctrl+Tab, Ctrl+1 to 0, Ctrl+N and Ctrl+F are the shell's, letting go of Ctrl too`() {
+        showShell(wide = true)
+        searchAndOpen("Cli exploration", CLI)
+        searchAndOpen("House environment", HOUSE)
+        imeAnswers = answersCtrlChords
+        val composer = compose.onNode(hasSetTextAction() and hasText(CHAT_PLACEHOLDER, substring = true))
+        composer.performClick()
+        composer.assertIsFocused()
+        val composerFocused = { exists(isFocused() and hasSetTextAction() and hasText(CHAT_PLACEHOLDER, substring = true)) }
+
+        // The switcher steps both ways, and letting go of Ctrl, which the keyboard app keeps as well, opens the pick.
+        ctrlDown()
+        press(KeyEvent.KEYCODE_TAB, ctrl = true)
+        press(KeyEvent.KEYCODE_TAB, ctrl = true)
+        press(KeyEvent.KEYCODE_TAB, ctrl = true, shift = true)
+        compose.onNode(resultRow(1, CLI)).assertIsSelected()
+        ctrlUp()
+        compose.waitUntil(20_000) { chatOpen(CLI) }
+        compose.waitUntil(10_000) { composerFocused() }
+
+        chord(KeyEvent.KEYCODE_1)
+        compose.waitUntil(20_000) { chatOpen(PROJECT) }
+        compose.waitUntil(10_000) { composerFocused() }
+        chord(KeyEvent.KEYCODE_0)
+        compose.waitUntil(20_000) { exists(CHAT_HEADER) && !chatOpen(PROJECT) }
+        compose.waitUntil(10_000) { composerFocused() }
+
+        chord(KeyEvent.KEYCODE_N)
+        compose.waitUntil(20_000) { exists(isFocused() and hasSetTextAction() and hasText(HOME_PLACEHOLDER, substring = true)) }
+
+        chord(KeyEvent.KEYCODE_F)
+        compose.waitUntil(10_000) { exists(hasTestTag(PaletteTags.CARD)) }
+        paletteField.assertIsFocused()
+
+        assertTrue(KeyEvent.KEYCODE_CTRL_LEFT in imeHeard)
+        val shells = listOf(KeyEvent.KEYCODE_TAB, KeyEvent.KEYCODE_1, KeyEvent.KEYCODE_0, KeyEvent.KEYCODE_N, KeyEvent.KEYCODE_F)
+        assertTrue(shells.none { it in imeHeard })
+    }
+
+    @Test
+    fun `beside the pane, Ctrl+B moves the rail within the frame the key lands, and the rail's own toggle still slides it`() {
+        showShell(wide = true)
+        compose.waitUntil(20_000) { displayed(SEARCH_CHATS) }
+        val rest = left(SEARCH_CHATS)
+        val railWidth = (CursorDimens.sidebarWidth + CursorDimens.hairline).value
+        clockHeld {
+            chord(KeyEvent.KEYCODE_B)
+            frame()
+            assertFalse(exists(SEARCH_CHATS))
+            chord(KeyEvent.KEYCODE_B)
+            frame()
+            assertEquals(rest, left(SEARCH_CHATS), 0.5f)
+
+            tap(hasContentDescription("Toggle sidebar"))
+            frame()
+            assertTrue(exists(SEARCH_CHATS))
+            compose.mainClock.advanceTimeBy(SidebarRailMillis / 2L)
+            assertTrue(left(SEARCH_CHATS) in (rest - railWidth + 1f)..(rest - 1f))
+            settle()
+            assertFalse(exists(SEARCH_CHATS))
+
+            tap(hasContentDescription("Open sidebar"))
+            frame()
+            assertTrue(left(SEARCH_CHATS) < rest - 1f)
+            settle()
+            assertEquals(rest, left(SEARCH_CHATS), 0.5f)
+        }
+    }
+
+    @Test
+    fun `on a phone, Ctrl+B opens and shuts the drawer within the frame the key lands, and the header's button still slides it`() {
+        showShell(wide = false)
+        clockHeld {
+            chord(KeyEvent.KEYCODE_B)
+            frame()
+            val open = left(SEARCH_CHATS)
+            assertTrue(displayed(SEARCH_CHATS))
+            settle()
+            assertEquals(open, left(SEARCH_CHATS), 0.5f)
+
+            chord(KeyEvent.KEYCODE_B)
+            frame()
+            assertFalse(displayed(SEARCH_CHATS))
+
+            tap(hasContentDescription("Open sidebar"))
+            frame()
+            assertTrue(left(SEARCH_CHATS) < open - 1f)
+            settle()
+            assertEquals(open, left(SEARCH_CHATS), 0.5f)
+        }
+    }
+
+    @Test
+    fun `Ctrl+Shift+B and Esc put the chat's panel in place within the frame the key lands, and its button still slides it`() {
+        showShell(wide = true)
+        searchAndOpen("House environment", HOUSE)
+        clockHeld {
+            chord(KeyEvent.KEYCODE_B, shift = true)
+            frame()
+            val open = left(PANEL)
+            settle()
+            assertEquals(open, left(PANEL), 0.5f)
+
+            press(KeyEvent.KEYCODE_ESCAPE)
+            frame()
+            assertFalse(exists(PANEL))
+
+            tap(hasContentDescription("Open panel"))
+            frame()
+            assertTrue(left(PANEL) > open + 1f)
+            settle()
+            assertEquals(open, left(PANEL), 0.5f)
+        }
+    }
+
+    @Test
+    fun `the palette and the shortcuts sheet come and go within the frame their key lands`() {
+        showShell(wide = true)
+        clockHeld {
+            chord(KeyEvent.KEYCODE_K)
+            frame()
+            assertTrue(exists(hasTestTag(PaletteTags.CARD)))
+            press(KeyEvent.KEYCODE_ESCAPE)
+            frame()
+            assertFalse(exists(hasTestTag(PaletteTags.CARD)))
+            chord(KeyEvent.KEYCODE_SLASH)
+            frame()
+            assertTrue(exists(hasTestTag(PaletteTags.SHORTCUTS)))
+            chord(KeyEvent.KEYCODE_SLASH)
+            frame()
+            assertFalse(exists(hasTestTag(PaletteTags.CARD)))
+        }
+    }
+
+    @Test
+    fun `a screen the keyboard opens is on screen alone within the frame the key lands, where a tapped row and back slide`() {
+        showShell(wide = true)
+        compose.waitUntil(20_000) { onScreen(PROJECT) }
+        clockHeld {
+            // Ctrl+1 from the New Chat pane: the pane is gone in the same frame, not sliding out under the chat.
+            chord(KeyEvent.KEYCODE_1)
+            firstFrameWith { exists(CHAT_HEADER) }
+            assertFalse(onScreen(HOME_PLACEHOLDER))
+            settle()
+            assertTrue(chatOpen(PROJECT))
+
+            // Ctrl+Tab, let go: the chat it picks replaces this one outright.
+            ctrlDown()
+            press(KeyEvent.KEYCODE_TAB, ctrl = true)
+            ctrlUp()
+            firstFrameWith { !chatOpen(PROJECT) }
+            assertEquals(1, compose.onAllNodes(CHAT_HEADER).fetchSemanticsNodes().size)
+            settle()
+
+            // Ctrl+N: the New Chat pane, alone.
+            chord(KeyEvent.KEYCODE_N)
+            firstFrameWith { onScreen(HOME_PLACEHOLDER) }
+            assertFalse(exists(CHAT_HEADER))
+            settle()
+
+            // Ctrl+comma pushes Settings the same way.
+            chord(KeyEvent.KEYCODE_COMMA)
+            firstFrameWith { onScreen("Appearance") }
+            assertFalse(onScreen(HOME_PLACEHOLDER))
+            settle()
+
+            // Back still slides: both screens are drawn while Settings goes.
+            compose.runOnUiThread { compose.activity.onBackPressedDispatcher.onBackPressed() }
+            compose.waitForIdle()
+            firstFrameWith { onScreen(HOME_PLACEHOLDER) }
+            assertTrue(onScreen("Appearance"))
+            settle()
+            assertFalse(onScreen("Appearance"))
+
+            // And a row tapped slides its chat in over the pane.
+            tap(hasText(CLI) and hasClickAction())
+            firstFrameWith { exists(CHAT_HEADER) }
+            assertTrue(onScreen(HOME_PLACEHOLDER))
+            settle()
+            assertFalse(onScreen(HOME_PLACEHOLDER))
+        }
+    }
+
+    @Test
+    fun `a chat switched to with Ctrl+Tab or Ctrl+1 opens with the caret in its composer, and one tapped in the sidebar does not`() {
+        showShell(wide = true)
+        searchAndOpen("Cli exploration", CLI)
+        searchAndOpen("House environment", HOUSE)
+        assertFalse(exists(isFocused() and hasSetTextAction()))
+
+        ctrlDown()
+        press(KeyEvent.KEYCODE_TAB, ctrl = true)
+        ctrlUp()
+        compose.waitUntil(20_000) { chatOpen(CLI) }
+        compose.waitUntil(10_000) { exists(isFocused() and hasSetTextAction() and hasText(CHAT_PLACEHOLDER, substring = true)) }
+
+        chord(KeyEvent.KEYCODE_1)
+        compose.waitUntil(20_000) { chatOpen(PROJECT) }
+        compose.waitUntil(10_000) { exists(isFocused() and hasSetTextAction() and hasText(CHAT_PLACEHOLDER, substring = true)) }
+
+        compose.onAllNodes(hasText(HOUSE) and hasClickAction()).onFirst().performClick()
+        compose.waitUntil(20_000) { chatOpen(HOUSE) }
+        compose.waitForIdle()
+        assertFalse(exists(isFocused() and hasSetTextAction()))
+    }
+
+    private fun left(matcher: SemanticsMatcher): Float = compose.onAllNodes(matcher).onFirst().getBoundsInRoot().left.value
+
+    /**
+     * Holds the test clock for [block], so what a key or a tap changes can be looked at a frame at a time ([frame]):
+     * a key's change has to be in place at the end of the frame it lands in, where a tap's is still on its way.
+     */
+    private fun clockHeld(block: () -> Unit) {
+        compose.mainClock.autoAdvance = false
+        try {
+            block()
+        } finally {
+            compose.mainClock.autoAdvance = true
+            compose.waitForIdle()
+        }
+    }
+
+    private fun frame() = compose.mainClock.advanceTimeByFrame()
+
+    /**
+     * Frame by frame, a few at most, to the first that draws a change: the test clock can take a frame or two to get a
+     * state change to the screen, and it is that first frame a key's change must already be complete in.
+     */
+    private fun firstFrameWith(drawn: () -> Boolean) {
+        repeat(4) {
+            frame()
+            if (drawn()) return
+        }
+        throw AssertionError("not drawn within 4 frames")
+    }
+
+    /** Past the longest slide there is, and the frame after it. */
+    private fun settle() {
+        compose.mainClock.advanceTimeBy(1_000)
+        frame()
+    }
+
+    /** The tap's own action, run without a pointer: an injected tap would move the held clock along with it. */
+    private fun tap(matcher: SemanticsMatcher) {
+        compose.onAllNodes(matcher).onFirst().performSemanticsAction(SemanticsActions.OnClick)
+        compose.waitForIdle()
+    }
+
     /**
      * Whether [text] comes up after [action], looked for frame by frame: left to run on, the test clock would carry a
      * snackbar through its whole showing inside one wait for idle. Ctrl+R's answer is the pull's, put away on the
@@ -352,5 +674,8 @@ class KeyboardShortcutsFlowTest {
         const val CLI = "Cli exploration"
         const val PROJECT = "Cesium billing launch"
         const val UP_TO_DATE = "Up to date"
+        val SEARCH_CHATS = hasContentDescription("Search chats")
+        val PANEL = hasTestTag("conversation-panel")
+        val CHAT_HEADER = hasTestTag("chat-header")
     }
 }

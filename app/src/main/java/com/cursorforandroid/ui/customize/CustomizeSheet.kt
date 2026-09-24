@@ -73,8 +73,8 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 
 /**
- * The "Chats" filter menu (the filter icon in the sidebar header) as a bottom sheet: the quick actions first (Read
- * all, in a card of its own — see [ActionsSection]), then grouping, sort, the Repo / Status / Git / Source /
+ * The "Chats" filter menu (the filter icon in the sidebar's account row) as a bottom sheet: the quick actions first
+ * (Read all, in a card of its own — see [ActionsSection]), then grouping, sort, the Repo / Status / Git / Source /
  * Environment filters, and the metadata toggles. Flat 40dp rows, 13sp, desktop-size toggles.
  */
 @OptIn(ExperimentalMaterial3Api::class)

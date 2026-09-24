@@ -1,8 +1,11 @@
 package com.cursorforandroid.ui.navigation
 
 import androidx.compose.runtime.Stable
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.Saver
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.saveable.listSaver
 import java.util.UUID
 
@@ -74,7 +77,8 @@ class NavEntry internal constructor(val id: String, val screen: Screen) {
  *   notification, a widget, a launcher shortcut, a link from outside. It sits on the root, so back from it is the New
  *   Chat pane, and from there the system's back leaves the app as it would from any home.
  *
- * Mutations apply immediately; [CursorNavHost] observes the top and animates whatever changed.
+ * Mutations apply immediately; [CursorNavHost] observes the top and animates whatever changed, except a change made
+ * [instantly], which it shows in place.
  */
 @Stable
 class NavStack private constructor(initial: List<NavEntry>) {
@@ -86,6 +90,21 @@ class NavStack private constructor(initial: List<NavEntry>) {
     val entries: List<NavEntry> get() = list
     val top: NavEntry get() = list.last()
     val canPop: Boolean get() = list.size > 1
+
+    /** The id of the top [instantly] left, until [CursorNavHost] has put it on screen; not saved. */
+    internal var instantTop by mutableStateOf<String?>(null)
+
+    /**
+     * Makes [change], and has whatever it leaves on top shown in the frame it lands, with no transition: the keyboard's
+     * navigation (a chat switched to, a new chat, Settings), which desktop Cursor answers at once. Back, and every
+     * other change, still slides.
+     */
+    fun <T> instantly(change: () -> T): T {
+        val before = top.id
+        val result = change()
+        if (top.id != before) instantTop = top.id
+        return result
+    }
 
     /** The entry a back gesture would reveal, or null at the root. */
     val underTop: NavEntry? get() = list.getOrNull(list.size - 2)

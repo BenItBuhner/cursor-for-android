@@ -67,6 +67,7 @@ import com.cursorforandroid.domain.SubagentChild
 import com.cursorforandroid.domain.SystemNotification
 import com.cursorforandroid.domain.SystemNotifications
 import com.cursorforandroid.domain.TimelineItem
+import com.cursorforandroid.domain.newMessageCount
 import com.cursorforandroid.util.AppClock
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
@@ -104,9 +105,9 @@ import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 
 /**
- * What a pull to catch up found (see [ConversationRepository.catchUp]): the messages it brought that the screen did
- * not have — prompts, replies, notices — and whether anything else moved (a turn's steps, its status). [error]: the
- * read failed, in the server's words; what the screen had stands.
+ * What a catch-up found (see [ConversationRepository.catchUp]): the messages it brought that the screen did not have —
+ * prompts, replies, notices — and whether anything else moved (a turn's steps, its status). [error]: the read failed,
+ * in the server's words; what the screen had stands.
  */
 data class CatchUp(val newMessages: Int = 0, val changed: Boolean = false, val error: String? = null)
 
@@ -817,7 +818,7 @@ class ConversationRepository(
         var rereadAfterLoad = false
         /** That reread is owed the documented transcript beside the run list (see [revalidateNow]'s `fresh`). */
         var freshAfterLoad = false
-        /** The reader's pull to catch up being answered; a second pull while it is shares its answer (see [catchUp]). */
+        /** The reader's catch-up being answered; a second one asked for while it is shares its answer (see [catchUp]). */
         var catchUpJob: Deferred<CatchUp>? = null
         /** Cuts the window back a while after the last screen left (see [trimWindow]); cancelled by a screen coming back. */
         var trimJob: Job? = null
@@ -2230,15 +2231,15 @@ class ConversationRepository(
     }
 
     /**
-     * The reader pulled up past the newest message: what is new since the last thing this device has, and only that
-     * — not a reload. Beta: the account's record from the turns in hand (its state, and only the turns whose blob is
-     * new or moved; see [readRecordGrowth]) with the run list's first page beside it; then the live stream is asked
-     * again from its offset, its backoff forgotten. Stable: the run list's first page, and the documented transcript
-     * only when that page names a run this device has not seen or a status that moved — the transcript being the one
-     * place a turn's prompt is. Either way a run under way is followed (the tail of its log, see [startStreaming]) and
-     * the chat's running state is the account's word again. A load already under way is waited for, its turns' traces
-     * with it, not doubled — what it brings is not the pull's to count — and a second pull while one is being answered
-     * shares its answer.
+     * The reader asked for what the server has that this chat does not (a pull up past the newest message, Ctrl+R):
+     * what is new since the last thing this device has, and only that — not a reload. Beta: the account's record from
+     * the turns in hand (its state, and only the turns whose blob is new or moved; see [readRecordGrowth]) with the run
+     * list's first page beside it; then the live stream is asked again from its offset, its backoff forgotten. Stable:
+     * the run list's first page, and the documented transcript only when that page names a run this device has not
+     * seen or a status that moved — the transcript being the one place a turn's prompt is. Either way a run under way
+     * is followed (the tail of its log, see [startStreaming]) and the chat's running state is the account's word again.
+     * A load already under way is waited for, its turns' traces with it, not doubled — what it brings is not the
+     * catch-up's to count — and a second catch-up asked for while one is being answered shares its answer.
      */
     suspend fun catchUp(agentId: String): CatchUp {
         val e = entry(agentId)
@@ -2251,8 +2252,12 @@ class ConversationRepository(
         synchronized(e) { e.loadJob }?.join()
         // The steps that load asked for are its too: until its turns' traces are in, the chat is still being read.
         synchronized(e) { e.traceJob }?.join()
+        // A chat still being launched has nothing on the server to read; the launch settles it when the server answers.
+        if (synchronized(e) { e.launching }) return CatchUp()
         val before = e.state.value
-        val seen = before.items.messageKeys()
+        // As with [reload]: after the server's own failure the record is asked at once, so the chat is read as a load
+        // reads it; a refusal keeps its pause.
+        val retryRecord = synchronized(e) { (before.recordFallback?.serverError == true).also { if (it) e.recordRefusedUntil = 0L } }
         val failure = runCatching {
             val backend = session.current
             val recordOn = record != null && !backend.isDemo && capabilities().accountTranscript && synchronized(e) { e.recordWindow != null }
@@ -2274,7 +2279,7 @@ class ConversationRepository(
             } else {
                 net(agentId, "runs")
                 val page = backend.api.listRuns(agentId, limit = FIRST_RUN_PAGE)
-                val held = synchronized(e) { if (e.fetched && e.messages.isNotEmpty() && e.recordWindow == null) e.runs.associateBy { it.id } to e.local.isEmpty() else null }
+                val held = synchronized(e) { if (!retryRecord && e.fetched && e.messages.isNotEmpty() && e.recordWindow == null) e.runs.associateBy { it.id } to e.local.isEmpty() else null }
                 if (held != null && runsUnchanged(page, held.first, noLocal = held.second)) refreshNewestRuns(e, handed = page)
                 else loadAsJob(e) { load(e, agentId, force = true, handed = page) }
             }
@@ -2301,9 +2306,8 @@ class ConversationRepository(
             }
         }
         watchWhileOpen(e)
-        val fresh = after.items.messageKeys()
         return CatchUp(
-            newMessages = fresh.count { it !in seen },
+            newMessages = newMessageCount(before.items, after.items),
             changed = after.items != before.items || after.runStatus != before.runStatus || after.activeRunId != before.activeRunId,
             error = error,
         )
@@ -2313,19 +2317,6 @@ class ConversationRepository(
     private suspend fun loadAsJob(e: Entry, block: suspend () -> Unit) {
         val job = synchronized(e) { e.scope.launch { block() }.also { e.loadJob = it } }
         job.join()
-    }
-
-    /**
-     * The messages of [this] by what they say, not their ids: a prompt sent from here handing over to the server's
-     * copy, or a reply moving from the live stream to the run's trace, is the same message under a new id.
-     */
-    private fun List<TimelineItem>.messageKeys(): Set<String> = mapNotNullTo(HashSet()) {
-        when (it) {
-            is UserMessage -> "u:" + normalizePrompt(it.text)
-            is AssistantMessage -> if (it.isStreaming) null else "a:" + it.markdown.trim()
-            is SystemNotification -> "n:" + it.id
-            else -> null
-        }
     }
 
     /**

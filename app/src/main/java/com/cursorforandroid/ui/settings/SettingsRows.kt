@@ -81,7 +81,7 @@ internal fun SettingsRow(
 
 /**
  * A setting that is a switch: the whole row flips it, the switch at the end says which way it is, and the flip is felt
- * as the switch's own toggle haptic. Without [felt] the row plays nothing itself, for a switch that decides its own.
+ * as the switch's own toggle haptic.
  */
 @Composable
 internal fun SettingsToggleRow(
@@ -92,7 +92,6 @@ internal fun SettingsToggleRow(
     description: String? = null,
     enabled: Boolean = true,
     toggleModifier: Modifier = Modifier,
-    felt: Boolean = true,
 ) {
     val haptics = rememberHaptics()
     SettingsRow(
@@ -100,11 +99,11 @@ internal fun SettingsToggleRow(
         description = description,
         modifier = modifier,
         onClick = {
-            if (felt) haptics.toggle(!checked)
+            haptics.toggle(!checked)
             onCheckedChange(!checked)
         },
         enabled = enabled,
-        trailing = { CursorToggle(checked = checked, onCheckedChange = onCheckedChange, modifier = toggleModifier, enabled = enabled, felt = felt) },
+        trailing = { CursorToggle(checked = checked, onCheckedChange = onCheckedChange, modifier = toggleModifier, enabled = enabled) },
     )
 }
 
