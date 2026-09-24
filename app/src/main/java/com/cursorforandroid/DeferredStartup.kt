@@ -14,8 +14,8 @@ import kotlinx.coroutines.launch
 
 /**
  * The wiring between the app and the rest of the system that the first frame does not need: the notification
- * channels and the live-run service's coordinator, the periodic update check, the widget picker's preview, and the
- * sweep of what earlier processes left in the cache directory.
+ * channels and the live-run service's coordinator, the periodic update check, the composer catalogs' background
+ * refresh, the widget picker's preview, and the sweep of what earlier processes left in the cache directory.
  *
  * All of it is held back until the activity has been on screen for [SETTLE_MS]. Each one talks to a system
  * service — `NotificationManager`, `JobScheduler`, the launcher's widget host — and the periodic update check is
@@ -41,6 +41,7 @@ object DeferredStartup {
             LiveNotifications.ensureChannels(activity)
             LiveNotificationCoordinator.bind(activity, graph)
             UpdateCoordinator.bind(activity, graph)
+            CatalogFreshness.bind(activity, graph)
             // The widget picker's live preview is composed here, once the screen is up; the widgets themselves are
             // followed from the application (see CursorApp), whichever way the process was started.
             WidgetSync.publishPreviews(activity)
