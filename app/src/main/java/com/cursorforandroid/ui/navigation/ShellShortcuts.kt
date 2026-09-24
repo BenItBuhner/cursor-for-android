@@ -87,6 +87,8 @@ internal class ShellShortcuts {
 /**
  * The palette over the shell, fed from the list and the transcripts this device keeps. The transcripts are read
  * while search is up (see [TranscriptSearchIndex.refresh]): a chat read before and not moved on since is not read again.
+ * They are read again as the list changes under an open search: the list can still be loading when Ctrl+F comes, and a
+ * chat can move on while search is up.
  */
 @Composable
 internal fun PaletteHost(
@@ -101,8 +103,9 @@ internal fun PaletteHost(
     val byId = remember(list.allAgents) { list.allAgents.associateBy { it.id } }
     val transcripts by index.passages.collectAsStateWithLifecycle()
     val reading by index.isReading.collectAsStateWithLifecycle()
-    LaunchedEffect(searching) {
-        if (searching) index.refresh(entries.map { it.agentId to it.updatedAtMillis })
+    val chats = remember(entries) { entries.map { it.agentId to it.updatedAtMillis } }
+    LaunchedEffect(searching, chats) {
+        if (searching) index.refresh(chats)
     }
     val visited = shortcuts.visited.toList()
     val recent = remember(entries, visited) { SwitcherOrder.of(visited, entries.filter { !(byId[it.agentId]?.isArchived ?: false) }, null, ShellShortcuts.RECENT_ROWS) }
