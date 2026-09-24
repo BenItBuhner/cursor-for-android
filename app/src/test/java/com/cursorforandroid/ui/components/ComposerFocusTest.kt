@@ -71,20 +71,20 @@ class ComposerFocusTest {
         }
 
         compose.onNodeWithContentDescription("Add to prompt").performClick()
-        compose.onNodeWithText("Multitask").performClick()
+        compose.onNodeWithText("Skills").performClick()
+        compose.onNodeWithText("/review").performClick()
         compose.waitForIdle()
 
-        // The command is the owner's: the field shows it as the Multitask pill and stays empty, caret at the start.
-        compose.runOnIdle { assertThat(hoisted).isEqualTo("/multitask ") }
-        assertThat(draft()).isEmpty()
-        assertThat(selection()).isEqualTo(TextRange(0))
-        compose.onNodeWithContentDescription("Remove Multitask").assertExists()
+        // The skill goes in at the front of the prompt as text, and the caret follows it.
+        compose.runOnIdle { assertThat(hoisted).isEqualTo("/review ") }
+        assertThat(draft()).isEqualTo("/review ")
+        assertThat(selection()).isEqualTo(TextRange("/review ".length))
         field.assertIsFocused()
 
         // And carrying on writes the request, which goes out behind the command.
         field.performTextInput("ship it")
-        assertThat(draft()).isEqualTo("ship it")
-        compose.runOnIdle { assertThat(hoisted).isEqualTo("/multitask ship it") }
+        assertThat(draft()).isEqualTo("/review ship it")
+        compose.runOnIdle { assertThat(hoisted).isEqualTo("/review ship it") }
     }
 
     @Test
