@@ -325,7 +325,8 @@ object TranscriptDiagnostics {
         val rows = TranscriptRows.of(presented, decision.coordinatorMode, runActive = state.isStreaming || state.runStatus?.isActive == true)
         appendLine(
             "presented: items=${presented.size} folded=${state.items.size - presented.size} staleMessages=${state.items.count { it is ActivityGroup && CoordinatorTranscript.needsRefresh(listOf(it)) }}" +
-                " rows=${rows.size} stretches=${rows.count { it is TranscriptRow.Stretch && it.single == null }} messages=${rows.count { it is TranscriptRow.Message }}",
+                " rows=${rows.size} stretches=${rows.count { it is TranscriptRow.Stretch && it.single == null }} messages=${rows.count { it is TranscriptRow.Message }}" +
+                " subagents=${rows.sumOf { (it as? TranscriptRow.Stretch)?.subagents?.size ?: 0 }}",
         )
         appendLine()
         appendLine("items (kind · facts; tool calls: name · kind · status · payload · argKeys · linked · truncated):")

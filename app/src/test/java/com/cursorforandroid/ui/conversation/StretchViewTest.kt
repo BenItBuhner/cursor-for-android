@@ -13,6 +13,7 @@ import com.cursorforandroid.domain.ActivityGroup
 import com.cursorforandroid.domain.AssistantMessage
 import com.cursorforandroid.domain.RunFooter
 import com.cursorforandroid.domain.RunStatus
+import com.cursorforandroid.domain.SubagentChild
 import com.cursorforandroid.domain.ThinkingBlock
 import com.cursorforandroid.domain.TimelineItem
 import com.cursorforandroid.domain.ToolCall
@@ -25,6 +26,7 @@ import com.cursorforandroid.domain.WorkerStatus
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.ui.theme.ThemeMode
 import com.google.common.truth.Truth.assertThat
+import kotlinx.coroutines.flow.MutableStateFlow
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -33,8 +35,8 @@ import org.robolectric.annotation.GraphicsMode
 
 /**
  * Everything between two messages behind one line: closed, the summary alone; open, the sequence verbatim — each
- * thought, each tool call as the line it was, each of a coordinator's notes — and a stretch of one step drawn as
- * that step. The coordinator's updates and its worker's card stand outside, as rows of their own.
+ * thought, each tool call as the line it was, each subagent as its row, each of a coordinator's notes — and a
+ * stretch of one step drawn as that step. The coordinator's updates stand outside, as rows of their own.
  */
 @RunWith(AndroidJUnit4::class)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
@@ -78,35 +80,118 @@ class StretchViewTest {
     )
 
     @Test
-    fun `closed, a stretch is one line, open, it is the sequence verbatim, and the message and the subagents stand outside`() {
+    fun `closed, a stretch is one line, open, it is the sequence verbatim with its subagents' rows, and the message stands outside`() {
         val rows = TranscriptRows.of(items, coordinatorMode = true)
-        assertThat(rows.map { it::class.simpleName }).containsExactly("Item", "Stretch", "Subagent", "Message", "Subagent", "Stretch").inOrder()
+        // The subagents split nothing: one stretch before the update, one after it.
+        assertThat(rows.map { it::class.simpleName }).containsExactly("Item", "Stretch", "Message", "Stretch").inOrder()
         show(rows)
-        // The summary alone: nothing of the sequence is on screen.
+        // The summary alone: nothing of the sequence is on screen, the subagents' rows included.
         compose.onNodeWithText("1 edit").assertIsDisplayed()
-        compose.onNodeWithText("1 thought · 1 note").assertIsDisplayed()
+        compose.onNodeWithText("1 agent · 1 thought · 1 note").assertIsDisplayed()
         assertThat(compose.onAllNodesWithText("Checking the board before answering.").fetchSemanticsNodes()).isEmpty()
         assertThat(compose.onAllNodesWithText("The aggregation landed; check the webhook handler.").fetchSemanticsNodes()).isEmpty()
         assertThat(compose.onAllNodesWithText("Edited").fetchSemanticsNodes()).isEmpty()
-        // The update and each subagent row stand on their own, visible whatever the stretch does.
+        assertThat(compose.onAllNodes(hasTestTag("subagent-row")).fetchSemanticsNodes()).isEmpty()
+        assertThat(compose.onAllNodesWithText("Agent follow-up").fetchSemanticsNodes()).isEmpty()
+        assertThat(compose.onAllNodesWithText("Stripe webhook handler").fetchSemanticsNodes()).isEmpty()
+        // The update stands on its own, visible whatever the stretches do.
         compose.onNodeWithText("merged", substring = true).assertIsDisplayed()
-        compose.onNodeWithText("Agent follow-up").assertIsDisplayed()
-        compose.onNodeWithText("Stripe webhook handler").assertIsDisplayed()
-        assertThat(compose.onAllNodes(hasTestTag("subagent-row")).fetchSemanticsNodes()).hasSize(2)
         assertThat(compose.onAllNodesWithText("Coordinator").fetchSemanticsNodes()).isEmpty()
-        // The footer after them is a stretch of one entry: drawn as the footer.
-        compose.onNodeWithText("Worked").assertIsDisplayed()
-        compose.onNodeWithText("1m 48s").assertIsDisplayed()
+        // The worker it created and the footer after it: one line, the worker counted.
+        compose.onNodeWithText("Worked 1m 48s").assertIsDisplayed()
+        compose.onNodeWithText("1 agent").assertIsDisplayed()
 
-        // Open: the note, the thought and the edit's line, in order, each as it always was.
+        // Open: the note, the thought, the edit's line and the message to the worker, in order, each as it always was.
         compose.onNodeWithText("1 edit").performClick()
         compose.onNodeWithTag("stretch-steps", useUnmergedTree = true).assertIsDisplayed()
-        compose.onNodeWithText("Checking the board before answering.").assertIsDisplayed()
-        compose.onNodeWithText("The aggregation landed; check the webhook handler.").assertIsDisplayed()
-        compose.onNodeWithText("Edited").assertIsDisplayed()
+        val order = listOf("Checking the board before answering.", "The aggregation landed; check the webhook handler.", "Edited", "Agent follow-up")
+        val tops = order.map { text -> compose.onNodeWithText(text).assertIsDisplayed().fetchSemanticsNode().boundsInRoot.top }
+        assertThat(tops).isInStrictOrder()
         compose.onNodeWithText("notes.md").assertIsDisplayed()
+        assertThat(compose.onAllNodes(hasTestTag("subagent-row")).fetchSemanticsNodes()).hasSize(1)
+        assertThat(compose.onAllNodesWithText("Stripe webhook handler").fetchSemanticsNodes()).isEmpty()
         // The edits' line counts sit on the summary and on the edit's own line.
         assertThat(compose.onAllNodesWithText("+2").fetchSemanticsNodes()).hasSize(2)
+        // The second opens onto the worker it created, then the run's end.
+        compose.onNodeWithText("Worked 1m 48s").performClick()
+        compose.onNodeWithText("Stripe webhook handler").assertIsDisplayed()
+        assertThat(compose.onAllNodes(hasTestTag("subagent-row")).fetchSemanticsNodes()).hasSize(2)
+        // Closed again, the rows go with the rest.
+        compose.onNodeWithText("1 edit").performClick()
+        compose.waitForIdle()
+        assertThat(compose.onAllNodesWithText("Agent follow-up").fetchSemanticsNodes()).isEmpty()
+    }
+
+    /** An agent's turn that ended with its cloud task still at work, the task between two reads. */
+    private val taskTurn: List<TimelineItem> = listOf(
+        UserMessage("u1", "Hand the chart work to a cloud agent."),
+        ActivityGroup(
+            "g1",
+            listOf(
+                ToolCall("r1", "read_file", ToolKind.Read, "completed", "Chart.tsx"),
+                ToolCall(
+                    "t1", "task", ToolKind.Task, ToolCall.STATUS_COMPLETED, "CursorBench chart hover highlight",
+                    payload = ToolPayload.Subagent("CursorBench chart hover highlight", agentId = "bc-cb1", isBackground = true),
+                ),
+                ToolCall("r2", "read_file", ToolKind.Read, "completed", "Legend.tsx"),
+            ),
+        ),
+        RunFooter("f1", "run-1", RunStatus.FINISHED, 38_000, emptyList()),
+    )
+
+    /** [items] with the task's child standing as [child] says. */
+    private fun showTurn(coordinatorMode: Boolean, child: MutableStateFlow<SubagentChild?>, items: List<TimelineItem> = taskTurn) {
+        val controls = TranscriptControls(coordinatorMode = coordinatorMode, subagentActivity = { child })
+        compose.setContent {
+            CursorTheme(mode = ThemeMode.Dark) {
+                CompositionLocalProvider(LocalTranscriptControls provides controls) {
+                    androidx.compose.foundation.layout.Column { TranscriptRows.of(items, coordinatorMode = coordinatorMode).forEach { TranscriptRowView(it) } }
+                }
+            }
+        }
+    }
+
+    @Test
+    fun `a task call its ended run left running, with nothing known of the child, does not hold the stretch open`() {
+        val stale = taskTurn.map { item ->
+            if (item !is ActivityGroup) item else item.copy(steps = item.steps.map { step -> if (step is ToolCall && step.callId == "t1") step.copy(status = ToolCall.STATUS_RUNNING) else step })
+        }
+        showTurn(coordinatorMode = true, MutableStateFlow(null), stale)
+        compose.onNodeWithText("Worked 38s").assertIsDisplayed()
+        assertThat(compose.onAllNodesWithText("1 Working").fetchSemanticsNodes()).isEmpty()
+        assertThat(compose.onAllNodesWithText(com.cursorforandroid.domain.SubagentRows.PLANNING).fetchSemanticsNodes()).isEmpty()
+    }
+
+    @Test
+    fun `a closed stretch whose subagent still works counts it as working, and settles once it is done`() {
+        val child = MutableStateFlow<SubagentChild?>(SubagentChild(SubagentChild.Status.Running, step = "Implement bidirectional hover linking"))
+        showTurn(coordinatorMode = false, child)
+        // The run has ended; the stretch has not: the desktop's "1 working", the counts after it, the row hidden.
+        compose.onNodeWithText("1 working").assertIsDisplayed()
+        compose.onNodeWithText("2 files · 1 agent").assertIsDisplayed()
+        assertThat(compose.onAllNodesWithText("Implement bidirectional hover linking").fetchSemanticsNodes()).isEmpty()
+        // Open, the row reads where the task stands, between the reads it came between.
+        compose.onNodeWithText("1 working").performClick()
+        val tops = listOf("Chart.tsx", "CursorBench chart hover highlight", "Legend.tsx").map { compose.onNodeWithText(it).assertIsDisplayed().fetchSemanticsNode().boundsInRoot.top }
+        assertThat(tops).isInStrictOrder()
+        compose.onNodeWithText("Implement bidirectional hover linking").assertIsDisplayed()
+        // The task finishes: the stretch settles on the run's footer.
+        child.value = SubagentChild(SubagentChild.Status.Succeeded)
+        compose.waitUntil(5_000) { compose.onAllNodesWithText("Worked 38s").fetchSemanticsNodes().isNotEmpty() }
+        assertThat(compose.onAllNodesWithText("1 working").fetchSemanticsNodes()).isEmpty()
+    }
+
+    @Test
+    fun `in a Project's chat a closed stretch says where its newest working subagent stands`() {
+        val child = MutableStateFlow<SubagentChild?>(SubagentChild(SubagentChild.Status.Running, action = "Editing Chart.tsx"))
+        showTurn(coordinatorMode = true, child)
+        compose.onNodeWithText("1 Working").assertIsDisplayed()
+        compose.onNodeWithText("Editing Chart.tsx").assertIsDisplayed()
+        assertThat(compose.onAllNodes(hasTestTag("subagent-row")).fetchSemanticsNodes()).isEmpty()
+        // Waiting on the reader still counts; the line says so.
+        child.value = SubagentChild(SubagentChild.Status.Running, waiting = true)
+        compose.waitUntil(5_000) { compose.onAllNodesWithText(com.cursorforandroid.domain.SubagentRows.WAITING).fetchSemanticsNodes().isNotEmpty() }
+        compose.onNodeWithText("1 Working").assertIsDisplayed()
     }
 
     @Test

@@ -55,7 +55,8 @@ class EventGroupsTest {
         assertThat(stretch.eventCount).isEqualTo(18)
         val group = groups(rows).single()
         assertThat(group.count).isEqualTo(18)
-        assertThat(group.summary.text).isEqualTo("18 events · 11 GitHub · 7 subagents · 1h 59m span")
+        // Seven subagent reports from six subagents: one reported twice, counted once as an agent.
+        assertThat(group.summary.text).isEqualTo("18 events · 11 GitHub · 6 subagents · 1h 59m span")
         // Silent, and eighteen strong: closed.
         assertThat(group.startsOpen).isFalse()
         // The same completion twice in a row is one row counted twice; the rest stand once each, in order.
@@ -192,6 +193,28 @@ class EventGroupsTest {
         assertThat(split.eventCount).isEqualTo(2)
         assertThat(split.listed.map { it::class.simpleName }).containsExactly("Event")
         assertThat(split.summary.text).isEqualTo("Worked 5s · 2 events")
+    }
+
+    @Test
+    fun `a subagent reporting again is its one row with the newest report and every remark, and one agent in the line`() {
+        val first = notice("k1", "Subagent completed", "Record Kalshi LIP side coverage", SystemNotification.Kind.Subagent, at = 1_000L, body = "Coverage recorded.")
+            .copy(agentId = "bc-k2", narration = "Noted.")
+        val again = first.copy(id = "k2", timestampMillis = 180_000L, body = "Coverage re-recorded after the roll.", raw = "<system_notification>again</system_notification>", narration = "Three markets flipped.")
+        val other = notice("q1", "Subagent completed", "Track big-pool lone quoters daily", SystemNotification.Kind.Subagent, at = 200_000L).copy(agentId = "bc-q1")
+        val group = groups(TranscriptRows.of(listOf(first, again, other), coordinatorMode = true)).single()
+        assertThat(group.summary.text).isEqualTo("3 events · 2 subagents · 3m span")
+        val merged = group.events.first()
+        assertThat(merged.count).isEqualTo(2)
+        // Its place is the first's — the key, the time the span starts at — and what it says is the newest.
+        assertThat(merged.key).isEqualTo("k1")
+        assertThat(merged.notification.timestampMillis).isEqualTo(1_000L)
+        assertThat(merged.notification.body).isEqualTo("Coverage re-recorded after the roll.")
+        assertThat(merged.notification.raw).isEqualTo(again.raw)
+        assertThat(merged.notification.narration).isEqualTo("Noted.\n\nThree markets flipped.")
+        // A subagent reporting once more, not in a row, is a second row but still one agent.
+        val apart = groups(TranscriptRows.of(listOf(first, other, again), coordinatorMode = true)).single()
+        assertThat(apart.events).hasSize(3)
+        assertThat(apart.summary.kinds).isEqualTo("2 subagents")
     }
 
     @Test

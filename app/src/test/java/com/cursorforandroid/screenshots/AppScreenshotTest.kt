@@ -13,7 +13,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.hasAnyAncestor
 import androidx.compose.ui.test.hasAnyDescendant
+import androidx.compose.ui.test.hasClickAction
 import androidx.compose.ui.test.hasContentDescription
+import androidx.compose.ui.test.hasParent
 import androidx.compose.ui.test.hasScrollToNodeAction
 import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.hasTestTag
@@ -515,8 +517,13 @@ class AppScreenshotTest {
         } finally {
             watching.cancel()
         }
-        // The earlier turn's worker rows sit above the current turn; bring the first of them into the frame.
-        compose.onAllNodes(hasScrollToNodeAction() and hasAnyDescendant(hasText("PR #215 (usage aggregation) is", substring = true))).onFirst().performScrollToNode(hasTestTag("subagent-row"))
+        // The earlier turn's worker rows sit in its stretch (the one that read files), above the current turn: open
+        // it and bring the first of them into the frame.
+        val list = compose.onAllNodes(hasScrollToNodeAction() and hasAnyDescendant(hasText("PR #215 (usage aggregation) is", substring = true))).onFirst()
+        val earlier = hasClickAction() and hasParent(hasTestTag("stretch")) and hasText("files", substring = true)
+        list.performScrollToNode(earlier)
+        compose.onNode(earlier).performClick()
+        list.performScrollToNode(hasTestTag("subagent-row"))
         compose.waitForIdle()
         capture("39_project_coordinator_transcript")
         // The Project itself is the chat's panel: its Project section, open by default, right under the Overview —

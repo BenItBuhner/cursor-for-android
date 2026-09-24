@@ -6,10 +6,12 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
@@ -17,6 +19,8 @@ import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import com.cursorforandroid.data.api.CursorEndpoints
+import com.cursorforandroid.domain.StretchSummary
+import com.cursorforandroid.domain.SubagentRows
 import com.cursorforandroid.domain.ToolPayload
 import com.cursorforandroid.domain.TranscriptPerf
 import com.cursorforandroid.domain.TranscriptRow
@@ -26,8 +30,8 @@ import com.cursorforandroid.ui.theme.CursorTheme
 
 /**
  * One row of the transcript (see [TranscriptRow]): the messages as themselves, a coordinator's update as a reply, a
- * subagent's row, a step's pictures, the question a run waits on, an injected turn as its line and a run of silent
- * ones behind one ([EventGroupView]) — and everything else between two messages as one [StretchView].
+ * step's pictures, the question a run waits on, an injected turn as its line and a run of silent ones behind one
+ * ([EventGroupView]) — and everything else between two messages, subagents' rows among it, as one [StretchView].
  */
 @Composable
 fun TranscriptRowView(row: TranscriptRow, modifier: Modifier = Modifier) {
@@ -36,7 +40,6 @@ fun TranscriptRowView(row: TranscriptRow, modifier: Modifier = Modifier) {
     when (row) {
         is TranscriptRow.Item -> TimelineItemView(row.item, modifier)
         is TranscriptRow.Message -> CoordinatorMessageView(row.call, row.call.payload as ToolPayload.CoordinatorMessage, modifier)
-        is TranscriptRow.Subagent -> SubagentRowView(row.call, row.subagent, modifier)
         is TranscriptRow.Media -> GroupMediaStrip(row.group, modifier)
         is TranscriptRow.Question -> {
             val agentId = LocalMarkdownMedia.current?.agentId
@@ -52,10 +55,11 @@ fun TranscriptRowView(row: TranscriptRow, modifier: Modifier = Modifier) {
 
 /**
  * Everything the agent did between two messages behind one line — "Worked 4m · 148 events · 3 edits", shimmering
- * "Working" while the run still writes — that opens onto the sequence verbatim and in order: each thought as dimmed
- * prose, each tool call as the line it always was (opening onto its command, diff or output as before), each of a
- * coordinator's working notes as dimmed markdown, each injected turn as its line and a run of them behind one
- * ([EventGroupView]). A stretch of one step is that step, drawn as it would be alone; a note never is.
+ * "Working" while the run still writes, "1 working" while a subagent of it still works — that opens onto the
+ * sequence verbatim and in order: each thought as dimmed prose, each tool call as the line it always was (opening
+ * onto its command, diff or output as before), each subagent as its row, each of a coordinator's working notes as
+ * dimmed markdown, each injected turn as its line and a run of them behind one ([EventGroupView]). A stretch of one
+ * step is that step, drawn as it would be alone; a note never is.
  */
 @Composable
 internal fun StretchView(stretch: TranscriptRow.Stretch, modifier: Modifier = Modifier) {
@@ -64,24 +68,34 @@ internal fun StretchView(stretch: TranscriptRow.Stretch, modifier: Modifier = Mo
         return
     }
     var expanded by rememberSaveable(stretch.key) { mutableStateOf(false) }
-    val summary = stretch.summary
-    Column(modifier.fillMaxWidth().testTag("stretch")) {
-        DisclosureRow(
-            action = summary.action,
-            details = summary.details,
-            expanded = expanded,
-            onToggle = { expanded = !expanded },
-            busy = summary.busy,
-            lineStats = summary.lineStats,
-        )
-        AnimatedVisibility(visible = expanded) {
-            Column(Modifier.fillMaxWidth().padding(top = 6.dp, bottom = 4.dp).testTag("stretch-steps"), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                // Each entry owns its slot, so an opened output stays with the call it was opened on as the list grows.
-                stretch.listed.forEach { entry -> key(entry.key) { EntryView(entry) } }
+    val coordinator = LocalTranscriptControls.current.coordinatorMode
+    val subagents = subagentStates(stretch)
+    val working = subagents.mapNotNull { (entry, state) -> state.look.takeIf { SubagentRows.isWorking(entry.subagent!!, it, state.child, stretch.live) } }
+    val summary = if (working.isEmpty()) stretch.summary else remember(stretch, working, coordinator) { StretchSummary.of(stretch, working, coordinator) }
+    CompositionLocalProvider(LocalSubagentStates provides subagents.associate { (entry, state) -> entry.call.callId to state }) {
+        Column(modifier.fillMaxWidth().testTag("stretch")) {
+            DisclosureRow(
+                action = summary.action,
+                details = summary.details,
+                expanded = expanded,
+                onToggle = { expanded = !expanded },
+                busy = summary.busy,
+                lineStats = summary.lineStats,
+            )
+            AnimatedVisibility(visible = expanded) {
+                Column(Modifier.fillMaxWidth().padding(top = 6.dp, bottom = 4.dp).testTag("stretch-steps"), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    // Each entry owns its slot, so an opened output stays with the call it was opened on as the list grows.
+                    stretch.listed.forEach { entry -> key(entry.key) { EntryView(entry) } }
+                }
             }
         }
     }
 }
+
+/** Where each subagent of [stretch] stands, in order, followed once here whether or not the stretch is open. */
+@Composable
+private fun subagentStates(stretch: TranscriptRow.Stretch): List<Pair<TranscriptRow.Entry.Call, SubagentState>> =
+    stretch.subagents.map { entry -> key(entry.key) { entry to rememberSubagentState(entry.call, entry.subagent!!) } }
 
 /** One entry of an open stretch, as Cursor lists a step. */
 @Composable
@@ -98,10 +112,14 @@ private fun EntryView(entry: TranscriptRow.Entry) {
     }
 }
 
-/** A tool call's line: a coordinator's row (a message to a worker, a status check) when it is one, else the plain line. */
+/** A tool call's line: a subagent's row, a coordinator's row (a status check) when it is one, else the plain line. */
 @Composable
 private fun StepLine(entry: TranscriptRow.Entry.Call) {
-    if (!CoordinatorStep(entry.call)) ToolCallLine(entry.call)
+    val subagent = entry.subagent
+    when {
+        subagent != null -> SubagentRowView(entry.call, subagent)
+        !CoordinatorStep(entry.call) -> ToolCallLine(entry.call)
+    }
 }
 
 /** A coordinator's working note inside an open stretch: its prose, dimmed, with a reply's press-and-hold. */

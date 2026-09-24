@@ -13,6 +13,7 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTouchInput
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.cursorforandroid.domain.AssistantMessage
+import com.cursorforandroid.domain.SubagentRows
 import com.cursorforandroid.domain.SystemNotifications
 import com.cursorforandroid.domain.TimelineItem
 import com.cursorforandroid.domain.UserMessage
@@ -94,9 +95,9 @@ class MessageActionsTest {
     @Test
     fun `an injected notification reads as one row, opens onto its report on a tap, and copies as injected`() {
         show(SystemNotifications.parse("n1", injected)!!.items.single())
-        // One line: the subagent's title, then what became of it.
+        // One row, the subagent's: its title, and how it finished under it.
         compose.onNodeWithText("Contacts and clipping").assertIsDisplayed()
-        compose.onNodeWithText(" \u00B7 completed").assertIsDisplayed()
+        compose.onNodeWithText(SubagentRows.COMPLETED).assertIsDisplayed()
         // The markup is nowhere on screen, and neither is the report until asked for.
         assertThat(compose.onAllNodesWithText("<system_notification>", substring = true).fetchSemanticsNodes()).isEmpty()
         assertThat(compose.onAllNodesWithText("The clipping is gone", substring = true).fetchSemanticsNodes()).isEmpty()
