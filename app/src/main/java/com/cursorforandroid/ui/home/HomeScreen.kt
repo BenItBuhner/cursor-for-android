@@ -34,6 +34,7 @@ import androidx.compose.material3.ripple
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -120,6 +121,9 @@ fun HomeScreen(
     onNewProject: (() -> Unit)? = null,
     /** The Projects page's way to Extended mode, while it is off. */
     onOpenSettings: (() -> Unit)? = null,
+    /** Ctrl+N asked for the composer: it is scrolled to and focused, and [onComposerFocused] says the ask was taken. */
+    focusComposer: Boolean = false,
+    onComposerFocused: () -> Unit = {},
 ) {
     // The draft open here is kept with the screen's saved state: a process ended under the composer opens it again,
     // while an app started afresh begins a new one, the others waiting in the sidebar.
@@ -169,6 +173,14 @@ fun HomeScreen(
         // the canvas colour, since a list resized on every frame of the keyboard's animation cannot afford an
         // offscreen layer per frame.
         val recentState = rememberLazyListState()
+        var composerFocusRequests by remember { mutableIntStateOf(0) }
+        LaunchedEffect(focusComposer) {
+            if (focusComposer) {
+                recentState.scrollToItem(0)
+                composerFocusRequests++
+                onComposerFocused()
+            }
+        }
         LazyColumn(
             Modifier.fillMaxSize().imePadding().scrollEdgeFade(recentState, surface = colors.canvas),
             state = recentState,
@@ -204,6 +216,7 @@ fun HomeScreen(
                         // A new chat is launched over the documented API, which carries agent and plan alone.
                         modePill = if (state.planMode) ModePills.Pill.Plan else null,
                         onModePill = { pill -> viewModel.setPlanMode(pill == ModePills.Pill.Plan) },
+                        focusRequests = composerFocusRequests,
                     )
                     state.error?.let { ComposerErrorLine(it, state.errorAsked, onDismiss = viewModel::dismissError) }
                 }

@@ -40,6 +40,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -169,6 +170,8 @@ fun ComposerBox(
      * (the quick composer over the launcher). Off, arriving on a screen never throws the keyboard up.
      */
     focusOnOpen: Boolean = false,
+    /** Bumped to put the caret in the field now (Ctrl+N); a composer composed after a bump does not answer it again. */
+    focusRequests: Int = 0,
 ) {
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
@@ -190,6 +193,13 @@ fun ComposerBox(
         if (wantsFocus && !menuOpen) {
             wantsFocus = false
             focus.requestFocus()
+        }
+    }
+    var focusRequestsSeen by remember { mutableIntStateOf(focusRequests) }
+    LaunchedEffect(focusRequests) {
+        if (focusRequests != focusRequestsSeen) {
+            focusRequestsSeen = focusRequests
+            wantsFocus = true
         }
     }
     var cancelOffered by remember { mutableStateOf(false) }
