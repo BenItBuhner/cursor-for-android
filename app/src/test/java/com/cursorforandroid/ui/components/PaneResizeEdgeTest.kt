@@ -307,6 +307,60 @@ class PaneResizeEdgeTest {
         assertThat(kept.map { it.value }).containsExactly(340f, 300f, 260f).inOrder()
     }
 
+    @Test
+    @Config(shadows = [ShadowHapticLog::class])
+    fun `a finger is felt once where the pane stops at either end of its range, however far on it pushes, and again only once back off it`() {
+        show()
+        HapticLog.clear()
+        val stop = Haptic.SlotTick.constant()
+        fun moves(vararg dx: Float) {
+            compose.onRoot().performTouchInput { dx.forEach { moveBy(Offset(it, 0f), delayMillis = 16) } }
+            compose.waitForIdle()
+        }
+        compose.onRoot().performTouchInput { down(Offset(edgeX, 300f)) }
+        // To 500: the pane follows, and nothing is felt.
+        moves(200f)
+        assertWidth(500.dp)
+        assertThat(HapticLog.played).isEmpty()
+        // Asked for 650, then 800: it stops at 600, felt the once.
+        moves(150f, 150f)
+        assertWidth(MaxWidth)
+        assertThat(HapticLog.played).containsExactly(stop)
+        // Back to 596 and out again, as a finger held at the stop wobbles: not felt again.
+        moves(-204f, 10f)
+        assertThat(HapticLog.played).containsExactly(stop)
+        // Back to 576, well off it, and out again: felt again.
+        moves(-30f, 40f)
+        assertThat(HapticLog.played).containsExactly(stop, stop)
+        // Down past the narrowest: that end, felt the once.
+        moves(-700f, -50f)
+        compose.onRoot().performTouchInput { up() }
+        compose.waitForIdle()
+        assertWidth(MinWidth)
+        assertThat(HapticLog.played).containsExactly(stop, stop, stop)
+    }
+
+    @OptIn(ExperimentalTestApi::class)
+    @Test
+    @Config(shadows = [ShadowHapticLog::class])
+    fun `a mouse's drag past the end of the range and TalkBack's step past it are not felt`() {
+        show()
+        HapticLog.clear()
+        compose.onRoot().performMouseInput {
+            moveTo(Offset(edgeX, 300f))
+            press()
+            moveBy(Offset(480f, 0f))
+            release()
+        }
+        compose.waitForIdle()
+        assertWidth(MaxWidth)
+        val widen = compose.onNodeWithContentDescription(RESIZE).fetchSemanticsNode().config[SemanticsActions.CustomActions].single { it.label == "Widen" }
+        compose.runOnIdle { widen.action() }
+        compose.waitForIdle()
+        assertWidth(MaxWidth)
+        assertThat(HapticLog.played).isEmpty()
+    }
+
     private companion object {
         const val RESIZE = "Resize pane"
         val RowHeight = 48.dp

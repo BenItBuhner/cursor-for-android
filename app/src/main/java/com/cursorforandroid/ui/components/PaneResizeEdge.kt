@@ -70,6 +70,10 @@ enum class PaneSide { Start, End }
  * A mouse over the strip shows the resize cursor and, pressed there, keeps it until the button comes up; its drag starts
  * at the first move across. The divider is lit only while a drag is under way, and TalkBack widens or narrows the pane
  * by a step through its actions.
+ *
+ * A finger's drag is felt once where the pane comes up against the end of its range and stops following ([Haptic.SlotTick]),
+ * however far on the finger pushes, and felt there again only once the pane has come back off that end by [StopRearm]. A
+ * mouse's drag and TalkBack's steps are not felt: the hand is not on the screen.
  */
 @Composable
 fun PaneResizeEdge(
@@ -93,6 +97,7 @@ fun PaneResizeEdge(
     var mouseHeld by remember { mutableStateOf(false) }
     val lit by animateFloatAsState(if (dragging) 1f else 0f, tween(if (dragging) LightMillis else DimMillis), label = "paneEdgeLit")
     val drag = remember { DragFromStart() }
+    val haptics = rememberHaptics()
     val reach = LocalConfiguration.current.screenWidthDp.dp
     Box(
         modifier
@@ -129,11 +134,15 @@ fun PaneResizeEdge(
             .dragAcross(
                 edges = edges,
                 onMouseHeld = { mouseHeld = it },
-                onStart = {
+                onStart = { mouse ->
                     dragging = true
-                    drag.start(width())
+                    drag.start(width(), felt = !mouse)
                 },
-                onDrag = { dx -> resize(drag.by(with(density) { (widening * dx).toDp() })) },
+                onDrag = { dx ->
+                    val asked = drag.by(with(density) { (widening * dx).toDp() })
+                    resize(asked)
+                    if (drag.stopped(asked, width())) haptics.perform(Haptic.SlotTick)
+                },
                 onStop = {
                     dragging = false
                     done()
@@ -146,20 +155,38 @@ fun PaneResizeEdge(
     )
 }
 
-/** The width a drag started from and how far it has gone since, so the edge tracks the finger rather than the clamp. */
+/**
+ * The width a drag started from and how far it has gone since, so the edge tracks the finger rather than the clamp; and
+ * where the clamp last stopped the pane, so that stop is felt once rather than with every move that pushes on past it.
+ */
 private class DragFromStart {
     var from = 0.dp
         private set
     private var travel = 0.dp
+    private var felt = false
 
-    fun start(width: Dp) {
+    /** The width the pane stopped at, until it has come back off it by [StopRearm]. */
+    private var stoppedAt: Dp? = null
+
+    fun start(width: Dp, felt: Boolean) {
         from = width
         travel = 0.dp
+        this.felt = felt
+        stoppedAt = null
     }
 
     fun by(delta: Dp): Dp {
         travel += delta
         return from + travel
+    }
+
+    /** Whether the pane, asked to be [asked] wide and held at [width], has just come up against the end of its range. */
+    fun stopped(asked: Dp, width: Dp): Boolean {
+        stoppedAt?.let { if (abs((width - it).value) < StopRearm.value) return false }
+        stoppedAt = null
+        if (abs((asked - width).value) < StopTolerance.value) return false
+        stoppedAt = width
+        return felt
     }
 }
 
@@ -169,12 +196,13 @@ private class DragFromStart {
  * initial pass, so a drag across is its own once past touch slop, consumed before something under the strip that
  * scrolls sideways — a code view running to the panel's edge — would take it. It consumes nothing before then, and
  * gives the gesture up at once if it crosses touch slop no further across than up or down. [onMouseHeld] hears a mouse
- * button go down on the strip (true) and that gesture end (false), whether or not it became a drag.
+ * button go down on the strip (true) and that gesture end (false), whether or not it became a drag; [onStart] hears
+ * whether a mouse is the one dragging.
  */
 private fun Modifier.dragAcross(
     edges: BackGestureEdges?,
     onMouseHeld: (Boolean) -> Unit,
-    onStart: () -> Unit,
+    onStart: (mouse: Boolean) -> Unit,
     onDrag: (Float) -> Unit,
     onStop: () -> Unit,
     onCancel: () -> Unit,
@@ -183,7 +211,7 @@ private fun Modifier.dragAcross(
 private data class DragAcrossElement(
     val edges: BackGestureEdges?,
     val onMouseHeld: (Boolean) -> Unit,
-    val onStart: () -> Unit,
+    val onStart: (mouse: Boolean) -> Unit,
     val onDrag: (Float) -> Unit,
     val onStop: () -> Unit,
     val onCancel: () -> Unit,
@@ -207,7 +235,7 @@ private data class DragAcrossElement(
 private class DragAcrossNode(
     var edges: BackGestureEdges?,
     var onMouseHeld: (Boolean) -> Unit,
-    var onStart: () -> Unit,
+    var onStart: (mouse: Boolean) -> Unit,
     var onDrag: (Float) -> Unit,
     var onStop: () -> Unit,
     var onCancel: () -> Unit,
@@ -222,7 +250,7 @@ private class DragAcrossNode(
                 if (mouse) onMouseHeld(true)
                 try {
                     val across = awaitDragAcross(down) ?: return@awaitEachGesture
-                    onStart()
+                    onStart(mouse)
                     onDrag(across)
                     if (followAcross(down.id) { onDrag(it) }) onStop() else onCancel()
                 } finally {
@@ -286,6 +314,12 @@ val PaneResizeEdgeWidth = 16.dp
 
 /** How much of touch slop a mouse has to clear: it holds still where a finger wobbles. */
 private const val MouseSlopRatio = 0.125f / 18f
+
+/** How far short of where it was asked to be a pane is held before it counts as stopped at the end of its range. */
+private val StopTolerance = 0.5.dp
+
+/** How far back off the end of its range a pane comes before reaching it again is felt again: more than a held finger wobbles. */
+private val StopRearm = 8.dp
 
 private val HighlightWidth = 2.dp
 private const val HighlightAlpha = 0.6f
