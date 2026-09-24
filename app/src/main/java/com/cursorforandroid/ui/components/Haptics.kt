@@ -163,7 +163,8 @@ internal class FeltClipboard(private val clipboard: ClipboardManager, private va
  * sheet is decides it, not how far the finger went: a short flick whose fling carries the sheet the rest of the way
  * lands like a slow drag all the way across, and a drag let go short of committing springs back without a sound
  * however far it went, as does one taken past half-way and back. A sheet moved without a finger (a button, a
- * shortcut, a back gesture, which is felt as it commits: [feltOnCommit]) plays nothing.
+ * shortcut, a back gesture, which is felt as it commits: [feltOnCommit]) plays nothing. The side panel pinned beside
+ * the chat has no swipe, so the one way a hand moves it, its button's slide, lands here as a release would.
  *
  * A sheet caught on its way and sent on the same way still lands once. Caught and sent back, it lands, felt, where it
  * started: the release had committed it, and the one that sends it back commits it again.

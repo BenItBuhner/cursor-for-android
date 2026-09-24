@@ -76,7 +76,6 @@ import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.unit.dp
 import com.cursorforandroid.ui.components.BackGestureEdges
-import com.cursorforandroid.ui.components.Haptic
 import com.cursorforandroid.ui.components.Haptics
 import com.cursorforandroid.ui.components.LocalScrollFadeSurface
 import com.cursorforandroid.ui.components.PaneResizeEdge
@@ -407,6 +406,7 @@ class SidePanelState(initialValue: SidePanelValue) {
     internal suspend fun slideTo(value: SidePanelValue, heading: () -> Unit = {}) {
         val target = value.fraction
         mutex.mutate {
+            val wasOpen = isOpen
             targetValue = value
             heading()
             val distance = abs(target - fraction)
@@ -414,19 +414,18 @@ class SidePanelState(initialValue: SidePanelValue) {
                 fraction = target
                 return@mutate
             }
+            // Pinned, the slide is the one way a hand moves the panel (it has no swipe and no back gesture), so it lands as a
+            // swipe's release does, felt once where it comes to rest. A sheet's is not: it can end a back gesture already
+            // felt on its commit.
+            val felt = isPinned
+            if (felt) landing.released(wasOpen = wasOpen, open = value == SidePanelValue.Open)
             val millis = (SlideMillis * distance).roundToInt().coerceIn(MinSlideMillis, SlideMillis)
             val jump = jumps
             runAnimation {
-                var landed = false
                 animate(fraction, target, animationSpec = tween(millis, easing = SlideEasing)) { v, _ ->
                     if (jumps != jump) return@animate
                     fraction = v
-                    // Pinned, the slide is the one way a hand moves the panel (it has no drag and no back gesture), so it is
-                    // felt once, as it lands. A sheet's is not: it can end a back gesture already felt on its commit.
-                    if (isPinned && !landed && abs(v - target) <= LandedWithin) {
-                        landed = true
-                        haptics?.perform(Haptic.GestureEnd)
-                    }
+                    if (felt) landing.at(v)?.let { haptics?.perform(it) }
                 }
             }
         }
@@ -679,8 +678,5 @@ private val ExpandGain = 120.dp
 private const val SlideMillis = 300
 private const val MinSlideMillis = 100
 private val SlideEasing: Easing = CubicBezierEasing(0.2f, 0f, 0f, 1f)
-
-/** How near its end a pinned panel's slide has landed: the ease's last stretch is too slight to see, and is not waited for. */
-private const val LandedWithin = 0.01f
 private val FlingThreshold = 400.dp
 private val FlingSpec = spring<Float>(dampingRatio = Spring.DampingRatioNoBouncy, stiffness = 1000f, visibilityThreshold = 0.0005f)
