@@ -789,6 +789,8 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
     /** Where the reader's pull to catch up stands (see [catchUp]). */
     val catchUpStatus: StateFlow<CatchUpStatus> = catchUpState.asStateFlow()
     private var catchUpJob: Job? = null
+    /** The pause already told for the pull under way (see [catchUpSettled]). */
+    private var toldWait: CatchUpStatus.Waiting? = null
 
     private fun catchingUp(): Boolean = catchUpState.value.let { it is CatchUpStatus.Checking || it is CatchUpStatus.Waiting }
 
@@ -799,12 +801,13 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
      * The reader pulled up past the newest message, or pressed Ctrl+R: only what is new since the last thing this
      * device has (see `ConversationRepository.catchUp`, which waits out a load still under way — a chat just opened —
      * and counts nothing it brought), and the account's queue read again beside it. A pause the server asked the
-     * account's calls to take (a `429`, see `ApiThrottle`) is waited out first, and said so. The answer shows for a
-     * moment; a failure, in the server's words, for longer.
+     * account's calls to take (a `429`, see `ApiThrottle`) is waited out first. The screen tells the pause and the
+     * answer as its indicator settles ([catchUpSettled]); an answer it never tells is put away after a while.
      */
     fun catchUp() {
         if (catchingUp()) return
         catchUpJob?.cancel()
+        toldWait = null
         catchUpJob = viewModelScope.launch {
             val pause = graph.accountPauseMillis()
             if (pause > 0) {
@@ -831,12 +834,24 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
         }
     }
 
-    /** The reader tapped the answer away. */
-    fun dismissCatchUp() {
-        val shown = catchUpState.value
-        if (shown !is CatchUpStatus.Done && shown !is CatchUpStatus.Failed) return
-        catchUpJob?.cancel()
-        catchUpState.value = CatchUpStatus.Idle
+    /**
+     * The pull's indicator went home over [shown], which is the reader's now, once, as a toast (see
+     * [CatchUpStatus.word]): the pause being waited out, or the answer — which is then put away.
+     */
+    fun catchUpSettled(shown: CatchUpStatus) {
+        if (catchUpState.value != shown) return
+        val word = shown.word() ?: return
+        when (shown) {
+            is CatchUpStatus.Waiting -> {
+                if (toldWait == shown) return
+                toldWait = shown
+            }
+            else -> {
+                catchUpJob?.cancel()
+                catchUpState.value = CatchUpStatus.Idle
+            }
+        }
+        toast.value = word
     }
 
     fun cancelRun() = viewModelScope.launch {
@@ -923,11 +938,11 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
         const val PENDING_RETRIES = 8
         /** How many of the newest rows have their markdown parsed with the rows, ahead of the screen: a phone's worth and the next page. */
         const val PRIMED_ROWS = 24
-        /** The least a pull shows "Catching up…" for. */
+        /** The least a pull's indicator spins for. */
         const val CHECKING_MIN_MS = 450L
-        /** How long a pull's answer shows ("Up to date", "N new"). */
+        /** How long a pull's answer ("Up to date", "N new") waits to be told by the screen before it is put away untold. */
         const val ANSWER_SHOWN_MS = 1_800L
-        /** How long a pull's failure shows, unless tapped away. */
+        /** How long a pull's failure waits to be told by the screen before it is put away untold. */
         const val FAILURE_SHOWN_MS = 6_000L
     }
 

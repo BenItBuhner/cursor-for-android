@@ -35,7 +35,6 @@ import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -45,10 +44,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.scale
-import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalUriHandler
@@ -262,13 +258,11 @@ fun ConversationScreen(
     val listState = rememberLazyListState(prefetchStrategy = remember { TranscriptPrefetchStrategy() })
     val transcriptScroll = rememberTranscriptScroll(listState, agentId)
     val scope = rememberCoroutineScope()
-    // The pull past the newest message that catches the chat up (see CatchUpOverscroll): it draws the indicator's tab
-    // out from under the composer with the finger and keeps it out over the answer, the list lifted clear of it; read
-    // where it is drawn, so the pull recomposes nothing but the indicator.
+    // The pull past the newest message that catches the chat up (see CatchUpOverscroll), drawn as the sidebar's pull
+    // to refresh is, from the transcript's bottom edge (see CatchUpIndicator). Read only where it is drawn, and its
+    // status only by the indicator: a frame of the pull recomposes nothing, an answer the indicator alone.
     val density = LocalDensity.current
-    val catchUpPull = remember(agentId, density) { with(density) { CatchUpPull(CatchUpPullThreshold.toPx(), CatchUpPullReveal.toPx()) } }
-    val catchUpStatus by viewModel.catchUpStatus.collectAsStateWithLifecycle()
-    val catchUpReveal = rememberCatchUpReveal(catchUpPull, catchUpStatus)
+    val catchUpPull = remember(agentId, density) { with(density) { CatchUpPull(CatchUpPullThreshold.toPx()) } }
     var menuOpen by rememberSaveable { mutableStateOf(false) }
     var modelSheet by rememberSaveable { mutableStateOf(false) }
     var renameOpen by rememberSaveable { mutableStateOf(false) }
@@ -482,10 +476,7 @@ fun ConversationScreen(
             },
         )
 
-        // Clipped: the list lifted by a pull to catch up goes under the header, not over it.
-        var areaHeight by remember { mutableIntStateOf(0) }
-        var listHeight by remember { mutableIntStateOf(0) }
-        Box(Modifier.weight(1f).fillMaxWidth().clipToBounds().onSizeChanged { areaHeight = it.height }) {
+        Box(Modifier.weight(1f).fillMaxWidth()) {
             val paneWidth = Modifier.widthIn(max = CursorDimens.composerMaxWidth).fillMaxWidth()
             // The column the rows are laid out in, measured whether or not there are any rows yet.
             Box(Modifier.align(Alignment.TopCenter).padding(horizontal = TranscriptGutter).then(paneWidth).then(headerClearance.transcriptColumn))
@@ -557,8 +548,6 @@ fun ConversationScreen(
                     modifier = Modifier
                         .fillMaxWidth()
                         .align(Alignment.TopCenter)
-                        .onSizeChanged { listHeight = it.height }
-                        .graphicsLayer { translationY = -catchUpListLift(catchUpReveal.value, areaHeight - listHeight) }
                         .scrollEdgeFade(listState, reverseLayout = listReversed, surface = colors.canvas)
                         .readerScrolling(transcriptScroll, pull = catchUpPull, canCatchUp = viewModel::canCatchUp, onCatchUp = viewModel::catchUp)
                         .testTag("transcript"),
@@ -579,13 +568,13 @@ fun ConversationScreen(
                 }
                 SideEffect { transcriptScroll.orient(following, order) }
             }
-            // The composer's width, at the area's clipped bottom edge: the top of the composer's stack.
+            // Out of the area's bottom edge, the top of the composer's stack; a word up there gives way as it rises.
             CatchUpIndicator(
                 catchUpPull,
-                catchUpStatus,
-                catchUpReveal,
-                onDismiss = viewModel::dismissCatchUp,
-                modifier = Modifier.align(Alignment.BottomCenter).padding(horizontal = CursorDimens.composerGutter).widthIn(max = CursorDimens.composerMaxWidth).fillMaxWidth(),
+                viewModel.catchUpStatus,
+                onSettled = viewModel::catchUpSettled,
+                modifier = Modifier.align(Alignment.BottomCenter),
+                onRise = { snackbar.currentSnackbarData?.dismiss() },
             )
 
             androidx.compose.animation.AnimatedVisibility(

@@ -13,9 +13,10 @@ import org.junit.Test
 /**
  * The pull to catch up read off the platform's overscroll ([CatchUpOverscroll]): the reader's drag past the newest
  * message stretches it and arms it at the threshold, and a release armed pulls once; a drag back relaxes it, a fling
- * reaching the edge never pulls, a chat that cannot be caught up stretches without pulling, and every
- * delta still reaches the platform's own stretch. What it reveals goes with the finger, the answer keeps the whole tab
- * out, and the transcript is lifted only as far as it must be to clear it.
+ * reaching the edge never pulls, a chat that cannot be caught up stretches without pulling, and every delta still
+ * reaches the platform's own stretch. As the sidebar's pull to refresh, it is a `PullToRefreshState`: its fraction is
+ * the finger's up to the threshold and Material's tension past it, left where the finger let go, and the finger's
+ * alone to move while it holds.
  */
 @OptIn(ExperimentalFoundationApi::class)
 class CatchUpPullTest {
@@ -37,7 +38,7 @@ class CatchUpPullTest {
     }
 
     private val platform = Platform()
-    private val pull = CatchUpPull(thresholdPx = 100f, maxRevealPx = 50f)
+    private val pull = CatchUpPull(thresholdPx = 100f)
     private var enabled = true
     private var pulls = 0
     private val effect = CatchUpOverscroll(platform, pull, enabled = { enabled }, onPulled = { pulls++ })
@@ -54,17 +55,16 @@ class CatchUpPullTest {
         drag(-40f)
         assertThat(pull.holding).isTrue()
         assertThat(pull.armed).isFalse()
-        assertThat(pull.progress).isWithin(0.001f).of(0.4f)
-        assertThat(pull.revealPx).isGreaterThan(0f)
+        assertThat(pull.distanceFraction).isWithin(0.001f).of(0.4f)
         drag(-70f)
         assertThat(pull.armed).isTrue()
-        assertThat(pull.revealPx).isLessThan(50f)
+        assertThat(pull.distanceFraction).isWithin(0.001f).of(catchUpTension(1.1f))
         assertThat(effect.isInProgress).isTrue()
         release()
         assertThat(pulls).isEqualTo(1)
         assertThat(pull.holding).isFalse()
         assertThat(pull.distance).isEqualTo(0f)
-        assertThat(pull.revealPx).isEqualTo(0f)
+        assertThat(pull.awaiting).isTrue()
         // The platform had every delta, and its release: the stretch and its spring back are Android's own.
         assertThat(platform.scrolls).containsExactly(Offset(0f, -40f), Offset(0f, -70f)).inOrder()
         assertThat(platform.flings).isEqualTo(1)
@@ -79,6 +79,7 @@ class CatchUpPullTest {
         assertThat(pull.distance).isEqualTo(60f)
         release()
         assertThat(pulls).isEqualTo(0)
+        assertThat(pull.awaiting).isFalse()
     }
 
     @Test
@@ -93,13 +94,29 @@ class CatchUpPullTest {
     }
 
     @Test
-    fun `the reveal goes with the finger at first, then slows short of its cap`() {
-        drag(-5f)
-        assertThat(pull.revealPx).isWithin(0.3f).of(5f)
-        drag(-45f)
-        assertThat(pull.revealPx).isLessThan(pull.distance)
-        drag(-400f)
-        assertThat(pull.revealPx).isWithin(0.1f).of(50f)
+    fun `the fraction is the finger's to the threshold, then slows as the sidebar's does, never past twice it`() {
+        assertThat(catchUpTension(-0.2f)).isEqualTo(0f)
+        assertThat(catchUpTension(0.5f)).isEqualTo(0.5f)
+        assertThat(catchUpTension(1f)).isEqualTo(1f)
+        assertThat(catchUpTension(2f)).isEqualTo(1.75f)
+        assertThat(catchUpTension(3f)).isEqualTo(2f)
+        assertThat(catchUpTension(9f)).isEqualTo(2f)
+        drag(-50f)
+        assertThat(pull.distanceFraction).isEqualTo(0.5f)
+        drag(-250f)
+        assertThat(pull.distanceFraction).isEqualTo(2f)
+    }
+
+    @Test
+    fun `let go, the indicator stands where the finger left it, and only the finger moves it while it holds`() {
+        assertThat(pull.isAnimating).isTrue()
+        drag(-60f)
+        assertThat(pull.isAnimating).isFalse()
+        release()
+        assertThat(pull.distanceFraction).isWithin(0.001f).of(0.6f)
+        assertThat(pull.isAnimating).isTrue()
+        drag(-20f)
+        assertThat(pull.distanceFraction).isWithin(0.001f).of(0.2f)
     }
 
     @Test
@@ -110,25 +127,6 @@ class CatchUpPullTest {
         drag(-120f)
         release()
         assertThat(pull.pulls).isEqualTo(1)
-    }
-
-    @Test
-    fun `the answer keeps the whole tab out, and nothing is out without one`() {
-        pull.tabPx = 34f
-        drag(-20f)
-        assertThat(pull.liftPx(CatchUpStatus.Idle)).isEqualTo(pull.revealPx)
-        release()
-        assertThat(pull.liftPx(CatchUpStatus.Checking)).isEqualTo(34f)
-        assertThat(pull.liftPx(CatchUpStatus.Done(newMessages = 1, changed = true))).isEqualTo(34f)
-        assertThat(pull.liftPx(CatchUpStatus.Idle)).isEqualTo(0f)
-    }
-
-    @Test
-    fun `a transcript that fills the screen is lifted by the whole reveal, one short enough to fit only by what its room does not clear`() {
-        assertThat(catchUpListLift(revealPx = 40f, roomPx = 0)).isEqualTo(40f)
-        assertThat(catchUpListLift(revealPx = 40f, roomPx = 15)).isEqualTo(25f)
-        assertThat(catchUpListLift(revealPx = 40f, roomPx = 300)).isEqualTo(0f)
-        assertThat(catchUpListLift(revealPx = 0f, roomPx = -5)).isEqualTo(0f)
     }
 
     @Test

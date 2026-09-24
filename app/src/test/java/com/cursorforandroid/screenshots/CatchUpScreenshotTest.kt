@@ -10,16 +10,18 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.material3.LocalRippleConfiguration
+import androidx.compose.material3.Snackbar
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clipToBounds
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
-import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.unit.dp
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -28,14 +30,12 @@ import com.cursorforandroid.domain.TimelineItem
 import com.cursorforandroid.domain.UserMessage
 import com.cursorforandroid.ui.components.ComposerBox
 import com.cursorforandroid.ui.components.composerDockPadding
-import com.cursorforandroid.ui.conversation.CATCH_UP_TEST_TAG
 import com.cursorforandroid.ui.conversation.CatchUpIndicator
 import com.cursorforandroid.ui.conversation.CatchUpPull
-import com.cursorforandroid.ui.conversation.CatchUpPullReveal
 import com.cursorforandroid.ui.conversation.CatchUpPullThreshold
 import com.cursorforandroid.ui.conversation.CatchUpStatus
 import com.cursorforandroid.ui.conversation.TimelineItemView
-import com.cursorforandroid.ui.conversation.rememberCatchUpReveal
+import com.cursorforandroid.ui.conversation.word
 import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.ui.theme.ThemeMode
@@ -43,6 +43,8 @@ import com.cursorforandroid.util.AppClock
 import com.github.takahirom.roborazzi.ExperimentalRoborazziApi
 import com.github.takahirom.roborazzi.RoborazziOptions
 import com.github.takahirom.roborazzi.captureScreenRoboImage
+import com.google.common.truth.Truth.assertThat
+import kotlinx.coroutines.flow.MutableStateFlow
 import org.junit.After
 import org.junit.Before
 import org.junit.Rule
@@ -53,12 +55,11 @@ import org.robolectric.annotation.GraphicsMode
 import java.io.File
 
 /**
- * The pull to catch up at the bottom of a transcript, over the follow-up composer, one frame per state of its tab:
- * partway out from under the composer's top edge with the finger ("Pull to catch up"), all the way out past the
- * threshold ("Release to catch up"), then let go and kept out for the answer — "Catching up…", the server's pause
- * being waited out, "1 new" with the turn started elsewhere on screen, "Up to date", and a failure in the words the
- * app has for it. The transcript is lifted clear of the tab and the tab sits at the composer's width, as the screen
- * does both (see ConversationScreen).
+ * The pull to catch up at the bottom of a transcript, over the follow-up composer: the sidebar's pull-to-refresh
+ * indicator turned to rise out of the transcript's bottom edge. Partway up with the finger, its arrow filling; past
+ * the threshold, the arrow whole; let go and spinning at the threshold while the chat is caught up. Then home, and
+ * the word in a toast as the screen gives it (see ConversationScreen): the server's pause being waited out, "1 new"
+ * with the turn started elsewhere on screen, "Up to date", and a failure in the words the app has for it.
  */
 @RunWith(AndroidJUnit4::class)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
@@ -105,17 +106,25 @@ class CatchUpScreenshotTest {
     @Test
     fun catchUpIndicatorStates() {
         var items by mutableStateOf(shown)
-        var status by mutableStateOf<CatchUpStatus>(CatchUpStatus.Idle)
-        val pull = with(compose.density) { CatchUpPull(CatchUpPullThreshold.toPx(), CatchUpPullReveal.toPx()) }
+        val status = MutableStateFlow<CatchUpStatus>(CatchUpStatus.Idle)
+        var toast by mutableStateOf<String?>(null)
+        val pull = with(compose.density) { CatchUpPull(CatchUpPullThreshold.toPx()) }
         compose.mainClock.autoAdvance = false
         compose.setContent {
             CursorTheme(mode = ThemeMode.Dark) {
                 CompositionLocalProvider(LocalRippleConfiguration provides null) {
-                    val reveal = rememberCatchUpReveal(pull, status)
-                    Column(Modifier.fillMaxSize().background(CursorTheme.colors.canvas)) {
-                        Box(Modifier.weight(1f).fillMaxWidth().clipToBounds()) {
+                    val colors = CursorTheme.colors
+                    val snackbar = remember { SnackbarHostState() }
+                    LaunchedEffect(toast) {
+                        toast?.let {
+                            snackbar.showSnackbar(it)
+                            toast = null
+                        }
+                    }
+                    Column(Modifier.fillMaxSize().background(colors.canvas)) {
+                        Box(Modifier.weight(1f).fillMaxWidth()) {
                             Column(
-                                Modifier.fillMaxSize().graphicsLayer { translationY = -reveal.value }.padding(start = 16.dp, end = 16.dp, bottom = 12.dp),
+                                Modifier.fillMaxSize().padding(start = 16.dp, end = 16.dp, bottom = 12.dp),
                                 verticalArrangement = Arrangement.spacedBy(10.dp, Alignment.Bottom),
                                 horizontalAlignment = Alignment.CenterHorizontally,
                             ) {
@@ -124,10 +133,13 @@ class CatchUpScreenshotTest {
                             CatchUpIndicator(
                                 pull,
                                 status,
-                                reveal,
-                                onDismiss = {},
-                                modifier = Modifier.align(Alignment.BottomCenter).padding(horizontal = CursorDimens.composerGutter).widthIn(max = CursorDimens.composerMaxWidth).fillMaxWidth(),
+                                onSettled = { toast = it.word() },
+                                modifier = Modifier.align(Alignment.BottomCenter),
+                                onRise = { snackbar.currentSnackbarData?.dismiss() },
                             )
+                            SnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter)) { data ->
+                                Snackbar(snackbarData = data, containerColor = colors.elevated, contentColor = colors.textPrimary, shape = CursorTheme.shapes.lg)
+                            }
                         }
                         Column(Modifier.fillMaxWidth().composerDockPadding(), horizontalAlignment = Alignment.CenterHorizontally) {
                             ComposerBox(
@@ -146,43 +158,42 @@ class CatchUpScreenshotTest {
         }
         compose.waitForIdle()
 
-        pull.stretch(pull.thresholdPx * 0.3f)
+        pull.stretch(pull.thresholdPx * 0.5f)
         frame()
-        compose.onNodeWithText("Pull to catch up").assertExists()
         capture("440_catch_up_pulling")
 
-        pull.stretch(pull.thresholdPx * 0.9f)
+        pull.stretch(pull.thresholdPx * 0.8f)
         frame()
-        compose.onNodeWithText("Release to catch up").assertExists()
+        assertThat(pull.armed).isTrue()
         capture("441_catch_up_armed")
 
         pull.release()
-        status = CatchUpStatus.Checking
+        status.value = CatchUpStatus.Checking
         frame()
-        compose.onNodeWithText("Catching up…").assertExists()
         capture("442_catch_up_checking")
 
-        status = CatchUpStatus.Waiting(now + 7_000L)
+        status.value = CatchUpStatus.Waiting(now + 7_000L)
         frame()
-        compose.onNodeWithText("Cursor asked for a pause · catching up in 7 s").assertExists()
         capture("443_catch_up_waiting")
+        compose.onNodeWithText("Cursor asked for a pause · catching up in 7 s").assertExists()
 
-        items = shown + elsewhere
-        status = CatchUpStatus.Done(newMessages = 1, changed = true)
+        status.value = CatchUpStatus.Checking
         frame()
-        compose.onNodeWithText("1 new").assertExists()
+        items = shown + elsewhere
+        status.value = CatchUpStatus.Done(newMessages = 1, changed = true)
+        frame()
         capture("444_catch_up_new")
+        compose.onNodeWithText("1 new").assertExists()
 
         items = shown
-        status = CatchUpStatus.Done(newMessages = 0, changed = false)
+        status.value = CatchUpStatus.Done(newMessages = 0, changed = false)
         frame()
-        compose.onNodeWithText("Up to date").assertExists()
         capture("445_catch_up_up_to_date")
+        compose.onNodeWithText("Up to date").assertExists()
 
-        status = CatchUpStatus.Failed("Cursor couldn't be reached. Check your connection.")
+        status.value = CatchUpStatus.Failed("Cursor couldn't be reached. Check your connection.")
         frame()
-        compose.onNodeWithTag(CATCH_UP_TEST_TAG).assertExists()
-        compose.onNodeWithText("Cursor couldn't be reached. Check your connection.").assertExists()
         capture("446_catch_up_failed")
+        compose.onNodeWithText("Cursor couldn't be reached. Check your connection.").assertExists()
     }
 }

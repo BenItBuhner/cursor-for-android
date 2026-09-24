@@ -43,7 +43,7 @@ class CatchUpGestureTest {
     private fun transcript(rows: Int) {
         compose.setContent {
             val density = LocalDensity.current
-            pull = androidx.compose.runtime.remember { with(density) { CatchUpPull(CatchUpPullThreshold.toPx(), CatchUpPullReveal.toPx()) } }
+            pull = androidx.compose.runtime.remember { with(density) { CatchUpPull(CatchUpPullThreshold.toPx()) } }
             val list = rememberLazyListState()
             val scroll = rememberTranscriptScroll(list, key = "chat")
             Box(Modifier.fillMaxSize()) {

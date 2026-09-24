@@ -72,6 +72,21 @@ class ChatRefreshWordTest {
     }
 
     @Test
+    fun `the answer is told once the indicator is home, once, and put away, and an answer no longer up is not told`() {
+        val vm = opened(HOUSE_ID)
+        vm.catchUp()
+        val answer = vm.answer()
+        vm.catchUpSettled(CatchUpStatus.Failed("stale"))
+        assertThat(vm.toastMessage.value).isNull()
+        vm.catchUpSettled(answer)
+        assertThat(vm.toastMessage.value).isEqualTo(RefreshWord.UP_TO_DATE)
+        assertThat(vm.catchUpStatus.value).isEqualTo(CatchUpStatus.Idle)
+        vm.clearToast()
+        vm.catchUpSettled(answer)
+        assertThat(vm.toastMessage.value).isNull()
+    }
+
+    @Test
     fun `Ctrl+Shift+R reads the transcript again from nothing, and says it is up to date all the same`() {
         val vm = opened(HOUSE_ID)
         vm.reloadTranscriptWithWord()
