@@ -34,7 +34,7 @@ fun ProjectDiagnosticsRow(graph: AppGraph, share: ((String) -> Unit)? = null) {
         // The report goes as a file as well as text: a heavy account's report runs to hundreds of lines, more than
         // some receivers take as text, and a `.txt` attaches to mail, Slack or Drive as it is.
         val file = runCatching {
-            File(context.cacheDir, "diagnostics").apply { mkdirs() }.resolve("cursor-project-diagnostics-${System.currentTimeMillis()}.txt").also { it.writeText(report) }
+            File(context.cacheDir, DIAGNOSTICS_DIR).apply { mkdirs() }.resolve("cursor-project-diagnostics-${System.currentTimeMillis()}.txt").also { it.writeText(report) }
         }.getOrNull()
         val uri = file?.let { runCatching { FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", it) }.getOrNull() }
         val intent = Intent(Intent.ACTION_SEND).apply {
@@ -106,6 +106,9 @@ object DeepRefreshCopy {
     const val STARTED = "Deep refresh started"
     const val TAG = "deep-refresh"
 }
+
+/** Under the cache: the reports handed to the share sheet (`file_paths.xml`); a day later the start sweeps them (see `AppGraph.sweepLeftovers`). */
+const val DIAGNOSTICS_DIR = "diagnostics"
 
 object ProjectDiagnosticsCopy {
     const val TITLE = "Export Project diagnostics"

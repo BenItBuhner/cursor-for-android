@@ -141,6 +141,23 @@ class AttachmentStoreTest {
     }
 
     @Test
+    fun `a staged prompt a dead process never committed or discarded is swept after a week, a recent one is not`() = runBlocking<Unit> {
+        val now = System.currentTimeMillis()
+        val orphan = store.stage(listOf(png(64, 64)))
+        val orphanDir = File(orphan.attachments.single().path).parentFile!!
+        orphanDir.setLastModified(now - 8 * 24 * 60 * 60 * 1000L)
+        val waiting = store.stage(listOf(png(32, 32)))
+        store.commit("bc-1", "run-1", store.stage(listOf(png(16, 16))))
+        File(root, "bc-1/run-1").setLastModified(now - 30 * 24 * 60 * 60 * 1000L)
+
+        store.sweepStaging(now)
+
+        assertThat(orphanDir.exists()).isFalse()
+        assertThat(store.staged(waiting.attachments).attachments).isEqualTo(waiting.attachments)
+        assertThat(store.forAgent("bc-1").keys).containsExactly("run-1")
+    }
+
+    @Test
     fun `images already within bounds are kept byte for byte`() = runBlocking {
         val png = png(400, 800)
         val jpeg = jpeg(300, 200)

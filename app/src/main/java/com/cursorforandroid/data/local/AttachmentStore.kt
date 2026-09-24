@@ -109,6 +109,16 @@ class AttachmentStore(context: Context) {
         Unit
     }
 
+    /**
+     * At start: the staged sets last written more than [maxAgeMs] ago. A process that died between [stage] and
+     * [commit] or [discard] left one nothing will ever reach again. A message still waiting on the account's queue
+     * reads its set back by [staged], and a week is past any wait that still delivers.
+     */
+    suspend fun sweepStaging(nowMillis: Long = System.currentTimeMillis(), maxAgeMs: Long = STAGING_MAX_AGE_MS) = withContext(Dispatchers.IO) {
+        staging.listFiles { f -> f.isDirectory }?.forEach { if (it.lastModified() < nowMillis - maxAgeMs) it.deleteRecursively() }
+        Unit
+    }
+
     /** Stages and commits in one step, for prompts without an optimistic bubble (launching a new agent). */
     suspend fun save(agentId: String, runId: String, images: List<PromptImage>, files: List<PromptFile> = emptyList()): List<MessageAttachment> =
         commit(agentId, runId, stage(images, files))
@@ -241,6 +251,7 @@ class AttachmentStore(context: Context) {
         const val JPEG_QUALITY = 85
         /** Pixels held at once while looking for transparency: a quarter of a megabyte, whatever the image's shape. */
         const val PIXEL_BAND_PX = 64 * 1024
+        const val STAGING_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000L
 
         /**
          * IDs are `bc-…` / `run-…` today, but nothing an API returns should be trusted as a path segment: unsafe
