@@ -26,6 +26,7 @@ import com.cursorforandroid.domain.DeviceTarget
 import com.cursorforandroid.domain.EnvType
 import com.cursorforandroid.domain.KnownBranches
 import com.cursorforandroid.domain.KnownDevices
+import com.cursorforandroid.domain.ModelChoice
 import com.cursorforandroid.domain.ModelOption
 import com.cursorforandroid.domain.ModelParam
 import com.cursorforandroid.domain.ModelResolution
@@ -162,6 +163,8 @@ data class NewAgentUiState(
      * request without a `model` gets — and that is what the chip says.
      */
     val modelLabel: String get() = selectedModel?.displayName ?: AccountModel.AUTO_LABEL
+    /** The model and variant the chat would start on, for the `/` popover's check mark. */
+    val modelChoice: ModelChoice? get() = selectedModel?.let { ModelChoice(it, selectedVariant) }
     /** [accountMode] as it goes out: only while Extended mode's modes are on. */
     val sentAccountMode: AgentMode? get() = accountMode?.takeIf { extendedModes && it.needsAccountService }
     /** The mode pill the composer wears for the choices here; Multitask's is the prompt's own `/multitask`. */

@@ -70,7 +70,6 @@ import com.cursorforandroid.ui.components.CursorSheet
 import com.cursorforandroid.ui.components.Dot
 import com.cursorforandroid.ui.components.FlatIconButton
 import com.cursorforandroid.ui.components.HairlineDivider
-import com.cursorforandroid.ui.components.ModePills
 import com.cursorforandroid.ui.components.Pill
 import com.cursorforandroid.ui.components.PullRequestPill
 import com.cursorforandroid.ui.components.RefreshableSheetHeader
@@ -200,10 +199,14 @@ fun HomeScreen(
                         media = graph.media,
                         modelLabel = state.modelLabel,
                         onModel = { modelSheet = true },
-                        // Plan mode is a pill beside "+" rather than a suffix on the model chip, as on cursor.com/agents.
-                        // A new chat is launched over the documented API, which carries agent and plan alone.
-                        modePill = if (state.planMode) ModePills.Pill.Plan else null,
-                        onModePill = { pill -> viewModel.setPlanMode(pill == ModePills.Pill.Plan) },
+                        // The mode is a pill beside "+" rather than a suffix on the model chip, as on cursor.com/agents.
+                        // Plan goes over the documented API; Ask and Debug, in Extended mode, through the account's start.
+                        modePill = state.modePill,
+                        onModePill = viewModel::setModePill,
+                        extendedModes = state.extendedModes,
+                        models = state.models,
+                        currentModel = state.modelChoice,
+                        onPickModel = { viewModel.selectModel(it.model, it.variant) },
                     )
                     state.error?.let { ComposerErrorLine(it, state.errorAsked, onDismiss = viewModel::dismissError) }
                 }
