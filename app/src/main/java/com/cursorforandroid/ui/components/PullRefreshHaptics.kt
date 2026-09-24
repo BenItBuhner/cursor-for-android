@@ -16,9 +16,22 @@ class PullThreshold {
     var armed: Boolean = false
         private set
 
-    /** The finger took the pull to [fraction]: the threshold haptic if that crossed it either way. */
+    /** From a [reset] to the reading after it. */
+    private var wasReset = false
+
+    /**
+     * The finger took the pull to [fraction]: the threshold haptic if that crossed it either way. Read at exactly
+     * the threshold straight after a [reset], it is the indicator where Material sprang it and holds it for a
+     * refresh, between one animation and the next: armed, silently.
+     */
     fun pulled(fraction: Float): Haptic? {
         val now = fraction >= 1f
+        val resting = wasReset && fraction == 1f
+        wasReset = false
+        if (resting) {
+            armed = true
+            return null
+        }
         if (now == armed) return null
         armed = now
         return if (now) Haptic.ThresholdActivate else Haptic.ThresholdDeactivate
@@ -27,12 +40,15 @@ class PullThreshold {
     /** The indicator is moving by itself (refreshing, springing back, hiding): the next pull starts from nothing, silently. */
     fun reset() {
         armed = false
+        wasReset = true
     }
 }
 
 /**
  * Plays [state]'s threshold as the finger crosses it, both ways, the way the system's own pull-down lists do. Nothing
- * plays while the indicator animates or [isRefreshing] holds it, so the refresh itself and its end are silent.
+ * plays while the indicator animates or [isRefreshing] holds it, so the refresh itself and its end are silent — nor
+ * in the frames between, where the indicator rests at the threshold with neither: the refresh asked for and not yet
+ * under way, the refresh over and the indicator not yet hiding.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable

@@ -8,6 +8,7 @@ import com.cursorforandroid.data.demo.DemoData
 import com.cursorforandroid.data.local.CachedConversation
 import com.cursorforandroid.util.MainDispatcherRule
 import com.google.common.truth.Truth.assertThat
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -18,16 +19,18 @@ import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
 
 /**
- * Ctrl+R and Ctrl+Shift+R on a chat, against the demo backend: each reads the chat again and leaves its word on it.
- * The demo's first paint carries the conversation's own ids and the read again rebuilds the chat from its run's
- * trace, under new ones — the same reply, which is not new.
+ * Ctrl+R and Ctrl+Shift+R on a chat, against the demo backend. Ctrl+R is the pull's catch-up, answered where the pull
+ * is (see [CatchUpStatus]); Ctrl+Shift+R reads the whole chat again and leaves its word on it. The demo's first paint
+ * carries the conversation's own ids and the read again rebuilds the chat from its run's trace, under new ones — the
+ * same reply, which is not new.
  */
 @RunWith(AndroidJUnit4::class)
 @Config(sdk = [35])
 class ChatRefreshWordTest {
 
+    // Real time: the catch-up's answer is held on screen for a moment, and a virtual clock no one advances would hold it forever.
     @get:Rule
-    val mainDispatcher = MainDispatcherRule()
+    val mainDispatcher = MainDispatcherRule { Dispatchers.Unconfined }
 
     private lateinit var graph: AppGraph
 
@@ -44,11 +47,15 @@ class ChatRefreshWordTest {
 
     private fun ConversationViewModel.word(): String? = runBlocking { withTimeout(20_000) { toastMessage.first { it != null } } }
 
+    private fun ConversationViewModel.answer(): CatchUpStatus = runBlocking {
+        withTimeout(20_000) { catchUpStatus.first { it is CatchUpStatus.Done || it is CatchUpStatus.Failed } }
+    }
+
     @Test
     fun `Ctrl+R on a chat with nothing new says it is up to date`() {
         val vm = opened(HOUSE_ID)
         vm.catchUp()
-        assertThat(vm.word()).isEqualTo(RefreshWord.UP_TO_DATE)
+        assertThat(vm.answer()).isEqualTo(CatchUpStatus.Done(newMessages = 0, changed = false))
     }
 
     @Test
@@ -59,8 +66,24 @@ class ChatRefreshWordTest {
         }
         val vm = ConversationViewModel(graph, HOUSE_ID)
         vm.catchUp()
-        assertThat(vm.word()).isEqualTo(RefreshWord.UP_TO_DATE)
+        assertThat((vm.answer() as CatchUpStatus.Done).newMessages).isEqualTo(0)
         assertThat(vm.conversation.value.items).isNotEmpty()
+        assertThat(vm.toastMessage.value).isNull()
+    }
+
+    @Test
+    fun `the answer is told once the indicator is home, once, and put away, and an answer no longer up is not told`() {
+        val vm = opened(HOUSE_ID)
+        vm.catchUp()
+        val answer = vm.answer()
+        vm.catchUpSettled(CatchUpStatus.Failed("stale"))
+        assertThat(vm.toastMessage.value).isNull()
+        vm.catchUpSettled(answer)
+        assertThat(vm.toastMessage.value).isEqualTo(RefreshWord.UP_TO_DATE)
+        assertThat(vm.catchUpStatus.value).isEqualTo(CatchUpStatus.Idle)
+        vm.clearToast()
+        vm.catchUpSettled(answer)
+        assertThat(vm.toastMessage.value).isNull()
     }
 
     @Test

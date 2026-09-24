@@ -1,5 +1,6 @@
 package com.cursorforandroid.ui.conversation
 
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -15,6 +16,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -47,9 +49,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.LifecycleStartEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -266,6 +270,12 @@ fun ConversationScreen(
     val listState = rememberLazyListState(prefetchStrategy = remember { TranscriptPrefetchStrategy() })
     val transcriptScroll = rememberTranscriptScroll(listState, agentId)
     val scope = rememberCoroutineScope()
+    // The pull past the newest message that catches the chat up (see CatchUpOverscroll), drawn as the sidebar's pull
+    // to refresh is, from the transcript's bottom edge (see CatchUpIndicator). Read only where it is drawn, and its
+    // status only by the indicator: a frame of the pull recomposes nothing, an answer the indicator alone.
+    val density = LocalDensity.current
+    val catchUpPull = remember(agentId, density) { with(density) { CatchUpPull(CatchUpPullThreshold.toPx()) } }
+    val readerScroll = rememberReaderScroll(transcriptScroll, pull = catchUpPull, canCatchUp = viewModel::canCatchUp, onCatchUp = viewModel::catchUp)
     var menuOpen by rememberSaveable { mutableStateOf(false) }
     var modelSheet by rememberSaveable { mutableStateOf(false) }
     var renameOpen by rememberSaveable { mutableStateOf(false) }
@@ -495,6 +505,7 @@ fun ConversationScreen(
         )
 
         Box(Modifier.weight(1f).fillMaxWidth()) {
+            Box(Modifier.matchParentSize().readerBackdrop(readerScroll))
             val paneWidth = Modifier.widthIn(max = CursorDimens.composerMaxWidth).fillMaxWidth()
             // The column the rows are laid out in, measured whether or not there are any rows yet.
             Box(Modifier.align(Alignment.TopCenter).padding(horizontal = TranscriptGutter).then(paneWidth).then(headerClearance.transcriptColumn))
@@ -567,7 +578,7 @@ fun ConversationScreen(
                         .fillMaxWidth()
                         .align(Alignment.TopCenter)
                         .scrollEdgeFade(listState, reverseLayout = listReversed, surface = colors.canvas)
-                        .readerScrolling(transcriptScroll)
+                        .readerScrolling(readerScroll)
                         .testTag("transcript"),
                     contentPadding = PaddingValues(start = TranscriptGutter, end = TranscriptGutter, top = 6.dp, bottom = 12.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp),
@@ -586,10 +597,19 @@ fun ConversationScreen(
                 }
                 SideEffect { transcriptScroll.orient(following, order) }
             }
+            // Out of the area's bottom edge, the top of the composer's stack; a word up there gives way as it rises.
+            CatchUpIndicator(
+                catchUpPull,
+                viewModel.catchUpStatus,
+                onSettled = viewModel::catchUpSettled,
+                modifier = Modifier.align(Alignment.BottomCenter),
+                onRise = { snackbar.currentSnackbarData?.dismiss() },
+            )
 
+            val jumpShown = !following && items.size > 2
             androidx.compose.animation.AnimatedVisibility(
-                visible = !following && items.size > 2,
-                modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 10.dp),
+                visible = jumpShown,
+                modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = JumpButtonGap),
                 enter = fadeIn(tween(160)) + scaleIn(tween(160), initialScale = 0.8f),
                 exit = fadeOut(tween(120)) + scaleOut(tween(120), targetScale = 0.8f),
             ) {
@@ -604,7 +624,10 @@ fun ConversationScreen(
                     Icon(CursorIcons.ArrowDown, "Scroll to latest", tint = colors.iconPrimary, modifier = Modifier.size(16.dp))
                 }
             }
-            SnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter)) { data ->
+            // A word up while the jump button is out sits above it, never over it: the button stays the reader's to
+            // tap (a catch-up's answer lands there as the reader flings back to the newest message). Read at layout.
+            val snackbarLift = animateDpAsState(if (jumpShown) CursorDimens.iconButton + JumpButtonGap else 0.dp, tween(160), label = "snackbar-lift")
+            SnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter).offset { IntOffset(0, -snackbarLift.value.roundToPx()) }) { data ->
                 Snackbar(snackbarData = data, containerColor = colors.elevated, contentColor = colors.textPrimary, shape = CursorTheme.shapes.lg)
             }
         }
@@ -807,6 +830,9 @@ private const val LOADING_KEY = "loading"
 
 /** The transcript's side margins, inside which its rows take [CursorDimens.composerMaxWidth] at most. */
 private val TranscriptGutter = 16.dp
+
+/** The jump button's lift off the transcript's bottom edge. */
+private val JumpButtonGap = 10.dp
 
 /**
  * How many rows from the oldest one shown the reader may be before the turns before it are asked for: about a
