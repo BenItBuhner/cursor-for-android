@@ -1786,7 +1786,7 @@ class ConversationRepository(
                         run != null && run.statusEnum().isActive -> "live"
                         complete != null -> "shown(log)"
                         kept != null -> "shown(story)"
-                        turn.items.isEmpty() -> "pending"
+                        turn.items.isEmpty() -> if (turn.complete) "prompt-only" else "pending"
                         run == null -> "shown(unpaired)"
                         else -> "shown"
                     }
