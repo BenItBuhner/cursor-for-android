@@ -56,13 +56,13 @@ import java.util.TimeZone
  * stand in the margin beside the column the header keeps no band and the transcript runs up to the status bar; where
  * they reach the column the band is kept as it always was.
  *
- * - `370`/`371`: a 1280dp tablet with the rail open (Bennett's Pixel Tablet), dark and light — clear of the column.
- * - `372`: a 1000dp tablet with the rail open, where the column reaches the panel and menu buttons — the band stays.
- * - `373`: the inner screen of a Pixel Fold with the rail open — the band stays; `374`: the rail collapsed, in the
+ * - `470`/`471`: a 1280dp tablet with the rail open (Bennett's Pixel Tablet), dark and light — clear of the column.
+ * - `472`: a 1000dp tablet with the rail open, where the column reaches the panel and menu buttons — the band stays.
+ * - `473`: the inner screen of a Pixel Fold with the rail open — the band stays; `474`: the rail collapsed, in the
  *   Project's chat, whose header has no pull request button — clear.
- * - `375`: a phone on its side with the rail collapsed — clear, the Project's chat longer than the window, so its
+ * - `475`: a phone on its side with the rail collapsed — clear, the Project's chat longer than the window, so its
  *   older rows dissolve into the status bar's edge.
- * - `376`: the phone — the band stays, the frame the slim header (#283) has always drawn.
+ * - `476`: the phone — the band stays, the frame the slim header (#283) has always drawn.
  *
  * Written to `screenshots/` and compared pixel for pixel in CI.
  */
@@ -195,11 +195,11 @@ class HeaderClearanceScreenshotTest {
 
     @Test
     @Config(qualifiers = "w1280dp-h800dp-night-320dpi")
-    fun tabletClearDark() = tabletClear(ThemeMode.Dark, "370_header_clear_tablet_dark")
+    fun tabletClearDark() = tabletClear(ThemeMode.Dark, "470_header_clear_tablet_dark")
 
     @Test
     @Config(qualifiers = "w1280dp-h800dp-night-320dpi")
-    fun tabletClearLight() = tabletClear(ThemeMode.Light, "371_header_clear_tablet_light")
+    fun tabletClearLight() = tabletClear(ThemeMode.Light, "471_header_clear_tablet_light")
 
     @Test
     @Config(qualifiers = "w1000dp-h720dp-night-320dpi")
@@ -207,7 +207,7 @@ class HeaderClearanceScreenshotTest {
         val graph = show(ThemeMode.Dark, wide = true, agentId = REVENUE_ID)
         waitForRail()
         waitForRevenueChat(graph)
-        capture("372_header_band_tablet_rail")
+        capture("472_header_band_tablet_rail")
     }
 
     @Test
@@ -216,7 +216,7 @@ class HeaderClearanceScreenshotTest {
         val graph = show(ThemeMode.Dark, wide = true, agentId = REVENUE_ID)
         waitForRail()
         waitForRevenueChat(graph)
-        capture("373_header_band_foldable")
+        capture("473_header_band_foldable")
     }
 
     @Test
@@ -226,7 +226,7 @@ class HeaderClearanceScreenshotTest {
         waitForRail()
         waitForProjectChat(graph)
         collapseRail()
-        capture("374_header_clear_foldable_collapsed")
+        capture("474_header_clear_foldable_collapsed")
     }
 
     @Test
@@ -236,14 +236,14 @@ class HeaderClearanceScreenshotTest {
         waitForRail()
         waitForProjectChat(graph)
         collapseRail()
-        capture("375_header_clear_landscape_phone")
+        capture("475_header_clear_landscape_phone")
     }
 
     @Test
     fun phone() {
         val graph = show(ThemeMode.Dark, wide = false, agentId = REVENUE_ID)
         waitForRevenueChat(graph)
-        capture("376_header_band_phone")
+        capture("476_header_band_phone")
     }
 
     private companion object {
