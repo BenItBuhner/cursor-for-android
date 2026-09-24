@@ -353,6 +353,8 @@ fun ConversationScreen(
     val panelState = rememberSidePanelState()
     val panel by panelViewModel.state.collectAsStateWithLifecycle()
     val panelActions = rememberPanelActions(panelViewModel, onToast = viewModel::showMessage, onOpenAgent = onOpenAgent, onAskToCopyFile = if (isDemo) null else viewModel::askToCopyFileIntoWorkspace)
+    ChatKeyboardShortcuts(agentId, viewModel, panelState)
+    TranscriptHitScroll(agentId, rows, conversation, transcriptScroll, viewModel)
     // Replies reference screenshots and recordings by their VM path; resolving them needs this agent's id. A path
     // into an Agent Store (`/cursor/stores/…`, a Project's context) is read through the account in Extended mode and
     // opens in the document sheet; without the account it points at the Project on cursor.com. A tapped figure opens
