@@ -173,6 +173,82 @@ class TraceCacheTest {
         assertThat(traces.runIds("bc-new")).containsExactly("run-1")
     }
 
+    private fun bytesOnDisk(): Long = root.walkTopDown().filter { it.isFile }.sumOf { it.length() }
+
+    /** Marks an agent's traces as last shown (and last written) at [at], the way a read stamps them. */
+    private suspend fun open(traces: TraceCache, agentId: String, at: Long) {
+        assertThat(traces.read(agentId, listOf("run-1"))).isNotEmpty()
+        File(root, "$agentId/.opened").setLastModified(at)
+        File(root, agentId).setLastModified(at)
+    }
+
+    /**
+     * The run monitor writes the trace of every run it sees finish, opened here or not. Past the store's budget those
+     * go first, even when a chat that was opened is older, and the store ends up within the budget.
+     */
+    @Test
+    fun `past the store budget the traces nobody opened go before an older chat that was opened`() = runBlocking<Unit> {
+        val traces = TraceCache(disk(), maxTotalBytes = 8_000)
+        val big = "x".repeat(2_000)
+        traces.put("bc-read", listOf(trace("run-1", 1L, big)))
+        open(traces, "bc-read", at = 1_000L)
+        traces.put("bc-seen-1", listOf(trace("run-1", 1L, big)))
+        File(root, "bc-seen-1").setLastModified(5_000L)
+        traces.put("bc-seen-2", listOf(trace("run-1", 1L, big)))
+        File(root, "bc-seen-2").setLastModified(6_000L)
+        assertThat(File(root, "bc-seen-1").exists()).isTrue()
+
+        traces.put("bc-new", listOf(trace("run-1", 1L, big)))
+
+        assertThat(File(root, "bc-seen-1").exists()).isFalse()
+        assertThat(traces.runIds("bc-read")).containsExactly("run-1")
+        assertThat(traces.runIds("bc-new")).containsExactly("run-1")
+        assertThat(bytesOnDisk()).isAtMost(8_000L)
+    }
+
+    /** When the chats opened here are all there is, the one opened longest ago goes, never the one just written. */
+    @Test
+    fun `among opened chats the least recently opened goes first`() = runBlocking<Unit> {
+        val traces = TraceCache(disk(), maxTotalBytes = 6_000)
+        val big = "x".repeat(2_000)
+        traces.put("bc-a", listOf(trace("run-1", 1L, big)))
+        open(traces, "bc-a", at = 1_000L)
+        traces.put("bc-b", listOf(trace("run-1", 1L, big)))
+        open(traces, "bc-b", at = 2_000L)
+        // Opened again later: now the most recently used of the two.
+        open(traces, "bc-a", at = 3_000L)
+
+        traces.put("bc-c", listOf(trace("run-1", 1L, big)))
+
+        assertThat(File(root, "bc-b").exists()).isFalse()
+        assertThat(traces.runIds("bc-a")).containsExactly("run-1")
+        assertThat(traces.runIds("bc-c")).containsExactly("run-1")
+    }
+
+    /**
+     * A new process does not trust a total it has not measured: a store an earlier one left over the budget is held
+     * to it on the first write, and a whole-file store no build ever migrated (nothing else deletes it) goes first.
+     */
+    @Test
+    fun `the first write of a process trims a store an earlier one left over budget, unmigrated files first`() = runBlocking<Unit> {
+        val big = "x".repeat(2_000)
+        val earlier = TraceCache(disk())
+        listOf("bc-1", "bc-2", "bc-3").forEachIndexed { i, id ->
+            earlier.put(id, listOf(trace("run-1", 1L, big)))
+            File(root, id).setLastModified(10_000L + i)
+        }
+        File(root, "bc-legacy.json").apply { writeText("y".repeat(3_000)); setLastModified(20_000L) }
+
+        val traces = TraceCache(disk(), maxTotalBytes = 8_000)
+        traces.put("bc-4", listOf(trace("run-1", 1L, big)))
+
+        assertThat(File(root, "bc-legacy.json").exists()).isFalse()
+        assertThat(traces.runIds("bc-4")).containsExactly("run-1")
+        assertThat(bytesOnDisk()).isAtMost(8_000L)
+        // The least recently written of the unopened ones went before the newer.
+        assertThat(File(root, "bc-3").exists()).isTrue()
+    }
+
     /**
      * A tool call is read off its JSON while it is built and carries only what a row shows, so what the disk keeps is
      * that and nothing else: no whole files, no whole command output.
