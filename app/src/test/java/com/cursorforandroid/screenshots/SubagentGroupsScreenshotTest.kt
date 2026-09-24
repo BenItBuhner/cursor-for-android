@@ -254,7 +254,7 @@ class SubagentGroupsScreenshotTest {
         // Closed, the rows are behind their groups' lines, which count what still works.
         awaitShown("1 working", "2 Working", "Waiting on CI for #113")
         compose.onAllNodes(hasTestTag("subagent-row")).assertCountEquals(0)
-        capture("339_subagent_groups_closed")
+        capture("343_subagent_groups_closed")
     }
 
     @Test
@@ -267,7 +267,7 @@ class SubagentGroupsScreenshotTest {
         val tops = listOf("Chart.tsx", "Map the legend's hover state", "Legend.tsx", "CursorBench chart hover highlight")
             .map { compose.onNodeWithText(it).fetchSemanticsNode().boundsInRoot.top }
         assertThat(tops).isInStrictOrder()
-        capture("340_subagent_groups_open")
+        capture("344_subagent_groups_open")
     }
 
     // -- a small Project through the real pipeline, under each engine ---------------------------------------------
@@ -329,10 +329,10 @@ class SubagentGroupsScreenshotTest {
     }
 
     @Test
-    fun projectOnStable() = projectFrame(TranscriptEngine.STABLE, "341_subagent_groups_stable")
+    fun projectOnStable() = projectFrame(TranscriptEngine.STABLE, "345_subagent_groups_stable")
 
     @Test
-    fun projectOnBeta() = projectFrame(TranscriptEngine.BETA, "342_subagent_groups_beta")
+    fun projectOnBeta() = projectFrame(TranscriptEngine.BETA, "346_subagent_groups_beta")
 
     /** A row as its shape: the kind, a stretch's line and where each of its subagents came from. */
     private fun shape(row: TranscriptRow): String = when (row) {

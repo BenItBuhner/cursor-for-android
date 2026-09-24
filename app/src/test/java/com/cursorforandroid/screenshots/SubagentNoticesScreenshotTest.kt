@@ -197,7 +197,7 @@ class SubagentNoticesScreenshotTest {
         assertThat(presented.rows.none { it is TranscriptRow.Event || it is TranscriptRow.Events }).isTrue()
         show()
         compose.onAllNodes(hasTestTag("event-row")).assertCountEquals(0)
-        capture("343_subagent_notices_closed")
+        capture("347_subagent_notices_closed")
     }
 
     @Test
@@ -214,6 +214,6 @@ class SubagentNoticesScreenshotTest {
         assertThat(compose.onAllNodesWithText(" \u00B7 completed").fetchSemanticsNodes()).isEmpty()
         assertThat(compose.onAllNodes(hasTestTag("event-time"), useUnmergedTree = true).fetchSemanticsNodes()).isEmpty()
         compose.onNodeWithText("Noted: the ledger is complete back to March 2025.").assertExists()
-        capture("344_subagent_notices_open")
+        capture("348_subagent_notices_open")
     }
 }
