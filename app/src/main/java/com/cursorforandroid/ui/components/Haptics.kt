@@ -1,5 +1,6 @@
 package com.cursorforandroid.ui.components
 
+import android.annotation.SuppressLint
 import android.os.Build
 import android.view.HapticFeedbackConstants
 import android.view.View
@@ -65,7 +66,9 @@ enum class Haptic {
     Subtle,
 }
 
+// Every newer constant is behind a check of `sdk`, which lint's InlinedApi does not follow for a parameter.
 /** The [HapticFeedbackConstants] value [Haptic] plays on [sdk]: API 34's and API 30's named constants where they exist, the nearest older one before. */
+@SuppressLint("InlinedApi")
 fun Haptic.constant(sdk: Int = Build.VERSION.SDK_INT): Int = when (this) {
     Haptic.LongPress -> HapticFeedbackConstants.LONG_PRESS
     Haptic.Confirm -> if (sdk >= Build.VERSION_CODES.R) HapticFeedbackConstants.CONFIRM else HapticFeedbackConstants.VIRTUAL_KEY
