@@ -28,6 +28,7 @@ import com.cursorforandroid.appGraph
 import com.cursorforandroid.ui.components.CursorHeader
 import com.cursorforandroid.ui.components.CursorIcons
 import com.cursorforandroid.ui.components.FlatIconButton
+import com.cursorforandroid.ui.components.contentColumn
 import com.cursorforandroid.ui.components.fadingVerticalScroll
 import com.cursorforandroid.ui.components.pressable
 import com.cursorforandroid.ui.theme.CursorTheme
@@ -133,7 +134,7 @@ fun WidgetConfigureScreen(title: String, subtitle: String, onDone: () -> Unit, o
                 )
             },
         )
-        Column(Modifier.fillMaxSize().navigationBarsPadding().fadingVerticalScroll(surface = colors.canvas).padding(horizontal = 16.dp).padding(bottom = 24.dp)) {
+        Column(Modifier.fillMaxSize().navigationBarsPadding().fadingVerticalScroll(surface = colors.canvas).contentColumn().padding(bottom = 24.dp)) {
             body()
         }
     }
