@@ -53,6 +53,7 @@ import androidx.compose.ui.unit.isFinite
 import androidx.compose.ui.unit.sp
 import com.cursorforandroid.data.media.MediaLoader
 import com.cursorforandroid.data.media.MediaProblem
+import com.cursorforandroid.domain.AgentLink
 import com.cursorforandroid.domain.FileFormat
 import com.cursorforandroid.domain.MediaRef
 import com.cursorforandroid.domain.StorePath
@@ -76,9 +77,10 @@ import kotlin.math.sqrt
  *
  * [canReadStores] says the account's store reads are on (Extended mode), so a `/cursor/stores/…` figure is fetched
  * rather than stood in for; [onOpenStorePath] is where a tapped store link (or a store figure that cannot be shown)
- * goes — the document sheet, or the Project on cursor.com when nothing here can read it. [onBeforeOpen] runs as a
- * figure opens the viewer: a sheet showing the figure puts itself away with it, since the viewer is a layer of the
- * window and a sheet is a window of its own over it.
+ * goes — the document sheet, or the Project on cursor.com when nothing here can read it. [onOpenAgentLink] is where
+ * a tapped link to an agent goes (its chat); without one it opens the agent's page on cursor.com. [onBeforeOpen] runs
+ * as a figure opens the viewer: a sheet showing the figure puts itself away with it, since the viewer is a layer of
+ * the window and a sheet is a window of its own over it.
  */
 class MarkdownMediaContext(
     val agentId: String?,
@@ -87,9 +89,10 @@ class MarkdownMediaContext(
     val onOpenStorePath: ((StorePath) -> Unit)? = null,
     val entries: () -> List<MediaEntry> = { emptyList() },
     val onBeforeOpen: (() -> Unit)? = null,
+    val onOpenAgentLink: ((AgentLink) -> Unit)? = null,
 ) {
     /** The same context for a surface that has to step aside as the viewer opens. */
-    fun withBeforeOpen(action: () -> Unit) = MarkdownMediaContext(agentId, loader, canReadStores, onOpenStorePath, entries, action)
+    fun withBeforeOpen(action: () -> Unit) = MarkdownMediaContext(agentId, loader, canReadStores, onOpenStorePath, entries, action, onOpenAgentLink)
 }
 
 val LocalMarkdownMedia = staticCompositionLocalOf<MarkdownMediaContext?> { null }
