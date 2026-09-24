@@ -8,10 +8,12 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.systemBars
@@ -37,6 +39,7 @@ import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Constraints
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -91,6 +94,7 @@ object NewChatHomeCopy {
 }
 
 object NewChatHomeTags {
+    const val COMPOSER = "new_chat_composer"
     const val PROJECT_SHORTCUT = "new_chat_project_shortcut"
     const val PROJECTS_NOTE = "new_chat_projects_note"
 }
@@ -320,8 +324,9 @@ internal fun rememberComposerChips(graph: AppGraph): ComposerChips {
 
 /**
  * The New Chat pane in miniature, for the Settings picker: the page as it is laid out at [pageSize] — header, the
- * composer with [chips] on its selectors, and [homeBlocks] for [home] from the live [list] — drawn from the pane's own
- * composables and scaled down to the width it is given. It takes no focus and no touches (the picker's option does),
+ * composer with [chips] on its selectors, and [homeBlocks] for [home] from the live [list], in the middle of the page
+ * while they fit as the pane puts them — drawn from the pane's own composables and scaled down to the width it is
+ * given. It takes no focus and no touches (the picker's option does),
  * and says nothing to accessibility services, which hear the option's label instead.
  */
 @OptIn(ExperimentalComposeUiApi::class)
@@ -341,31 +346,36 @@ internal fun NewChatPageMiniature(
         homeBlocks(home, list, projectsAvailable).take(MiniatureBlocks).map { if (it is HomeBlock.Projects) HomeBlock.Projects(it.rows.take(MiniatureShortcuts)) else it }
     }
     val menu = remember { ComposerMenuActions(onPickMedia = {}) }
+    // The page's list keeps its last row clear of the navigation bar, and so its middle is this much higher.
+    val navigationBar = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
     Box(modifier) {
         ScaledPage(pageSize, Modifier.focusProperties { enter = { FocusRequester.Cancel } }.focusGroup()) {
             Column(Modifier.fillMaxSize().background(colors.canvas).consumeWindowInsets(WindowInsets.systemBars)) {
                 if (withHeader) CursorHeader(leading = { FlatIconButton(CursorIcons.Sidebar, null, onClick = {}) })
-                Column(
-                    Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = if (withHeader) 8.dp else 48.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
+                CentredWhileItFits(
+                    top = pageTopPadding(withHeader),
+                    bottom = PageBottomPadding + navigationBar,
+                    modifier = Modifier.fillMaxWidth().weight(1f),
                 ) {
-                    Column(Modifier.widthIn(max = CursorDimens.composerMaxWidth).fillMaxWidth()) {
-                        NewChatSelectors(chips.repoLabel, chips.noRepo, chips.ref.ifBlank { NewAgentUiState.DEFAULT_BRANCH }, chips.device, onRepo = {}, onBranch = {}, onDevice = {})
-                        ComposerBox(
-                            value = "",
-                            onValueChange = {},
-                            placeholder = NewChatHomeCopy.PLACEHOLDER,
-                            onSend = {},
-                            canSend = false,
-                            minLines = 3,
-                            plusMenu = menu,
-                            modelLabel = chips.modelLabel,
-                            onModel = {},
-                            onModePill = {},
-                        )
+                    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                        Column(Modifier.widthIn(max = CursorDimens.composerMaxWidth).fillMaxWidth()) {
+                            NewChatSelectors(chips.repoLabel, chips.noRepo, chips.ref.ifBlank { NewAgentUiState.DEFAULT_BRANCH }, chips.device, onRepo = {}, onBranch = {}, onDevice = {})
+                            ComposerBox(
+                                value = "",
+                                onValueChange = {},
+                                placeholder = NewChatHomeCopy.PLACEHOLDER,
+                                onSend = {},
+                                canSend = false,
+                                minLines = 3,
+                                plusMenu = menu,
+                                modelLabel = chips.modelLabel,
+                                onModel = {},
+                                onModePill = {},
+                            )
+                        }
+                        if (blocks.isNotEmpty()) Spacer(Modifier.height(ComposerGap))
+                        blocks.forEach { HomeBlockView(it, nowMillis = list.nowMillis, actions = MiniatureActions) }
                     }
-                    Spacer(Modifier.height(ComposerGap))
-                    blocks.forEach { HomeBlockView(it, nowMillis = list.nowMillis, actions = MiniatureActions) }
                 }
             }
         }
@@ -396,6 +406,28 @@ private fun ScaledPage(pageSize: DpSize, modifier: Modifier = Modifier, content:
         }
     }
 }
+
+/**
+ * [content] in the middle of the height this is given, between [top] and [bottom], while it fits there; taller, it
+ * starts at [top] and is cut off at the foot. The miniature's page, laid out as the pane's list arranges its items.
+ */
+@Composable
+private fun CentredWhileItFits(top: Dp, bottom: Dp, modifier: Modifier = Modifier, content: @Composable () -> Unit) {
+    Layout(content = content, modifier = modifier.clipToBounds()) { measurables, constraints ->
+        val placeable = measurables.single().measure(constraints.copy(minHeight = 0, maxHeight = Constraints.Infinity))
+        val height = if (constraints.hasBoundedHeight) constraints.maxHeight else placeable.height
+        val room = height - top.roundToPx() - bottom.roundToPx()
+        layout(constraints.maxWidth, height) {
+            placeable.place(0, top.roundToPx() + ((room - placeable.height) / 2f).roundToInt().coerceAtLeast(0))
+        }
+    }
+}
+
+/** Above the composer: clear of the pane's 44dp header where it has one, else of the window's top. */
+internal fun pageTopPadding(withHeader: Boolean): Dp = if (withHeader) 8.dp else 48.dp
+
+/** Under the pane's last row, before the navigation bar. */
+internal val PageBottomPadding = 32.dp
 
 /** Between the composer and what the pane lists under it. */
 internal val ComposerGap = 26.dp

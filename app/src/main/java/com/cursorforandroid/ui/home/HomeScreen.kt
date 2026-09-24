@@ -94,8 +94,9 @@ import com.cursorforandroid.util.TimeFormat
 
 /**
  * The "New Chat" pane — the home of the official app: context selectors, the composer, then — as Settings › New chat
- * page chooses ([home]) — the recent chats list with preview cards (cursor.com/agents), or the Projects as shortcuts
- * (see [homeBlocks]). On phones a 44dp header carries the sidebar toggle.
+ * page chooses ([home]) — the recent chats list with preview cards (cursor.com/agents), the Projects as shortcuts, or
+ * nothing (see [homeBlocks]); what does not fill the pane sits in its middle. On phones a 44dp header carries the
+ * sidebar toggle.
  *
  * Sending opens the new chat through [onLaunchOpen] right away, before the server has answered, and leaves the
  * composer empty behind it: the launch is on its own from there (see [NewAgentViewModel.launch]), so this pane is
@@ -178,14 +179,18 @@ fun HomeScreen(
         // the canvas colour, since a list resized on every frame of the keyboard's animation cannot afford an
         // offscreen layer per frame.
         val recentState = rememberLazyListState()
+        val centring = remember { PageCentring() }
+        LaunchedEffect(recentState) { centring.follow(recentState) }
         LazyColumn(
             Modifier.fillMaxSize().imePadding().scrollEdgeFade(recentState, surface = colors.canvas),
             state = recentState,
-            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = if (onOpenSidebar != null) 8.dp else 48.dp, bottom = 32.dp + navigationBar),
+            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = pageTopPadding(withHeader = onOpenSidebar != null), bottom = PageBottomPadding + navigationBar),
+            verticalArrangement = centring.arrangement,
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            item("composer") {
-                Column(Modifier.widthIn(max = CursorDimens.composerMaxWidth).fillMaxWidth()) {
+            item(PageCentring.LEAD_KEY) { centring.Lead() }
+            item(PageCentring.COMPOSER_KEY) {
+                Column(Modifier.widthIn(max = CursorDimens.composerMaxWidth).fillMaxWidth().testTag(NewChatHomeTags.COMPOSER)) {
                     NewChatSelectors(state, onRepo = { repoSheet = true }, onBranch = { branchSheet = true }, onDevice = { deviceSheet = true })
                     ComposerBox(
                         value = state.prompt,
@@ -217,7 +222,7 @@ fun HomeScreen(
                     state.error?.let { ComposerErrorLine(it, state.errorAsked, onDismiss = viewModel::dismissError) }
                 }
             }
-            item("gap") { Spacer(Modifier.height(ComposerGap)) }
+            if (blocks.isNotEmpty()) item("gap") { Spacer(Modifier.height(ComposerGap)) }
             items(blocks, key = { it.key }) { block -> HomeBlockView(block, nowMillis = listState.nowMillis, actions = blockActions) }
         }
     }
