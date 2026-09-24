@@ -74,6 +74,32 @@ class AgentListOrganizerTest {
     }
 
     @Test
+    fun `a Project cannot be pinned, and a pin it carries from the account is read as none`() {
+        val project = agent("project", updatedAgo = 2 * hour, isProject = true)
+        val archivedProject = agent("archived-project", updatedAgo = 3 * hour, isProject = true, lifecycle = AgentLifecycle.ARCHIVED)
+        val worker = agent("worker", updatedAgo = hour, parent = "project")
+        val nestedProject = agent("nested-project", isProject = true, parent = "plain", parentKind = AgentParentKind.SUBAGENT)
+        val plain = agent("plain")
+        assertThat(AgentListOrganizer.canPin(project)).isFalse()
+        assertThat(AgentListOrganizer.canPin(archivedProject)).isFalse()
+        // Every chat that is not a Project's root keeps its pin: a worker, a Project nested as a subagent, a plain chat.
+        assertThat(AgentListOrganizer.canPin(worker)).isTrue()
+        assertThat(AgentListOrganizer.canPin(nestedProject)).isTrue()
+        assertThat(AgentListOrganizer.canPin(plain)).isTrue()
+
+        val local = LocalAgentState(pinnedIds = setOf("project", "archived-project", "worker", "plain"))
+        assertThat(AgentListOrganizer.toRow(project, local, now).isPinned).isFalse()
+        assertThat(AgentListOrganizer.toRow(worker, local, now).isPinned).isTrue()
+        assertThat(AgentListOrganizer.toRow(plain, local, now).isPinned).isTrue()
+
+        // The stale pin does not hold an archived Project in the list past the archive filter, as a chat's pin would.
+        val sections = AgentListOrganizer.organize(listOf(project, archivedProject, worker, plain), ListPreferences(), local, nowMillis = now, zone = zone)
+        assertThat(sections.ids(AgentListOrganizer.PROJECTS_KEY)).containsExactly("project")
+        assertThat(sections.first { it.key == AgentListOrganizer.PROJECTS_KEY }.rows.single().children.single().isPinned).isTrue()
+        assertThat(sections.ids(AgentListOrganizer.PINNED_KEY)).containsExactly("plain")
+    }
+
+    @Test
     fun `chats nest under their parent's row, a child of an unloaded parent is not drawn, and a pinned child stays under its parent`() {
         val agents = listOf(
             agent("project", updatedAgo = 3 * hour, isProject = true),
