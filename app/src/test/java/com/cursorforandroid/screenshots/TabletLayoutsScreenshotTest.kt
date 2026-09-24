@@ -80,8 +80,8 @@ import java.util.TimeZone
 
 /**
  * Every screen other than a chat on a phone, an unfolded foldable (840dp) and a tablet held sideways (1280dp, the
- * Galaxy Tab S8's window) — and Settings upright on that tablet too: Settings from the top and at its New chat page
- * picker, What's new, the widget's settings, the share picker, the full-file viewer's failure, the Project sheet, the
+ * Galaxy Tab S8's window) — and Settings upright on that tablet too, and its New chat page picker on a large and a
+ * small phone: Settings from the top and at its New chat page picker, What's new, the widget's settings, the share picker, the full-file viewer's failure, the Project sheet, the
  * stop question, and sign-in and the mode choice. Where the shell puts the sidebar beside the pane (600dp and up)
  * the pane's screens are drawn beside it; the screens that fill the window — the widget's settings, the share picker,
  * the file viewer, onboarding — fill it here too. The account is [NewChatHomeFixtures]' over the demo session, as in
@@ -315,6 +315,14 @@ class TabletLayoutsScreenshotTest {
     fun pickerTabletPortrait() = picker("367_tablet_layouts_picker_tablet_portrait")
 
     @Test
+    @Config(sdk = [35], qualifiers = LARGE_PHONE)
+    fun pickerLargePhone() = picker("530_tablet_layouts_picker_large_phone")
+
+    @Test
+    @Config(sdk = [35], qualifiers = SMALL_PHONE)
+    fun pickerSmallPhone() = picker("531_tablet_layouts_picker_small_phone")
+
+    @Test
     fun whatsNewPhone() = whatsNew("368_tablet_layouts_whats_new_phone")
 
     @Test
@@ -405,6 +413,10 @@ class TabletLayoutsScreenshotTest {
 }
 
 private const val PHONE = "w411dp-h914dp-night-420dpi"
+
+/** A large phone (Pixel 8 Pro: 1344×2992 at xxhdpi) and a small one. */
+private const val LARGE_PHONE = "w448dp-h997dp-night-480dpi"
+private const val SMALL_PHONE = "w360dp-h780dp-night-420dpi"
 
 /** An unfolded book-style foldable, held as it opens: Material's 840dp expanded width. */
 private const val FOLDABLE = "w840dp-h700dp-night-320dpi"
