@@ -40,9 +40,9 @@ class TranscriptDiagnosticsTest {
     fun `the report carries kinds, names, statuses, payload shapes and argument keys, and none of the text`() {
         val report = render()
         assertThat(report).contains("Cursor for Android 0.3.7 · transcript diagnostics · 2026-09-14T04:00:00Z")
-        // The engine beside the mode: Stable unless Beta was chosen, whatever the mode (see TranscriptEngine).
-        assertThat(report).contains("mode=extended engine=stable")
-        assertThat(TranscriptDiagnostics.render(TranscriptDiagnostics.Input("0.3.7", "2026-09-14T04:00:00Z", extendedMode = true, engine = TranscriptEngine.BETA, agentId = null, agent = null, state = null))).contains("mode=extended engine=beta")
+        // The engine beside the mode: Beta unless Stable was chosen, whatever the mode (see TranscriptEngine).
+        assertThat(report).contains("mode=extended engine=beta")
+        assertThat(TranscriptDiagnostics.render(TranscriptDiagnostics.Input("0.3.7", "2026-09-14T04:00:00Z", extendedMode = true, engine = TranscriptEngine.STABLE, agentId = null, agent = null, state = null))).contains("mode=extended engine=stable")
         assertThat(TranscriptDiagnostics.render(TranscriptDiagnostics.Input("0.3.7", "2026-09-14T04:00:00Z", extendedMode = false, engine = TranscriptEngine.BETA, agentId = null, agent = null, state = null))).contains("mode=default engine=beta")
         assertThat(report).contains("chat=…874668 row=not in list")
         assertThat(report).contains("classification: COORDINATOR listProject=false recordProjectMode=false content=true evidence=sendToAgent,SendMessage,sendMessage")

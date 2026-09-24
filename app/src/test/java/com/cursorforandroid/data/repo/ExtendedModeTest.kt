@@ -47,14 +47,22 @@ class ExtendedModeTest {
     }
 
     @Test
-    fun `the transcript engine is Stable for everyone until Beta is chosen, and only Beta reads the record`() = runBlocking<Unit> {
+    fun `the transcript engine is Beta for everyone until Stable is chosen, and only Beta reads the record`() = runBlocking<Unit> {
         val mode = mode()
         // The default, for a fresh install and an upgrade alike: nothing on the device says otherwise.
-        assertThat(mode.engine()).isEqualTo(TranscriptEngine.STABLE)
-        assertThat(mode.engine.first()).isEqualTo(TranscriptEngine.STABLE)
+        assertThat(mode.engine()).isEqualTo(TranscriptEngine.BETA)
+        assertThat(mode.engine.first()).isEqualTo(TranscriptEngine.BETA)
+        // With the mode off the engine chooses nothing: the documented API alone, as before the default changed.
+        assertThat(mode.capabilities()).isEqualTo(Capabilities.DOCUMENTED)
         assertThat(mode.acknowledge()).isTrue()
         assertThat(mode.enable()).isTrue()
-        // Extended mode on, Stable: every private surface but the record read and the goal it carries.
+        // Extended mode on, never chosen: Beta, what 0.3.58 did, the record included.
+        assertThat(mode.capabilities()).isEqualTo(Capabilities.EXTENDED)
+        assertThat(mode.capabilities.first()).isEqualTo(Capabilities.EXTENDED)
+        // Stable chosen: every private surface but the record read and the goal it carries; persisted, and read by
+        // the flow the screens collect.
+        assertThat(mode.setEngine(TranscriptEngine.STABLE)).isTrue()
+        assertThat(mode.engine()).isEqualTo(TranscriptEngine.STABLE)
         val stable = mode.capabilities()
         assertThat(stable).isEqualTo(Capabilities.EXTENDED_STABLE)
         assertThat(stable.accountTranscript).isFalse()
@@ -65,25 +73,21 @@ class ExtendedModeTest {
         assertThat(stable.pinSync).isTrue()
         assertThat(stable.anyExtended).isTrue()
         assertThat(stable.copy(accountTranscript = true, accountGoal = true)).isEqualTo(Capabilities.EXTENDED)
-        // Beta: what 0.3.58 did, the record included; persisted, and read by the flow the screens collect.
+        assertThat(mode.capabilities.first()).isEqualTo(Capabilities.EXTENDED_STABLE)
+        assertThat(mode().engine()).isEqualTo(TranscriptEngine.STABLE)
+        // Back to Beta.
         assertThat(mode.setEngine(TranscriptEngine.BETA)).isTrue()
-        assertThat(mode.engine()).isEqualTo(TranscriptEngine.BETA)
         assertThat(mode.capabilities()).isEqualTo(Capabilities.EXTENDED)
-        assertThat(mode.capabilities.first()).isEqualTo(Capabilities.EXTENDED)
-        assertThat(mode().engine()).isEqualTo(TranscriptEngine.BETA)
-        // Back to Stable.
-        assertThat(mode.setEngine(TranscriptEngine.STABLE)).isTrue()
-        assertThat(mode.capabilities()).isEqualTo(Capabilities.EXTENDED_STABLE)
         // With the mode off the engine chooses nothing: the documented API alone, whatever it says.
-        assertThat(mode.setEngine(TranscriptEngine.BETA)).isTrue()
         assertThat(mode.disable()).isTrue()
         assertThat(mode.capabilities()).isEqualTo(Capabilities.DOCUMENTED)
         assertThat(Capabilities.of(false, TranscriptEngine.BETA)).isEqualTo(Capabilities.DOCUMENTED)
         // The one-argument form is the Beta set: the tests' shorthand for every private surface at once.
         assertThat(Capabilities.of(true)).isEqualTo(Capabilities.EXTENDED)
         assertThat(TranscriptEngine.parse("beta")).isEqualTo(TranscriptEngine.BETA)
-        assertThat(TranscriptEngine.parse("nonsense")).isEqualTo(TranscriptEngine.STABLE)
-        assertThat(TranscriptEngine.parse(null)).isEqualTo(TranscriptEngine.STABLE)
+        assertThat(TranscriptEngine.parse("stable")).isEqualTo(TranscriptEngine.STABLE)
+        assertThat(TranscriptEngine.parse("nonsense")).isEqualTo(TranscriptEngine.BETA)
+        assertThat(TranscriptEngine.parse(null)).isEqualTo(TranscriptEngine.BETA)
     }
 
     @Test
@@ -98,8 +102,8 @@ class ExtendedModeTest {
         assertThat(mode.acknowledgedAt.first()).isEqualTo(now)
         assertThat(mode.enable()).isTrue()
         assertThat(mode.isEnabled()).isTrue()
-        // Every private surface but the record read, which the Stable transcript engine (the default) leaves off.
-        assertThat(mode.capabilities()).isEqualTo(Capabilities.EXTENDED_STABLE)
+        // Every private surface, the record read included: the Beta transcript engine is the default.
+        assertThat(mode.capabilities()).isEqualTo(Capabilities.EXTENDED)
         assertThat(enabledRuns).isEqualTo(1)
         // Turning it on again does nothing more.
         assertThat(mode.enable()).isTrue()
@@ -186,7 +190,7 @@ class ExtendedModeTest {
 
         mode.acknowledge()
         mode.enable()
-        assertThat(mode.capabilities.first()).isEqualTo(Capabilities.EXTENDED_STABLE)
+        assertThat(mode.capabilities.first()).isEqualTo(Capabilities.EXTENDED)
         assertThat(mode.enabled.first()).isTrue()
 
         mode.disable()
