@@ -11,6 +11,8 @@ import com.cursorforandroid.data.repo.ConversationState
 import com.cursorforandroid.domain.TranscriptEngine
 import com.cursorforandroid.domain.UserMessage
 import com.cursorforandroid.fixtures.BigProject
+import com.google.common.truth.Truth.assertThat
+import com.google.common.truth.Truth.assertWithMessage
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
@@ -129,7 +131,21 @@ class WatchLatencyTest {
         return (System.nanoTime() - startedNanos) / 1_000_000
     }
 
-    private fun report(label: String, ms: Long) = println("   latency | $label | $ms ms")
+    /**
+     * Printed for the record, and held to its engine's bound: Beta's live stream says so within a round trip or two of
+     * the turn, Stable's list entry within a poll; the reads behind either then take a few more at these round trips.
+     */
+    private fun report(label: String, ms: Long) {
+        println("   latency | $label | $ms ms")
+        assertWithMessage("$label: on screen after $ms ms (-1: not within 45 s)").that(ms).isAtLeast(0L)
+        assertWithMessage(label).that(ms).isAtMost(if (label.startsWith("Beta")) BETA_BOUND_MS else STABLE_BOUND_MS)
+    }
+
+    private companion object {
+        const val BETA_BOUND_MS = 5_000L
+        /** A 4 s poll ([com.cursorforandroid.data.repo.ConversationRepository.WATCH_POLL_MS]) and the reads behind it. */
+        const val STABLE_BOUND_MS = 8_000L
+    }
 
     /** The chat long at rest (8 s: the live stream held and heartbeating, the list entry polled), then the turn. */
     private suspend fun atRest(engine: TranscriptEngine, id: String, label: String) {
@@ -230,6 +246,8 @@ class WatchLatencyTest {
         val prompt = startElsewhere(worker)
         report("Beta worker, 20 s after 3 live-stream failures", rig.onScreenAfter(worker, prompt, started))
         println("   live requests: ${server.requests(Route.Live).size}, list-entry reads: ${server.composerReads.count { it == worker }}")
+        // The live stream was asked again once the network was back, rather than the list standing in for good.
+        assertThat(server.requests(Route.Live).size).isGreaterThan(3)
     }
 
     /** The sidebar refreshing every 3 s beside the open chat (Extended mode: the account's list, page by page, over the same throttle). */
