@@ -87,7 +87,6 @@ object TranscriptHitLocator {
         is TranscriptRow.Event -> row.notification.id == id
         is TranscriptRow.Events -> row.rows.any { draws(it, id) }
         is TranscriptRow.Message -> row.group.id == id
-        is TranscriptRow.Subagent -> row.group.id == id
         is TranscriptRow.Media -> row.group.id == id
         is TranscriptRow.Question -> row.group.id == id
         is TranscriptRow.Stretch -> row.entries.any { entry ->
