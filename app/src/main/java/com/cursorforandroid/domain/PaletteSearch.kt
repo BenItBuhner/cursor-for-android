@@ -7,7 +7,11 @@ data class PaletteEntry(
     val repo: String?,
     val isProject: Boolean,
     val updatedAtMillis: Long,
-)
+) {
+    companion object {
+        fun of(agent: Agent): PaletteEntry = PaletteEntry(agent.id, agent.name, agent.repoSlug, agent.looksLikeProject, agent.listedAtMillis)
+    }
+}
 
 /**
  * A stretch of a chat's transcript as this device keeps it: a prompt, a reply, a thought, a tool call's line. [itemId]

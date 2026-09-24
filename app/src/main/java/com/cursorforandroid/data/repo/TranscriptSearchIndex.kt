@@ -39,6 +39,7 @@ class TranscriptSearchIndex(
     private val dispatcher: CoroutineDispatcher = Dispatchers.IO,
     private val maxChats: Int = MAX_CHATS,
     private val runsPerChat: Int = RUNS_PER_CHAT,
+    private val totalChars: Int = TOTAL_CHARS,
 ) {
     private val state = MutableStateFlow<Map<String, List<TranscriptPassage>>>(emptyMap())
     val passages: StateFlow<Map<String, List<TranscriptPassage>>> = state.asStateFlow()
@@ -51,12 +52,28 @@ class TranscriptSearchIndex(
     private val stamps = HashMap<String, Long>()
     private val lock = Mutex()
 
-    /** Reads the chats given, newest first, as `id to updatedAt`: the ones not read since they last moved on. */
+    /**
+     * Reads the chats given, newest first, as `id to updatedAt`: the ones not read since they last moved on, until
+     * the chats read hold [totalChars] between them; the older ones past that are left out of the search.
+     */
     suspend fun refresh(chats: List<Pair<String, Long>>) = lock.withLock {
         reading.value = true
         try {
-            for ((agentId, updatedAt) in chats.take(maxChats)) {
-                if (stamps[agentId] == updatedAt && agentId in state.value) continue
+            val wanted = chats.take(maxChats)
+            val kept = wanted.mapTo(HashSet()) { it.first }
+            state.update { held -> held.filterKeys { it in kept } }
+            var total = 0
+            for ((agentId, updatedAt) in wanted) {
+                if (total >= totalChars) {
+                    state.update { it - agentId }
+                    stamps.remove(agentId)
+                    continue
+                }
+                val held = state.value[agentId]
+                if (stamps[agentId] == updatedAt && held != null) {
+                    total += charsOf(held)
+                    continue
+                }
                 val read = try {
                     withContext(dispatcher) { read(agentId) }
                 } catch (c: CancellationException) {
@@ -65,7 +82,12 @@ class TranscriptSearchIndex(
                     null
                 }
                 stamps[agentId] = updatedAt
-                if (read.isNullOrEmpty()) state.update { it - agentId } else state.update { it + (agentId to read) }
+                if (read.isNullOrEmpty()) {
+                    state.update { it - agentId }
+                } else {
+                    total += charsOf(read)
+                    state.update { it + (agentId to read) }
+                }
             }
         } finally {
             reading.value = false
@@ -93,7 +115,10 @@ class TranscriptSearchIndex(
 
         private const val PASSAGE_CHARS = 20_000
         private const val DETAIL_CHARS = 400
-        private const val CHAT_CHARS = 1_500_000
+        private const val CHAT_CHARS = 300_000
+
+        /** All chats together, newest first: past it the older chats are not read, keeping the index to tens of MB. */
+        const val TOTAL_CHARS = 8_000_000
 
         /**
          * The passages of a chat in transcript order: the `/v0` transcript's messages (their ids are the timeline's
@@ -114,9 +139,19 @@ class TranscriptSearchIndex(
                 add(prompt.message.id, prompt.message.text)
                 prompt.reply?.let { add(it.id, it.text) }
             }
-            for (run in runs.sortedBy { it.createdAtMillis }) run.items.forEach { item -> itemText(item, ::add) }
+            // Newest run first, so what the chat's cap leaves out is its oldest activity; put back in order after.
+            val traced = out.size
+            for (run in runs.sortedByDescending { it.createdAtMillis }) {
+                val start = out.size
+                run.items.forEach { item -> itemText(item, ::add) }
+                out.subList(start, out.size).reverse()
+            }
+            out.subList(traced, out.size).reverse()
             return out
         }
+
+        /** Every character [passages] hold: what [TOTAL_CHARS] is counted in. */
+        fun charsOf(passages: List<TranscriptPassage>): Int = passages.sumOf { it.text.length }
 
         private fun itemText(item: TimelineItem, add: (String?, String?, Int) -> Unit) {
             when (item) {
