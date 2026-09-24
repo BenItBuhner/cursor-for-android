@@ -32,11 +32,15 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusProperties
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.Dp
@@ -80,22 +84,18 @@ object NewChatHomeCopy {
     const val NO_PROJECTS_DETAIL = "A Project you create is pinned here. Your recent agents are below until then."
     const val NEW_PROJECT = "New Project"
 
-    /** A shortcut's second line: what is working in the Project, else how many chats it holds. */
-    fun status(row: AgentRow): String {
-        val working = row.workingCount
-        val chats = row.shownCount
-        return when {
-            working > 0 -> "$working working"
-            chats == 1 -> "1 chat"
-            chats > 1 -> "$chats chats"
-            else -> "Idle"
-        }
-    }
+    /** The count beside a shortcut's working glyph: from two on, as the glyph alone already says one. */
+    fun workingCount(working: Int): String? = working.takeIf { it >= 2 }?.toString()
+
+    /** What a shortcut's working glyph, with its count, says to accessibility services. */
+    fun workingLabel(working: Int): String = if (working == 1) "1 agent working" else "$working agents working"
 }
 
 object NewChatHomeTags {
     const val COMPOSER = "new_chat_composer"
     const val PROJECT_SHORTCUT = "new_chat_project_shortcut"
+    const val WORKING = "new_chat_project_working"
+    const val WORKING_COUNT = "new_chat_project_working_count"
     const val PROJECTS_NOTE = "new_chat_projects_note"
 }
 
@@ -203,9 +203,9 @@ internal fun HomeBlockView(block: HomeBlock, nowMillis: Long, actions: HomeBlock
 }
 
 /**
- * A Project pinned to the New Chat pane: its icon in its colour on a tint of it, as the Project's own view heads it;
- * its name; and what is working in it — the working glyph in the Project's colour and "2 working" — or how many chats
- * it holds. An unread Project carries the unread dot where the glyph would be, a failed one the red dot. While the
+ * A Project pinned to the New Chat pane: its icon in its colour on a tint of it, as the Project's own view heads it,
+ * with the working glyph in the Project's colour across from it while anything in it works (see [WorkingCount]); and
+ * its name. An unread Project carries the unread dot where the glyph would be, a failed one the red dot. While the
  * shortcuts are being [arranging], each shows its grip there instead, and the one [lifted] under the finger its edge
  * drawn stronger. What it does when touched is [ProjectShortcutGrid]'s.
  */
@@ -225,21 +225,27 @@ internal fun ProjectShortcut(row: AgentRow, modifier: Modifier = Modifier, arran
             Spacer(Modifier.weight(1f))
             when {
                 arranging -> Icon(CursorIcons.GripVertical, null, tint = if (lifted) colors.iconSecondary else colors.iconTertiary, modifier = Modifier.size(16.dp))
-                row.workingCount > 0 -> RunningGlyph(size = 16.dp, color = tone)
+                row.workingCount > 0 -> WorkingCount(row.workingCount, tone)
                 row.indicator == AgentIndicator.Unread -> Dot(colors.unreadDot, size = CursorDimens.recentDot)
                 row.indicator == AgentIndicator.Error -> Dot(colors.red, size = CursorDimens.recentDot)
             }
         }
         Spacer(Modifier.height(12.dp))
         Text(agent.name, style = type.rowMedium, color = colors.textPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis)
-        Spacer(Modifier.height(2.dp))
-        Text(
-            NewChatHomeCopy.status(row),
-            style = type.small,
-            color = if (row.workingCount > 0) colors.textSecondary else colors.textTertiary,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
+    }
+}
+
+/** The working glyph in [tone], with how many chats are [working] before it in the same tone once there are two. */
+@Composable
+private fun WorkingCount(working: Int, tone: Color) {
+    val label = NewChatHomeCopy.workingLabel(working)
+    Row(Modifier.testTag(NewChatHomeTags.WORKING).semantics { contentDescription = label }, verticalAlignment = Alignment.CenterVertically) {
+        NewChatHomeCopy.workingCount(working)?.let { count ->
+            // Said once, in the label: the digit alone would be read out after it.
+            Text(count, style = CursorTheme.typography.small, color = tone, maxLines = 1, modifier = Modifier.testTag(NewChatHomeTags.WORKING_COUNT).clearAndSetSemantics {})
+            Spacer(Modifier.width(4.dp))
+        }
+        RunningGlyph(size = 16.dp, color = tone)
     }
 }
 
