@@ -1,6 +1,8 @@
 package com.cursorforandroid.screenshots
 
 import android.content.Context
+import android.view.ViewConfiguration
+import androidx.compose.foundation.Canvas
 import androidx.activity.ComponentActivity
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
@@ -12,6 +14,10 @@ import androidx.compose.material3.LocalRippleConfiguration
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.lerp
+import androidx.compose.ui.test.hasAnyDescendant
+import androidx.compose.ui.test.hasScrollToIndexAction
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.isSelected
@@ -20,6 +26,8 @@ import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.performTouchInput
+import androidx.compose.ui.unit.dp
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.cursorforandroid.AppGraph
@@ -39,6 +47,7 @@ import com.cursorforandroid.ui.navigation.SidebarRail
 import com.cursorforandroid.ui.settings.NewChatHomePickerCopy
 import com.cursorforandroid.ui.settings.NewChatHomePickerTags
 import com.cursorforandroid.ui.settings.SettingsScreen
+import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.ui.theme.ThemeMode
 import com.cursorforandroid.util.AppClock
@@ -60,10 +69,12 @@ import java.util.Locale
 import java.util.TimeZone
 
 /**
- * The New chat page setting: the New Chat pane under each layout — the recent chats, and the Projects pinned as
- * shortcuts — on a phone and beside the sidebar on a tablet, dark and light; the Projects layout's two notes; and
- * Settings' picker with each layout chosen, its miniatures drawn from the same account, on both widths and in both
- * themes, then with Extended mode off. The account is [NewChatHomeFixtures]' (five Projects and the chats of its
+ * The New chat page setting: the New Chat pane under each layout — the recent chats, the Projects pinned as
+ * shortcuts, and the composer alone — on a phone and beside the sidebar on a tablet, dark and light, what does not
+ * fill the pane in its middle; the Projects layout's two notes; the recent chats' cards and the shortcuts inset alike
+ * from the composer's sides (drawn as guides); a shortcut's long-press menu, and the shortcuts being arranged; and
+ * Settings' picker with each layout chosen, its three miniatures drawn from the same account, on both widths and in
+ * both themes, then with Extended mode off. The account is [NewChatHomeFixtures]' (five Projects and the chats of its
  * own) over the demo session, whose catalogue fills the composer's chips on the page and in the miniatures alike.
  */
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalRoborazziApi::class)
@@ -156,6 +167,9 @@ class NewChatHomeScreenshotTest {
         tablet: Boolean = false,
         list: AgentListUiState = NewChatHomeFixtures.list(),
         projectsAvailable: Boolean = true,
+        rowActions: AgentRowActions = ROW_ACTIONS,
+        onReorderProjects: ((List<String>) -> Unit)? = null,
+        overlay: @Composable () -> Unit = {},
     ) {
         compose.setContent {
             Scene(mode) {
@@ -166,15 +180,17 @@ class NewChatHomeScreenshotTest {
                         onOpenSidebar = if (withHeader) ({}) else null,
                         onOpenAgent = {},
                         onLaunchOpen = {},
-                        rowActions = ROW_ACTIONS,
+                        rowActions = rowActions,
                         modifier = modifier,
                         home = home,
                         projectsAvailable = projectsAvailable,
                         onNewProject = {},
                         onOpenSettings = {},
+                        onReorderProjects = onReorderProjects,
                     )
                 }
                 if (tablet) Tablet(SidebarDestination.NewChat, list) { page(it, false) } else page(Modifier.fillMaxSize(), true)
+                overlay()
             }
         }
         // The first composition in a cold sandbox loads the native renderer and the fonts.
@@ -195,6 +211,77 @@ class NewChatHomeScreenshotTest {
         compose.waitUntil(10_000) { onScreen("Revenue Scaling Pipeline Research") }
         assertThat(shortcuts()).isEqualTo(0)
         capture(frame)
+    }
+
+    /** The composer alone, in the middle of the pane; the chats are the sidebar's (beside it on a tablet). */
+    private fun composerPage(mode: ThemeMode, tablet: Boolean, frame: String) {
+        showPage(NewChatHome.COMPOSER, mode, tablet)
+        assertThat(shortcuts()).isEqualTo(0)
+        if (!tablet) assertThat(onScreen(NewChatHomeFixtures.NEWEST_CHAT)).isFalse()
+        capture(frame)
+    }
+
+    /** The page's list of Project shortcuts, which the touches go to (a tablet's sidebar is a list too). */
+    private fun projectList() = compose.onNode(hasScrollToIndexAction() and hasAnyDescendant(hasTestTag(NewChatHomeTags.PROJECT_SHORTCUT)))
+
+    /** The centre of [name]'s shortcut (not its row in a tablet's sidebar), in [projectList]'s coordinates. */
+    private fun shortcutCentre(name: String): Offset =
+        compose.onNode(hasTestTag(NewChatHomeTags.PROJECT_SHORTCUT) and hasText(name, substring = true)).fetchSemanticsNode().boundsInRoot.center -
+            projectList().fetchSemanticsNode().boundsInRoot.topLeft
+
+    /** Lets [millis] pass a frame at a time, the page laid out after each as it would be on screen. */
+    private fun pass(millis: Long) {
+        var left = millis
+        while (left > 0) {
+            compose.mainClock.advanceTimeBy(minOf(left, FRAME_MILLIS))
+            compose.waitForIdle()
+            left -= FRAME_MILLIS
+        }
+    }
+
+    /** A Project shortcut held for the long-press timeout and let go: its menu, the one its sidebar row has. */
+    private fun projectMenu(mode: ThemeMode, frame: String) {
+        showPage(NewChatHome.PROJECTS, mode, rowActions = PROJECT_ROW_ACTIONS, onReorderProjects = {})
+        compose.waitUntil(10_000) { shortcuts() == 5 }
+        compose.mainClock.autoAdvance = false
+        val at = shortcutCentre(NewChatHomeFixtures.SHIPYARD_NAME)
+        projectList().performTouchInput { down(at) }
+        pass(LONG_PRESS + 100)
+        projectList().performTouchInput { up() }
+        pass(600)
+        assertThat(onScreen(EDIT_PROJECT)).isTrue()
+        capture(frame)
+    }
+
+    /**
+     * Shipyard held twice as long, lifted and carried most of the way to Cursor for Android's slot: the others have
+     * made room, its own slot is marked where it would be dropped, and every shortcut shows its grip.
+     */
+    private fun projectsReordering(mode: ThemeMode, tablet: Boolean, frame: String) {
+        showPage(NewChatHome.PROJECTS, mode, tablet, rowActions = PROJECT_ROW_ACTIONS, onReorderProjects = {})
+        compose.waitUntil(10_000) { shortcuts() == 5 }
+        compose.mainClock.autoAdvance = false
+        val start = shortcutCentre(NewChatHomeFixtures.SHIPYARD_NAME)
+        val carried = lerp(start, shortcutCentre("Cursor for Android"), 0.8f)
+        projectList().performTouchInput { down(start) }
+        pass(2 * LONG_PRESS + 100)
+        projectList().performTouchInput { for (step in 1..8) moveTo(lerp(start, carried, step / 8f)) }
+        pass(800)
+        assertThat(onScreen(EDIT_PROJECT)).isFalse()
+        capture(frame)
+        projectList().performTouchInput { up() }
+    }
+
+    /** Where the composer's sides are (grey), and where the list under it starts, [CursorDimens.recentRowInset] inside them (accent). */
+    @Composable
+    private fun InsetGuides() {
+        val colors = CursorTheme.colors
+        Canvas(Modifier.fillMaxSize()) {
+            for ((inset, color) in listOf(PAGE_SIDE to colors.textTertiary, PAGE_SIDE + CursorDimens.recentRowInset to colors.accent)) {
+                val x = inset.toPx()
+                for (at in listOf(x, size.width - x)) drawLine(color, Offset(at, 0f), Offset(at, size.height), strokeWidth = 1.dp.toPx())
+            }
+        }
     }
 
     @Test
@@ -226,6 +313,54 @@ class NewChatHomeScreenshotTest {
     @Test
     @Config(sdk = [35], qualifiers = TABLET_LIGHT)
     fun projectsTabletLight() = projectsPage(ThemeMode.Light, tablet = true, "270_new_chat_projects_tablet_light")
+
+    @Test
+    fun composerPhoneDark() = composerPage(ThemeMode.Dark, tablet = false, "450_new_chat_composer_phone_dark")
+
+    @Test
+    @Config(sdk = [35], qualifiers = PHONE_LIGHT)
+    fun composerPhoneLight() = composerPage(ThemeMode.Light, tablet = false, "451_new_chat_composer_phone_light")
+
+    @Test
+    @Config(sdk = [35], qualifiers = TABLET_DARK)
+    fun composerTabletDark() = composerPage(ThemeMode.Dark, tablet = true, "452_new_chat_composer_tablet_dark")
+
+    @Test
+    @Config(sdk = [35], qualifiers = TABLET_LIGHT)
+    fun composerTabletLight() = composerPage(ThemeMode.Light, tablet = true, "453_new_chat_composer_tablet_light")
+
+    /** The recent chats' cards and the Project shortcuts start the same way inside the composer's sides. */
+    @Test
+    fun recentInsetGuides() {
+        showPage(NewChatHome.RECENT, overlay = { InsetGuides() })
+        compose.waitUntil(10_000) { onScreen("Revenue Scaling Pipeline Research") }
+        capture("458_new_chat_inset_guides_recent")
+    }
+
+    @Test
+    fun projectsInsetGuides() {
+        showPage(NewChatHome.PROJECTS, overlay = { InsetGuides() })
+        compose.waitUntil(10_000) { shortcuts() == 5 }
+        capture("459_new_chat_inset_guides_projects")
+    }
+
+    @Test
+    fun projectMenuPhoneDark() = projectMenu(ThemeMode.Dark, "460_new_chat_project_menu_phone_dark")
+
+    @Test
+    @Config(sdk = [35], qualifiers = PHONE_LIGHT)
+    fun projectMenuPhoneLight() = projectMenu(ThemeMode.Light, "461_new_chat_project_menu_phone_light")
+
+    @Test
+    fun projectsReorderingPhoneDark() = projectsReordering(ThemeMode.Dark, tablet = false, "462_new_chat_projects_reordering_phone_dark")
+
+    @Test
+    @Config(sdk = [35], qualifiers = PHONE_LIGHT)
+    fun projectsReorderingPhoneLight() = projectsReordering(ThemeMode.Light, tablet = false, "463_new_chat_projects_reordering_phone_light")
+
+    @Test
+    @Config(sdk = [35], qualifiers = TABLET_DARK)
+    fun projectsReorderingTabletDark() = projectsReordering(ThemeMode.Dark, tablet = true, "464_new_chat_projects_reordering_tablet_dark")
 
     /** Projects chosen with Extended mode off: the note and its way to Settings, the recent chats under it. */
     @Test
@@ -277,11 +412,13 @@ class NewChatHomeScreenshotTest {
         capture(frame)
     }
 
-    private fun projectsChosen(mode: ThemeMode, tablet: Boolean, frame: String) {
+    private fun layoutChosen(home: NewChatHome, mode: ThemeMode, tablet: Boolean, frame: String) {
         showSettings(mode, tablet)
-        choose(NewChatHome.PROJECTS)
+        choose(home)
         capture(frame)
     }
+
+    private fun projectsChosen(mode: ThemeMode, tablet: Boolean, frame: String) = layoutChosen(NewChatHome.PROJECTS, mode, tablet, frame)
 
     @Test
     fun settingsRecentPhoneDark() = recentChosen(ThemeMode.Dark, tablet = false, "273_settings_new_chat_recent_phone_dark")
@@ -313,6 +450,21 @@ class NewChatHomeScreenshotTest {
     @Config(sdk = [35], qualifiers = TABLET_LIGHT)
     fun settingsProjectsTabletLight() = projectsChosen(ThemeMode.Light, tablet = true, "280_settings_new_chat_projects_tablet_light")
 
+    @Test
+    fun settingsComposerPhoneDark() = layoutChosen(NewChatHome.COMPOSER, ThemeMode.Dark, tablet = false, "454_settings_new_chat_composer_phone_dark")
+
+    @Test
+    @Config(sdk = [35], qualifiers = PHONE_LIGHT)
+    fun settingsComposerPhoneLight() = layoutChosen(NewChatHome.COMPOSER, ThemeMode.Light, tablet = false, "455_settings_new_chat_composer_phone_light")
+
+    @Test
+    @Config(sdk = [35], qualifiers = TABLET_DARK)
+    fun settingsComposerTabletDark() = layoutChosen(NewChatHome.COMPOSER, ThemeMode.Dark, tablet = true, "456_settings_new_chat_composer_tablet_dark")
+
+    @Test
+    @Config(sdk = [35], qualifiers = TABLET_LIGHT)
+    fun settingsComposerTabletLight() = layoutChosen(NewChatHome.COMPOSER, ThemeMode.Light, tablet = true, "457_settings_new_chat_composer_tablet_light")
+
     /** Outside the demo with Extended mode off: Projects chosen, its miniature the note over the recent chats, and the row saying why. */
     @Test
     fun settingsProjectsNeedExtendedMode() {
@@ -327,6 +479,15 @@ class NewChatHomeScreenshotTest {
         /** The demo session's own account, as the shell shows it. */
         val DEMO_USER = CursorUser("Demo", "demo@cursor.local", "Demo", "User", null)
         val ROW_ACTIONS = AgentRowActions({}, {}, {}, {}, { _, _ -> }, { _, _ -> }, {})
+
+        /** As the shell hands the page its rows' actions: a Project's menu leads with Edit Project. */
+        val PROJECT_ROW_ACTIONS = AgentRowActions({}, {}, {}, {}, { _, _ -> }, { _, _ -> }, {}, onEditProject = {})
+        const val EDIT_PROJECT = "Edit Project"
+        const val FRAME_MILLIS = 16L
+        val LONG_PRESS = ViewConfiguration.getLongPressTimeout().toLong()
+
+        /** The pane's list stands this far in from its sides; the composer fills what is left. */
+        val PAGE_SIDE = 16.dp
 
         /** The chip the demo account's newest chat puts on a new chat's composer: the page has settled once it reads this. */
         const val MODEL_CHIP = "Claude Fable 5.1"

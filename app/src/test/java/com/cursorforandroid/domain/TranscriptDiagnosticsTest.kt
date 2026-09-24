@@ -243,4 +243,38 @@ class TranscriptDiagnosticsTest {
         assertThat(report).contains("  open /tmp/reel_frames_s.jpg list=loaded(212) vm=/tmp/reel_frames_s.jpg→NotFound [POST /aiserver.v1.BackgroundComposerService/ReadBinaryFile → HTTP 404 not_found \"File not found\"] repo=skipped (outside the workspace) result=NotFound")
         assertThat(render()).doesNotContain("files:")
     }
+
+    /** The section the Tab S8's report lacked: every figure's source, state, step, wait and sizes, and where the account's calls queue. */
+    @Test
+    fun `the media block names each figure's source, how its read stands, how long it waited and why it failed`() {
+        val media = listOf(
+            MediaLine("store", "transcript-store-images.png", "loading", "link", 12_400, "1600x840", null, 1, null),
+            MediaLine("https:github.com", "demo.gif", "ready", "decode", 830, "1600x840", "480x270", 1, null),
+            MediaLine("machine", "reel_frames_s.jpg", "timed_out", "machine", 60_000, "1600x840", null, 2, "This image took too long to load · No answer after 60s — stuck reading it from the agent's machine."),
+            MediaLine("store", "bc-bae107cb-2562-40b2-b814-4f8eca874668-shot.png", "left", "store", 41_000, "1600x840", null, 1, null),
+        )
+        val report = TranscriptDiagnostics.render(
+            TranscriptDiagnostics.Input(
+                appVersion = "0.3.89",
+                nowIso = "2026-09-24T04:00:00Z",
+                extendedMode = true,
+                agentId = "bc-bae107cb-2562-40b2-b814-4f8eca874668",
+                agent = null,
+                state = TranscriptDiagnostics.State(items, runStatus = RunStatus.FINISHED),
+                media = media,
+                throttle = "control 3/3 +7 waiting · blobs 8/8 +142 waiting · watch 1/2 · media 1/4",
+            ),
+        )
+        assertThat(report).contains("media: 4 figures loading=1 ready=1 timed_out=1 left=1")
+        assertThat(report).contains("  store transcript-store-images.png state=loading stage=link waitedMs=12400 asked=1600x840 decoded=- attempts=1\n")
+        assertThat(report).contains("  https:github.com demo.gif state=ready stage=decode waitedMs=830 asked=1600x840 decoded=480x270 attempts=1\n")
+        assertThat(report).contains("  machine reel_frames_s.jpg state=timed_out stage=machine waitedMs=60000 asked=1600x840 decoded=- attempts=2 error=\"This image took too long to load · No answer after 60s — stuck reading it from the agent's machine.\"")
+        assertThat(report).contains("  store bc-….png state=left stage=store waitedMs=41000")
+        assertThat(report).contains("throttle: control 3/3 +7 waiting · blobs 8/8 +142 waiting · watch 1/2 · media 1/4")
+
+        // Printed with nothing to say too, so a report without the section predates it.
+        val quiet = render()
+        assertThat(quiet).contains("media: no figures asked for this session")
+        assertThat(quiet).contains("throttle: -")
+    }
 }

@@ -404,6 +404,9 @@ class AgentsViewModel(
     /** Folds a sidebar group closed or open, remembered on the device across restarts (see [AgentListUiState.collapsedSections]). */
     fun setSectionCollapsed(sectionKey: String, collapsed: Boolean) = viewModelScope.launch { graph.prefs.setSidebarSectionCollapsed(sectionKey, collapsed) }
 
+    /** The Projects arranged on the New Chat page, first to last; the sidebar's Projects group follows (see [LocalAgentState.projectOrder]). */
+    fun setProjectOrder(ids: List<String>) = viewModelScope.launch { graph.prefs.setProjectOrder(ids) }
+
     /** Marks every loaded conversation read at its current `updatedAt`, the same stamp opening a chat would write. */
     fun markAllRead() = viewModelScope.launch {
         val agents = graph.agents.state.value.agents

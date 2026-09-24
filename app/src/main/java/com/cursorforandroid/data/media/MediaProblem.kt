@@ -63,6 +63,14 @@ sealed interface MediaProblem {
         override val asked: String? = null,
     ) : MediaProblem
 
+    /** No answer within the load's deadline; [stage] is where the read was when it was given up on (see [MediaStage]). */
+    data class TimedOut(val stage: MediaStage, val seconds: Long) : MediaProblem {
+        override val title: String get() = "This image took too long to load"
+        override val detail: String get() = "No answer after ${seconds}s — stuck ${stage.words.replaceFirstChar { it.lowercase() }}."
+        override val retryable: Boolean get() = true
+        override val openable: Boolean get() = false
+    }
+
     /** The agent's machine is not running: waking it (`WakeBackgroundComposer`) and reading again is the way on. */
     data class MachineAsleep(override val asked: String? = null) : MediaProblem {
         override val title: String get() = "The agent's machine is asleep"

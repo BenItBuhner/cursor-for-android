@@ -210,6 +210,24 @@ data class TranscriptLoadDiagnostics(
     data class LiveStreamLine(val events: Int, val status: String, val reconnecting: Boolean, val expired: Boolean, val finished: Boolean, val items: Int)
 }
 
+/**
+ * One figure of the chat asked for this session (see `MediaLoads`): its source ([kind] — `store`, `workspace`,
+ * `machine`, `artifact`, `https:<host>`, `data-uri`, `local`), its file name, how the read stands ([state] `loading`,
+ * `ready`, `failed`, `timed_out`, `left` when the row went away first) and the step it is at or ended on, how long it
+ * has waited or took, the size asked for and the size decoded, the attempts, and why it failed.
+ */
+data class MediaLine(
+    val kind: String,
+    val label: String,
+    val state: String,
+    val stage: String,
+    val waitedMs: Long,
+    val asked: String,
+    val decoded: String?,
+    val attempts: Int,
+    val error: String?,
+)
+
 object TranscriptDiagnostics {
 
     /** The conversation's state, in the facts the report prints. */
@@ -252,6 +270,10 @@ object TranscriptDiagnostics {
          * Paths are the agent's own, not anything anyone wrote.
          */
         val fileReads: List<String> = emptyList(),
+        /** The chat's figures asked for this session (see [MediaLine]). */
+        val media: List<MediaLine> = emptyList(),
+        /** Where the account's calls wait, lane by lane (`ApiThrottle.describe`); null when the account client was never built. */
+        val throttle: String? = null,
     )
 
     /** The decision the conversation screen makes, spelled out: which of its three words fired. */
@@ -296,6 +318,7 @@ object TranscriptDiagnostics {
             appendLine("files: ${input.fileReads.size} opened")
             input.fileReads.forEach { appendLine("  ${redactIds(it)}") }
         }
+        describeMedia(input.media, input.throttle)
         val decision = decide(agent, state.items, state.recordProjectMode)
         appendLine("classification: ${if (decision.coordinatorMode) "COORDINATOR" else "agent"} listProject=${decision.listProject} recordProjectMode=${decision.recordProjectMode} content=${decision.content}" + (if (decision.evidence.isNotEmpty()) " evidence=${decision.evidence.joinToString(",")}" else ""))
         val presented = CoordinatorTranscript.present(state.items, decision.coordinatorMode)
@@ -349,6 +372,23 @@ object TranscriptDiagnostics {
         )
         appendLine("errors: last=${load.lastError?.let { "\"${redact(it)}\"" } ?: "-"} transcript=${load.transcriptError?.let { "\"${redact(it)}\"" } ?: "-"} transcriptUnavailable=${load.transcriptUnavailable}")
         if (load.shapes.isNotEmpty()) describe(load.shapes)
+    }
+
+    /**
+     * Always printed, so a report without it predates it: the chat's figures by state, then one line each, then
+     * where the account's calls wait — which says whether a picture that never came was queued, stuck on a step, or
+     * refused, and for how long.
+     */
+    private fun StringBuilder.describeMedia(media: List<MediaLine>, throttle: String?) {
+        val counts = media.groupingBy { it.state }.eachCount().entries.joinToString(" ") { (state, n) -> "$state=$n" }
+        appendLine("media: ${if (media.isEmpty()) "no figures asked for this session" else "${media.size} figures $counts"}")
+        media.forEach { m ->
+            appendLine(
+                "  ${m.kind} ${redactIds(m.label).take(80)} state=${m.state} stage=${m.stage} waitedMs=${m.waitedMs} asked=${m.asked} decoded=${m.decoded ?: "-"} attempts=${m.attempts}" +
+                    (m.error?.let { " error=\"${redact(it)}\"" } ?: ""),
+            )
+        }
+        appendLine("throttle: ${throttle ?: "-"}")
     }
 
     /**
