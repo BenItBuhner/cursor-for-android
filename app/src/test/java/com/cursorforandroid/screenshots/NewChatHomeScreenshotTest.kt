@@ -315,52 +315,52 @@ class NewChatHomeScreenshotTest {
     fun projectsTabletLight() = projectsPage(ThemeMode.Light, tablet = true, "270_new_chat_projects_tablet_light")
 
     @Test
-    fun composerPhoneDark() = composerPage(ThemeMode.Dark, tablet = false, "339_new_chat_composer_phone_dark")
+    fun composerPhoneDark() = composerPage(ThemeMode.Dark, tablet = false, "450_new_chat_composer_phone_dark")
 
     @Test
     @Config(sdk = [35], qualifiers = PHONE_LIGHT)
-    fun composerPhoneLight() = composerPage(ThemeMode.Light, tablet = false, "340_new_chat_composer_phone_light")
+    fun composerPhoneLight() = composerPage(ThemeMode.Light, tablet = false, "451_new_chat_composer_phone_light")
 
     @Test
     @Config(sdk = [35], qualifiers = TABLET_DARK)
-    fun composerTabletDark() = composerPage(ThemeMode.Dark, tablet = true, "341_new_chat_composer_tablet_dark")
+    fun composerTabletDark() = composerPage(ThemeMode.Dark, tablet = true, "452_new_chat_composer_tablet_dark")
 
     @Test
     @Config(sdk = [35], qualifiers = TABLET_LIGHT)
-    fun composerTabletLight() = composerPage(ThemeMode.Light, tablet = true, "342_new_chat_composer_tablet_light")
+    fun composerTabletLight() = composerPage(ThemeMode.Light, tablet = true, "453_new_chat_composer_tablet_light")
 
     /** The recent chats' cards and the Project shortcuts start the same way inside the composer's sides. */
     @Test
     fun recentInsetGuides() {
         showPage(NewChatHome.RECENT, overlay = { InsetGuides() })
         compose.waitUntil(10_000) { onScreen("Revenue Scaling Pipeline Research") }
-        capture("347_new_chat_inset_guides_recent")
+        capture("458_new_chat_inset_guides_recent")
     }
 
     @Test
     fun projectsInsetGuides() {
         showPage(NewChatHome.PROJECTS, overlay = { InsetGuides() })
         compose.waitUntil(10_000) { shortcuts() == 5 }
-        capture("348_new_chat_inset_guides_projects")
+        capture("459_new_chat_inset_guides_projects")
     }
 
     @Test
-    fun projectMenuPhoneDark() = projectMenu(ThemeMode.Dark, "349_new_chat_project_menu_phone_dark")
+    fun projectMenuPhoneDark() = projectMenu(ThemeMode.Dark, "460_new_chat_project_menu_phone_dark")
 
     @Test
     @Config(sdk = [35], qualifiers = PHONE_LIGHT)
-    fun projectMenuPhoneLight() = projectMenu(ThemeMode.Light, "350_new_chat_project_menu_phone_light")
+    fun projectMenuPhoneLight() = projectMenu(ThemeMode.Light, "461_new_chat_project_menu_phone_light")
 
     @Test
-    fun projectsReorderingPhoneDark() = projectsReordering(ThemeMode.Dark, tablet = false, "351_new_chat_projects_reordering_phone_dark")
+    fun projectsReorderingPhoneDark() = projectsReordering(ThemeMode.Dark, tablet = false, "462_new_chat_projects_reordering_phone_dark")
 
     @Test
     @Config(sdk = [35], qualifiers = PHONE_LIGHT)
-    fun projectsReorderingPhoneLight() = projectsReordering(ThemeMode.Light, tablet = false, "352_new_chat_projects_reordering_phone_light")
+    fun projectsReorderingPhoneLight() = projectsReordering(ThemeMode.Light, tablet = false, "463_new_chat_projects_reordering_phone_light")
 
     @Test
     @Config(sdk = [35], qualifiers = TABLET_DARK)
-    fun projectsReorderingTabletDark() = projectsReordering(ThemeMode.Dark, tablet = true, "353_new_chat_projects_reordering_tablet_dark")
+    fun projectsReorderingTabletDark() = projectsReordering(ThemeMode.Dark, tablet = true, "464_new_chat_projects_reordering_tablet_dark")
 
     /** Projects chosen with Extended mode off: the note and its way to Settings, the recent chats under it. */
     @Test
@@ -451,19 +451,19 @@ class NewChatHomeScreenshotTest {
     fun settingsProjectsTabletLight() = projectsChosen(ThemeMode.Light, tablet = true, "280_settings_new_chat_projects_tablet_light")
 
     @Test
-    fun settingsComposerPhoneDark() = layoutChosen(NewChatHome.COMPOSER, ThemeMode.Dark, tablet = false, "343_settings_new_chat_composer_phone_dark")
+    fun settingsComposerPhoneDark() = layoutChosen(NewChatHome.COMPOSER, ThemeMode.Dark, tablet = false, "454_settings_new_chat_composer_phone_dark")
 
     @Test
     @Config(sdk = [35], qualifiers = PHONE_LIGHT)
-    fun settingsComposerPhoneLight() = layoutChosen(NewChatHome.COMPOSER, ThemeMode.Light, tablet = false, "344_settings_new_chat_composer_phone_light")
+    fun settingsComposerPhoneLight() = layoutChosen(NewChatHome.COMPOSER, ThemeMode.Light, tablet = false, "455_settings_new_chat_composer_phone_light")
 
     @Test
     @Config(sdk = [35], qualifiers = TABLET_DARK)
-    fun settingsComposerTabletDark() = layoutChosen(NewChatHome.COMPOSER, ThemeMode.Dark, tablet = true, "345_settings_new_chat_composer_tablet_dark")
+    fun settingsComposerTabletDark() = layoutChosen(NewChatHome.COMPOSER, ThemeMode.Dark, tablet = true, "456_settings_new_chat_composer_tablet_dark")
 
     @Test
     @Config(sdk = [35], qualifiers = TABLET_LIGHT)
-    fun settingsComposerTabletLight() = layoutChosen(NewChatHome.COMPOSER, ThemeMode.Light, tablet = true, "346_settings_new_chat_composer_tablet_light")
+    fun settingsComposerTabletLight() = layoutChosen(NewChatHome.COMPOSER, ThemeMode.Light, tablet = true, "457_settings_new_chat_composer_tablet_light")
 
     /** Outside the demo with Extended mode off: Projects chosen, its miniature the note over the recent chats, and the row saying why. */
     @Test
