@@ -6,8 +6,8 @@ package com.cursorforandroid.domain
  * its display name; picking it sets the composer's model with its parameters). What was typed narrows them fuzzily:
  * each word must begin a word of the model's display name, id or an alias, in any order and case — "opus 4",
  * "Opus 4.7", "5.5", "gpt-5.5", `5-5` read as `5.5` ([ModelSlugs.words]) — or the whole of it, spaces and dots
- * aside, must stand in the name ("opus47"). Words the name has no use for are read as the model's own parameter
- * words ("opus 4.7 max fast"), through the same normaliser the rest of the app places model ids with
+ * aside, must run on from one of the name's words ("opus47"). Words the name has no use for are read as the model's
+ * own parameter words ("opus 4.7 max fast"), through the same normaliser the rest of the app places model ids with
  * ([ModelSlugs.resolve]), and pick the variant they spell; the last one may still be half typed. At least one word
  * has to name the model.
  */
@@ -46,8 +46,14 @@ object ModelSearch {
                 variantSpelled(models, model, settled)?.let { return it }
             }
         }
-        if (compact.length >= 2 && (compact(model.displayName).contains(compact) || compact(model.id).contains(compact))) return model.choice(current)
+        if (compact.length >= 2 && (runsFromWord(model.displayName, compact) || runsFromWord(model.id, compact))) return model.choice(current)
         return null
+    }
+
+    /** Whether [compact] runs on from the start of one of [text]'s words: "opus55" in "Claude Opus 5.5", not "de" in "Claude". */
+    private fun runsFromWord(text: String, compact: String): Boolean {
+        val words = ModelSlugs.words(text)
+        return words.indices.any { i -> compact(words.drop(i).joinToString("")).startsWith(compact) }
     }
 
     /**

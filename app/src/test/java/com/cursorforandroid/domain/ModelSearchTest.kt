@@ -58,6 +58,9 @@ class ModelSearchTest {
     fun `a word that names nothing on a model leaves it out, and Auto is never listed`() {
         assertThat(ids("opus rewrite")).isEmpty()
         assertThat(ids("goal fix")).isEmpty()
+        // Letters inside a word are not a name: "de" in "Claude" or "codex", as "/de" is on its way to "/debug".
+        assertThat(ids("de")).isEmpty()
+        assertThat(ids("dex")).isEmpty()
         assertThat(ids("auto")).isEmpty()
         assertThat(ids("")).doesNotContain("auto-smart")
     }
