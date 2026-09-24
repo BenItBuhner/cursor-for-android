@@ -116,6 +116,7 @@ import com.cursorforandroid.ui.panel.LocalPanelGraph
 import com.cursorforandroid.ui.panel.PanelViewModel
 import com.cursorforandroid.ui.panel.SidePanel
 import com.cursorforandroid.ui.panel.rememberPanelActions
+import com.cursorforandroid.ui.panel.rememberPanelTabStates
 import com.cursorforandroid.ui.panel.rememberSidePanelState
 import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
@@ -375,6 +376,7 @@ fun ConversationScreen(
     // toward the start edge across the chat; it is per chat, like the view model behind it.
     val panelViewModel: PanelViewModel = viewModel(key = "panel-$agentId", factory = PanelViewModel.Factory(graph, agentId))
     val panelState = rememberSidePanelState()
+    val panelTabs = rememberPanelTabStates()
     val panel by panelViewModel.state.collectAsStateWithLifecycle()
     val panelActions = rememberPanelActions(panelViewModel, onToast = viewModel::showMessage, onOpenAgent = onOpenAgent, onAskToCopyFile = if (isDemo) null else viewModel::askToCopyFileIntoWorkspace)
     ChatKeyboardShortcuts(agentId, viewModel, panelState)
@@ -431,7 +433,7 @@ fun ConversationScreen(
             // The panel's figures — generated images, recordings, artifacts — resolve through the same media context and
             // open into the same viewer as the transcript's, among the same pages.
             CompositionLocalProvider(LocalMarkdownMedia provides markdownMedia, LocalPanelGraph provides graph, LocalRunStopConfirmation provides stopConfirmation) {
-                ConversationPanel(panel, panelActions, onClose = { scope.launch { panelState.close() } })
+                ConversationPanel(panel, panelActions, onClose = { scope.launch { panelState.close() } }, tabStates = panelTabs)
             }
         },
     ) {

@@ -22,11 +22,13 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.MutableState
+import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.SaveableStateHolder
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.setValue
@@ -70,7 +72,8 @@ import kotlinx.coroutines.launch
  * Project's chats, the chat's own sections (Details), then one tab for each thing opened from them: another chat, a
  * Context document, a file, a picture or a recording — and the selected tab's body under it. The panel opens on its
  * home tab, the Project where there is one; back walks the tabs back to it (see [PanelViewModel.back]), and from
- * there closes the panel. Each tab keeps its scroll and what it opened while another shows.
+ * there closes the panel. Each tab keeps its scroll and what it opened while another shows, and while the panel is put
+ * away, as long as [tabStates] outlasts it.
  */
 @Composable
 fun ConversationPanel(
@@ -79,6 +82,7 @@ fun ConversationPanel(
     onClose: () -> Unit,
     modifier: Modifier = Modifier,
     registry: PanelRegistry = remember { PanelRegistry.default() },
+    tabStates: PanelTabStates = rememberPanelTabStates(),
 ) {
     // Whether the chat has artifacts decides whether the Artifacts section is there at all, so the list is asked for
     // as the panel opens rather than when a section is; the view model asks once.
@@ -89,16 +93,8 @@ fun ConversationPanel(
     // Off its home tab, back is the panel's: to the tab the reader came from. At home it is the host's, and shuts the
     // panel. Pinned beside the chat the panel is a pane of the layout, like the rail, and back is the chat's.
     BackHandler(enabled = !LocalPanelPinned.current && current.key != state.homeTab.key, onBack = actions::back)
-    val tabStates = rememberSaveableStateHolder()
-    val kept = remember { HashSet<String>() }
     val keys = strip.map { it.key }
-    // A tab taken off the strip takes what it kept with it: reopened, it starts afresh.
-    LaunchedEffect(keys) {
-        val open = keys.toSet()
-        kept.filterNot { it in open }.forEach(tabStates::removeState)
-        kept.retainAll(open)
-        kept.addAll(open)
-    }
+    LaunchedEffect(keys) { tabStates.keepOnly(keys.toSet()) }
     val menu = remember(state.hasProjectTab, DefaultPanelSections.canStartSideChat(state.capabilities, state), actions) {
         buildList {
             if (state.hasProjectTab) add(StripAction("All files", CursorIcons.Folder) { actions.openProject(allFiles = true) })
@@ -132,7 +128,7 @@ fun ConversationPanel(
         )
         CompositionLocalProvider(LocalMarkdownMedia provides rememberPanelMedia(state.agentId, actions)) {
             Box(Modifier.fillMaxSize()) {
-                tabStates.SaveableStateProvider(current.key) {
+                tabStates.holder.SaveableStateProvider(current.key) {
                     when (current) {
                         PanelTab.Project -> ProjectTabContent(state, actions)
                         PanelTab.Details -> DetailsTab(state, actions, registry)
@@ -145,6 +141,29 @@ fun ConversationPanel(
             }
         }
     }
+}
+
+/**
+ * What each of the panel's tabs keeps — its scroll, what it unfolded — for as long as whoever remembers this is
+ * composed. The chat holds it rather than the panel, whose content is composed only while it can be seen: shut and
+ * opened again, or put away as a foldable folds and brought back as it unfolds, a tab comes back as it was left. A tab
+ * taken off the strip takes what it kept with it, and reopened starts afresh.
+ */
+@Stable
+class PanelTabStates internal constructor(internal val holder: SaveableStateHolder) {
+    private val kept = HashSet<String>()
+
+    internal fun keepOnly(open: Set<String>) {
+        kept.filterNot { it in open }.forEach(holder::removeState)
+        kept.retainAll(open)
+        kept.addAll(open)
+    }
+}
+
+@Composable
+fun rememberPanelTabStates(): PanelTabStates {
+    val holder = rememberSaveableStateHolder()
+    return remember(holder) { PanelTabStates(holder) }
 }
 
 /**
