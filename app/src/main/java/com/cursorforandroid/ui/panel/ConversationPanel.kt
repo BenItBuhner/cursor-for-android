@@ -3,6 +3,7 @@ package com.cursorforandroid.ui.panel
 import android.content.Intent
 import android.os.Build
 import android.widget.Toast
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -45,8 +46,9 @@ import kotlinx.coroutines.launch
 
 /**
  * The panel's contents: a header row, then the sections the chat has something for ([PanelRegistry.shown]) as
- * collapsible groups — or, while a file is open from Files or Changes, the file viewer in their place. A section
- * whose read is under way or failed says so under its header; one with nothing to show is not there.
+ * collapsible groups — or, while a file is open from Files or Changes, the file viewer in their place, which back
+ * closes before it closes the panel. A section whose read is under way or failed says so under its header; one with
+ * nothing to show is not there.
  */
 @Composable
 fun ConversationPanel(
@@ -66,6 +68,9 @@ fun ConversationPanel(
     // runs edge to edge behind them.
     Column(modifier.fillMaxSize().panelInsetPadding().testTag("conversation-panel")) {
         if (file != null) {
+            // A file opened from Files or Changes is a page within the panel: back returns to the sections it was
+            // opened from before it closes the panel.
+            BackHandler(onBack = actions::closeFile)
             FileViewerScreen(file, onBack = actions::closeFile, onOpenUrl = actions::openUrl, onRetry = actions::retryFile, onAskToCopy = actions::askToCopyFile)
             return@Column
         }

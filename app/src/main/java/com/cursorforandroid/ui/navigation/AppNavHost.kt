@@ -178,8 +178,11 @@ internal fun AppShell(
     // it has. A callback that trusted its captured "a chat is on top" then swapped the New Chat root out for the new
     // chat, cleared its view models — and with them the launch in flight — and left the chat with nothing under it.
     /**
-     * Opens a chat. A Project's row is its coordinator's chat — the Project is that conversation, with its primaries,
-     * context and actions in the chat's right-side panel — so every row, Project or not, opens the same way.
+     * Opens a chat from the screen on top — a worker's row or a subagent in the transcript, the panel's Project
+     * section or side chats, a link to another chat, the chat a send from the New Chat pane launched — so back returns
+     * to that screen as it was left (see [NavStack.open]). A Project's row is its coordinator's chat — the Project is
+     * that conversation, with its primaries, context and actions in the chat's right-side panel — so every chat,
+     * Project or not, opens the same way.
      */
     fun openAgent(id: String) {
         closeDrawer()
@@ -188,11 +191,30 @@ internal fun AppShell(
         leaveSidebar()
     }
 
-    fun openRow(row: AgentRow) = openAgent(row.agent.id)
-
     fun navigateTop(screen: Screen) {
         closeDrawer()
         stack.resetTo(screen)
+        leaveSidebar()
+    }
+
+    /**
+     * Switches to a chat picked from the top level: the sidebar, the New Chat pane's lists, a notification, a widget,
+     * a launcher shortcut, a link from outside the app. It sits on the New Chat pane rather than on whatever was
+     * showing, which it has nothing to do with; back from it is the pane, never a trail the reader already left by
+     * going to the sidebar, and one reached from outside has the pane under it to go back to instead of leaving the
+     * app. Picked again, a chat still on the stack comes back as it was left (see [NavStack.resetTo]).
+     */
+    fun switchToAgent(id: String) = navigateTop(Screen.Agent(id))
+
+    fun openRow(row: AgentRow) = switchToAgent(row.agent.id)
+
+    /**
+     * Settings, over whatever is on top — from the sidebar's account row, the New Chat pane, the Extended mode notice:
+     * a detour the reader comes back from, so back from it is the chat (or pane) they left, not the New Chat pane.
+     */
+    fun openSettings() {
+        closeDrawer()
+        stack.open(Screen.Settings)
         leaveSidebar()
     }
 
@@ -211,7 +233,7 @@ internal fun AppShell(
     /** The What's new page, over whatever is on top — Settings' row or the sidebar's card is where it was asked for. */
     fun openWhatsNew() {
         closeDrawer()
-        if (stack.top.screen != Screen.WhatsNew) stack.push(Screen.WhatsNew)
+        stack.open(Screen.WhatsNew)
         leaveSidebar()
     }
 
@@ -228,8 +250,10 @@ internal fun AppShell(
 
     LaunchedEffect(deepLinkAgentId) {
         deepLinkAgentId?.let { id ->
-            // A Project's rolled-up notification names the Project: that is its coordinator's chat, like any other id.
-            openAgent(id)
+            // A notification, a widget's row, a launcher shortcut, a link from another app: entered from outside, the
+            // chat gets the New Chat pane under it. A Project's rolled-up notification names the Project: that is its
+            // coordinator's chat, like any other id.
+            switchToAgent(id)
             onDeepLinkConsumed()
         }
     }
@@ -286,7 +310,7 @@ internal fun AppShell(
         ExtendedModeUpgradeNotice(
             onOpenSettings = {
                 scope.launch { graph.extendedMode.dismissNotice() }
-                navigateTop(Screen.Settings)
+                openSettings()
             },
             onDismiss = { scope.launch { graph.extendedMode.dismissNotice() } },
         )
@@ -340,7 +364,7 @@ internal fun AppShell(
             searchRequests = searchRequests,
             callbacks = SidebarCallbacks(
                 onNewChat = ::startNewChat,
-                onSettings = { navigateTop(Screen.Settings) },
+                onSettings = ::openSettings,
                 onWhatsNew = ::openWhatsNew,
                 onCustomize = { customizeOpen = true },
                 onToggleSidebar = if (inDrawer) ({ closeDrawer() }) else ({ sidebarCollapsed = true; shortLists.reset() }),
@@ -384,7 +408,7 @@ internal fun AppShell(
                         home = pane.newChatHome,
                         projectsAvailable = pane.projectsAvailable,
                         onNewProject = pane.onNewProject,
-                        onOpenSettings = { navigateTop(Screen.Settings) },
+                        onOpenSettings = ::openSettings,
                         onReorderProjects = pane.onReorderProjects,
                     )
                     Screen.Settings -> SettingsScreen(
@@ -452,7 +476,8 @@ internal fun AppShell(
         CustomizeSheet(viewModel = agentsViewModel, onDismiss = { customizeOpen = false })
     }
     projectEditor?.let { target ->
-        ProjectEditorHost(graph, target, onOpenAgent = ::openAgent, onDismiss = { projectEditor = null })
+        // Asked for from the sidebar or the New Chat pane: a Project created here is a new top-level chat.
+        ProjectEditorHost(graph, target, onOpenAgent = ::switchToAgent, onDismiss = { projectEditor = null })
     }
 
     val shareOffer by graph.share.offer.collectAsStateWithLifecycle()
@@ -475,7 +500,7 @@ internal fun AppShell(
                 onPickChat = { row ->
                     agentsViewModel.markRead(row.agent)
                     graph.share.setTarget(ShareTarget.Chat(row.agent.id))
-                    openAgent(row.agent.id)
+                    switchToAgent(row.agent.id)
                 },
                 onRefresh = agentsViewModel::refresh,
                 onDismiss = graph.share::clear,
