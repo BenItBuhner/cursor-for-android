@@ -707,7 +707,7 @@ fun ConversationScreen(
             unavailable = picker.unavailable,
             onPlanMode = viewModel::setPlanMode,
             onAutoCreatePr = null,
-            onRetry = viewModel::refreshModels,
+            onRefresh = viewModel::refreshModels,
             onSelect = viewModel::selectModel,
             onDismiss = { modelSheet = false },
             pinnedIds = picker.pinnedModelIds,
