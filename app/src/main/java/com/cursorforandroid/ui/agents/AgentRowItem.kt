@@ -52,6 +52,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.cursorforandroid.domain.AgentIndicator
+import com.cursorforandroid.domain.AgentListOrganizer
 import com.cursorforandroid.domain.AgentRow
 import com.cursorforandroid.domain.EnvType
 import com.cursorforandroid.domain.ListPreferences
@@ -275,7 +276,7 @@ private fun ChildrenToggle(row: AgentRow, expanded: Boolean, onToggle: () -> Uni
 /** Levels past this share the last indent: a deeper tree is still readable at the sidebar's width. */
 private const val MAX_INDENT_DEPTH = 3
 
-/** Pin / rename / link / snooze / archive — the long-press menu on a sidebar or recent-chat row. */
+/** Pin / rename / link / snooze / archive — the long-press menu on a sidebar or recent-chat row; a Project's has no pin. */
 @Composable
 fun ChatOverflowMenu(
     row: AgentRow,
@@ -289,7 +290,7 @@ fun ChatOverflowMenu(
     val uriHandler = LocalUriHandler.current
     val agent = row.agent
     CursorMenu(expanded = expanded, onDismissRequest = onDismiss) {
-        CursorMenuItem(if (row.isPinned) "Unpin" else "Pin", CursorIcons.Pin) { onDismiss(); actions.onTogglePin(row) }
+        if (AgentListOrganizer.canPin(agent)) CursorMenuItem(if (row.isPinned) "Unpin" else "Pin", CursorIcons.Pin) { onDismiss(); actions.onTogglePin(row) }
         val editProject = actions.onEditProject?.takeIf { agent.isProjectRoot }
         if (editProject != null) CursorMenuItem("Edit Project", CursorIcons.Pencil) { onDismiss(); editProject(row) }
         if (actions.onRename != null && editProject == null) CursorMenuItem("Rename", CursorIcons.Pencil) { onRename() }
