@@ -11,6 +11,7 @@ import com.cursorforandroid.domain.AgentStoreRef
 import com.cursorforandroid.domain.Artifact
 import com.cursorforandroid.domain.Capabilities
 import com.cursorforandroid.domain.DesktopFailure
+import com.cursorforandroid.domain.StorePath
 import com.cursorforandroid.domain.ToolPayload
 import com.cursorforandroid.domain.TranscriptContent
 
@@ -68,8 +69,10 @@ interface PanelActions {
     fun copyText(text: String, confirmation: String = "Copied")
     fun shareText(text: String)
     fun openArtifact(artifact: Artifact)
-    /** Navigates to another chat — a subagent, a Project's primary or its coordinator, a side chat; a no-op where the host cannot navigate. */
+    /** Opens another chat — a subagent, a Project's primary or its coordinator, a side chat — as a tab of the panel. */
     fun openAgent(agentId: String)
+    /** Navigates to another chat in place of this one; a no-op where the host cannot navigate. */
+    fun openAgentAsChat(agentId: String) = openAgent(agentId)
     /** The panel's own toast. */
     fun notify(message: String)
     /** The reader opened or closed a section; remembered for the panel's life (see `PanelState.expandedSections`). */
@@ -113,32 +116,30 @@ interface PanelActions {
     /** Wakes the chat's machine ahead of a follow-up. */
     fun wake()
 
-    // -- the panel's surfaces and tabs (see PanelSurface, PanelTab) ----------------------------------------------------
+    // -- the panel's tabs (see PanelTab) ------------------------------------------------------------------------------
 
-    /** The Project panel or the chat's sections. */
-    fun showSurface(surface: PanelSurface)
-    fun selectTab(tab: PanelTab)
-    /** Closes a document or side chat tab; the Project tab stays. */
-    fun closeTab(tab: PanelTab)
-    /** Opens the side chat [agentId] beside this conversation, as a tab of the Project panel. */
-    fun openSideChat(agentId: String)
-    /** Opens [path] of [store] as a document tab (Preview for markdown, Source for the rest). */
-    fun openDocument(store: AgentStoreRef, path: String)
-    /** The Project tab, on its notes ([allFiles] false) or its files ([allFiles] true): the header's toggle. */
-    fun openProject(allFiles: Boolean)
-    /** The chat's sections with [section] open: where a pill above the composer sends the reader. */
-    fun showSection(section: PanelSectionId)
-
-    // -- Context: the Project's Agent Store and the user's (Extended mode) ---------------------------------------------
-
-    /** Reads which stores the chat has, the Project's notes and the Recents row; folders are listed as they are opened. */
-    fun loadContext(force: Boolean = false)
-    /** Opens or closes a folder of the All Files tree, listing it on first open. */
-    fun toggleFolder(store: AgentStoreRef, path: String)
-    /** Reads (or re-reads) the document behind [tab]. */
-    fun loadDocument(tab: PanelTab.Document, force: Boolean = false)
-    /** Preview (rendered markdown) or Source (the text) for a document tab. */
-    fun setDocumentSource(tab: PanelTab.Document, source: Boolean)
+    /** Shows [tab]. */
+    fun selectTab(tab: PanelTab) = Unit
+    /** Takes a closable tab off the strip; the tab the reader was on before it shows, or the home tab. */
+    fun closeTab(tab: PanelTab) = Unit
+    /** Back within the panel: off a tab to the one the reader came from, and from there to the home tab. */
+    fun back() = Unit
+    /** Opens [path] of a Context store as a document tab. */
+    fun openDocument(store: AgentStoreRef, path: String) = Unit
+    /** Opens a picture or a recording as a tab of its own. */
+    fun openMedia(src: String, name: String, isVideo: Boolean = false) = Unit
+    /**
+     * A store path a link inside the panel names: its picture or recording as a media tab, a file of a store the chat
+     * can read as a document tab; [otherwise] where no store of the chat's holds it.
+     */
+    fun openStorePath(path: StorePath, chatAgentId: String, otherwise: () -> Unit) = otherwise()
+    /** The Project tab, on its notes or, with [allFiles], on its files. */
+    fun openProject(allFiles: Boolean) = Unit
+    /** Reads the Context the Project tab shows: the stores, the notes, the roots' listings, Recents. */
+    fun loadContext(force: Boolean = false) = Unit
+    fun toggleFolder(store: AgentStoreRef, path: String) = Unit
+    fun loadDocument(tab: PanelTab.Document, force: Boolean = false) = Unit
+    fun setDocumentSource(tab: PanelTab.Document, source: Boolean) = Unit
 
     companion object {
         /** Does nothing; for previews and tests of the sections' rendering. */
@@ -178,17 +179,6 @@ interface PanelActions {
             override fun resumeRun() = Unit
             override fun stopRun() = Unit
             override fun wake() = Unit
-            override fun showSurface(surface: PanelSurface) = Unit
-            override fun selectTab(tab: PanelTab) = Unit
-            override fun closeTab(tab: PanelTab) = Unit
-            override fun openSideChat(agentId: String) = Unit
-            override fun openDocument(store: AgentStoreRef, path: String) = Unit
-            override fun openProject(allFiles: Boolean) = Unit
-            override fun showSection(section: PanelSectionId) = Unit
-            override fun loadContext(force: Boolean) = Unit
-            override fun toggleFolder(store: AgentStoreRef, path: String) = Unit
-            override fun loadDocument(tab: PanelTab.Document, force: Boolean) = Unit
-            override fun setDocumentSource(tab: PanelTab.Document, source: Boolean) = Unit
         }
     }
 }

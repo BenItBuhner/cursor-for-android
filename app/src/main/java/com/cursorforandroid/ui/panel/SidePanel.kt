@@ -5,6 +5,7 @@ import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.animation.core.Easing
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animate
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
@@ -27,6 +28,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.derivedStateOf
@@ -205,24 +207,33 @@ fun SidePanelHost(
 /** The width the panel takes on a screen of [maxWidth]: most of a phone, a column on anything wider. */
 fun panelWidthFor(maxWidth: Dp): Dp = minOf(maxWidth - PanelMargin, PanelMaxWidth)
 
-/** A host that sizes the panel to its window — the whole window when [expanded], the panel's expand control; see [SidePanelHost]. */
+/**
+ * A host that sizes the panel to its window; see [SidePanelHost]. Where the window has room to spare beside the
+ * panel's column, the panel can be widened over the chat from its strip ([LocalPanelExpand]), as cursor.com's expand
+ * control does; put away, it comes back at its column's width. The surface is the chat's canvas, as the web's panel is.
+ */
 @Composable
 fun SidePanel(
     state: SidePanelState,
     modifier: Modifier = Modifier,
     gesturesEnabled: Boolean = true,
-    expanded: Boolean = false,
-    containerColor: Color = CursorTheme.colors.sidebar,
     panelContent: @Composable () -> Unit,
     content: @Composable () -> Unit,
 ) {
     BoxWithConstraints(modifier) {
+        val column = panelWidthFor(maxWidth)
+        val full = maxWidth - PanelMargin
+        val canExpand = full - column >= ExpandGain
+        var expanded by rememberSaveable { mutableStateOf(false) }
+        LaunchedEffect(state.isVisible) { if (!state.isVisible) expanded = false }
+        val width by animateDpAsState(if (expanded && canExpand) full else column, tween(SlideMillis, easing = SlideEasing), label = "panel-width")
+        val expand = remember(canExpand, expanded) { PanelExpand(available = canExpand, expanded = expanded && canExpand, toggle = { expanded = !expanded }) }
         SidePanelHost(
             state = state,
-            panelWidth = if (expanded) maxWidth else panelWidthFor(maxWidth),
+            panelWidth = width,
             gesturesEnabled = gesturesEnabled,
-            containerColor = containerColor,
-            panelContent = panelContent,
+            containerColor = CursorTheme.colors.canvas,
+            panelContent = { CompositionLocalProvider(LocalPanelExpand provides expand, content = panelContent) },
             content = content,
         )
     }
@@ -491,6 +502,8 @@ private const val ClosePanel = "Dismiss panel"
 /** What the panel leaves of the screen beside it, so the transcript stays visible as context. */
 private val PanelMargin = 48.dp
 private val PanelMaxWidth = 400.dp
+/** The least a widened panel must gain over its column for the strip to offer widening at all. */
+private val ExpandGain = 120.dp
 
 private const val SlideMillis = 300
 private const val MinSlideMillis = 100
