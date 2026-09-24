@@ -22,8 +22,8 @@ import com.cursorforandroid.domain.SlashCommands
  */
 
 /**
- * The tint: the Plan pill's ([pillTint] of [ModePills.Pill.Plan]) in the theme in force — the amber `charts.yellow`
- * of Cursor Dark on the dark and OLED themes, its deepened counterpart on the light — so a command and the mode
+ * The tint: the Plan pill's ([pillTint] of [ModePills.Pill.Plan]) in the theme in force — the desktop's `yellow`
+ * on the dark and OLED themes and on the light — so a command and the mode
  * pill a command can become read as one thing, and the shade moves with the pill's if the pill's ever does.
  */
 @Composable

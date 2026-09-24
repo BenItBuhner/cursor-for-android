@@ -27,7 +27,7 @@ import com.cursorforandroid.ui.theme.CursorTheme
 /**
  * The slash commands the composer wears as pills instead of text, as cursor.com/agents does: `/multitask`, which
  * still travels in the prompt as its token, and the modes — `/plan`, which is plan mode (`mode: "plan"` on the run),
- * and in Extended mode `/ask` and `/debug`, which are `agent.v1.AgentMode` ASK and DEBUG on the account's follow-up —
+ * and in Extended mode `/ask` and `/debug`, which are `agent.v1.AgentMode` ASK and DEBUG on the account's start and follow-up —
  * none of which travels as text at all. They are settings of one slot — a run is planned, or answers, or debugs, or
  * fans out to subagents, not two of those — so turning any on takes the others off, and the composer only ever wears one.
  *
@@ -37,12 +37,12 @@ import com.cursorforandroid.ui.theme.CursorTheme
  * skill or a machine command stay in the text, painted as commands in the Plan pill's tint ([slashCommandTint]).
  */
 object ModePills {
-    /** A pill: the slash command it stands for, and the word on it. */
-    enum class Pill(val command: String, val label: String) {
-        Multitask(SlashCommands.MULTITASK, "Multitask"),
-        Plan(SlashCommands.PLAN, "Plan"),
-        Ask(SlashCommands.ASK, "Ask"),
-        Debug(SlashCommands.DEBUG, "Debug"),
+    /** A pill: the slash command it stands for, the word on it, and the line the desktop's mode menu gives it (3.21.18 `modeConfig.js`). */
+    enum class Pill(val command: String, val label: String, val description: String) {
+        Multitask(SlashCommands.MULTITASK, "Multitask", "Orchestrate multiple subagents in parallel"),
+        Plan(SlashCommands.PLAN, "Plan", "Generate an implementation plan"),
+        Ask(SlashCommands.ASK, "Ask", "Answer questions without making edits"),
+        Debug(SlashCommands.DEBUG, "Debug", "Pinpoint the root cause of an issue"),
         ;
 
         /** The mode a pill asks the run for; null for Multitask, which rides in the text instead. */
@@ -60,7 +60,22 @@ object ModePills {
         companion object {
             /** The pill for a mode the owner holds; null for none, and for a mode the composer has no pill for. */
             fun of(mode: AgentMode?): Pill? = entries.firstOrNull { it.agentMode != null && it.agentMode == mode }
+
+            /** The order the desktop lists the modes in, and Shift+Tab steps through them (3.21.18 `Ans`: plan, debug, multitask, chat). */
+            val desktopOrder: List<Pill> = listOf(Plan, Debug, Multitask, Ask)
         }
+    }
+
+    /**
+     * The mode Shift+Tab moves to from [current], as the desktop's "Cycle Mode" does: no mode, then each of
+     * [desktopOrder] this composer can wear ([available]), then no mode again. A pill that is not in the cycle
+     * starts it over at its first mode. Null when there is nothing to cycle through.
+     */
+    fun next(current: Pill?, available: (Pill) -> Boolean): Pill? {
+        val cycle = listOf<Pill?>(null) + Pill.desktopOrder.filter(available)
+        if (cycle.size == 1) return null
+        val at = cycle.indexOf(current)
+        return if (at < 0) cycle[1] else cycle[(at + 1) % cycle.size]
     }
 
     /** What the field shows of the owner's value, and whether the Multitask pill is on. */
@@ -153,45 +168,34 @@ object ModePills {
     }
 }
 
-/**
- * The violet cursor.com/agents paints its Multitask pill in, measured off the official capture: glyph, label and
- * cross at #A296EC on a 12 % wash of the same over the composer's surface (the wash reads #272532 on #181818, as
- * the reference does). Not the theme's `purple` — the Anysphere mauve, #B48EAD — which is grey at that alpha. The
- * light theme keeps the hue two steps darker so the label holds its contrast on the light surface.
+/*
+ * The desktop's own colour for each mode (3.21.18 `modeConfig.js`: Plan `yellow`, Debug `red`, Ask `green`, Multitask
+ * `purple`), as its glass themes define those tokens: `cursor-dark` and `cursor-light` in OKLCH, which come out in sRGB
+ * as the Cursor Dark and Cursor Light themes' `charts.yellow`, `terminal.ansiRed`, `terminal.ansiGreen` and
+ * `charts.purple`. The `/commands` in the reader's text are painted in Plan's ([slashCommandTint]), so a command and
+ * the pill a command can become read as one thing.
  */
-internal val PillVioletDark = Color(0xFFA296EC)
-internal val PillVioletLight = Color(0xFF6A5ACD)
+internal val PillPurpleDark = Color(0xFF9386F2)
+internal val PillPurpleLight = Color(0xFF7565CC)
+internal val PillYellowDark = Color(0xFFF1B467)
+internal val PillYellowLight = Color(0xFFA46700)
+internal val PillGreenDark = Color(0xFF3FA266)
+internal val PillGreenLight = Color(0xFF007041)
+internal val PillRedDark = Color(0xFFFC6B83)
+internal val PillRedLight = Color(0xFFBE1744)
 
-/**
- * Plan mode's amber: Cursor Dark Anysphere's own `charts.yellow` (#F1B467). The `/commands` in the reader's text are
- * painted in this same tint ([slashCommandTint]) — in the composer and wherever the message is shown after it — so a
- * command and the pill a command can become read as one thing. The light theme takes the light theme's counterpart
- * (#A46700) deepened to #8F5C00, the lightest step at which the label clears 4.5:1 on its wash.
- */
-internal val PillAmberDark = Color(0xFFF1B467)
-internal val PillAmberLight = Color(0xFF8F5C00)
-
-/** Ask mode's blue: the theme's `charts.blue` line (#82AAFF), deepened for the light surface the same way. */
-internal val PillBlueDark = Color(0xFF82AAFF)
-internal val PillBlueLight = Color(0xFF2456B8)
-
-/** Debug mode's teal: `charts.green` at its cooler end (#5FD3B3), so it reads apart from the git-added green of the diffs. */
-internal val PillTealDark = Color(0xFF5FD3B3)
-internal val PillTealLight = Color(0xFF0F766E)
-
-/** How much of its tint a pill's wash carries over the surface, dark or light. */
+/** How much of its tint a pill's wash carries over the surface, dark or light: the desktop's `color-mix(… 12%, transparent)`. */
 private const val PillWashAlpha = 0.12f
 
-/** A pill's tint in the theme in force: Multitask the web's violet, Plan the theme's amber, Ask blue, Debug teal. */
+/** A pill's tint in the theme in force: Multitask purple, Plan yellow, Ask green, Debug red, as the desktop paints them. */
 @Composable
-internal fun pillTint(pill: ModePills.Pill): Color {
-    val dark = CursorTheme.colors.isDark
-    return when (pill) {
-        ModePills.Pill.Multitask -> if (dark) PillVioletDark else PillVioletLight
-        ModePills.Pill.Plan -> if (dark) PillAmberDark else PillAmberLight
-        ModePills.Pill.Ask -> if (dark) PillBlueDark else PillBlueLight
-        ModePills.Pill.Debug -> if (dark) PillTealDark else PillTealLight
-    }
+internal fun pillTint(pill: ModePills.Pill): Color = pillTint(pill, CursorTheme.colors.isDark)
+
+internal fun pillTint(pill: ModePills.Pill, dark: Boolean): Color = when (pill) {
+    ModePills.Pill.Multitask -> if (dark) PillPurpleDark else PillPurpleLight
+    ModePills.Pill.Plan -> if (dark) PillYellowDark else PillYellowLight
+    ModePills.Pill.Ask -> if (dark) PillGreenDark else PillGreenLight
+    ModePills.Pill.Debug -> if (dark) PillRedDark else PillRedLight
 }
 
 /**
@@ -221,7 +225,7 @@ fun ModePill(pill: ModePills.Pill, onClear: () -> Unit, modifier: Modifier = Mod
     }
 }
 
-private val ModePills.Pill.icon: ImageVector
+internal val ModePills.Pill.icon: ImageVector
     get() = when (this) {
         ModePills.Pill.Multitask -> CursorIcons.Multitask
         ModePills.Pill.Plan -> CursorIcons.Plan

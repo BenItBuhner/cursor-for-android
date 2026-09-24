@@ -334,12 +334,12 @@ class ComposerPillsTest {
 
         field.performTextInput("ship it")
         compose.waitForIdle()
-        assertThat(pixelsOfTintInField(PillAmberDark)).isEqualTo(0)
+        assertThat(pixelsOfTintInField(PillYellowDark)).isEqualTo(0)
 
         field.performTextClearance()
         field.performTextInput("/goal ship it")
         compose.waitForIdle()
-        assertThat(pixelsOfTintInField(PillAmberDark)).isGreaterThan(0)
+        assertThat(pixelsOfTintInField(PillYellowDark)).isGreaterThan(0)
         // The pill's tint and no other: the brand orange the commands once wore is gone from the field.
         assertThat(pixelsOfTintInField(Color(0xFFF54E00))).isEqualTo(0)
     }
@@ -350,8 +350,8 @@ class ComposerPillsTest {
 
         field.performTextInput("/review ship it")
         compose.waitForIdle()
-        assertThat(pixelsOfTintInField(PillAmberLight)).isGreaterThan(0)
-        assertThat(pixelsOfTintInField(PillAmberDark)).isEqualTo(0)
+        assertThat(pixelsOfTintInField(PillYellowLight)).isGreaterThan(0)
+        assertThat(pixelsOfTintInField(PillYellowDark)).isEqualTo(0)
     }
 
     @Test
@@ -362,8 +362,8 @@ class ComposerPillsTest {
         field.performTextInput("/review ship it")
         compose.waitForIdle()
         // The pill's label is drawn in its tint; the field's command in the same one — the two are one thing.
-        assertThat(pixelsOfTint(compose.onNode(hasText("Plan")).fetchSemanticsNode().boundsInWindow, PillAmberDark)).isGreaterThan(0)
-        assertThat(pixelsOfTintInField(PillAmberDark)).isGreaterThan(0)
+        assertThat(pixelsOfTint(compose.onNode(hasText("Plan")).fetchSemanticsNode().boundsInWindow, PillYellowDark)).isGreaterThan(0)
+        assertThat(pixelsOfTintInField(PillYellowDark)).isGreaterThan(0)
     }
 
     /** Pixels inside the field whose colour is [tint], the glyphs of a command being drawn in it (see [pixelsOfTint]). */
