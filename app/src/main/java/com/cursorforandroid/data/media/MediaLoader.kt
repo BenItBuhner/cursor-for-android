@@ -32,18 +32,41 @@ import com.cursorforandroid.domain.FileFormat
 import com.cursorforandroid.domain.MediaRef
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.runInterruptible
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okio.Path.Companion.toOkioPath
 import java.io.File
+import java.io.FileOutputStream
 import java.io.IOException
 import java.security.MessageDigest
 
 /** A frame from early in a video plus its length; [frame] is null when the file could not be probed. */
 class VideoPoster(val frame: Bitmap?, val durationMs: Long?)
+
+/** Hears a transfer's bytes as they arrive: [read] so far of [total], which is -1 when the source does not say. Called on a worker thread. */
+fun interface TransferProgress {
+    fun onBytes(read: Long, total: Long)
+}
+
+val NoProgress = TransferProgress { _, _ -> }
+
+/** The first [max] bytes of a file, for telling its format by its magic numbers. Blocking. */
+internal fun File.head(max: Int = 4096): ByteArray = inputStream().use { input ->
+    val buffer = ByteArray(max)
+    var filled = 0
+    while (filled < max) {
+        val n = input.read(buffer, filled, max - filled)
+        if (n < 0) break
+        filled += n
+    }
+    buffer.copyOf(filled)
+}
 
 /**
  * Fetches the pixels behind a [MediaRef]. Images go through Coil (downsampling to the requested bounds, memory and
@@ -80,6 +103,8 @@ class MediaLoader(
         .build()
 
     private val posters = LruCache<String, VideoPoster>(12)
+
+    private val copyLocks = List(COPY_LOCK_STRIPES) { Mutex() }
 
     /** Every figure asked for with a chat named, and how its read went: the transcript diagnostics' `media:` section. */
     val loads = MediaLoads()
@@ -210,9 +235,49 @@ class MediaLoader(
      * The bytes behind [ref] as a file of this app's cache (`cache/media/`), for handing to another app — the share
      * sheet, a viewer, the gallery — through the `FileProvider`. Fetched once per artifact and kept while it is among
      * the most recently used ([MEDIA_MAX_BYTES]); a copy already there is answered without a request. [fileName] gives
-     * the copy its name and so its type, as the other app reads it.
+     * the copy its name and so its type, as the other app reads it. [onProgress] hears a download's bytes as they
+     * arrive, on a worker thread (the total is -1 when the server does not say it).
+     *
+     * One fetch per copy at a time: a second caller for the same copy waits for the first and is answered its file.
      */
-    suspend fun file(ref: MediaRef, fileName: String): File = onMain { named { materialize(ref, fileName) } }
+    suspend fun file(ref: MediaRef, fileName: String, onProgress: TransferProgress = NoProgress): File =
+        onMain { named { materialize(ref, fileName, onProgress = onProgress) } }
+
+    /**
+     * Runs [block] on the bytes behind [ref] as a whole file of this device, and says whether they had to be fetched
+     * for it. A file already whole here is used where it is, with no request and no copy: a file of this device's own
+     * ([MediaRef.Local]), the copy [file] keeps, or a fetched picture's original bytes in the image cache (held open
+     * for [block], so the cache cannot drop them mid-read). Otherwise the bytes are fetched as [file] fetches them.
+     */
+    suspend fun <T> withFile(ref: MediaRef, fileName: String, onProgress: TransferProgress = NoProgress, block: suspend (file: File, fetched: Boolean) -> T): T = onMain {
+        val onDisk = named { wholeOnDisk(ref, fileName) }
+        if (onDisk != null) {
+            try {
+                return@onMain block(onDisk.file, false)
+            } finally {
+                onDisk.release()
+            }
+        }
+        block(named { materialize(ref, fileName, onProgress = onProgress) }, true)
+    }
+
+    private class OnDisk(val file: File, val release: () -> Unit = {})
+
+    private suspend fun wholeOnDisk(ref: MediaRef, fileName: String): OnDisk? = withContext(Dispatchers.IO) {
+        if (ref is MediaRef.Local) File(ref.path).takeIf { it.isFile && it.length() > 0L }?.let { return@withContext OnDisk(it) }
+        copyFor(ref, fileName).takeIf { it.isFile && it.length() > 0L }?.let {
+            it.setLastModified(System.currentTimeMillis())
+            return@withContext OnDisk(it)
+        }
+        if (ref !is MediaRef.Remote && ref !is MediaRef.Artifact) return@withContext null
+        val snapshot = imageLoader.diskCache?.openSnapshot(ref.cacheKey) ?: return@withContext null
+        val data = snapshot.data.toFile()
+        // Only the file itself: a wrapper or a web page the decoder was handed is fetched again and named for what it is.
+        if (data.isFile && FileFormat.sniff(data.head())?.isMedia == true) OnDisk(data) { snapshot.close() } else null.also { snapshot.close() }
+    }
+
+    private fun copyFor(ref: MediaRef, fileName: String): File =
+        File(File(context.cacheDir, MEDIA_DIR), "${ref.cacheKey.hashCode().toUInt().toString(16)}-${safeName(fileName)}")
 
     /**
      * Keeps [bytes] — a file the panel or the file viewer already holds — as a file of the cache and answers the
@@ -255,49 +320,122 @@ class MediaLoader(
         }
     }
 
-    private suspend fun materialize(ref: MediaRef, fileName: String, wake: Boolean = false): File = withContext(Dispatchers.IO) {
-        val dir = File(context.cacheDir, MEDIA_DIR).apply { mkdirs() }
-        val target = File(dir, "${ref.cacheKey.hashCode().toUInt().toString(16)}-${safeName(fileName)}")
-        if (target.isFile && target.length() > 0L) {
-            target.setLastModified(System.currentTimeMillis())
-            return@withContext target
-        }
-        val partial = File(dir, "${target.name}.part")
-        try {
-            when (ref) {
-                is MediaRef.Local -> File(ref.path).takeIf { it.isFile }?.copyTo(partial, overwrite = true) ?: throw MediaProblemException(MediaProblem.NotReadable(NOT_ON_DEVICE, null))
-                is MediaRef.Inline -> partial.writeBytes(ref.bytes)
-                is MediaRef.Store -> partial.writeBytes(storeReads().readBytes(ref))
-                is MediaRef.Workspace -> partial.writeBytes(unwrappedFile(workspaceBytes(ref, wake), ref.label))
-                is MediaRef.Remote, is MediaRef.Artifact -> download(resolvePlaybackUrl(ref), partial)
-                is MediaRef.Unavailable -> throw MediaProblemException(MediaProblem.NotReadable("This file isn't available", unavailableDetail(ref)))
+    /**
+     * The copy of [ref] under `cache/media/`, fetched when it is not there yet. Under the copy's lock: two callers
+     * once wrote the same `.part` at once (a second tap on Save while a recording was still coming down), each
+     * truncating the other's bytes, so the first handed the gallery a file with a hole in it and the second found its
+     * `.part` renamed away and failed; only a third tap, with the copy finally whole, went through.
+     */
+    private suspend fun materialize(ref: MediaRef, fileName: String, wake: Boolean = false, onProgress: TransferProgress = NoProgress): File = withContext(Dispatchers.IO) {
+        val target = copyFor(ref, fileName)
+        val dir = target.parentFile!!.apply { mkdirs() }
+        copyLocks[(target.name.hashCode() and Int.MAX_VALUE) % COPY_LOCK_STRIPES].withLock {
+            if (target.isFile && target.length() > 0L) {
+                target.setLastModified(System.currentTimeMillis())
+                return@withLock target
             }
-            if (!partial.renameTo(target)) partial.copyTo(target, overwrite = true)
-            trimCopies(dir, MEDIA_MAX_BYTES, System.currentTimeMillis())
-            target
-        } finally {
-            partial.delete()
+            val partial = File(dir, "${target.name}.part")
+            try {
+                partial.delete()
+                when (ref) {
+                    is MediaRef.Local -> File(ref.path).takeIf { it.isFile }?.copyTo(partial, overwrite = true) ?: throw MediaProblemException(MediaProblem.NotReadable(NOT_ON_DEVICE, null))
+                    is MediaRef.Inline -> partial.writeBytes(ref.bytes)
+                    is MediaRef.Store -> partial.writeBytes(storeReads().readBytes(ref))
+                    is MediaRef.Workspace -> partial.writeBytes(unwrappedFile(workspaceBytes(ref, wake), ref.label))
+                    is MediaRef.Remote, is MediaRef.Artifact -> download(ref, partial, onProgress)
+                    is MediaRef.Unavailable -> throw MediaProblemException(MediaProblem.NotReadable("This file isn't available", unavailableDetail(ref)))
+                }
+                if (partial.length() == 0L) throw MediaProblemException(MediaProblem.Failed("The download was empty."))
+                if (!partial.renameTo(target)) partial.copyTo(target, overwrite = true)
+                trimCopies(dir, MEDIA_MAX_BYTES, System.currentTimeMillis())
+                target
+            } finally {
+                partial.delete()
+            }
         }
     }
 
     /** A workspace file's bytes as they are meant, a wrapper taken off; a pointer or text stays as it came. */
     private fun unwrappedFile(raw: ByteArray, name: String): ByteArray = (FileBytes.of(raw, name) as? FileBytes.Plain)?.bytes ?: raw
 
-    private suspend fun download(url: String, into: File) {
-        if (url.startsWith(ASSET_PREFIX)) {
-            context.assets.open(url.removePrefix(ASSET_PREFIX)).use { input -> into.outputStream().use { input.copyTo(it) } }
-            return
-        }
-        if (url.startsWith("file:")) {
-            File(url.toUri().path ?: throw IOException("Bad file URL")).copyTo(into, overwrite = true)
-            return
-        }
-        okHttp.newCall(Request.Builder().url(url).build()).readCancellably { response ->
-            if (!response.isSuccessful) throw MediaProblemException(MediaProblem.Failed("The download answered ${response.code}."))
-            val body = response.body ?: throw MediaProblemException(MediaProblem.Failed("The download was empty."))
-            into.outputStream().use { body.byteStream().copyTo(it) }
+    /**
+     * The bytes behind a link into [into], whole or not at all. A dropped connection or a server's passing failure
+     * (5xx, 408, 429) is tried again up to [DOWNLOAD_ATTEMPTS] times, picking up where the bytes stopped when the
+     * server takes a `Range`; an artifact's presigned link refused as stale is asked for afresh once; a body shorter
+     * than its `Content-Length` is a failure, never a finished file.
+     */
+    private suspend fun download(ref: MediaRef, into: File, onProgress: TransferProgress) {
+        var url = resolvePlaybackUrl(ref)
+        if (url.startsWith(ASSET_PREFIX) || url.startsWith("file:")) return copyLocal(url, into, onProgress)
+        var refreshed = false
+        var attempt = 1
+        while (true) {
+            try {
+                return transfer(url, into, onProgress)
+            } catch (e: HttpRefusal) {
+                when {
+                    e.code in STALE_URL_CODES && ref is MediaRef.Artifact && !refreshed -> {
+                        refreshed = true
+                        artifacts.invalidate(ref.agentId, ref.path)
+                        url = resolvePlaybackUrl(ref)
+                        into.delete()
+                    }
+                    e.code in TRANSIENT_CODES && attempt < DOWNLOAD_ATTEMPTS -> delay(RETRY_BACKOFF_MS shl (attempt++ - 1))
+                    else -> throw MediaProblemException(MediaProblem.Failed("The download answered ${e.code}.", retryable = e.code in TRANSIENT_CODES), e)
+                }
+            } catch (e: MediaProblemException) {
+                throw e
+            } catch (e: IOException) {
+                if (attempt >= DOWNLOAD_ATTEMPTS) throw e
+                delay(RETRY_BACKOFF_MS shl (attempt++ - 1))
+            }
         }
     }
+
+    private suspend fun copyLocal(url: String, into: File, onProgress: TransferProgress): Unit = withContext(Dispatchers.IO) {
+        if (url.startsWith(ASSET_PREFIX)) {
+            context.assets.open(url.removePrefix(ASSET_PREFIX)).use { input -> into.outputStream().use { input.copyCounting(it, 0L, -1L, onProgress) } }
+        } else {
+            val source = File(url.toUri().path ?: throw IOException("Bad file URL"))
+            source.inputStream().use { input -> into.outputStream().use { input.copyCounting(it, 0L, source.length(), onProgress) } }
+        }
+    }
+
+    /** One request for the rest of [into]: from its end when it has bytes already and the server answers the range. */
+    private suspend fun transfer(url: String, into: File, onProgress: TransferProgress) {
+        val have = if (into.isFile) into.length() else 0L
+        val request = Request.Builder().url(url).apply { if (have > 0L) header("Range", "bytes=$have-") }.build()
+        okHttp.newCall(request).readCancellably { response ->
+            if (response.code == 416 && have > 0L) {
+                into.delete()
+                throw IOException("The download's range was refused.")
+            }
+            if (!response.isSuccessful) throw HttpRefusal(response.code)
+            val body = response.body ?: throw IOException("The download was empty.")
+            val resumed = have > 0L && response.code == 206 && response.header("Content-Range")?.startsWith("bytes $have-") == true
+            val start = if (resumed) have else 0L
+            val length = body.contentLength()
+            val total = if (length >= 0L) start + length else -1L
+            val read = FileOutputStream(into, resumed).use { out -> body.byteStream().use { it.copyCounting(out, start, total, onProgress) } }
+            if (total >= 0L && read != total) throw IOException("The download ended early ($read of $total bytes).")
+        }
+    }
+
+    private fun java.io.InputStream.copyCounting(out: java.io.OutputStream, start: Long, total: Long, onProgress: TransferProgress): Long {
+        val buffer = ByteArray(64 * 1024)
+        var read = start
+        onProgress.onBytes(read, total)
+        while (true) {
+            val n = read(buffer)
+            if (n < 0) break
+            out.write(buffer, 0, n)
+            read += n
+            onProgress.onBytes(read, total)
+        }
+        return read
+    }
+
+    private class HttpRefusal(val code: Int) : IOException("The download answered $code.")
 
     /** Up to [max] bytes behind [url], for looking at what a decoder refused. */
     private suspend fun download(url: String, max: Int): ByteArray {
@@ -535,6 +673,12 @@ class MediaLoader(
         /** What is read again of a response no decoder took, to say what it was: more than any page or wrapper needs. */
         private const val MAX_DIAGNOSE_BYTES = 24 * 1024 * 1024
         private val STALE_URL_CODES = setOf(400, 401, 403, 404)
+        /** A server's passing failures: a download that meets one is tried again, as it is after a dropped connection. */
+        private val TRANSIENT_CODES = setOf(408, 425, 429, 500, 502, 503, 504)
+        /** Tries at a download in all, the first included; the waits between them double from [RETRY_BACKOFF_MS]. */
+        private const val DOWNLOAD_ATTEMPTS = 4
+        private const val RETRY_BACKOFF_MS = 500L
+        private const val COPY_LOCK_STRIPES = 16
         private const val IN_WORKSPACE = "In the agent's workspace"
         private const val ON_MACHINE = "On the agent's machine"
 
