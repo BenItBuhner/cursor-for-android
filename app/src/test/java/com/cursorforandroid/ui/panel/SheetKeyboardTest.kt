@@ -231,15 +231,37 @@ class SheetKeyboardTest {
         assertThat(fieldText(compose.onNodeWithTag(tag))).isEqualTo(Query)
     }
 
+    /**
+     * [commit] a close, then two frames of its slide: the sheet, at [fraction], still on its way shut, and its field
+     * tagged [tag] already let go, the keyboard with it. Checked at the end instead, a panel's field would pass without
+     * ever being let go, having left the composition with the panel.
+     */
+    private fun assertLetGoAsTheSheetStartsSliding(tag: String, fraction: () -> Float, commit: () -> Unit) {
+        compose.mainClock.autoAdvance = false
+        try {
+            commit()
+            compose.mainClock.advanceTimeByFrame()
+            compose.mainClock.advanceTimeByFrame()
+            assertThat(fraction()).isGreaterThan(0f)
+            compose.onNodeWithTag(tag).assertIsNotFocused()
+            assertThat(softInputVisible()).isFalse()
+        } finally {
+            compose.mainClock.autoAdvance = true
+        }
+    }
+
     private val backDispatcher: OnBackPressedDispatcher get() = compose.activity.onBackPressedDispatcher
 
-    /** A predictive back gesture from [edge], reported half-way to its commit and then called off or carried through. */
-    private fun backGesture(edge: Int, commit: Boolean) {
+    /** A predictive back gesture from [edge], reported half-way to its commit and held there. */
+    private fun backHalfWay(edge: Int) {
         backDispatcher.dispatchOnBackStarted(BackEventCompat(0f, replyY, 0f, edge))
         compose.waitForIdle()
         backDispatcher.dispatchOnBackProgressed(BackEventCompat(windowWidth * 0.25f, replyY, 0.5f, edge))
         compose.waitForIdle()
-        if (commit) backDispatcher.onBackPressed() else backDispatcher.dispatchOnBackCancelled()
+    }
+
+    private fun cancelBack() {
+        backDispatcher.dispatchOnBackCancelled()
         compose.waitForIdle()
     }
 
@@ -264,7 +286,6 @@ class SheetKeyboardTest {
 
     private fun release(finish: TouchInjectionScope.() -> Unit = { up() }) {
         compose.onRoot().performTouchInput { finish() }
-        compose.waitForIdle()
     }
 
     /** [drag], then [finish]: a lift, unless told otherwise. */
@@ -481,7 +502,7 @@ class SheetKeyboardTest {
         assertThat(panel.targetValue).isEqualTo(SidePanelValue.Open)
         assertSheetFieldKept("panel-field", panelFieldWatch)
 
-        release()
+        assertLetGoAsTheSheetStartsSliding("panel-field", { panel.fraction }) { release() }
         assertRestsAt(panel, SidePanelValue.Closed)
         assertSheetFieldReleased(panelFieldWatch)
     }
@@ -500,11 +521,17 @@ class SheetKeyboardTest {
         assertRestsAt(panel, SidePanelValue.Open)
         assertSheetFieldKept("panel-field", panelFieldWatch)
 
-        backGesture(BackEventCompat.EDGE_RIGHT, commit = false)
+        // Held half-way, the gesture has committed nothing either way.
+        backHalfWay(BackEventCompat.EDGE_RIGHT)
+        assertThat(panel.fraction).isLessThan(1f)
+        assertThat(panel.targetValue).isEqualTo(SidePanelValue.Open)
+        assertSheetFieldKept("panel-field", panelFieldWatch)
+        cancelBack()
         assertRestsAt(panel, SidePanelValue.Open)
         assertSheetFieldKept("panel-field", panelFieldWatch)
 
-        backGesture(BackEventCompat.EDGE_RIGHT, commit = true)
+        backHalfWay(BackEventCompat.EDGE_RIGHT)
+        assertLetGoAsTheSheetStartsSliding("panel-field", { panel.fraction }) { backDispatcher.onBackPressed() }
         assertRestsAt(panel, SidePanelValue.Closed)
         assertSheetFieldReleased(panelFieldWatch)
     }
@@ -515,16 +542,8 @@ class SheetKeyboardTest {
         show(panel)
         startSearching("panel-field", panelFieldWatch)
 
-        compose.mainClock.autoAdvance = false
-        try {
+        assertLetGoAsTheSheetStartsSliding("panel-field", { panel.fraction }) {
             compose.onNodeWithContentDescription("Dismiss panel").performSemanticsAction(SemanticsActions.OnClick)
-            compose.mainClock.advanceTimeByFrame()
-            compose.mainClock.advanceTimeByFrame()
-            assertThat(panel.fraction).isGreaterThan(0f)
-            compose.onNodeWithTag("panel-field").assertIsNotFocused()
-            assertThat(softInputVisible()).isFalse()
-        } finally {
-            compose.mainClock.autoAdvance = true
         }
         assertRestsAt(panel, SidePanelValue.Closed)
         assertSheetFieldReleased(panelFieldWatch)
@@ -567,7 +586,7 @@ class SheetKeyboardTest {
         assertThat(drawer.targetValue).isEqualTo(DrawerValue.Open)
         assertSheetFieldKept("drawer-search", drawerSearchWatch)
 
-        release()
+        assertLetGoAsTheSheetStartsSliding("drawer-search", { drawer.fraction }) { release() }
         assertRestsAt(drawer, DrawerValue.Closed)
         assertSheetFieldReleased(drawerSearchWatch)
         // Still composed off screen, the search keeps what was typed in it for the drawer's next visit.
@@ -589,11 +608,16 @@ class SheetKeyboardTest {
         assertRestsAt(drawer, DrawerValue.Open)
         assertSheetFieldKept("drawer-search", drawerSearchWatch)
 
-        backGesture(BackEventCompat.EDGE_LEFT, commit = false)
+        backHalfWay(BackEventCompat.EDGE_LEFT)
+        assertThat(drawer.fraction).isLessThan(1f)
+        assertThat(drawer.targetValue).isEqualTo(DrawerValue.Open)
+        assertSheetFieldKept("drawer-search", drawerSearchWatch)
+        cancelBack()
         assertRestsAt(drawer, DrawerValue.Open)
         assertSheetFieldKept("drawer-search", drawerSearchWatch)
 
-        backGesture(BackEventCompat.EDGE_LEFT, commit = true)
+        backHalfWay(BackEventCompat.EDGE_LEFT)
+        assertLetGoAsTheSheetStartsSliding("drawer-search", { drawer.fraction }) { backDispatcher.onBackPressed() }
         assertRestsAt(drawer, DrawerValue.Closed)
         assertSheetFieldReleased(drawerSearchWatch)
     }
@@ -604,16 +628,8 @@ class SheetKeyboardTest {
         show(drawer = drawer)
         startSearching("drawer-search", drawerSearchWatch)
 
-        compose.mainClock.autoAdvance = false
-        try {
+        assertLetGoAsTheSheetStartsSliding("drawer-search", { drawer.fraction }) {
             compose.onNodeWithContentDescription("Close navigation menu").performSemanticsAction(SemanticsActions.OnClick)
-            compose.mainClock.advanceTimeByFrame()
-            compose.mainClock.advanceTimeByFrame()
-            assertThat(drawer.fraction).isGreaterThan(0f)
-            compose.onNodeWithTag("drawer-search").assertIsNotFocused()
-            assertThat(softInputVisible()).isFalse()
-        } finally {
-            compose.mainClock.autoAdvance = true
         }
         assertRestsAt(drawer, DrawerValue.Closed)
         assertSheetFieldReleased(drawerSearchWatch)
