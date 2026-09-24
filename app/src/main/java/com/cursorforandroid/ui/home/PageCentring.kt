@@ -84,6 +84,7 @@ internal fun centredLead(info: LazyListLayoutInfo): Float {
     val items = info.visibleItemsInfo
     val composer = items.firstOrNull { it.key == PageCentring.COMPOSER_KEY } ?: return 0f
     val last = items.last()
-    val spare = if (last.index == info.totalItemsCount - 1) room - (last.offset + last.size - composer.offset) else composer.offset
-    return (spare / 2f).coerceAtLeast(0f)
+    if (last.index == info.totalItemsCount - 1) return ((room - (last.offset + last.size - composer.offset)) / 2f).coerceAtLeast(0f)
+    // Rounded down: a lead of a pixel drawn is a composer a pixel down, and half of it rounded to the nearest is that pixel again.
+    return (composer.offset / 2).coerceAtLeast(0).toFloat()
 }

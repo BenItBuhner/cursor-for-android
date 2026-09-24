@@ -171,6 +171,24 @@ class NewChatHomeCentringTest {
     }
 
     @Test
+    fun `recent chats coming in under a composer alone take it all the way to the top`() {
+        show(NewChatHome.RECENT, list = AgentListUiState())
+        assertCentred()
+        listed = NewChatHomeFixtures.list()
+        compose.waitForIdle()
+        assertThat(composer().top).isWithin(0.5f).of(room().start)
+    }
+
+    @Test
+    @Config(sdk = [35], qualifiers = TABLET)
+    fun `on a tablet too, recent chats coming in take the composer all the way to the top`() {
+        show(NewChatHome.RECENT, list = AgentListUiState(), withHeader = false)
+        listed = NewChatHomeFixtures.list()
+        compose.waitForIdle()
+        assertThat(composer().top).isWithin(0.5f).of(room().start)
+    }
+
+    @Test
     fun `the first frame draws the block where it stays`() {
         compose.mainClock.autoAdvance = false
         setPane(NewChatHome.COMPOSER, NewChatHomeFixtures.list(), withHeader = true)
