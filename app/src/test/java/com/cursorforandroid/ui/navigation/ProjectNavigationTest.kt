@@ -41,7 +41,8 @@ import org.robolectric.annotation.GraphicsMode
 /**
  * A Cursor Project has no screen of its own: its row in the sidebar and a deep link naming it both open the
  * coordinator's chat, and the Project — its primaries, their menus, the coordinator's hands, the shared context —
- * is the Project section of that chat's panel, from where a primary opens in place. Driven through the demo.
+ * is the Project section of that chat's panel, from where a primary opens over the coordinator's chat, and its
+ * own panel's link to the coordinator goes back to it. Driven through the demo.
  */
 @RunWith(AndroidJUnit4::class)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
@@ -93,7 +94,7 @@ class ProjectNavigationTest {
     }
 
     @Test
-    fun `the Project's row opens the coordinator's chat, whose panel carries the Project and opens a primary in place`() {
+    fun `the Project's row opens the coordinator's chat, whose panel carries the Project and opens a primary over it`() {
         enterDemo()
         compose.onNodeWithContentDescription("Open sidebar").performClick()
         compose.waitUntil(30_000) { compose.onAllNodes(sidebarList).fetchSemanticsNodes().isNotEmpty() }
@@ -121,8 +122,8 @@ class ProjectNavigationTest {
         compose.onNodeWithText("Cancel").performClick()
         compose.waitUntil(20_000) { !onScreen("What should this agent do?") }
 
-        // A primary opens in place of the coordinator's chat (the transcript's worker cards name it too; the panel's
-        // row is the one tapped); its own panel points back to the coordinator.
+        // A primary opens over the coordinator's chat (the transcript's worker cards name it too; the panel's row is
+        // the one tapped); its own panel points back to the coordinator.
         compose.onNodeWithTag("panel-sections").performScrollToNode(hasTestTag("project-primary"))
         compose.onNode(hasTestTag("project-primary") and (hasText("Stripe webhook handler", substring = true) or hasAnyDescendant(hasText("Stripe webhook handler", substring = true)))).performClick()
         compose.waitUntil(20_000) { compose.onAllNodes(hasTestTag("conversation-panel")).fetchSemanticsNodes().isEmpty() }
@@ -130,8 +131,19 @@ class ProjectNavigationTest {
         compose.onNodeWithContentDescription("Open panel").performClick()
         compose.waitUntil(20_000) { compose.onAllNodes(hasTestTag("project-coordinator-link")).fetchSemanticsNodes().isNotEmpty() }
         assertThat(onScreen("A primary of this chat")).isTrue()
+        // That link is the way back: the coordinator's chat as it was left, its panel still open on the Project,
+        // not a second copy of it stacked over the primary.
         compose.onNodeWithTag("project-coordinator-link").performClick()
         assertCoordinatorChatOpen()
+        compose.waitUntil(20_000) { compose.onAllNodes(hasTestTag("section-Project")).fetchSemanticsNodes().isNotEmpty() }
+        val dispatcher = compose.activity.onBackPressedDispatcher
+        dispatcher.onBackPressed()
+        compose.waitUntil(20_000) { compose.onAllNodes(hasTestTag("conversation-panel")).fetchSemanticsNodes().isEmpty() }
+        waitForChat("Cesium billing launch")
+        dispatcher.onBackPressed()
+        waitForText("Ask Cursor to build, fix bugs, explore")
+        compose.waitForIdle()
+        assertThat(dispatcher.hasEnabledCallbacks()).isFalse()
     }
 
     @Test
