@@ -22,16 +22,20 @@ import com.cursorforandroid.data.repo.CursorBackend
 import com.cursorforandroid.domain.CursorUser
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.ui.theme.ThemeMode
+import com.cursorforandroid.util.AppClock
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
+import org.junit.After
 import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
+import java.time.LocalDate
+import java.time.ZoneId
 
 /**
  * A group folded in the sidebar stays folded across a restart: the fold goes through the view model to the device's
@@ -51,10 +55,19 @@ class SidebarCollapsePersistenceTest {
 
     @Before
     fun setUp() = runBlocking<Unit> {
+        // Midday, still moving: the demo's chats are minutes to hours old, so just after midnight none would be Today.
+        val midday = LocalDate.now().atTime(12, 0).atZone(ZoneId.systemDefault()).toInstant().toEpochMilli()
+        val offset = midday - System.currentTimeMillis()
+        AppClock.nowMillis = { System.currentTimeMillis() + offset }
         context = ApplicationProvider.getApplicationContext()
         val (demoApi, demoStreamer) = DemoBackendFactory.create()
         graph = AppGraph(context, demo = CursorBackend(demoApi, demoStreamer, isDemo = true))
         graph.session.enterDemo()
+    }
+
+    @After
+    fun tearDown() {
+        AppClock.nowMillis = System::currentTimeMillis
     }
 
     /**
