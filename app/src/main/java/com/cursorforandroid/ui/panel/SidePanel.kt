@@ -369,12 +369,28 @@ class SidePanelState(initialValue: SidePanelValue) {
 
     private val mutex = MutatorMutex()
 
+    /** Counts [jumpTo]s: a slide or fling that began before the latest one no longer moves the sheet. */
+    private var jumps = 0
+
     /** Pinned, the window keeps it open for every chat, as [close] keeps it shut. */
     suspend fun open() = slideTo(SidePanelValue.Open) { pin?.setOpen(true) }
 
     suspend fun close() = slideTo(SidePanelValue.Closed) { pin?.setOpen(false) }
 
     suspend fun toggle() = if (isOpen) close() else open()
+
+    /**
+     * Puts the sheet at [value] in this frame, with no slide: the keyboard's answer (Ctrl+Shift+B, Esc). A slide or a
+     * drag still holding the sheet stops moving it at once, and is cancelled on [scope]. Pinned, the shell is told in
+     * the same frame, as [slideTo]'s heading tells it, or [PinnedPanelSync] would put the panel back where it stood.
+     */
+    fun jumpTo(value: SidePanelValue, scope: CoroutineScope) {
+        jumps++
+        targetValue = value
+        fraction = value.fraction
+        pin?.setOpen(value == SidePanelValue.Open)
+        if (!mutex.tryMutate { }) scope.launch { snapTo(value) }
+    }
 
     /**
      * [heading] runs once the panel is headed for [value] and before it moves: where a pinned panel tells the shell.
@@ -392,7 +408,8 @@ class SidePanelState(initialValue: SidePanelValue) {
                 return@mutate
             }
             val millis = (SlideMillis * distance).roundToInt().coerceIn(MinSlideMillis, SlideMillis)
-            runAnimation { animate(fraction, target, animationSpec = tween(millis, easing = SlideEasing)) { v, _ -> fraction = v } }
+            val jump = jumps
+            runAnimation { animate(fraction, target, animationSpec = tween(millis, easing = SlideEasing)) { v, _ -> if (jumps == jump) fraction = v } }
         }
     }
 
@@ -418,8 +435,9 @@ class SidePanelState(initialValue: SidePanelValue) {
         }
         mutex.mutate {
             targetValue = value
+            val jump = jumps
             runAnimation {
-                animate(fraction, value.fraction, initialVelocity = velocity, animationSpec = FlingSpec) { v, _ -> fraction = v.coerceIn(0f, 1f) }
+                animate(fraction, value.fraction, initialVelocity = velocity, animationSpec = FlingSpec) { v, _ -> if (jumps == jump) fraction = v.coerceIn(0f, 1f) }
             }
         }
     }

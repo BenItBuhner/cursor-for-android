@@ -1,11 +1,13 @@
 package com.cursorforandroid.ui.conversation
 
+import com.cursorforandroid.data.repo.CatchUp
 import com.cursorforandroid.data.repo.ConversationState
 import com.cursorforandroid.domain.ActivityGroup
 import com.cursorforandroid.domain.AssistantMessage
 import com.cursorforandroid.domain.SystemNotification
 import com.cursorforandroid.domain.ThinkingBlock
 import com.cursorforandroid.domain.UserMessage
+import com.cursorforandroid.domain.newMessageCount
 import com.google.common.truth.Truth.assertThat
 import org.junit.Test
 
@@ -25,7 +27,7 @@ class RefreshWordTest {
     fun `the prompts and replies the refresh brought are counted`() {
         val after = before.copy(items = before.items + UserMessage("u2", "More?") + AssistantMessage("a2", "Sure") + ActivityGroup("g2", emptyList()))
         assertThat(RefreshWord.of(before, after)).isEqualTo("2 new")
-        assertThat(RefreshWord.newMessages(emptyList(), after.items)).isEqualTo(4)
+        assertThat(newMessageCount(emptyList(), after.items)).isEqualTo(4)
     }
 
     @Test
@@ -53,5 +55,13 @@ class RefreshWordTest {
     @Test
     fun `a read that did not go through says why`() {
         assertThat(RefreshWord.of(before, before.copy(error = "No connection"))).isEqualTo("No connection")
+    }
+
+    @Test
+    fun `a catch-up's word is its count, or its failure`() {
+        assertThat(RefreshWord.of(CatchUp())).isEqualTo(RefreshWord.UP_TO_DATE)
+        assertThat(RefreshWord.of(CatchUp(changed = true))).isEqualTo(RefreshWord.UP_TO_DATE)
+        assertThat(RefreshWord.of(CatchUp(newMessages = 3, changed = true))).isEqualTo("3 new")
+        assertThat(RefreshWord.of(CatchUp(newMessages = 1, error = "No connection"))).isEqualTo("No connection")
     }
 }

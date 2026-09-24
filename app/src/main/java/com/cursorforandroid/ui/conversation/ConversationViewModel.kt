@@ -795,13 +795,13 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
     private var refreshWordJob: Job? = null
 
     /**
-     * Ctrl+R: the chat brought up to what the server has, then a word on it — "Up to date", "2 new" (see [RefreshWord]).
-     * A press while one is still reading is the same press. This is the chat's refresh until the repository has a
-     * catch-up that reads only what follows the chat's newest event; that call, and its own count, then go here.
+     * Ctrl+R: what the server has that the chat does not, read without reading the chat again from nothing (see
+     * `ConversationRepository.catchUp`), then a word on it — "Up to date", "2 new" (see [RefreshWord]). A press while
+     * one is still reading is the same press.
      */
     fun catchUp() {
         if (refreshWordJob?.isActive == true) return
-        refreshWithWord { graph.conversations.reload(agentId) }
+        refreshWordJob = viewModelScope.launch { toast.value = RefreshWord.of(graph.conversations.catchUp(agentId)) }
     }
 
     /** Ctrl+Shift+R: [reloadTranscript], with [catchUp]'s word once the chat has been read again. */
@@ -812,7 +812,7 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
 
     /**
      * A load already under way — the chat's first read, just opened — is waited for before the chat is taken as it
-     * was: what that load brings was never the refresh's to count, as the pull's catch-up counts it.
+     * was: what that load brings was never the refresh's to count, as [catchUp] counts it.
      */
     private fun refreshWithWord(start: () -> Unit) {
         refreshWordJob = viewModelScope.launch {

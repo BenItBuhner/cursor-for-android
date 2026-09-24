@@ -12,6 +12,7 @@ import androidx.compose.runtime.snapshotFlow
 import com.cursorforandroid.data.repo.ConversationState
 import com.cursorforandroid.domain.TranscriptRow
 import com.cursorforandroid.ui.panel.SidePanelState
+import com.cursorforandroid.ui.panel.SidePanelValue
 import com.cursorforandroid.ui.shortcuts.ChatShortcutTarget
 import com.cursorforandroid.ui.shortcuts.LocalChatShortcuts
 import com.cursorforandroid.ui.shortcuts.LocalTranscriptFocus
@@ -24,7 +25,10 @@ internal const val HIT_OLDER_PAGES = 6
 
 internal const val HIT_NOT_SHOWN = "The match is further back than this chat has loaded"
 
-/** The chat's answers to Ctrl+Shift+B, Ctrl+R, Ctrl+Shift+R and Esc, registered with the shell while it is composed. */
+/**
+ * The chat's answers to Ctrl+Shift+B, Ctrl+R, Ctrl+Shift+R and Esc, registered with the shell while it is composed.
+ * The panel is put where the key says in the same frame; its slide is the finger's.
+ */
 @Composable
 internal fun ChatKeyboardShortcuts(agentId: String, viewModel: ConversationViewModel, panelState: SidePanelState) {
     val shortcuts = LocalChatShortcuts.current ?: return
@@ -32,7 +36,7 @@ internal fun ChatKeyboardShortcuts(agentId: String, viewModel: ConversationViewM
     val target = remember(viewModel, panelState, scope) {
         object : ChatShortcutTarget {
             override fun togglePanel(): Boolean {
-                scope.launch { if (panelState.isOpen) panelState.close() else panelState.open() }
+                panelState.jumpTo(if (panelState.isOpen) SidePanelValue.Closed else SidePanelValue.Open, scope)
                 return true
             }
 
@@ -43,7 +47,7 @@ internal fun ChatKeyboardShortcuts(agentId: String, viewModel: ConversationViewM
             // A panel pinned beside the chat is part of the layout, like the rail: Esc leaves the field, not the panel.
             override fun escape(): Boolean {
                 if (!panelState.isOpen || panelState.isPinned) return false
-                scope.launch { panelState.close() }
+                panelState.jumpTo(SidePanelValue.Closed, scope)
                 return true
             }
         }

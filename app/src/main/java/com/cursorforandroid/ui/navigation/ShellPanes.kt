@@ -160,12 +160,13 @@ internal class ShellPanes(
 /**
  * The wide window's row: the rail, while it stands beside the chat, at the width it was dragged to, its edge draggable
  * to resize it; then the detail pane, which a chat shares with its panel wherever the window has room to pin it
- * ([LocalPinnedPanel]).
+ * ([LocalPinnedPanel]). The rail slides as it goes and comes unless [railSlides] is false, where a key moved it.
  */
 @Composable
 internal fun WidePanes(
     panes: ShellPanes,
     railShown: Boolean,
+    railSlides: Boolean,
     pinnable: Boolean,
     rail: @Composable () -> Unit,
     detail: @Composable (Modifier) -> Unit,
@@ -182,7 +183,13 @@ internal fun WidePanes(
             .backGestureEdges(edges),
     ) {
         Row(Modifier.fillMaxSize()) {
-            SidebarRail(expanded = railShown, width = { panes.railColumn() }, modifier = Modifier.onSizeChanged { railEdge = it.width }, content = rail)
+            SidebarRail(
+                expanded = railShown,
+                width = { panes.railColumn() },
+                animate = railSlides,
+                modifier = Modifier.onSizeChanged { railEdge = it.width },
+                content = rail,
+            )
             CompositionLocalProvider(LocalPinnedPanel provides if (pinnable) panes else null) {
                 detail(Modifier.weight(1f).fillMaxHeight())
             }

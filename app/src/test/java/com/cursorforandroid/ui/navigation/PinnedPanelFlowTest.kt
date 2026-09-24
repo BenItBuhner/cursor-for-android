@@ -473,6 +473,47 @@ class PinnedPanelFlowTest {
     }
 
     @Test
+    @Config(qualifiers = "w840dp-h700dp-night-mdpi")
+    fun `on a foldable a key puts the pinned panel, and the rail it moves, in place in the frame it lands, and a tap after it slides`() {
+        showShell()
+        openChat(CLI)
+        compose.waitForIdle()
+        compose.mainClock.autoAdvance = false
+
+        // Ctrl+Shift+B: the panel stands open, and the rail it leaves no room is gone, in the one frame.
+        chord(KeyEvent.KEYCODE_B, shift = true)
+        compose.mainClock.advanceTimeByFrame()
+        assertThat(panelBounds().width).isWithin(0.5f).of(400f)
+        assertThat(chatBounds().left).isWithin(0.5f).of(0f)
+        assertThat(chatBounds().right).isWithin(0.5f).of(440f)
+        assertThat(described(SEARCH_CHATS)).isFalse()
+
+        // Ctrl+B brings the rail over the chat at once, and puts it away the same.
+        chord(KeyEvent.KEYCODE_B)
+        compose.mainClock.advanceTimeByFrame()
+        assertThat(described(CLOSE_DRAWER)).isTrue()
+        assertThat(bounds(hasContentDescription(SEARCH_CHATS)).left).isAtLeast(0f)
+        chord(KeyEvent.KEYCODE_B)
+        compose.mainClock.advanceTimeByFrame()
+        assertThat(described(SEARCH_CHATS)).isFalse()
+
+        // Shut by the key, the rail is back beside the chat as the panel goes.
+        chord(KeyEvent.KEYCODE_B, shift = true)
+        compose.mainClock.advanceTimeByFrame()
+        assertThat(chatBounds().left).isWithin(0.5f).of(278f)
+        assertThat(chatBounds().right).isWithin(0.5f).of(840f)
+
+        // The panel's button after the keys slides it open, and the rail off with it.
+        compose.onNodeWithContentDescription(OPEN_PANEL).performClick()
+        compose.mainClock.advanceTimeBy(SidebarRailMillis / 2L)
+        assertThat(chatBounds().left).isGreaterThan(0.5f)
+        assertThat(chatBounds().left).isLessThan(277.5f)
+        compose.mainClock.autoAdvance = true
+        compose.waitUntil(10_000) { !railShown() && described(OPEN_SIDEBAR) }
+        assertKept(true) { prefs.panelOpen(PaneWidthClass.Expanded).first() }
+    }
+
+    @Test
     fun `a panel left pinned open comes back open at the widths the rail and it were left at, after a restart`() {
         showShell {
             prefs.setPanelOpen(PaneWidthClass.Expanded, true)
