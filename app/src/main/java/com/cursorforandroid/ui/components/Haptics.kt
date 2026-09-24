@@ -17,6 +17,7 @@ import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.AnnotatedString
+import kotlin.math.abs
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.onCompletion
 import kotlinx.coroutines.flow.onEach
@@ -42,7 +43,7 @@ enum class Haptic {
     /** A dragged item takes the next slot. */
     SlotTick,
 
-    /** A dragged item is set down; a back gesture commits. */
+    /** A dragged item is set down; a back gesture commits; a sheet a swipe opened or closed lands ([SheetLanding]). */
     GestureEnd,
 
     /** A drag crosses the point past which letting go commits it. */
@@ -157,21 +158,46 @@ internal class FeltClipboard(private val clipboard: ClipboardManager, private va
 }
 
 /**
- * Whether a sheet that rests [restingOpen] (or shut) and has been dragged to [fraction] of the way open would change
- * sides if let go now, as the drawer and the side panel settle a drag with no fling: past half-way, it would.
+ * The one haptic a sheet — the sidebar drawer, the side panel — plays each time a gesture opens or closes it: a
+ * [Haptic.GestureEnd] as the sheet lands, fully open or fully shut, on the other side from where it rested. Where the
+ * sheet is decides it, not how far the finger went: a short flick whose fling carries the sheet the rest of the way
+ * lands like a slow drag all the way across, and a drag let go short of committing springs back without a sound
+ * however far it went, as does one taken past half-way and back. A sheet moved without a finger (a button, a
+ * shortcut, a back gesture, which is felt as it commits: [feltOnCommit]) plays nothing.
+ *
+ * A sheet caught on its way and sent on the same way still lands once. Caught and sent back, it lands, felt, where it
+ * started: the release had committed it, and the one that sends it back commits it again.
  */
-fun pastHalfway(fraction: Float, restingOpen: Boolean): Boolean = (fraction >= 0.5f) != restingOpen
+class SheetLanding {
+    /** The end, 0 or 1, a release committed the sheet to that it has not reached yet; NaN for none. */
+    private var heading = Float.NaN
 
-/** The threshold haptic a drag from [before] to [after] of the way open plays, if it crossed half-way either way; see [pastHalfway]. */
-fun halfwayCrossing(before: Float, after: Float, restingOpen: Boolean): Haptic? {
-    val was = pastHalfway(before, restingOpen)
-    val now = pastHalfway(after, restingOpen)
-    return when {
-        was == now -> null
-        now -> Haptic.ThresholdActivate
-        else -> Haptic.ThresholdDeactivate
+    /** A finger has moved the sheet since the last release. */
+    private var held = false
+
+    /** A finger moved the sheet from [before]. A gesture that takes it from rest forgets a landing a slide or a jump took over. */
+    fun dragged(before: Float) {
+        if (!held && (before == 0f || before == 1f)) heading = Float.NaN
+        held = true
+    }
+
+    /** The finger let go of a sheet committed to [wasOpen] (or shut), and it is settling [open] (or shut). */
+    fun released(wasOpen: Boolean, open: Boolean) {
+        held = false
+        val end = if (open) 1f else 0f
+        heading = if (open != wasOpen || heading == end) end else Float.NaN
+    }
+
+    /** The sheet is at [fraction] of the way open: the haptic, if that is it landing where a release sent it. */
+    fun at(fraction: Float): Haptic? {
+        if (heading.isNaN() || abs(fraction - heading) > LandedWithin) return null
+        heading = Float.NaN
+        return Haptic.GestureEnd
     }
 }
+
+/** How near its end a settling sheet has landed: the spring's last stretch is too slight to see, and is not waited for. */
+private const val LandedWithin = 0.01f
 
 /**
  * A predictive back gesture's events, with its commit felt as a [Haptic.GestureEnd]: the flow completing after the
