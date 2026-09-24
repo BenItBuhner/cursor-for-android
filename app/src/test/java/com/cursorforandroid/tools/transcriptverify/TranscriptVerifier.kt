@@ -547,7 +547,6 @@ class TranscriptVerifier(
         is TranscriptRow.Event -> "event kind=${row.notification.kind} ×${row.count} title=\"${row.notification.title}\""
         is TranscriptRow.Events -> "events count=${row.count} startsOpen=${row.startsOpen} \"${row.summary.text}\""
         is TranscriptRow.Message -> "MESSAGE " + describeMessage(row.call)
-        is TranscriptRow.Subagent -> "subagent ${row.subagent.source} ${row.call.name} title=\"${row.subagent.title ?: "-"}\" linked=${row.call.linkedAgentIds.size}"
         is TranscriptRow.Media -> "media calls=${row.group.calls.count { it.hasMedia }}"
         is TranscriptRow.Question -> "question ${row.call.name} answered=${(row.call.payload as? ToolPayload.Question)?.isAnswered}"
         is TranscriptRow.Failure -> "FAILURE run=${tail(row.footer.runId)} status=${row.footer.status} reason=${row.footer.reason?.length ?: 0}ch"
@@ -570,7 +569,8 @@ class TranscriptVerifier(
 
     private fun describe(entry: TranscriptRow.Entry): String = when (entry) {
         is TranscriptRow.Entry.Thought -> "thought(${entry.block.text.length}ch)"
-        is TranscriptRow.Entry.Call -> "call(${entry.call.name}:${entry.call.status}${if (entry.call.isError) ":error" else ""})"
+        is TranscriptRow.Entry.Call -> entry.subagent?.let { "subagent(${it.source}:${entry.call.name}:${entry.call.status})" }
+            ?: "call(${entry.call.name}:${entry.call.status}${if (entry.call.isError) ":error" else ""})"
         is TranscriptRow.Entry.Note -> "note(${entry.message.markdown.length}ch)"
         is TranscriptRow.Entry.Footer -> "footer(${entry.footer.status}${entry.footer.durationMs?.let { ",${it / 1000}s" } ?: ""}${if (entry.interrupted) ",interrupted" else ""})"
         is TranscriptRow.Entry.Failure -> "failure(${entry.footer.status})"

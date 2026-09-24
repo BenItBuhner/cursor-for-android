@@ -86,6 +86,7 @@ import com.cursorforandroid.data.media.MediaLoader
 import com.cursorforandroid.data.repo.AgentFileRepository
 import com.cursorforandroid.data.repo.AgentRepository
 import com.cursorforandroid.data.repo.SubagentActivity
+import com.cursorforandroid.data.repo.TranscriptSearchIndex
 import com.cursorforandroid.data.repo.ArtifactRepository
 import com.cursorforandroid.data.repo.AttachmentUploads
 import com.cursorforandroid.data.repo.CapabilityGatedPullRequestSource
@@ -698,6 +699,10 @@ class AppGraph(
     }
     val conversations: ConversationRepository get() = lazyConversations.value
 
+    /** The search palette's reading of the transcripts kept on this device (Ctrl+F, see [TranscriptSearchIndex]). */
+    private val lazyTranscriptSearch = lazy { TranscriptSearchIndex(caches.conversations, caches.traces) }
+    val transcriptSearch: TranscriptSearchIndex get() = lazyTranscriptSearch.value
+
     /** Sees new chats' launches through once the composer has handed them over, so no screen has to stay for the answer. */
     private val lazyLauncher = lazy { ChatLauncher(conversations) }
     val launcher: ChatLauncher get() = lazyLauncher.value
@@ -938,6 +943,7 @@ class AppGraph(
             if (lazyRemote.isInitialized()) remote.reset()
             if (lazyArtifacts.isInitialized()) artifacts.resetAll()
             if (lazyStoreFiles.isInitialized()) storeFiles.resetAll()
+            if (lazyTranscriptSearch.isInitialized()) transcriptSearch.clear()
             media.clearCaches()
             attachments.clear()
             generatedMedia.clear()

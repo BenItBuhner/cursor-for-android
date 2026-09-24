@@ -237,6 +237,7 @@ object SystemNotifications {
                 raw = raw,
                 timestampMillis = timestampMillis,
                 agentId = agentId,
+                callId = fields["tool_call_id"]?.trim()?.takeIf { it.isNotEmpty() },
             )
         }
 

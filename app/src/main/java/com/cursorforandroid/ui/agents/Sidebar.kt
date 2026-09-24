@@ -70,8 +70,11 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
 import com.cursorforandroid.data.media.MediaLoader
 import com.cursorforandroid.domain.AgentListOrganizer
+import com.cursorforandroid.domain.AgentRow
+import com.cursorforandroid.domain.AgentSection
 import com.cursorforandroid.domain.CursorUser
 import com.cursorforandroid.domain.MediaRef
+import com.cursorforandroid.domain.NestedRow
 import com.cursorforandroid.ui.components.CursorIcons
 import com.cursorforandroid.ui.components.FlatIconButton
 import com.cursorforandroid.ui.components.pressable
@@ -112,6 +115,8 @@ data class SidebarCallbacks(
     val onOpenDraft: (DraftRow) -> Unit = {},
     /** A draft's row menu asked for it to be deleted. */
     val onDeleteDraft: (DraftRow) -> Unit = {},
+    /** The first ten chat rows as drawn, whenever they change: what Ctrl+1 … Ctrl+0 open (see [SidebarGroup.numbered]). */
+    val onShortcutRows: (List<AgentRow>) -> Unit = {},
 )
 
 /** Test tags for the card slot above the account footer: one card at a time, the update's or the notes'. */
@@ -154,6 +159,8 @@ fun Sidebar(
     shortLists: SidebarShortLists = remember { SidebarShortLists() },
     /** Bumped by the shell when something outside asks for the search field (the widget's search button): each bump opens it. */
     searchRequests: Int = 0,
+    /** Ctrl is held on a hardware keyboard: the first ten chat rows show the digit that opens them. */
+    showShortcutNumbers: Boolean = false,
 ) {
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
@@ -245,6 +252,10 @@ fun Sidebar(
                 snapshotFlow { listState.layoutInfo.let { info -> (info.visibleItemsInfo.lastOrNull()?.index ?: -1) to info.totalItemsCount } }
                     .collect { (lastVisible, total) -> if (total > 0 && lastVisible >= total - MoreAgentsPrefetchRows) callbacks.onLoadMore() }
             }
+            val groups = sidebarGroups(state, query, expandedParents, selectedAgentId, shortLists)
+            val numbered = SidebarGroup.numbered(groups)
+            val shortcutNumbers = SidebarGroup.shortcutNumbers(numbered)
+            LaunchedEffect(numbered) { callbacks.onShortcutRows(numbered) }
             LazyColumn(Modifier.fillMaxSize().scrollEdgeFade(listState), state = listState, contentPadding = PaddingValues(top = 2.dp, bottom = 12.dp)) {
                 // The drafts lead the list, above every group, each a chat that has not been sent yet.
                 items(shownDrafts, key = { DRAFT_KEY_PREFIX + it.id }) { row ->
@@ -275,10 +286,9 @@ fun Sidebar(
                 state.error?.let { err ->
                     item("error") { Text(err, style = type.small, color = colors.red, modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) }
                 }
-                state.sections.forEach { section ->
-                    // Folded groups are the device's memory, read back from the state; a search opens every group
-                    // for as long as it is typed, since its matches may sit behind a fold.
-                    val expanded = query.isNotBlank() || section.key !in state.collapsedSections
+                groups.forEach { group ->
+                    val section = group.section
+                    val expanded = group.expanded
                     item("hdr-${section.key}") {
                         SidebarSectionHeader(
                             section = section,
@@ -301,17 +311,10 @@ fun Sidebar(
                         }
                     }
                     if (expanded) {
-                        // A search shows every match where it sits in the tree, so the tree is open while one is typed.
-                        val expandedIds = if (query.isNotBlank()) section.rows.flatMap { listOf(it) + it.descendants() }.mapTo(HashSet()) { it.agent.id } else expandedParents.toSet()
-                        // A long Projects or Pinned group lists its first rows until "Show N more"; a search lists every match.
-                        val cut = if (state.shortenLongGroups && query.isBlank() && section.key in SidebarShortList.KEYS) {
-                            SidebarShortList.cut(section.rows, selectedAgentId).takeIf { it.hidden > 0 }
-                        } else {
-                            null
-                        }
-                        val listedInFull = shortLists.isExpanded(section.key)
-                        val rows = if (cut == null || listedInFull) section.rows else cut.rows
-                        items(AgentListOrganizer.flatten(rows, expandedIds), key = { "${section.key}:${it.row.agent.id}" }) { (row, depth) ->
+                        val expandedIds = group.expandedIds
+                        val cut = group.cut
+                        val listedInFull = group.listedInFull
+                        items(group.rows, key = { "${section.key}:${it.row.agent.id}" }) { (row, depth) ->
                             val id = row.agent.id
                             AgentRowItem(
                                 row = row,
@@ -321,6 +324,7 @@ fun Sidebar(
                                 modifier = Modifier.animateItem().padding(vertical = CursorDimens.sidebarRowGap / 2),
                                 nowMillis = state.nowMillis,
                                 depth = depth,
+                                shortcutNumber = if (showShortcutNumbers) shortcutNumbers[id] else null,
                                 // A Project whose chats the pages do not hold yet still shows the account's count of them.
                                 childrenExpanded = if (row.children.isEmpty() && (row.memberCount ?: 0) == 0) null else id in expandedIds,
                                 onToggleChildren = {
@@ -394,6 +398,60 @@ internal fun sidebarTopKey(state: AgentListUiState, drafts: List<DraftRow> = emp
     state.hasLoaded && state.sections.isEmpty() -> "empty"
     state.error != null -> "error"
     else -> state.sections.firstOrNull()?.let { "hdr-${it.key}" }
+}
+
+/**
+ * One group of the sidebar as [Sidebar] draws it: folded or open, a long group cut to its first rows or listed in
+ * full, each chat's tree opened where the reader opened it — and [rows], the chat rows that are drawn for it.
+ */
+internal class SidebarGroup(
+    val section: AgentSection,
+    val expanded: Boolean,
+    val expandedIds: Set<String>,
+    val cut: SidebarShortList.Cut?,
+    val listedInFull: Boolean,
+) {
+    val rows: List<NestedRow> by lazy {
+        if (!expanded) emptyList() else AgentListOrganizer.flatten(if (cut == null || listedInFull) section.rows else cut.rows, expandedIds)
+    }
+
+    companion object {
+        /** How many rows Ctrl+1 … Ctrl+9 and Ctrl+0 reach. */
+        const val SHORTCUT_ROWS = 10
+
+        /**
+         * The first [SHORTCUT_ROWS] chat rows drawn, top to bottom; drafts, headers and folded rows are not counted,
+         * and a chat drawn twice (pinned, and under its Project) is counted where it is drawn first.
+         */
+        fun numbered(groups: List<SidebarGroup>): List<AgentRow> =
+            groups.asSequence().flatMap { it.rows.asSequence() }.map { it.row }.distinctBy { it.agent.id }.take(SHORTCUT_ROWS).toList()
+
+        /** The digit each of [numbered]'s rows is opened with, by agent id: 1 to 9, then 0 for the tenth. */
+        fun shortcutNumbers(numbered: List<AgentRow>): Map<String, Int> = numbered.withIndex().associate { (index, row) -> row.agent.id to (index + 1) % 10 }
+    }
+}
+
+/**
+ * The groups of [state] as the sidebar lists them. Folded groups are the device's memory, read back from the state; a
+ * search opens every group, and every tree in it, for as long as it is typed, since its matches may sit behind a fold,
+ * and lists every match rather than a long group's first rows.
+ */
+internal fun sidebarGroups(
+    state: AgentListUiState,
+    query: String,
+    expandedParents: List<String>,
+    selectedAgentId: String?,
+    shortLists: SidebarShortLists,
+): List<SidebarGroup> = state.sections.map { section ->
+    val searching = query.isNotBlank()
+    val expanded = searching || section.key !in state.collapsedSections
+    val expandedIds = if (searching) section.rows.flatMap { listOf(it) + it.descendants() }.mapTo(HashSet()) { it.agent.id } else expandedParents.toSet()
+    val cut = if (state.shortenLongGroups && !searching && section.key in SidebarShortList.KEYS) {
+        SidebarShortList.cut(section.rows, selectedAgentId).takeIf { it.hidden > 0 }
+    } else {
+        null
+    }
+    SidebarGroup(section, expanded, expandedIds, cut, shortLists.isExpanded(section.key))
 }
 
 /** The lead of a draft row's key in the sidebar's list: never read as an agent's (see `onVisibleRows`). */

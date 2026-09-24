@@ -16,6 +16,7 @@ import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.cursorforandroid.domain.AssistantMessage
 import com.cursorforandroid.domain.CoordinatorTranscript
 import com.cursorforandroid.domain.SystemNotifications
 import com.cursorforandroid.domain.TimelineItem
@@ -40,8 +41,9 @@ import org.robolectric.annotation.GraphicsMode
 
 /**
  * The wall of injected turns (see `event_wall.json`) on screen: the stretch's one line says how many; opened, the
- * group's line says of what, and opens onto every event as its own compact row — subject, verb, actor, age, a count
- * for a repeat — each still opening onto its own report and its agent's chat; the newest group open on its own only when small.
+ * group's line says of what, and opens onto every event as its own row — a pull request's subject, verb, actor, age
+ * and a count for a repeat; a subagent's report as that subagent's row, a repeat once — each still opening onto its
+ * report or its agent's chat; the newest group open on its own only when small.
  */
 @RunWith(AndroidJUnit4::class)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
@@ -60,7 +62,7 @@ class EventRowsTest {
 
     @Before
     fun pinClock() {
-        // Two hours and a minute after the wall's last turn: its rows read "2h", "3h", "4h".
+        // Two hours and a minute after the wall's last turn: its pull requests' rows read "2h" and "3h".
         AppClock.nowMillis = { wall.last().getValue("timestampMillis").jsonPrimitive.long + 121 * 60_000L }
     }
 
@@ -102,7 +104,7 @@ class EventRowsTest {
         openStretch()
         // Inside: the group's own line, still closed; no "Subagent completed" or "GitHub notification" label anywhere.
         compose.onNodeWithTag("event-group").assertIsDisplayed()
-        compose.onNodeWithText("\u00B7 11 GitHub \u00B7 7 subagents \u00B7 1h 59m span").assertIsDisplayed()
+        compose.onNodeWithText("\u00B7 11 GitHub \u00B7 6 subagents \u00B7 1h 59m span").assertIsDisplayed()
         compose.onAllNodes(hasTestTag("event-row")).assertCountEquals(0)
         assertThat(compose.onAllNodesWithText("GitHub notification").fetchSemanticsNodes()).isEmpty()
 
@@ -115,16 +117,19 @@ class EventRowsTest {
         compose.onAllNodesWithText(" \u00B7 opened").assertCountEquals(3)
         compose.onAllNodesWithText(" \u00B7 BenItBuhner").assertCountEquals(3)
         compose.onAllNodesWithText(" \u00B7 merged").assertCountEquals(6)
-        // A subagent's: its title and what became of it; its age from the wall's last turn.
-        compose.onNodeWithText("Hand & Arm Renders").assertIsDisplayed()
+        // A subagent's is its subagent's row: the title, and "Completed" under it rather than a verb and an age.
+        compose.onNodeWithContentDescription("Subagent Hand & Arm Renders, Completed").assertIsDisplayed()
+        compose.onAllNodes(hasTestTag("subagent-notice"), useUnmergedTree = true).assertCountEquals(6)
         compose.onNodeWithText("#66").assertIsDisplayed()
-        assertThat(compose.onAllNodesWithText("4h").fetchSemanticsNodes()).isNotEmpty()
+        // The pull requests read their ages; the oldest event, a subagent's four hours back, reads none.
+        assertThat(compose.onAllNodesWithText("3h").fetchSemanticsNodes()).isNotEmpty()
         assertThat(compose.onAllNodesWithText("2h").fetchSemanticsNodes()).isNotEmpty()
+        assertThat(compose.onAllNodesWithText("4h").fetchSemanticsNodes()).isEmpty()
         assertThat(compose.onAllNodesWithText("Subagent completed").fetchSemanticsNodes()).isEmpty()
-        // The repeat is one row counted twice.
-        compose.onNodeWithTag("event-count", useUnmergedTree = true).assertIsDisplayed()
+        assertThat(compose.onAllNodesWithText(" \u00B7 completed").fetchSemanticsNodes()).isEmpty()
+        // The repeat is one row, with no count on it.
         assertThat(compose.onAllNodesWithText("Match product sets to their references B").fetchSemanticsNodes()).hasSize(1)
-        compose.onNodeWithText("\u00D72").assertIsDisplayed()
+        assertThat(compose.onAllNodes(hasTestTag("event-count"), useUnmergedTree = true).fetchSemanticsNodes()).isEmpty()
 
         compose.onNodeWithContentDescription("Hide events").performClick()
         compose.waitUntil(5_000) { compose.onAllNodes(hasTestTag("event-row")).fetchSemanticsNodes().isEmpty() }
@@ -140,16 +145,30 @@ class EventRowsTest {
         compose.onAllNodes(hasTestTag("event-row")).assertCountEquals(0)
         compose.onNodeWithContentDescription("Show events").performClick()
         compose.waitUntil(5_000) { compose.onAllNodes(hasTestTag("event-row")).fetchSemanticsNodes().size == 3 }
-        assertThat(compose.onAllNodesWithText("Rendered the hand & arm stills", substring = true).fetchSemanticsNodes()).isEmpty()
-        compose.onNodeWithText("Hand & Arm Renders").performClick()
-        compose.waitUntil(5_000) { compose.onAllNodesWithText("Rendered the hand & arm stills", substring = true).fetchSemanticsNodes().isNotEmpty() }
         // The pull request's row opens onto its sentence and URL.
         compose.onNodeWithText("#64").performClick()
         compose.waitUntil(5_000) { compose.onAllNodesWithText("https://github.com/BenItBuhner/revenue-scaling-pipeline/pull/64", substring = true).fetchSemanticsNodes().isNotEmpty() }
-        // The subagent's chat is a tap on its arrow.
-        compose.onAllNodes(hasTestTag("open-worker")).assertCountEquals(2)
-        compose.onAllNodes(hasTestTag("open-worker"))[0].performClick()
+        // A cloud subagent's row is a tap from its chat, as its row among the calls is; there is no separate arrow.
+        assertThat(compose.onAllNodes(hasTestTag("open-worker")).fetchSemanticsNodes()).isEmpty()
+        compose.onNodeWithText("Hand & Arm Renders").performClick()
         assertThat(opened).containsExactly("bc-00000000-1a2d-5218-8e2e-7464ea74f671")
+        assertThat(compose.onAllNodesWithText("Rendered the hand & arm stills", substring = true).fetchSemanticsNodes()).isEmpty()
+    }
+
+    @Test
+    fun `a local subagent's row opens onto its report, and the agent's remark reads under it`() {
+        val local = SystemNotifications.parse(
+            "local",
+            "<system_notification>\n<task>\nkind: subagent\nstatus: failed\ntitle: Price the maker rebate tiers\ndetail: The rebate endpoint returned 403 for every tier.\n\nAgent ID: a1b2c3 (resume)\n</task>\n</system_notification>",
+            wall.last().getValue("timestampMillis").jsonPrimitive.long,
+        )!!.items
+        show(local + listOf(AssistantMessage("remark", "Noted: the tiers wait on API access.")))
+        compose.onNodeWithContentDescription("Subagent Price the maker rebate tiers, Stopped with error").assertIsDisplayed()
+        compose.onNodeWithText("Noted: the tiers wait on API access.").assertIsDisplayed()
+        assertThat(compose.onAllNodesWithText("The rebate endpoint returned 403", substring = true).fetchSemanticsNodes()).isEmpty()
+        compose.onNodeWithText("Price the maker rebate tiers").performClick()
+        compose.waitUntil(5_000) { compose.onAllNodesWithText("The rebate endpoint returned 403", substring = true).fetchSemanticsNodes().isNotEmpty() }
+        assertThat(opened).isEmpty()
     }
 
     @Test
@@ -168,14 +187,14 @@ class EventRowsTest {
     }
 
     @Test
-    fun `a lone event is its compact row, with no group line and no stretch line`() {
+    fun `a lone event is its row, with no group line and no stretch line`() {
         show(wallItems(1))
         compose.onAllNodes(hasTestTag("event-group")).assertCountEquals(0)
         compose.onAllNodes(hasTestTag("stretch")).assertCountEquals(0)
         compose.onNodeWithTag("event-row").assertIsDisplayed()
         compose.onNodeWithText("Hand & Arm Renders").assertIsDisplayed()
-        compose.onNodeWithText(" \u00B7 completed").assertIsDisplayed()
-        compose.onNodeWithText("4h").assertIsDisplayed()
+        compose.onNodeWithText("Completed").assertIsDisplayed()
+        assertThat(compose.onAllNodesWithText("4h").fetchSemanticsNodes()).isEmpty()
         assertThat(compose.onAllNodes(hasText("events", substring = true)).fetchSemanticsNodes()).isEmpty()
     }
 }
