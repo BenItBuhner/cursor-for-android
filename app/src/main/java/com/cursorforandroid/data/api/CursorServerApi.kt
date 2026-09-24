@@ -1,8 +1,6 @@
 package com.cursorforandroid.data.api
 
 import com.cursorforandroid.data.auth.SessionTokenProvider
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
 import kotlinx.serialization.EncodeDefault
 import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.Serializable
@@ -82,6 +80,7 @@ class CursorServerApi(
             RequestDto.serializer(),
             ResponseDto.serializer(),
             retryRefusals = false,
+            lane = ApiThrottle.Lane.MEDIA,
         )
         val host = response.host?.trim().orEmpty()
         val port = response.port ?: 0
@@ -98,7 +97,7 @@ class CursorServerApi(
         )
     }
 
-    override suspend fun read(server: CursorServer, path: String): ByteArray = withContext(Dispatchers.IO) {
+    override suspend fun read(server: CursorServer, path: String): ByteArray {
         val request = Request.Builder()
             .url(server.resourceUrl(path))
             // The same Host the desktop's WebSocket upgrade names, and the ingress's headers after it.
@@ -106,7 +105,7 @@ class CursorServerApi(
             .apply { server.headers.forEach { (key, value) -> header(key, value) } }
             .get()
             .build()
-        http.newCall(request).execute().use { response ->
+        return http.newCall(request).readCancellably { response ->
             val asked = server.describe(path)
             if (!response.isSuccessful) {
                 val said = response.body?.let { body -> runCatching { body.source().readUtf8(minOf(body.contentLength().takeIf { it >= 0 } ?: 200L, 200L)) }.getOrNull() }

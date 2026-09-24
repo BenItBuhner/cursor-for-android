@@ -143,6 +143,13 @@ object CursorIcons {
         }
     }
 
+    /** Lucide `grip-vertical`, its rings filled as [More]'s are: something that can be dragged into another place. */
+    val GripVertical: ImageVector by lazy {
+        icon("GripVertical") {
+            for (x in listOf(9f, 15f)) for (y in listOf(5f, 12f, 19f)) dot(x, y, 1.6f)
+        }
+    }
+
     val ChevronDown: ImageVector by lazy { icon("ChevronDown") { path("m6 9 6 6 6-6", 2f) } }
     val ChevronRight: ImageVector by lazy { icon("ChevronRight") { path("m9 18 6-6-6-6", 2f) } }
     val ChevronLeft: ImageVector by lazy { icon("ChevronLeft") { path("m15 18-6-6 6-6", 2f) } }

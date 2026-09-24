@@ -3,6 +3,7 @@ package com.cursorforandroid.data.faults
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import com.cursorforandroid.data.api.AccountFollowup
+import com.cursorforandroid.data.api.ApiThrottle
 import com.cursorforandroid.data.api.BlobCache
 import com.cursorforandroid.data.local.BlobDiskStore
 import com.cursorforandroid.data.api.ConnectJsonClient
@@ -159,8 +160,8 @@ class FaultRig(
         .dns(lastGoodDns)
         .protocols(protocols)
         .build()
-        // As `AppGraph` widens the record's client: the blobs are read several at a time.
-        .also { it.dispatcher.maxRequestsPerHost = maxOf(it.dispatcher.maxRequestsPerHost, HeadlessConversationApi.BLOB_PARALLELISM + 2) }
+        // As `AppGraph` widens the account client: every lane of the throttle on the wire at once.
+        .also { it.dispatcher.maxRequestsPerHost = ApiThrottle.ON_THE_WIRE + 2 }
     private val accountRpc = ConnectJsonClient(accountClient, baseUrl)
     private val sessionTokens = SessionTokenProvider(accountClient, key, apiUrl = baseUrl, now = { now })
     /** The account's list, pins and records (`BackgroundComposerService`), over [accountClient] on the same host. */
