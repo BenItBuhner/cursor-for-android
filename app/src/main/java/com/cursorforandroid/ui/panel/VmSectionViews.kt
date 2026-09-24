@@ -53,7 +53,7 @@ internal fun WorkspaceBrowser(state: PanelState, actions: PanelActions) {
         if (workspace.tree is RemoteLoad.Idle || workspace.tree is RemoteLoad.Unsupported) actions.loadWorkspace()
     }
     val segments = workspace.path.split('/').filter { it.isNotEmpty() }
-    Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+    Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = PanelGutter, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
         Text("workspace", style = type.small, color = if (segments.isEmpty()) colors.textSecondary else colors.link, modifier = Modifier.pressable({ actions.browseWorkspace("") }, CursorTheme.shapes.sm, enabled = segments.isNotEmpty()).padding(2.dp))
         segments.forEachIndexed { index, segment ->
             Text(" / ", style = type.small, color = colors.textQuaternary)
@@ -75,7 +75,7 @@ internal fun WorkspaceBrowser(state: PanelState, actions: PanelActions) {
                 entries.isEmpty() -> EmptyRow("Empty directory")
                 else -> entries.forEach { entry -> WorkspaceEntryRow(entry, onClick = { if (entry.isDirectory) actions.browseWorkspace(entry.path) else actions.openWorkspaceFile(entry.path) }) }
             }
-            Row(Modifier.padding(horizontal = 12.dp, vertical = 6.dp)) {
+            Row(Modifier.padding(horizontal = PanelGutter, vertical = 6.dp)) {
                 CursorButton("Refresh", { actions.loadWorkspace(force = true) }, icon = CursorIcons.Refresh, height = 28.dp, modifier = Modifier.testTag("workspace-refresh"))
             }
         }
