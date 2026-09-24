@@ -61,8 +61,9 @@ import java.io.File
  * The wall of eighteen injected turns Bennett's coordinator chat showed as eighteen rows (see [CoordinatorFixtures],
  * `event_wall.json`), between two of the coordinator's updates and before two newer events: everything between two
  * messages one stretch — "Worked 38s · 18 events" — with the wall behind one line of its own inside it ("18 events ·
- * 11 GitHub · 7 subagents · 1h 59m span"); then the stretch and the wall opened, every event a compact row of
- * subject, verb, actor and age, the repeat counted once. Written to `screenshots/` beside the walkthrough and
+ * 11 GitHub · 6 subagents · 1h 59m span", the subagent that reported twice counted once); then the stretch and the
+ * wall opened, every GitHub event a compact row of subject, verb, actor and age, every subagent's notice its row
+ * of title, model and how it finished, the repeat one row. Written to `screenshots/` beside the walkthrough and
  * compared pixel for pixel in CI.
  */
 @RunWith(AndroidJUnit4::class)
@@ -148,7 +149,7 @@ class CoordinatorEventGroupsScreenshotTest {
         assertThat(rows.none { it is TranscriptRow.Event || it is TranscriptRow.Events }).isTrue()
         val groups = groups(rows)
         assertThat(groups).hasSize(2)
-        assertThat(groups[0].summary.text).isEqualTo("18 events · 11 GitHub · 7 subagents · 1h 59m span")
+        assertThat(groups[0].summary.text).isEqualTo("18 events · 11 GitHub · 6 subagents · 1h 59m span")
         assertThat(groups[0].startsOpen).isFalse()
         assertThat(groups[1].summary.text).isEqualTo("2 events · 1 GitHub · 1 subagent · 18m span")
         assertThat(groups[1].startsOpen).isTrue()

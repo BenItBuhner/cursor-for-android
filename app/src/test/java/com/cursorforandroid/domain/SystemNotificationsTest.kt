@@ -104,6 +104,8 @@ class SystemNotificationsTest {
         assertThat(done.title).isEqualTo("Subagent completed")
         assertThat(done.summary).isEqualTo("Contacts, clipping and pose naturalness")
         assertThat(done.tone).isEqualTo(NoticeTone.Success)
+        // The call that started the task, which its row is drawn from (see SubagentRows.Index.startOf).
+        assertThat(done.callId).isEqualTo("toolu_01HGRsB5tyEGWt88yLjN9PHJ")
         // The report is the subagent's own words: without the sentence Cursor opens it with or the resume hint after it.
         assertThat(done.body).startsWith("The clipping is gone. Here is the final report.")
         assertThat(done.body).endsWith("Four commits on `cursor/contact-clipping-0e15`, not pushed.")

@@ -12,8 +12,12 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.test.assertCountEquals
+import androidx.compose.ui.test.hasClickAction
+import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
+import androidx.compose.ui.test.performClick
 import androidx.compose.ui.unit.dp
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.cursorforandroid.domain.ActivityGroup
@@ -208,7 +212,9 @@ class SubagentRowsScreenshotTest {
 
     private fun coordinator(mode: ThemeMode, name: String) {
         val presented = TranscriptPresenter().present(coordinatorItems, coordinatorMode = true, runActive = false)
-        assertThat(presented.rows.filterIsInstance<TranscriptRow.Subagent>().map { it.subagent.source }).containsExactly(
+        // The prompt, the one stretch the rows sit in, in order among its steps, and the coordinator's message.
+        assertThat(presented.rows.map { it::class }).containsExactly(TranscriptRow.Item::class, TranscriptRow.Stretch::class, TranscriptRow.Message::class).inOrder()
+        assertThat(presented.rows.filterIsInstance<TranscriptRow.Stretch>().single().subagents.map { it.subagent?.source }).containsExactly(
             SubagentCall.Source.Created, SubagentCall.Source.Created, SubagentCall.Source.Created, SubagentCall.Source.Steered, SubagentCall.Source.Queued, SubagentCall.Source.Stopped,
         ).inOrder()
         val controls = TranscriptControls(
@@ -216,6 +222,10 @@ class SubagentRowsScreenshotTest {
             subagentActivity = { id -> MutableStateFlow(workerActivity[id]) },
         )
         show(mode, controls) { presented.rows.forEach { TranscriptRowView(it) } }
+        // Closed, the stretch counts the two workers still at work and says where the newest stands.
+        compose.waitUntil(10_000) { compose.onAllNodesWithText("Waiting on CI for #113").fetchSemanticsNodes().isNotEmpty() }
+        compose.onAllNodesWithText("Editing AgentListOrganizer.kt").assertCountEquals(0)
+        compose.onNode(hasClickAction() and hasText("2 Working")).performClick()
         compose.waitUntil(10_000) { compose.onAllNodesWithText("Editing AgentListOrganizer.kt").fetchSemanticsNodes().isNotEmpty() }
         capture(name)
     }
@@ -261,12 +271,15 @@ class SubagentRowsScreenshotTest {
 
     private fun agentTurn(mode: ThemeMode, name: String) {
         val presented = TranscriptPresenter().present(agentItems, coordinatorMode = false, runActive = false)
-        assertThat(presented.rows.filterIsInstance<TranscriptRow.Subagent>().single().subagent.source).isEqualTo(SubagentCall.Source.Task)
+        assertThat(presented.rows.filterIsInstance<TranscriptRow.Stretch>().flatMap { it.subagents }.single().subagent?.source).isEqualTo(SubagentCall.Source.Task)
         val controls = TranscriptControls(
             onOpenAgent = {}, agentById = { null }, models = models, subagents = presented.subagents, placement = SubagentPlacement.Cloud,
             subagentActivity = { MutableStateFlow(SubagentChild(SubagentChild.Status.Running, step = "Implement bidirectional hover linking")) },
         )
         show(mode, controls) { presented.rows.forEach { TranscriptRowView(it) } }
+        // The run has ended and the task still works: its stretch reads "1 working" until it is opened.
+        compose.waitUntil(10_000) { compose.onAllNodesWithText("1 working").fetchSemanticsNodes().isNotEmpty() }
+        compose.onNode(hasClickAction() and hasText("1 working")).performClick()
         compose.waitUntil(10_000) { compose.onAllNodesWithText("Implement bidirectional hover linking").fetchSemanticsNodes().isNotEmpty() }
         capture(name)
     }

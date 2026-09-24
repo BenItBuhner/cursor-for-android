@@ -159,6 +159,36 @@ class SubagentRowsTest {
         assertThat(look(stopped(isError = true))).isEqualTo(SubagentLook(SubagentLook.Indicator.Error, SubagentRows.COULD_NOT_STOP))
     }
 
+    @Test
+    fun `the group a row sits in counts it as working while it runs, starts or waits, not while it stops`() {
+        fun working(call: ToolCall, child: SubagentChild? = null, latest: Boolean = true, live: Boolean = true) =
+            SubagentRows.isWorking(SubagentCall.of(call)!!, look(call, child, latest), child, live)
+        assertThat(working(task(), SubagentChild(SubagentChild.Status.Running, step = "Wiring the hover state"))).isTrue()
+        assertThat(working(task())).isTrue()
+        assertThat(working(created(agentId = null, status = ToolCall.STATUS_RUNNING))).isTrue()
+        assertThat(working(created(), SubagentChild(SubagentChild.Status.Running, waiting = true))).isTrue()
+        assertThat(working(stopped(status = ToolCall.STATUS_RUNNING))).isFalse()
+        assertThat(working(task(status = ToolCall.STATUS_COMPLETED), SubagentChild(SubagentChild.Status.Succeeded))).isFalse()
+        assertThat(working(created(), SubagentChild(SubagentChild.Status.Failed))).isFalse()
+        // A later row speaks for the worker: this one no longer holds the group open.
+        assertThat(working(created(), SubagentChild(SubagentChild.Status.Running), latest = false)).isFalse()
+    }
+
+    @Test
+    fun `once its run has ended, only a child reported at work holds the group open, not a call left running`() {
+        fun working(call: ToolCall, child: SubagentChild? = null) = SubagentRows.isWorking(SubagentCall.of(call)!!, look(call, child), child, live = false)
+        // The run ended with the call never closed and nothing known of the child: the row still says where the call
+        // stood, but the group settles.
+        assertThat(look(task()).indicator).isEqualTo(SubagentLook.Indicator.Running)
+        assertThat(working(task())).isFalse()
+        assertThat(working(created(agentId = null, status = ToolCall.STATUS_RUNNING))).isFalse()
+        assertThat(working(task(), SubagentChild(name = "Explorer"))).isFalse()
+        // A child the list or its stream reports at work, or waiting on the reader, still does.
+        assertThat(working(task(), SubagentChild(SubagentChild.Status.Running, step = "Wiring the hover state"))).isTrue()
+        assertThat(working(created(), SubagentChild(SubagentChild.Status.Running))).isTrue()
+        assertThat(working(created(), SubagentChild(waiting = true))).isTrue()
+    }
+
     // -- the action line ------------------------------------------------------------------------------------------
 
     @Test
@@ -261,7 +291,10 @@ class SubagentRowsTest {
         val create = created(model = "composer-2.5")
         val steer = sent(ToolPayload.WorkerAction.Delivery.Followup, callId = "s1")
         val queue = sent(ToolPayload.WorkerAction.Delivery.Queue, callId = "s2")
-        val rows = listOf(create, steer, queue, task()).map { call -> TranscriptRow.Subagent(ActivityGroup("g-${call.callId}", listOf(call)), call, SubagentCall.of(call)!!) }
+        // The rows sit among the other steps of the stretches they were made in.
+        fun stretch(vararg calls: ToolCall) = TranscriptRow.Stretch(calls.map { TranscriptRow.Entry.Call(it, "g:${it.callId}") })
+        val read = ToolCall("r1", "read_file", ToolKind.Read, ToolCall.STATUS_COMPLETED, "Main.kt")
+        val rows = listOf(stretch(read, create, steer), stretch(queue, read.copy(callId = "r2"), task()))
         val index = SubagentRows.index(rows)
         assertThat(index.latest).containsExactly("bc-w1", "s2")
         assertThat(index.workers).containsExactly("bc-w1", SubagentRows.Index.Worker("Build Projects under Extended mode", "composer-2.5"))
@@ -270,5 +303,86 @@ class SubagentRowsTest {
         assertThat(index.isLatest(queue, SubagentCall.of(queue)!!)).isTrue()
         assertThat(index.isLatest(task(), SubagentCall.of(task())!!)).isTrue()
         assertThat(SubagentRows.index(emptyList())).isSameInstanceAs(SubagentRows.Index.EMPTY)
+    }
+
+    // -- a subagent's notice --------------------------------------------------------------------------------------
+
+    private fun notice(
+        id: String = "n1",
+        title: String = "Subagent completed",
+        summary: String? = "CursorBench chart hover highlight",
+        kind: SystemNotification.Kind = SystemNotification.Kind.Subagent,
+        agentId: String? = null,
+        callId: String? = null,
+    ) = SystemNotification(id, kind, title, summary, body = "Done.", raw = "<system_notification/>", agentId = agentId, callId = callId)
+
+    private fun events(vararg notices: SystemNotification) = TranscriptRow.Entry.Events(TranscriptRow.Events(notices.map { TranscriptRow.Event(it) }))
+
+    @Test
+    fun `a notice says how its child ended in the row's own words`() {
+        fun status(title: String) = SubagentRows.notice(notice(title = title), start = null)!!.look
+        assertThat(status("Subagent completed")).isEqualTo(SubagentLook(SubagentLook.Indicator.Finished, SubagentRows.COMPLETED))
+        assertThat(status("Subagent finished")).isEqualTo(SubagentLook(SubagentLook.Indicator.Finished, SubagentRows.COMPLETED))
+        assertThat(status("Subagent failed")).isEqualTo(SubagentLook(SubagentLook.Indicator.Error, SubagentRows.STOPPED_WITH_ERROR))
+        assertThat(status("Worker timed out")).isEqualTo(SubagentLook(SubagentLook.Indicator.Error, SubagentRows.STOPPED_WITH_ERROR))
+        assertThat(status("Subagent cancelled")).isEqualTo(SubagentLook(SubagentLook.Indicator.Finished, SubagentRows.STOPPED, dimmed = true))
+        // A worker's update is not an ending: its row says what it said, under the worker's name.
+        val update = SubagentRows.notice(notice(title = "Worker update", summary = "Rebased onto main; CI is green.", kind = SystemNotification.Kind.Worker, agentId = "bc-w1"), start = null, workerName = "Land the merge train")!!
+        assertThat(update.title).isEqualTo("Land the merge train")
+        assertThat(update.look).isEqualTo(SubagentLook(SubagentLook.Indicator.Finished, "Rebased onto main; CI is green."))
+        assertThat(update.subagent.agentId).isEqualTo("bc-w1")
+        assertThat(update.subagent.isWorker).isTrue()
+        // Anything else injected is not a subagent's row.
+        assertThat(SubagentRows.notice(notice(kind = SystemNotification.Kind.Task, title = "Shell completed"), start = null)).isNull()
+        assertThat(SubagentRows.notice(notice(kind = SystemNotification.Kind.Other, title = "GitHub notification"), start = null)).isNull()
+    }
+
+    @Test
+    fun `a notice takes its title, model and agent from the call that started the child, else from itself`() {
+        val start = SubagentCall.of(task(model = "composer-2.5", environment = "SUBAGENT_EXECUTION_ENVIRONMENT_CLOUD"))!!
+        val bound = SubagentRows.notice(notice(summary = "Chart hover", agentId = "bc-c1"), start)!!
+        assertThat(bound.title).isEqualTo("CursorBench chart hover highlight")
+        assertThat(bound.subagent.modelId).isEqualTo("composer-2.5")
+        assertThat(bound.subagent.agentId).isEqualTo("bc-c1")
+        assertThat(SubagentRows.placement(bound.subagent, SubagentPlacement.Cloud)).isEqualTo(SubagentPlacement.Cloud)
+        // Without one, its own title; a worker's is the worker's row, a cloud one openable.
+        val alone = SubagentRows.notice(notice(title = "Worker completed", summary = "Backfill the fills ledger", kind = SystemNotification.Kind.Worker, agentId = "bc-f1"), start = null)!!
+        assertThat(alone.title).isEqualTo("Backfill the fills ledger")
+        assertThat(alone.subagent.source).isEqualTo(SubagentCall.Source.Created)
+        assertThat(alone.subagent.isCloudAgent).isTrue()
+        assertThat(SubagentRows.notice(notice(summary = null), start = null, childName = "Quote tracker")!!.title).isEqualTo("Quote tracker")
+        assertThat(SubagentRows.notice(notice(summary = null), start = null)!!.title).isEqualTo(SubagentCall.NEW_SUBAGENT)
+    }
+
+    @Test
+    fun `the index binds each notice to the call before it that started its child, and keeps how it ended`() {
+        val cloud = task(description = "Track big-pool lone quoters daily", agentId = "bc-q1", status = ToolCall.STATUS_COMPLETED).copy(callId = "t1")
+        val local = task(description = "Price the maker rebate tiers", status = ToolCall.STATUS_COMPLETED).copy(callId = "t2")
+        val again = local.copy(callId = "t3")
+        val worker = created(name = "Backfill the fills ledger", agentId = "bc-f1")
+        val byAgent = notice("n1", summary = "Some other words", agentId = "bc-q1")
+        val byCall = notice("n2", title = "Subagent failed", summary = "Renamed since", callId = "t2")
+        val byTitle = notice("n3", title = "Subagent cancelled", summary = "Price the maker rebate tiers")
+        val ofWorker = notice("n4", title = "Worker completed", summary = "Backfill the fills ledger", kind = SystemNotification.Kind.Worker, agentId = "bc-f1")
+        val early = notice("n0", summary = "Price the maker rebate tiers")
+        val rows = listOf(
+            TranscriptRow.Stretch(listOf(TranscriptRow.Entry.Event(TranscriptRow.Event(early)))),
+            TranscriptRow.Stretch(listOf(TranscriptRow.Entry.Call(cloud, "g:t1"), TranscriptRow.Entry.Call(local, "g:t2"), TranscriptRow.Entry.Call(worker, "g:c1"))),
+            TranscriptRow.Stretch(listOf(events(byAgent, byCall, ofWorker))),
+            TranscriptRow.Stretch(listOf(TranscriptRow.Entry.Call(again, "g:t3"), TranscriptRow.Entry.Event(TranscriptRow.Event(byTitle)))),
+        )
+        val index = SubagentRows.index(rows)
+        assertThat(index.startOf(byAgent)).isEqualTo(SubagentCall.of(cloud))
+        assertThat(index.startOf(byCall)).isEqualTo(SubagentCall.of(local))
+        assertThat(index.startOf(ofWorker)).isEqualTo(SubagentCall.of(worker))
+        // By title, the newest call with it before the notice; a notice before any call binds to none.
+        assertThat(index.startOf(byTitle)).isEqualTo(SubagentCall.of(again))
+        assertThat(index.startOf(early)).isNull()
+        assertThat(index.endingOf(cloud)).isEqualTo(SubagentChild.Status.Succeeded)
+        assertThat(index.endingOf(local)).isEqualTo(SubagentChild.Status.Failed)
+        assertThat(index.endingOf(again)).isEqualTo(SubagentChild.Status.Aborted)
+        assertThat(index.endingOf(worker)).isEqualTo(SubagentChild.Status.Succeeded)
+        // A background task's call returned before its child: the notice's ending is what its row says.
+        assertThat(look(local, SubagentChild(status = index.endingOf(local)))).isEqualTo(SubagentLook(SubagentLook.Indicator.Error, SubagentRows.STOPPED_WITH_ERROR))
     }
 }
