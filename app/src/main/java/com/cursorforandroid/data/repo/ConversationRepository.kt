@@ -3334,7 +3334,8 @@ class ConversationRepository(
                     e.whileAtRest { live.watch(agentId, start, resume) }
                 } catch (c: CancellationException) {
                     throw c
-                } catch (_: Throwable) {
+                } catch (t: Throwable) {
+                    failure = t
                     null
                 }
                 // The chat left rest under the stream: the run's own stream has it, and the watch waits for the end.
@@ -3383,8 +3384,7 @@ class ConversationRepository(
                     poll(agentId)?.let { it.isRunning to it.activityAtMillis }
                 } catch (c: CancellationException) {
                     throw c
-                } catch (t: Throwable) {
-                    failure = t
+                } catch (_: Throwable) {
                     null
                 }
                 val before = listed
