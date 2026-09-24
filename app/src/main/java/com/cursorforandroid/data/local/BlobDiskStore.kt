@@ -4,6 +4,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.security.MessageDigest
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 
 /**
@@ -18,6 +19,7 @@ class BlobDiskStore(private val cache: JsonDiskCache, private val maxBytes: Long
     private val dir: File get() = cache.root
     /** Bytes on disk, counted once on first use and kept as files come and go; -1 until counted. */
     private val bytes = AtomicLong(-1L)
+    private val trimming = AtomicBoolean(false)
 
     suspend fun read(agentId: String, blobId: String): ByteArray? = withContext(Dispatchers.IO) {
         val file = file(agentId, blobId)
@@ -86,7 +88,7 @@ class BlobDiskStore(private val cache: JsonDiskCache, private val maxBytes: Long
      */
     suspend fun recentIds(agentId: String, max: Int): List<String> = withContext(Dispatchers.IO) {
         val files = chatDir(agentId).listFiles { f -> f.isFile && !f.name.endsWith(".tmp") } ?: return@withContext emptyList()
-        files.sortedByDescending { it.lastModified() }.asSequence().mapNotNull { idOf(it.name) }.take(max).toList()
+        DiskSweep.byModified(files, newestFirst = true).asSequence().mapNotNull { idOf(it.name) }.take(max).toList()
     }
 
     /** The ids the server last prefetched for [agentId] (see `BlobCache.notePrefetched`), newest first; empty when none were noted. */
@@ -116,17 +118,26 @@ class BlobDiskStore(private val cache: JsonDiskCache, private val maxBytes: Long
         return bytes.get()
     }
 
-    /** Evicts the least recently used blobs, whichever chat they belong to, until the store is at three quarters of [maxBytes]. */
+    /**
+     * Evicts the least recently used blobs, whichever chat they belong to, until the store is at three quarters of
+     * [maxBytes]. One pass at a time: the writes that find the store over while a pass runs leave it to that pass
+     * rather than each walking every file of every chat again.
+     */
     private fun trim() {
-        val files = dir.walkTopDown().filter { it.isFile }.sortedBy { it.lastModified() }.toList()
-        var total = files.sumOf { it.length() }
-        val target = maxBytes * 3 / 4
-        for (file in files) {
-            if (total <= target) break
-            val size = file.length()
-            if (file.delete()) total -= size
+        if (!trimming.compareAndSet(false, true)) return
+        try {
+            val files = DiskSweep.byModified(dir.walkTopDown().filter { it.isFile })
+            var total = files.sumOf { it.length() }
+            val target = maxBytes * 3 / 4
+            for (file in files) {
+                if (total <= target) break
+                val size = file.length()
+                if (file.delete()) total -= size
+            }
+            bytes.set(total)
+        } finally {
+            trimming.set(false)
         }
-        bytes.set(total)
     }
 
     private fun chatDir(agentId: String): File = File(dir, sha1(agentId).take(24))

@@ -57,6 +57,26 @@ class DiskSweepTest {
     }
 
     @Test
+    fun `files are ordered by the time each had when read, whatever a writer stamps meanwhile`() {
+        val dir = folder.newFolder("stamped")
+        val files = (0 until 3_000).map { i -> dir.file("f$i", 1, 1_000_000L + i * 1_000L) }
+        val stamping = java.util.concurrent.atomic.AtomicBoolean(true)
+        val writer = kotlin.concurrent.thread {
+            val random = java.util.Random(7)
+            while (stamping.get()) files[random.nextInt(files.size)].setLastModified(System.currentTimeMillis())
+        }
+        try {
+            repeat(20) { assertThat(DiskSweep.byModified(dir.listFiles()!!, newestFirst = true)).hasSize(files.size) }
+        } finally {
+            stamping.set(false)
+            writer.join()
+        }
+        files[5].setLastModified(1L)
+        files[9].setLastModified(2L)
+        assertThat(DiskSweep.byModified(dir.listFiles()!!).take(2)).containsExactly(files[5], files[9]).inOrder()
+    }
+
+    @Test
     fun `a directory within its bound is left alone, and one that is missing weighs nothing`() {
         val dir = folder.newFolder("fits")
         dir.file("a", 100, 1_000L)

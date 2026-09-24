@@ -28,7 +28,7 @@ class GeneratedMediaStore(context: Context) {
 
     /** Every image kept for [agentId], newest write last. */
     fun forAgent(agentId: String): List<File> =
-        File(root, safeName(agentId)).listFiles { file -> file.isFile }?.sortedBy { it.lastModified() }.orEmpty()
+        File(root, safeName(agentId)).listFiles { file -> file.isFile }?.let { DiskSweep.byModified(it) }.orEmpty()
 
     fun delete(agentId: String) {
         File(root, safeName(agentId)).deleteRecursively()
