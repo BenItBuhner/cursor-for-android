@@ -131,12 +131,12 @@ jobs:
           path: app/build/reports/lint-results-debug.html
           if-no-files-found: ignore
 
-  # The ~2000 JVM unit tests over six runners, one test JVM each: five deterministic slices of the ordinary classes
-  # (`-Papp.testShard=I/5`, app/build.gradle.kts) and one for the benchmarks - the frame-time and throughput claims
+  # The ~3000 JVM unit tests over seven runners, one test JVM each: six deterministic slices of the ordinary classes
+  # (`-Papp.testShard=I/6`, balanced on app/test-class-seconds.properties) and one for the benchmarks - the frame-time and throughput claims
   # (`*BenchmarkTest`, `TranscriptPerf*`) - alone, so what they measure is the code and not a neighbour. One JVM
   # because the runner's four vCPUs are two cores: with two or three test JVMs side by side the fault, benchmark and
   # Compose UI tests, which assert on or wait for wall-clock behaviour, timed out on one shard job in five; alone in
-  # their JVM they never have. The checks are named "Unit tests (1/5)" .. "(5/5)" and "Unit tests (benchmarks)"; `ci`
+  # their JVM they never have. The checks are named "Unit tests (1/6)" .. "(6/6)" and "Unit tests (benchmarks)"; `ci`
   # below folds them, and every other job, into the one check to require.
   unit-tests:
     name: Unit tests (${{ matrix.shard }})
@@ -145,7 +145,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: ["1/5", "2/5", "3/5", "4/5", "5/5", "benchmarks"]
+        shard: ["1/6", "2/6", "3/6", "4/6", "5/6", "6/6", "benchmarks"]
     steps:
       - uses: actions/checkout@v7
         with:

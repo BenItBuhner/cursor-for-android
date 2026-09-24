@@ -1,0 +1,3 @@
+# Goldens both sides changed merge without a conflict and must be re-recorded (merge.golden in
+# scripts/cloud-agent-setup.sh; without that config git falls back to an ordinary binary conflict).
+screenshots/*.png merge=golden
