@@ -10,6 +10,7 @@ import androidx.compose.ui.test.longClick
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onFirst
 import androidx.compose.ui.test.onNodeWithContentDescription
+import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTextInput
@@ -18,6 +19,7 @@ import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.cursorforandroid.AppGraph
 import com.cursorforandroid.domain.CursorUser
+import com.cursorforandroid.ui.agents.SidebarTags
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.ui.theme.ThemeMode
 import com.google.common.truth.Truth.assertThat
@@ -89,7 +91,7 @@ class NewChatDraftsFlowTest {
         // Being written: no row.
         assertThat(draftRows()).isEqualTo(0)
 
-        compose.onNodeWithContentDescription("Account").performClick()
+        compose.onNodeWithTag(SidebarTags.ACCOUNT).performClick()
         compose.waitUntil(10_000) { draftRows() == 1 }
         compose.onNodeWithText("Rewrite the onboarding copy").assertExists()
 

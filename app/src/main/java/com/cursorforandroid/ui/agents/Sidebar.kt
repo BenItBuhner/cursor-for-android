@@ -125,15 +125,18 @@ data class SidebarCallbacks(
 object SidebarTags {
     const val UPDATE_HINT = "sidebar_update_hint"
     const val WHATS_NEW_HINT = "sidebar_whats_new_hint"
+    /** The account footer row, which opens Settings. */
+    const val ACCOUNT = "sidebar_account"
 }
 
 /**
  * The Cursor sidebar as it appears on cursor.com/agents and in the desktop Agents window: cube logo with the flat
- * new-chat ("+") + search + filter + sidebar-toggle icons in one header row (the web's separate "Chats" label is
- * folded into it), Projects / Pinned / date groups of 32dp rows, and the account footer. A chat's workers, side chats
- * and subagents sit under it as a tree, closed until its count is tapped. Each group folds closed from its header
- * (see [SidebarSectionHeader]), and stays folded across restarts; a long Projects or Pinned group lists its first
- * five rows until "Show N more" is tapped (see [SidebarShortList]). Surface is `--cursor-sidebar` (#181818).
+ * new-chat ("+") + search + sidebar-toggle icons in one header row (the web's separate "Chats" label is folded into
+ * it), Projects / Pinned / date groups of 32dp rows, and the account footer, whose trailing icon filters and groups
+ * the chats as the official app's does. A chat's workers, side chats and subagents sit under it as a tree, closed
+ * until its count is tapped. Each group folds closed from its header (see [SidebarSectionHeader]), and stays folded
+ * across restarts; a long Projects or Pinned group lists its first five rows until "Show N more" is tapped (see
+ * [SidebarShortList]). Surface is `--cursor-sidebar` (#181818).
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -197,12 +200,6 @@ fun Sidebar(
                 "Search chats",
                 onClick = { searching = !searching; if (!searching) setSearchQuery("") },
                 tint = if (searching) colors.iconPrimary else colors.iconSecondary,
-            )
-            FlatIconButton(
-                CursorIcons.Filter,
-                "Filter and group chats",
-                onClick = callbacks.onCustomize,
-                tint = if (state.prefs.isDefault) colors.iconSecondary else colors.accent,
             )
             if (callbacks.onToggleSidebar != null) {
                 FlatIconButton(CursorIcons.Sidebar, "Toggle sidebar", onClick = callbacks.onToggleSidebar)
@@ -365,7 +362,15 @@ fun Sidebar(
             updateHint != null -> SidebarHintRow(CursorIcons.ArrowDown, updateHint, onClick = callbacks.onSettings, tag = SidebarTags.UPDATE_HINT)
             whatsNewHint != null -> SidebarHintRow(CursorIcons.Sparkle, whatsNewHint, onClick = callbacks.onWhatsNew, tag = SidebarTags.WHATS_NEW_HINT)
         }
-        AccountFooter(user, isDemo, extendedMode, selected = selectedDestination == SidebarDestination.Settings, onClick = callbacks.onSettings)
+        AccountFooter(
+            user,
+            isDemo,
+            extendedMode,
+            selected = selectedDestination == SidebarDestination.Settings,
+            filtered = !state.prefs.isDefault,
+            onClick = callbacks.onSettings,
+            onFilter = callbacks.onCustomize,
+        )
     }
 }
 
@@ -567,8 +572,20 @@ private fun SearchField(value: String, onValueChange: (String) -> Unit, onClose:
     }
 }
 
+/**
+ * The avatar and name open Settings; the trailing filter icon opens the filter and group sheet, accent-tinted while
+ * any filter or grouping differs from the default.
+ */
 @Composable
-private fun AccountFooter(user: CursorUser, isDemo: Boolean, extendedMode: Boolean, selected: Boolean, onClick: () -> Unit) {
+private fun AccountFooter(
+    user: CursorUser,
+    isDemo: Boolean,
+    extendedMode: Boolean,
+    selected: Boolean,
+    filtered: Boolean,
+    onClick: () -> Unit,
+    onFilter: () -> Unit,
+) {
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
     Row(
@@ -576,6 +593,7 @@ private fun AccountFooter(user: CursorUser, isDemo: Boolean, extendedMode: Boole
             .fillMaxWidth()
             .background(if (selected) colors.fillSoft else Color.Transparent)
             .pressable(onClick, RectangleShape)
+            .testTag(SidebarTags.ACCOUNT)
             .navigationBarsPadding()
             .padding(start = 14.dp, end = 6.dp, top = 8.dp, bottom = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -592,7 +610,12 @@ private fun AccountFooter(user: CursorUser, isDemo: Boolean, extendedMode: Boole
                 extendedMode -> Text(ExtendedModeCopy.INDICATOR, style = type.small, color = colors.orange, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
         }
-        FlatIconButton(CursorIcons.More, "Account", onClick = onClick)
+        FlatIconButton(
+            CursorIcons.Filter,
+            "Filter and group chats",
+            onClick = onFilter,
+            tint = if (filtered) colors.accent else colors.iconSecondary,
+        )
     }
 }
 
