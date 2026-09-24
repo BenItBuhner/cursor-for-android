@@ -105,11 +105,15 @@ internal class ShellPanes(
 
     override val width: Dp get() = widths.panel
 
-    /** The configuration's screen width, read in composition: a change drops the old measurement until the next. */
-    fun configure(width: Dp) {
-        if (width == configured) return
+    /**
+     * The configuration's screen width, read in composition: a change drops the old measurement until the next. True
+     * where [width] is a change, the window folded, unfolded, turned or resized under the shell.
+     */
+    fun configure(width: Dp): Boolean {
+        if (width == configured) return false
         configured = width
         measured = null
+        return true
     }
 
     fun measure(width: Dp) {
@@ -160,7 +164,8 @@ internal class ShellPanes(
 /**
  * The wide window's row: the rail, while it stands beside the chat, at the width it was dragged to, its edge draggable
  * to resize it; then the detail pane, which a chat shares with its panel wherever the window has room to pin it
- * ([LocalPinnedPanel]). The rail slides as it goes and comes unless [railSlides] is false, where a key moved it.
+ * ([LocalPinnedPanel]). The rail slides as it goes and comes unless [railSlides] is false, where a key or the window
+ * moved it.
  */
 @Composable
 internal fun WidePanes(

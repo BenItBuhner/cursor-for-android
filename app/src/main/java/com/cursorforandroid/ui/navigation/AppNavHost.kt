@@ -152,7 +152,7 @@ internal fun AppShell(
     var projectEditor by rememberSaveable { mutableStateOf<ProjectEditorTarget?>(null) }
     // Wide layout: the sidebar collapses like on the web, and the toggle moves into the detail pane header.
     var sidebarCollapsed by rememberSaveable { mutableStateOf(false) }
-    // Where a key last left the rail, beside the chat or away (see byKey), until anything else moves it.
+    // Where a key or the window last left the rail, beside the chat or away (see byKey), until anything else moves it.
     var railKeyed by remember { mutableStateOf<Boolean?>(null) }
     // The long groups the reader listed in full, for this visit to the sidebar: not saved, cut back on leaving.
     val shortLists = remember { SidebarShortLists() }
@@ -166,7 +166,10 @@ internal fun AppShell(
     val focusManager = LocalFocusManager.current
     // How the wide window shares its width between the rail, the chat and a panel pinned beside it (see ShellPanes).
     val panes = remember { ShellPanes(graph.prefs, scope, railExpanded = { !sidebarCollapsed }, chatOnTop = { stack.top.screen is Screen.Agent }) }
-    panes.configure(LocalConfiguration.current.screenWidthDp.dp)
+    // A fold, an unfold or a turn lays the whole window out again in one frame, so the rail is where the new window has
+    // it in that frame, as a key leaves it: a rail still sliding once the window has changed would drag the chat and a
+    // pinned panel through widths of their own after it.
+    if (panes.configure(LocalConfiguration.current.screenWidthDp.dp)) railKeyed = panes.widths.railShown
     LaunchedEffect(panes) { panes.load() }
     // Read coarse, so a drag at either edge resizes the panes without recomposing the shell.
     val railShown by remember(panes) { derivedStateOf { panes.widths.railShown } }
@@ -189,7 +192,7 @@ internal fun AppShell(
         val railBefore = panes.widths.railShown
         stack.instantly(action).also { if (panes.widths.railShown != railBefore) railKeyed = panes.widths.railShown }
     }
-    // Anything but a key that moves the rail after it, a tap or a drag or the window, slides it again.
+    // Anything else that moves the rail after it, a tap or a drag, slides it again.
     val railSlides = railKeyed != railShown
     SideEffect { if (railKeyed != null && railKeyed != railShown) railKeyed = null }
 
