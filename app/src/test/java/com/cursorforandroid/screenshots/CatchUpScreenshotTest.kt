@@ -121,40 +121,40 @@ class CatchUpScreenshotTest {
         pull.stretch(pull.thresholdPx * 0.55f)
         frame()
         compose.onNodeWithText("Pull to catch up").assertExists()
-        capture("339_catch_up_pulling")
+        capture("440_catch_up_pulling")
 
         pull.stretch(pull.thresholdPx * 0.75f)
         frame()
         compose.onNodeWithText("Release to catch up").assertExists()
-        capture("340_catch_up_armed")
+        capture("441_catch_up_armed")
 
         pull.release()
         status = CatchUpStatus.Checking
         frame()
         compose.onNodeWithText("Catching up…").assertExists()
-        capture("341_catch_up_checking")
+        capture("442_catch_up_checking")
 
         status = CatchUpStatus.Waiting(now + 7_000L)
         frame()
         compose.onNodeWithText("Cursor asked for a pause · catching up in 7 s").assertExists()
-        capture("342_catch_up_waiting")
+        capture("443_catch_up_waiting")
 
         items = shown + elsewhere
         status = CatchUpStatus.Done(newMessages = 1, changed = true)
         frame()
         compose.onNodeWithText("1 new").assertExists()
-        capture("343_catch_up_new")
+        capture("444_catch_up_new")
 
         items = shown
         status = CatchUpStatus.Done(newMessages = 0, changed = false)
         frame()
         compose.onNodeWithText("Up to date").assertExists()
-        capture("344_catch_up_up_to_date")
+        capture("445_catch_up_up_to_date")
 
         status = CatchUpStatus.Failed("Cursor couldn't be reached. Check your connection.")
         frame()
         compose.onNodeWithTag(CATCH_UP_TEST_TAG).assertExists()
         compose.onNodeWithText("Cursor couldn't be reached. Check your connection.").assertExists()
-        capture("345_catch_up_failed")
+        capture("446_catch_up_failed")
     }
 }
