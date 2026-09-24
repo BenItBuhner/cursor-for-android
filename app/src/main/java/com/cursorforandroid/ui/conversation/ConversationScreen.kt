@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -38,6 +39,7 @@ import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -50,11 +52,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.LifecycleStartEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -474,7 +478,9 @@ fun ConversationScreen(
         )
 
         // Clipped: the list lifted by a pull to catch up goes under the header, not over it.
-        Box(Modifier.weight(1f).fillMaxWidth().clipToBounds()) {
+        var areaHeight by remember { mutableIntStateOf(0) }
+        var listHeight by remember { mutableIntStateOf(0) }
+        Box(Modifier.weight(1f).fillMaxWidth().clipToBounds().onSizeChanged { areaHeight = it.height }) {
             val paneWidth = Modifier.widthIn(max = CursorDimens.composerMaxWidth).fillMaxWidth()
             // The items above and below the rows, by their keys in [order].
             val edgeItem: @Composable (String) -> Unit = { key ->
@@ -543,6 +549,7 @@ fun ConversationScreen(
                     modifier = Modifier
                         .fillMaxWidth()
                         .align(Alignment.TopCenter)
+                        .onSizeChanged { listHeight = it.height }
                         .graphicsLayer { translationY = -catchUpLift.value }
                         .scrollEdgeFade(listState, reverseLayout = listReversed, surface = colors.canvas)
                         .readerScrolling(transcriptScroll, pull = catchUpPull, canCatchUp = viewModel::canCatchUp, onCatchUp = viewModel::catchUp),
@@ -563,7 +570,13 @@ fun ConversationScreen(
                 }
                 SideEffect { transcriptScroll.orient(following, order) }
             }
-            CatchUpIndicator(catchUpPull, catchUpStatus, onDismiss = viewModel::dismissCatchUp, modifier = Modifier.align(Alignment.BottomCenter))
+            // Under the newest message: a transcript short enough to fit ends above the bottom of the area.
+            CatchUpIndicator(
+                catchUpPull,
+                catchUpStatus,
+                onDismiss = viewModel::dismissCatchUp,
+                modifier = Modifier.align(Alignment.BottomCenter).offset { IntOffset(0, -(areaHeight - listHeight).coerceAtLeast(0)) },
+            )
 
             androidx.compose.animation.AnimatedVisibility(
                 visible = !following && items.size > 2,

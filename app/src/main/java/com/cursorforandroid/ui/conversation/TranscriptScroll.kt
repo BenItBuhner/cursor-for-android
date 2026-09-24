@@ -289,6 +289,16 @@ internal class ScreenScroll(private val list: LazyListState) : ScrollableState {
 }
 
 /**
+ * [screen] for a transcript with a pull to catch up. The platform's scrollable hands a drag to the overscroll only
+ * while its state can scroll some way, and a transcript short enough to fit the screen scrolls neither: the pull on
+ * a one-turn chat would never arm. Such a list is said to scroll toward its newest row, so the drag it cannot take
+ * is the overscroll's, and the pull's.
+ */
+private class PullableScroll(private val screen: ScreenScroll) : ScrollableState by screen {
+    override val canScrollForward: Boolean get() = screen.canScrollForward || !screen.canScrollBackward
+}
+
+/**
  * The reader's scroll of the transcript's list, which is composed with `userScrollEnabled = false`: drags, flings,
  * wheels, keys and the accessibility actions, with the platform's overscroll, through [ScreenScroll].
  *
@@ -313,6 +323,7 @@ internal fun Modifier.readerScrolling(
     val overscroll = remember(platform, pull) { pull?.let { CatchUpOverscroll(platform, it, enabled = { allowed() }, onPulled = { catchUp() }) } ?: platform }
     val scope = rememberCoroutineScope()
     val screen = remember(scroll) { ScreenScroll(scroll.list) }
+    val dragged: ScrollableState = remember(screen, pull) { if (pull != null) PullableScroll(screen) else screen }
     val axis = remember(screen) {
         ScrollAxisRange(
             value = { scroll.screenOffset(screen) },
@@ -334,7 +345,7 @@ internal fun Modifier.readerScrolling(
             }
         }
         .overscroll(overscroll)
-        .scrollable(screen, Orientation.Vertical, overscrollEffect = overscroll, reverseDirection = true)
+        .scrollable(dragged, Orientation.Vertical, overscrollEffect = overscroll, reverseDirection = true)
 }
 
 /** The transcript's scroll for [list], remembered per chat ([key]) with whether it was following, so a restored position is read in its own order. */
