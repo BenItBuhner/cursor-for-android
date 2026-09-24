@@ -154,7 +154,7 @@ class PreferencesStore(
         val extendedModeAcknowledgedAt = longPreferencesKey("extended_mode_acknowledged_at")
         val extendedModeIntroduced = booleanPreferencesKey("extended_mode_introduced")
         val extendedModeNoticePending = booleanPreferencesKey("extended_mode_notice_pending")
-        /** Which engine renders transcripts in Extended mode (`stable` / `beta`, see `domain/TranscriptEngine.kt`); absent is Stable. */
+        /** Which engine renders transcripts in Extended mode (`stable` / `beta`, see `domain/TranscriptEngine.kt`); absent is never chosen, and Beta. */
         val transcriptEngine = stringPreferencesKey("transcript_engine")
         val crashReports = booleanPreferencesKey("crash_reports")
         val modeChoicePending = booleanPreferencesKey("mode_choice_pending")
@@ -286,8 +286,9 @@ class PreferencesStore(
     val extendedModeNoticePending: Flow<Boolean> = data.map { it[Keys.extendedModeNoticePending] ?: false }
 
     /**
-     * The transcript engine Extended mode renders with (see `TranscriptEngine`): Stable unless Beta was chosen here —
-     * for every install, upgrades included; it is never inferred from what an earlier build did.
+     * The transcript engine Extended mode renders with (see `TranscriptEngine`): Beta unless Stable was chosen here —
+     * for every install, upgrades included. Only the Settings switch writes it, so an absent key is an install that
+     * never chose and follows the default, and a stored `stable` is an explicit opt-out that stays.
      */
     val transcriptEngine: Flow<TranscriptEngine> = data.map { TranscriptEngine.parse(it[Keys.transcriptEngine]) }
 
