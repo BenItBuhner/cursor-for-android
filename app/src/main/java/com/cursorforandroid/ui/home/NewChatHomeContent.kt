@@ -2,9 +2,7 @@ package com.cursorforandroid.ui.home
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.focusGroup
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -62,7 +60,6 @@ import com.cursorforandroid.ui.components.FlatIconButton
 import com.cursorforandroid.ui.components.RunningGlyph
 import com.cursorforandroid.ui.components.SelectorChip
 import com.cursorforandroid.ui.components.SelectorRow
-import com.cursorforandroid.ui.components.pressable
 import com.cursorforandroid.ui.compose.NewAgentUiState
 import com.cursorforandroid.ui.compose.NewAgentViewModel
 import com.cursorforandroid.ui.theme.CursorDimens
@@ -155,6 +152,10 @@ internal class HomeBlockActions(
     val rowActions: AgentRowActions?,
     val onNewProject: (() -> Unit)?,
     val onOpenSettings: (() -> Unit)?,
+    /** The page's hold on its Project shortcuts (the menu open, the arranging); null where they are only shown. */
+    val projectGrid: ProjectGridState? = null,
+    /** The Projects as arranged on the page, first to last; null where they cannot be arranged. */
+    val onReorderProjects: ((List<String>) -> Unit)? = null,
 )
 
 @Composable
@@ -177,7 +178,14 @@ internal fun HomeBlockView(block: HomeBlock, nowMillis: Long, actions: HomeBlock
             color = if (block.error != null) colors.red else colors.textQuaternary,
             modifier = Modifier.widthIn(max = CursorDimens.composerMaxWidth).padding(top = 24.dp, start = 7.dp, end = 7.dp),
         )
-        is HomeBlock.Projects -> ProjectShortcutGrid(block.rows, onOpen = actions.onOpenAgent, modifier = inset)
+        is HomeBlock.Projects -> ProjectShortcutGrid(
+            block.rows,
+            modifier = inset,
+            onOpen = actions.onOpenAgent,
+            actions = actions.rowActions,
+            state = actions.projectGrid,
+            onReorder = actions.onReorderProjects,
+        )
         is HomeBlock.Note -> ProjectsNoteCard(
             block.note,
             onAction = when (block.note) {
@@ -189,45 +197,29 @@ internal fun HomeBlockView(block: HomeBlock, nowMillis: Long, actions: HomeBlock
     }
 }
 
-/** The shortcuts, two to a row on a phone and three once the column is wide enough for three to keep their names. */
-@Composable
-internal fun ProjectShortcutGrid(rows: List<AgentRow>, onOpen: ((AgentRow) -> Unit)?, modifier: Modifier = Modifier) {
-    BoxWithConstraints(modifier) {
-        val columns = if (maxWidth >= 520.dp) 3 else 2
-        Column(verticalArrangement = Arrangement.spacedBy(ShortcutGap)) {
-            rows.chunked(columns).forEach { line ->
-                Row(horizontalArrangement = Arrangement.spacedBy(ShortcutGap)) {
-                    line.forEach { row ->
-                        ProjectShortcut(row, onClick = onOpen?.let { open -> { open(row) } }, modifier = Modifier.weight(1f))
-                    }
-                    repeat(columns - line.size) { Spacer(Modifier.weight(1f)) }
-                }
-            }
-        }
-    }
-}
-
 /**
  * A Project pinned to the New Chat pane: its icon in its colour on a tint of it, as the Project's own view heads it;
  * its name; and what is working in it — the working glyph in the Project's colour and "2 working" — or how many chats
- * it holds. An unread Project carries the unread dot where the glyph would be, a failed one the red dot.
+ * it holds. An unread Project carries the unread dot where the glyph would be, a failed one the red dot. While the
+ * shortcuts are being [arranging], each shows its grip there instead, and the one [lifted] under the finger its edge
+ * drawn stronger. What it does when touched is [ProjectShortcutGrid]'s.
  */
 @Composable
-internal fun ProjectShortcut(row: AgentRow, onClick: (() -> Unit)?, modifier: Modifier = Modifier) {
+internal fun ProjectShortcut(row: AgentRow, modifier: Modifier = Modifier, arranging: Boolean = false, lifted: Boolean = false) {
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
     val agent = row.agent
     val appearance = agent.projectAppearance
     val tone = colors.projectTone(appearance?.colorId)
     val shape = CursorTheme.shapes.xl
-    val press = if (onClick != null) Modifier.pressable(onClick, shape) else Modifier
-    CursorCard(modifier.testTag(NewChatHomeTags.PROJECT_SHORTCUT).then(press), shape = shape, contentPadding = PaddingValues(12.dp)) {
+    CursorCard(modifier, shape = shape, border = if (lifted) colors.strokeStrong else colors.strokeSubtle, contentPadding = PaddingValues(12.dp)) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Box(Modifier.size(32.dp).background(tone.copy(alpha = 0.14f), CircleShape), contentAlignment = Alignment.Center) {
                 Icon(CursorIcons.project(appearance?.icon), null, tint = tone, modifier = Modifier.size(17.dp))
             }
             Spacer(Modifier.weight(1f))
             when {
+                arranging -> Icon(CursorIcons.GripVertical, null, tint = if (lifted) colors.iconSecondary else colors.iconTertiary, modifier = Modifier.size(16.dp))
                 row.workingCount > 0 -> RunningGlyph(size = 16.dp, color = tone)
                 row.indicator == AgentIndicator.Unread -> Dot(colors.unreadDot, size = CursorDimens.recentDot)
                 row.indicator == AgentIndicator.Error -> Dot(colors.red, size = CursorDimens.recentDot)
@@ -406,7 +398,6 @@ private fun ScaledPage(pageSize: DpSize, modifier: Modifier = Modifier, content:
 
 /** Between the composer and what the pane lists under it. */
 internal val ComposerGap = 26.dp
-private val ShortcutGap = 10.dp
 private const val MiniatureBlocks = 12
 private const val MiniatureShortcuts = 12
 

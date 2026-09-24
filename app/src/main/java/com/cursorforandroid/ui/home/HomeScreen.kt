@@ -119,6 +119,8 @@ fun HomeScreen(
     onNewProject: (() -> Unit)? = null,
     /** The Projects page's way to Extended mode, while it is off. */
     onOpenSettings: (() -> Unit)? = null,
+    /** The Projects as arranged on the Projects page, first to last; null leaves them in the order they come in. */
+    onReorderProjects: ((List<String>) -> Unit)? = null,
 ) {
     // The draft open here is kept with the screen's saved state: a process ended under the composer opens it again,
     // while an app started afresh begins a new one, the others waiting in the sidebar.
@@ -137,7 +139,15 @@ fun HomeScreen(
     // The Chats filters chosen in the sidebar's menu apply here just the same (the sidebar search does not), so the two
     // lists never disagree about which chats are visible; the cards are newest first.
     val blocks = remember(home, listState, projectsAvailable) { homeBlocks(home, listState, projectsAvailable) }
-    val blockActions = HomeBlockActions(onOpenAgent = onOpenAgent, rowActions = rowActions, onNewProject = onNewProject, onOpenSettings = onOpenSettings)
+    val projectGrid = remember { ProjectGridState() }
+    val blockActions = HomeBlockActions(
+        onOpenAgent = onOpenAgent,
+        rowActions = rowActions,
+        onNewProject = onNewProject,
+        onOpenSettings = onOpenSettings,
+        projectGrid = projectGrid,
+        onReorderProjects = onReorderProjects,
+    )
     // The "+" menu's two pickers: the gallery — images alone in the default mode, images and videos as real files in
     // Extended mode — and, in Extended mode, the document picker for files of any type.
     val counts = AttachmentCounts.of(state.attachments, state.files)
@@ -158,7 +168,7 @@ fun HomeScreen(
         graph.share.consume(draft.generation)
     }
 
-    Column(modifier.fillMaxSize().background(colors.canvas)) {
+    Column(modifier.fillMaxSize().background(colors.canvas).endsArrangingOnTap(projectGrid)) {
         if (onOpenSidebar != null) {
             CursorHeader(leading = { FlatIconButton(CursorIcons.Sidebar, "Open sidebar", onClick = onOpenSidebar) })
         }
