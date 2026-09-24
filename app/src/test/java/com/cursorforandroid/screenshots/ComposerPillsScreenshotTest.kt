@@ -34,11 +34,12 @@ import org.robolectric.annotation.GraphicsMode
 import java.io.File
 
 /**
- * The home composer alone, in each of the states its footer and text can take: nothing on, the Plan pill (amber,
- * beside a `/command` in the same amber, so the pill and the command read as one thing), the Multitask pill
- * (violet), two `/commands` painted in the Plan pill's tint on their own, and — in the light theme, with a long
- * model name — the Plan pill with the model chip giving way to it. Plan and Multitask are one slot, so no state
- * wears both. Written to `screenshots/` beside the walkthrough; CI compares them pixel for pixel
+ * The home composer alone, in each of the states its footer and text can take: nothing on, the Plan pill (the
+ * desktop's Plan yellow, beside a `/command` in the same yellow, so the pill and the command read as one thing), the
+ * Multitask pill (its purple), two `/commands` painted in the Plan pill's tint on their own, and — in the light
+ * theme, with a long model name — the Plan pill with the model chip giving way to it; then every mode's pill in each
+ * theme, in the desktop's colours. The modes are one slot, so no state wears two. Written to `screenshots/` beside
+ * the walkthrough; CI compares them pixel for pixel
  * (`verifyRoborazziDebug`), and `recordRoborazziDebug` re-records them on purpose. The composer's padding and
  * placeholder frames are [ComposerScreenshotTest]; the same tint on a sent message is [SlashHighlightScreenshotTest].
  */
@@ -102,8 +103,8 @@ class ComposerPillsScreenshotTest {
         // Nothing on: "+", the model chip beside send, the placeholder.
         capture("33_composer_no_pill", settledText = "Ask Cursor to build")
 
-        // Plan mode, as the model picker's toggle or `/plan` leaves it: an amber pill right of "+", the chip the model's
-        // name alone, and a `/command` in the pill's amber beside it in the text.
+        // Plan mode, as the model picker's toggle or `/plan` leaves it: a yellow pill right of "+", the chip the model's
+        // name alone, and a `/command` in the pill's yellow beside it in the text.
         scene = Scene(planMode = true, value = "/review Work out how the sidebar should group projects")
         capture("34_composer_plan_pill", settledText = "Work out how")
 
@@ -125,7 +126,7 @@ class ComposerPillsScreenshotTest {
         capture("37_composer_pills_light", settledText = "Ship the 0.2.0")
     }
 
-    /** Extended mode's two modes, each worn like Plan: Ask in blue, Debug in teal; one pill at a time. */
+    /** Extended mode's two modes, each worn like Plan: Ask in the desktop's green, Debug in its red; one pill at a time. */
     @Test
     fun extendedModePills() {
         compose.setContent { Composer(scene) }
@@ -135,5 +136,23 @@ class ComposerPillsScreenshotTest {
 
         scene = Scene(modePill = ModePills.Pill.Debug, value = "The sidebar loses its scroll position after a rotation")
         capture("48_composer_debug_pill", settledText = "The sidebar loses")
+    }
+
+    /** Every mode's pill in the light theme, whose tints are the desktop's darker light-theme ones. */
+    @Test
+    fun modePillsLight() {
+        compose.setContent { Composer(scene) }
+
+        scene = Scene(planMode = true, value = "Work out how the sidebar should group projects", mode = ThemeMode.Light)
+        capture("480_composer_plan_pill_light", settledText = "Work out how")
+
+        scene = Scene(modePill = ModePills.Pill.Debug, value = "The sidebar loses its scroll position after a rotation", mode = ThemeMode.Light)
+        capture("481_composer_debug_pill_light", settledText = "The sidebar loses")
+
+        scene = Scene(value = "/multitask Fan the flaky suites out to subagents and land the fixes", mode = ThemeMode.Light)
+        capture("482_composer_multitask_pill_light", settledText = "Fan the flaky")
+
+        scene = Scene(modePill = ModePills.Pill.Ask, value = "Why does the widget repaint on every list refresh?", mode = ThemeMode.Light)
+        capture("483_composer_ask_pill_light", settledText = "Why does the widget")
     }
 }
