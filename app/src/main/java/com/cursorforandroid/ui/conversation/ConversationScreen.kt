@@ -1,5 +1,6 @@
 package com.cursorforandroid.ui.conversation
 
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -15,6 +16,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -35,6 +37,7 @@ import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -46,9 +49,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.LifecycleStartEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -58,6 +63,7 @@ import com.cursorforandroid.data.api.CursorEndpoints
 import com.cursorforandroid.data.repo.ConversationState
 import com.cursorforandroid.data.repo.TraceStatus
 import com.cursorforandroid.data.repo.RecordFallback
+import com.cursorforandroid.domain.AgentListOrganizer
 import com.cursorforandroid.domain.AssistantMessage
 import com.cursorforandroid.domain.CarriedFile
 import com.cursorforandroid.domain.FileOpenRequest
@@ -77,11 +83,14 @@ import com.cursorforandroid.ui.components.CursorIcons
 import com.cursorforandroid.ui.components.CursorMenu
 import com.cursorforandroid.ui.components.CursorMenuItem
 import com.cursorforandroid.ui.components.FlatIconButton
+import com.cursorforandroid.ui.components.Haptic
+import com.cursorforandroid.ui.components.HeaderClearance
 import com.cursorforandroid.ui.components.LocalMarkdownMedia
 import com.cursorforandroid.ui.components.LocalRunStopConfirmation
 import com.cursorforandroid.ui.components.MarkdownMediaContext
 import com.cursorforandroid.ui.components.RunInterruption
 import com.cursorforandroid.ui.components.RunStopDialog
+import com.cursorforandroid.ui.components.rememberHaptics
 import com.cursorforandroid.ui.components.rememberRunStopConfirmation
 import com.cursorforandroid.ui.components.ShimmerText
 import com.cursorforandroid.ui.components.SpinnerRing
@@ -151,6 +160,13 @@ fun ConversationScreen(
     onOpenSidebar: (() -> Unit)? = null,
     /** Where the transcript's worker cards and the panel send the reader: another chat (a primary, a side chat, a Project's coordinator). */
     onOpenAgent: ((String) -> Unit)? = null,
+    /**
+     * The chat was switched to from the hardware keyboard (Ctrl+Tab, Ctrl+1 … Ctrl+0): the composer takes the caret,
+     * and [onComposerFocused] says the ask was taken. The keyboard app decides whether its own keys come up, which
+     * with a hardware keyboard attached they do not.
+     */
+    focusComposer: Boolean = false,
+    onComposerFocused: () -> Unit = {},
 ) {
     val viewModel: ConversationViewModel = viewModel(key = "conversation-$agentId", factory = ConversationViewModel.Factory(graph, agentId))
     val colors = CursorTheme.colors
@@ -254,6 +270,12 @@ fun ConversationScreen(
     val listState = rememberLazyListState(prefetchStrategy = remember { TranscriptPrefetchStrategy() })
     val transcriptScroll = rememberTranscriptScroll(listState, agentId)
     val scope = rememberCoroutineScope()
+    // The pull past the newest message that catches the chat up (see CatchUpOverscroll), drawn as the sidebar's pull
+    // to refresh is, from the transcript's bottom edge (see CatchUpIndicator). Read only where it is drawn, and its
+    // status only by the indicator: a frame of the pull recomposes nothing, an answer the indicator alone.
+    val density = LocalDensity.current
+    val catchUpPull = remember(agentId, density) { with(density) { CatchUpPull(CatchUpPullThreshold.toPx()) } }
+    val readerScroll = rememberReaderScroll(transcriptScroll, pull = catchUpPull, canCatchUp = viewModel::canCatchUp, onCatchUp = viewModel::catchUp)
     var menuOpen by rememberSaveable { mutableStateOf(false) }
     var modelSheet by rememberSaveable { mutableStateOf(false) }
     var renameOpen by rememberSaveable { mutableStateOf(false) }
@@ -261,6 +283,7 @@ fun ConversationScreen(
     // Every tap here that would stop, pause or interrupt the run asks first while the setting is on (see
     // RunStopConfirmation): the composer's Stop, the menu's, the queues' Send now, the panel's controls.
     val stopConfirmation = rememberRunStopConfirmation(graph.prefs)
+    val haptics = rememberHaptics()
     val uriHandler = LocalUriHandler.current
     val clipboard = LocalClipboardManager.current
 
@@ -287,6 +310,7 @@ fun ConversationScreen(
     val items = presentedTranscript.items
     val isActive = conversation.runStatus?.isActive == true || conversation.isStreaming
     LaunchedEffect(isActive) { if (!isActive) stopConfirmation.dismissFor(agentId) }
+    ChatHaptics(agentId, conversation.runStatus, outgoing)
     // The notices among the rows the reader has put away for this chat (see NoticeCard.dismissKey, NoticeDismissals) are left out.
     val rows = remember(presentedTranscript, hiddenNotices) {
         val closed = NoticeDismissals.inlineKeys(hiddenNotices)
@@ -353,6 +377,15 @@ fun ConversationScreen(
     val panelState = rememberSidePanelState()
     val panel by panelViewModel.state.collectAsStateWithLifecycle()
     val panelActions = rememberPanelActions(panelViewModel, onToast = viewModel::showMessage, onOpenAgent = onOpenAgent, onAskToCopyFile = if (isDemo) null else viewModel::askToCopyFileIntoWorkspace)
+    ChatKeyboardShortcuts(agentId, viewModel, panelState)
+    TranscriptHitScroll(agentId, rows, conversation, transcriptScroll, viewModel)
+    var composerFocusRequests by remember { mutableIntStateOf(0) }
+    LaunchedEffect(focusComposer) {
+        if (focusComposer) {
+            composerFocusRequests++
+            onComposerFocused()
+        }
+    }
     // Replies reference screenshots and recordings by their VM path; resolving them needs this agent's id. A path
     // into an Agent Store (`/cursor/stores/…`, a Project's context) is read through the account in Extended mode and
     // opens in the document sheet; without the account it points at the Project on cursor.com. A tapped figure opens
@@ -360,7 +393,11 @@ fun ConversationScreen(
     // has listed after them; the list is read at the tap, off the items as they are then.
     val latestItems = rememberUpdatedState(conversation.items)
     val latestArtifacts = rememberUpdatedState(panel.artifacts.valueOrNull.orEmpty())
-    val markdownMedia = remember(agentId, canReadStores) {
+    // A link to an agent — a coordinator cites its workers by id — opens that agent's chat the way a worker card does,
+    // read by its id first when the list does not hold it (see [AgentLinkOpener]); a store sheet it was tapped in goes
+    // away with the chat it stood over.
+    val agentLinks = rememberAgentLinkOpener(graph, onOpenChat = onOpenAgent?.let { open -> { id: String -> openStorePath = null; open(id) } })
+    val markdownMedia = remember(agentId, canReadStores, agentLinks) {
         MarkdownMediaContext(
             agentId, graph.media,
             canReadStores = canReadStores,
@@ -369,6 +406,7 @@ fun ConversationScreen(
                 if (canReadStores && target != null) openStorePath = path.text else runCatching { uriHandler.openUri(StorePath.webUrl(target?.ownerId ?: agentId)) }
             },
             entries = { ConversationMedia.of(latestItems.value, latestArtifacts.value) },
+            onOpenAgentLink = agentLinks::open,
         )
     }
     // The agent's VM desktop is reached from the header menu (Extended mode, `GetMachine` then noVNC), for the chats
@@ -399,8 +437,12 @@ fun ConversationScreen(
     ) {
     Column(Modifier.fillMaxSize().background(colors.canvas)) {
         val touchHeight = CursorDimens.minTouchTarget
+        // Where the header's buttons stand in the margin beside the transcript's column (a wide pane), the header gives
+        // its band to the transcript, which then reads up to the status bar; where they reach the column it keeps it.
+        val headerClearance = remember { HeaderClearance() }
         ChatHeader(
             label = agent?.name ?: "Chat",
+            clearance = headerClearance,
             leading = {
                 when {
                     onBack != null -> FlatIconButton(CursorIcons.ChevronLeft, "Back", onClick = onBack, touchHeight = touchHeight)
@@ -419,7 +461,7 @@ fun ConversationScreen(
                 Box {
                     FlatIconButton(CursorIcons.More, "More", onClick = { menuOpen = true }, touchHeight = touchHeight)
                     CursorMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
-                        CursorMenuItem(if (isPinned) "Unpin" else "Pin", CursorIcons.Pin) { menuOpen = false; viewModel.togglePinned() }
+                        if (agent?.let(AgentListOrganizer::canPin) != false) CursorMenuItem(if (isPinned) "Unpin" else "Pin", CursorIcons.Pin) { menuOpen = false; viewModel.togglePinned() }
                         // The public API has no rename; the demo renames its in-memory row, Extended mode the account's.
                         if (isDemo || extendedMode) CursorMenuItem("Rename", CursorIcons.Pencil) { menuOpen = false; renameOpen = true }
                         CursorMenuItem("Reload transcript", CursorIcons.Refresh) { menuOpen = false; viewModel.reloadTranscript() }
@@ -455,7 +497,10 @@ fun ConversationScreen(
         )
 
         Box(Modifier.weight(1f).fillMaxWidth()) {
+            Box(Modifier.matchParentSize().readerBackdrop(readerScroll))
             val paneWidth = Modifier.widthIn(max = CursorDimens.composerMaxWidth).fillMaxWidth()
+            // The column the rows are laid out in, measured whether or not there are any rows yet.
+            Box(Modifier.align(Alignment.TopCenter).padding(horizontal = TranscriptGutter).then(paneWidth).then(headerClearance.transcriptColumn))
             // The items above and below the rows, by their keys in [order].
             val edgeItem: @Composable (String) -> Unit = { key ->
                 when (key) {
@@ -517,15 +562,17 @@ fun ConversationScreen(
                     userScrollEnabled = false,
                     // Not fillMaxSize: a short transcript then sizes to its content and reads from the top. Once it
                     // overflows, the items dissolve at whichever edge still has transcript past it rather than clipping
-                    // flat against the header or the composer. The fade is painted in the canvas colour: this list is
-                    // resized on every frame the keyboard moves, and an offscreen dissolve would re-allocate and
-                    // re-render a full-screen layer on each of them.
+                    // flat against the header or the composer — or against the status bar, where the header has given
+                    // its band back, so no row is cut through under the bar's icons and nothing is dimmed at rest. The
+                    // fade is painted in the canvas colour: this list is resized on every frame the keyboard moves, and
+                    // an offscreen dissolve would re-allocate and re-render a full-screen layer on each of them.
                     modifier = Modifier
                         .fillMaxWidth()
                         .align(Alignment.TopCenter)
                         .scrollEdgeFade(listState, reverseLayout = listReversed, surface = colors.canvas)
-                        .readerScrolling(transcriptScroll),
-                    contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 6.dp, bottom = 12.dp),
+                        .readerScrolling(readerScroll)
+                        .testTag("transcript"),
+                    contentPadding = PaddingValues(start = TranscriptGutter, end = TranscriptGutter, top = 6.dp, bottom = 12.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp),
                     horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
@@ -542,10 +589,19 @@ fun ConversationScreen(
                 }
                 SideEffect { transcriptScroll.orient(following, order) }
             }
+            // Out of the area's bottom edge, the top of the composer's stack; a word up there gives way as it rises.
+            CatchUpIndicator(
+                catchUpPull,
+                viewModel.catchUpStatus,
+                onSettled = viewModel::catchUpSettled,
+                modifier = Modifier.align(Alignment.BottomCenter),
+                onRise = { snackbar.currentSnackbarData?.dismiss() },
+            )
 
+            val jumpShown = !following && items.size > 2
             androidx.compose.animation.AnimatedVisibility(
-                visible = !following && items.size > 2,
-                modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 10.dp),
+                visible = jumpShown,
+                modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = JumpButtonGap),
                 enter = fadeIn(tween(160)) + scaleIn(tween(160), initialScale = 0.8f),
                 exit = fadeOut(tween(120)) + scaleOut(tween(120), targetScale = 0.8f),
             ) {
@@ -560,7 +616,10 @@ fun ConversationScreen(
                     Icon(CursorIcons.ArrowDown, "Scroll to latest", tint = colors.iconPrimary, modifier = Modifier.size(16.dp))
                 }
             }
-            SnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter)) { data ->
+            // A word up while the jump button is out sits above it, never over it: the button stays the reader's to
+            // tap (a catch-up's answer lands there as the reader flings back to the newest message). Read at layout.
+            val snackbarLift = animateDpAsState(if (jumpShown) CursorDimens.iconButton + JumpButtonGap else 0.dp, tween(160), label = "snackbar-lift")
+            SnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter).offset { IntOffset(0, -snackbarLift.value.roundToPx()) }) { data ->
                 Snackbar(snackbarData = data, containerColor = colors.elevated, contentColor = colors.textPrimary, shape = CursorTheme.shapes.lg)
             }
         }
@@ -611,7 +670,12 @@ fun ConversationScreen(
                     onEdit = { viewModel.editQueued(it.id) },
                     // Sent now while a turn is under way, a message cancels that turn for it.
                     onSteer = { item ->
-                        if (isActive) stopConfirmation.ask(RunInterruption.SendNow, agentId) { viewModel.steerQueued(item.id) } else viewModel.steerQueued(item.id)
+                        if (isActive) {
+                            stopConfirmation.ask(RunInterruption.SendNow, agentId) { viewModel.steerQueued(item.id) }
+                        } else {
+                            haptics.perform(Haptic.Confirm)
+                            viewModel.steerQueued(item.id)
+                        }
                     },
                     onRemove = { viewModel.removeQueued(it.id) },
                     modifier = Modifier.widthIn(max = CursorDimens.composerMaxWidth).padding(bottom = 4.dp),
@@ -623,13 +687,18 @@ fun ConversationScreen(
                     inFlightIds = controls.inFlightQueueIds,
                     // `SubmitPendingFollowupNow` sends the message in place of the turn under way.
                     onSendNow = { item ->
-                        if (isActive) stopConfirmation.ask(RunInterruption.SendNow, agentId) { viewModel.queueSendNow(item.id) } else viewModel.queueSendNow(item.id)
+                        if (isActive) {
+                            stopConfirmation.ask(RunInterruption.SendNow, agentId) { viewModel.queueSendNow(item.id) }
+                        } else {
+                            haptics.perform(Haptic.Confirm)
+                            viewModel.queueSendNow(item.id)
+                        }
                     },
                     onRemove = { viewModel.queueDelete(it.id) },
                     onUpdate = { item, text -> viewModel.queueUpdate(item.id, text) },
                     onEditing = { item, editing -> viewModel.queueMarkEditing(item.id, editing) },
                     // A queued message can be delivered into the turn under way as a steer while there is one to steer.
-                    onSteerNow = if (capabilities.steering && isActive) ({ viewModel.queueSteerNow(it.id) }) else null,
+                    onSteerNow = if (capabilities.steering && isActive) ({ haptics.perform(Haptic.Confirm); viewModel.queueSteerNow(it.id) }) else null,
                     onMove = { item, up -> viewModel.queueMove(item.id, up) },
                     modifier = Modifier.widthIn(max = CursorDimens.composerMaxWidth).padding(bottom = 4.dp),
                 )
@@ -675,7 +744,8 @@ fun ConversationScreen(
                 models = picker.models,
                 currentModel = picker.selected,
                 onPickModel = if (archived) null else ({ viewModel.selectModel(it.model, it.variant) }),
-                modifier = Modifier.widthIn(max = CursorDimens.composerMaxWidth).testTag("follow-up-composer"),
+                focusRequests = composerFocusRequests,
+                modifier = Modifier.widthIn(max = CursorDimens.composerMaxWidth).then(headerClearance.composerColumn).testTag("follow-up-composer"),
             )
         }
     }
@@ -744,6 +814,7 @@ fun ConversationScreen(
         )
     }
     RunStopDialog(stopConfirmation)
+    AgentLinkDialog(agentLinks)
 }
 
 /** The keys of the list's items that are not rows of the transcript (see [TranscriptOrder]). */
@@ -752,6 +823,12 @@ private const val TRACES_KEY = "traces"
 private const val OLDER_KEY = "older"
 private const val EMPTY_KEY = "empty"
 private const val LOADING_KEY = "loading"
+
+/** The transcript's side margins, inside which its rows take [CursorDimens.composerMaxWidth] at most. */
+private val TranscriptGutter = 16.dp
+
+/** The jump button's lift off the transcript's bottom edge. */
+private val JumpButtonGap = 10.dp
 
 /**
  * How many rows from the oldest one shown the reader may be before the turns before it are asked for: about a

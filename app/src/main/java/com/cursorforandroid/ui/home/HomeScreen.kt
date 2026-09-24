@@ -34,6 +34,7 @@ import androidx.compose.material3.ripple
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -81,7 +82,10 @@ import com.cursorforandroid.ui.components.rememberFilePicker
 import com.cursorforandroid.ui.components.rememberMediaPicker
 import com.cursorforandroid.ui.components.scrollEdgeFade
 import com.cursorforandroid.ui.components.stylusWriting
+import com.cursorforandroid.ui.components.Haptic
+import com.cursorforandroid.ui.components.rememberHaptics
 import com.cursorforandroid.share.ShareTarget
+import com.cursorforandroid.ui.compose.LaunchRefusedHaptic
 import com.cursorforandroid.ui.compose.NewAgentUiState
 import com.cursorforandroid.ui.compose.NewAgentViewModel
 import com.cursorforandroid.ui.compose.rememberComposerMenuActions
@@ -120,6 +124,9 @@ fun HomeScreen(
     onOpenSettings: (() -> Unit)? = null,
     /** The Projects as arranged on the Projects page, first to last; null leaves them in the order they come in. */
     onReorderProjects: ((List<String>) -> Unit)? = null,
+    /** Ctrl+N asked for the composer: it is scrolled to and focused, and [onComposerFocused] says the ask was taken. */
+    focusComposer: Boolean = false,
+    onComposerFocused: () -> Unit = {},
 ) {
     // The draft open here is kept with the screen's saved state: a process ended under the composer opens it again,
     // while an app started afresh begins a new one, the others waiting in the sidebar.
@@ -179,6 +186,15 @@ fun HomeScreen(
         val recentState = rememberLazyListState()
         val centring = remember { PageCentring() }
         LaunchedEffect(recentState) { centring.follow(recentState) }
+        var composerFocusRequests by remember { mutableIntStateOf(0) }
+        LaunchedEffect(focusComposer) {
+            if (focusComposer) {
+                recentState.scrollToItem(0)
+                composerFocusRequests++
+                onComposerFocused()
+            }
+        }
+        LaunchRefusedHaptic(state)
         LazyColumn(
             Modifier.fillMaxSize().imePadding().scrollEdgeFade(recentState, surface = colors.canvas),
             state = recentState,
@@ -220,6 +236,7 @@ fun HomeScreen(
                         models = state.models,
                         currentModel = state.modelChoice,
                         onPickModel = { viewModel.selectModel(it.model, it.variant) },
+                        focusRequests = composerFocusRequests,
                     )
                     state.error?.let { ComposerErrorLine(it, state.errorAsked, onDismiss = viewModel::dismissError) }
                 }
@@ -304,6 +321,7 @@ fun RecentChatRow(
     val shape = CursorTheme.shapes.xl
     var menuOpen by remember { mutableStateOf(false) }
     val interaction = remember { MutableInteractionSource() }
+    val haptics = rememberHaptics()
     Box(modifier) {
     Row(
         Modifier
@@ -316,7 +334,7 @@ fun RecentChatRow(
                             interactionSource = interaction,
                             indication = ripple(color = colors.base),
                             onClick = onClick,
-                            onLongClick = { menuOpen = true },
+                            onLongClick = { haptics.perform(Haptic.LongPress); menuOpen = true },
                         )
                 } else {
                     Modifier.pressable(onClick, shape)

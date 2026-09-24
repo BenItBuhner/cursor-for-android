@@ -14,6 +14,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.cursorforandroid.AppGraph
 import com.cursorforandroid.domain.CursorUser
 import com.cursorforandroid.domain.NewChatHome
+import com.cursorforandroid.ui.agents.SidebarTags
 import com.cursorforandroid.ui.home.NewChatHomeCopy
 import com.cursorforandroid.ui.home.NewChatHomeTags
 import com.cursorforandroid.ui.settings.NewChatHomePickerTags
@@ -53,7 +54,7 @@ class NewChatHomeFlowTest {
     private fun shortcuts() = compose.onAllNodes(hasTestTag(NewChatHomeTags.PROJECT_SHORTCUT)).fetchSemanticsNodes().size
 
     private fun choose(home: NewChatHome) {
-        compose.onNodeWithContentDescription("Account").performClick()
+        compose.onNodeWithTag(SidebarTags.ACCOUNT).performClick()
         compose.waitUntil(10_000) { compose.onAllNodes(hasTestTag(NewChatHomePickerTags.of(home))).fetchSemanticsNodes().isNotEmpty() }
         // A touch made while the pane is still sliding Settings in is not the screen's to take.
         compose.waitForIdle()

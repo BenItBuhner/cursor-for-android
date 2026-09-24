@@ -53,6 +53,7 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import com.cursorforandroid.ui.components.CursorToggle
 import com.cursorforandroid.ui.components.pressable
+import com.cursorforandroid.ui.components.rememberHaptics
 import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
 import kotlin.math.roundToInt
@@ -115,10 +116,11 @@ fun OptionLabel(label: String, modifier: Modifier = Modifier) {
 /** A row with one of the app's toggles at its end; the whole row flips it. */
 @Composable
 fun OptionToggle(label: String, checked: Boolean, onChange: (Boolean) -> Unit, detail: String? = null) {
+    val haptics = rememberHaptics()
     Row(
         Modifier
             .fillMaxWidth()
-            .pressable({ onChange(!checked) }, RoundedCornerShape(WidgetOptionRadii.control), role = Role.Switch)
+            .pressable({ haptics.toggle(!checked); onChange(!checked) }, RoundedCornerShape(WidgetOptionRadii.control), role = Role.Switch)
             .heightIn(min = CursorDimens.listRow)
             .padding(horizontal = 10.dp, vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically,

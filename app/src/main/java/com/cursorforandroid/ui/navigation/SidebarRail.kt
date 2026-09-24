@@ -1,24 +1,28 @@
 package com.cursorforandroid.ui.navigation
 
-import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
-import androidx.compose.animation.core.FiniteAnimationSpec
 import androidx.compose.animation.core.tween
-import androidx.compose.animation.expandHorizontally
-import androidx.compose.animation.shrinkHorizontally
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.width
 import androidx.compose.runtime.Composable
-import androidx.compose.ui.Alignment
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.layout.layout
+import androidx.compose.ui.unit.Constraints
 import com.cursorforandroid.ui.components.rememberSheetFocus
 import com.cursorforandroid.ui.components.sheetFocus
 import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
+import kotlin.math.abs
+import kotlin.math.roundToInt
 
 /**
  * The sidebar as a column beside the detail pane on wide windows (tablets, the inner screen of a foldable, a phone on
@@ -37,32 +41,53 @@ import com.cursorforandroid.ui.theme.CursorTheme
  *
  * First composition with [expanded] true shows the rail at once, without a slide: that is what a Fold unfolding or a
  * phone rotating sees when the drawer layout is swapped for this one, and a rail that arrived by sliding in would
- * read as if it had opened on its own. Hidden, the content leaves the composition, as it did when the rail was a
- * plain `if`.
+ * read as if it had opened on its own. So does a change with [animate] false, Ctrl+B's: the rail is where the key put
+ * it in the frame the key lands, with a slide in flight dropped where it was. Hidden, the content leaves the
+ * composition, as it did when the rail was a plain `if`.
  */
 @Composable
-fun SidebarRail(expanded: Boolean, modifier: Modifier = Modifier, content: @Composable () -> Unit) {
+fun SidebarRail(expanded: Boolean, modifier: Modifier = Modifier, animate: Boolean = true, content: @Composable () -> Unit) {
     val colors = CursorTheme.colors
     val focus = rememberSheetFocus { expanded }
+    val target = if (expanded) 1f else 0f
+    // How much of the column shows: read while laying out, so neither the slide nor its end recomposes the content.
+    val shown = remember { Animatable(target) }
+    val onScreen by remember { derivedStateOf { shown.value > 0f } }
+    LaunchedEffect(expanded, animate) {
+        if (!animate) {
+            shown.snapTo(target)
+        } else {
+            val millis = (SidebarRailMillis * abs(target - shown.value)).roundToInt().coerceAtLeast(MinRailMillis)
+            shown.animateTo(target, tween(millis, easing = FastOutSlowInEasing))
+        }
+    }
     // Around the slide rather than on it: hidden, the slide composes nothing, so nothing on it would stay to hear a
     // focused search leave with it.
     Box(modifier.sheetFocus(focus)) {
-        AnimatedVisibility(
-            visible = expanded,
-            enter = expandHorizontally(sidebarRailMotion(), expandFrom = Alignment.End),
-            exit = shrinkHorizontally(sidebarRailMotion(), shrinkTowards = Alignment.End),
-            label = "sidebarRail",
-        ) {
-            Row(Modifier.fillMaxHeight()) {
-                Box(Modifier.width(CursorDimens.sidebarWidth).fillMaxHeight()) { content() }
-                Box(Modifier.fillMaxHeight().width(CursorDimens.hairline).background(colors.strokeSubtle))
+        if (expanded || (animate && onScreen)) {
+            Box(
+                Modifier
+                    .clipToBounds()
+                    .layout { measurable, constraints ->
+                        // The column and the hairline each round to whole pixels, so their sum is the row's own width.
+                        val placeable = measurable.measure(constraints.copy(minWidth = 0, maxWidth = Constraints.Infinity))
+                        val full = placeable.width
+                        val fraction = if (animate) shown.value else target
+                        val width = (full * fraction).roundToInt()
+                        layout(width, placeable.height) { placeable.placeRelative(width - full, 0) }
+                    },
+            ) {
+                Row(Modifier.fillMaxHeight()) {
+                    Box(Modifier.width(CursorDimens.sidebarWidth).fillMaxHeight()) { content() }
+                    Box(Modifier.fillMaxHeight().width(CursorDimens.hairline).background(colors.strokeSubtle))
+                }
             }
         }
     }
 }
 
 /** The phone drawer's motion (Material's `ModalNavigationDrawer` settles over a 256ms tween), so both feel like one control. */
-private fun sidebarRailMotion(): FiniteAnimationSpec<IntSize> = tween(SidebarRailMillis, easing = FastOutSlowInEasing)
-
-/** Exposed for tests that step the clock through the slide. */
 internal const val SidebarRailMillis = 256
+
+/** The shortest a slide turned back near its end takes, so it still reads as motion. */
+private const val MinRailMillis = 90

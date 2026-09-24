@@ -1,10 +1,13 @@
 package com.cursorforandroid
 
+import android.annotation.SuppressLint
 import android.content.Intent
 import android.os.Bundle
+import android.view.KeyEvent
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -16,6 +19,8 @@ import com.cursorforandroid.data.repo.LoginProgress
 import com.cursorforandroid.data.repo.SessionState
 import com.cursorforandroid.share.ShareIntent
 import com.cursorforandroid.ui.CursorRoot
+import com.cursorforandroid.ui.shortcuts.KeyboardShortcuts
+import com.cursorforandroid.ui.shortcuts.LocalKeyboardShortcuts
 import com.cursorforandroid.ui.theme.AppNightMode
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.ui.theme.ThemeMode
@@ -34,6 +39,12 @@ class MainActivity : ComponentActivity() {
     /** Set by an [ACTION_SEARCH] launch (the widget's corner button); the nav host opens the sidebar's search and clears it. */
     private var pendingSearch by mutableStateOf(false)
 
+    /**
+     * The hardware keyboard's shortcuts: read by the shell before the IME is given the key (`Modifier.shortcutsBeforeIme`),
+     * and here where nothing in the shell holds the focus (see [dispatchKeyEvent]).
+     */
+    private val shortcuts by lazy { KeyboardShortcuts(lifecycleScope) }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         val splash = installSplashScreen()
         super.onCreate(savedInstanceState)
@@ -50,26 +61,44 @@ class MainActivity : ComponentActivity() {
             val themeMode by graph.prefs.themeMode.collectAsStateWithLifecycle(initialValue = ThemeMode.System)
             val oledBlack by graph.prefs.oledBlack.collectAsStateWithLifecycle(initialValue = false)
             CursorTheme(mode = themeMode, oledBlack = oledBlack) {
-                CursorRoot(
-                    graph = graph,
-                    deepLinkAgentId = pendingAgentId,
-                    onDeepLinkConsumed = {
-                        pendingAgentId = null
-                        DeepLinks.clearAgentLink(intent)
-                    },
-                    newChatRequested = pendingNewChat,
-                    onNewChatConsumed = {
-                        pendingNewChat = false
-                        DeepLinks.clearAction(intent, ACTION_NEW_CHAT)
-                    },
-                    searchRequested = pendingSearch,
-                    onSearchConsumed = {
-                        pendingSearch = false
-                        DeepLinks.clearAction(intent, ACTION_SEARCH)
-                    },
-                )
+                CompositionLocalProvider(LocalKeyboardShortcuts provides shortcuts) {
+                    CursorRoot(
+                        graph = graph,
+                        deepLinkAgentId = pendingAgentId,
+                        onDeepLinkConsumed = {
+                            pendingAgentId = null
+                            DeepLinks.clearAgentLink(intent)
+                        },
+                        newChatRequested = pendingNewChat,
+                        onNewChatConsumed = {
+                            pendingNewChat = false
+                            DeepLinks.clearAction(intent, ACTION_NEW_CHAT)
+                        },
+                        searchRequested = pendingSearch,
+                        onSearchConsumed = {
+                            pendingSearch = false
+                            DeepLinks.clearAction(intent, ACTION_SEARCH)
+                        },
+                    )
+                }
             }
         }
+    }
+
+    /**
+     * A hardware keyboard's shortcut with nothing in the shell focused is taken here, ahead of any view; with a node
+     * focused the IME is handed the key before this, so the shell reads it earlier (`Modifier.shortcutsBeforeIme`),
+     * and one it read there is not read again here. Every other key, and every key of the on-screen keyboard, goes on.
+     *
+     * `Activity.dispatchKeyEvent` is the platform's public API; androidx.core's `ComponentActivity` re-declares it
+     * restricted to its own library group, which lint reads as this override calling a restricted method.
+     */
+    @SuppressLint("RestrictedApi")
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean = shortcuts.onKeyEvent(event) || super.dispatchKeyEvent(event)
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (!hasFocus) shortcuts.onFocusLost()
     }
 
     /** Off the screen, the process may be ended without another word: what was typed a moment ago is written now. */

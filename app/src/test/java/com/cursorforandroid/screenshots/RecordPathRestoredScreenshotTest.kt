@@ -186,10 +186,11 @@ class RecordPathRestoredScreenshotTest {
     fun recordPathAfter() {
         val rows = rowsAfter()
         assertThat(rows.filterIsInstance<TranscriptRow.Message>()).isNotEmpty()
-        // The newest rows: the reports' stretches and the workers queued after each, subagent rows of their own.
-        assertThat(rows.takeLast(6).count { it is TranscriptRow.Subagent }).isAtLeast(2)
+        // The newest rows: the reports and the stretches between them, the workers queued in each among its steps.
+        assertThat(rows.takeLast(6).filterIsInstance<TranscriptRow.Stretch>().sumOf { it.subagents.size }).isAtLeast(2)
         show(fallback = null) { rows.takeLast(6).forEach { TranscriptRowView(it) } }
-        compose.waitUntil(10_000) { compose.onAllNodes(hasTestTag("subagent-row")).fetchSemanticsNodes().isNotEmpty() }
+        compose.waitUntil(10_000) { compose.onAllNodes(hasTestTag("stretch")).fetchSemanticsNodes().isNotEmpty() }
+        compose.onAllNodes(hasTestTag("subagent-row")).assertCountEquals(0)
         compose.onAllNodes(hasTestTag("record-fallback")).assertCountEquals(0)
         capture("109_record_path_after")
     }

@@ -42,6 +42,8 @@ import androidx.lifecycle.ViewModelStore
 import androidx.lifecycle.ViewModelStoreOwner
 import androidx.lifecycle.viewmodel.compose.LocalViewModelStoreOwner
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.cursorforandroid.ui.components.feltOnCommit
+import com.cursorforandroid.ui.components.rememberHaptics
 import com.cursorforandroid.ui.theme.CursorTheme
 import kotlin.coroutines.cancellation.CancellationException
 import kotlin.math.abs
@@ -59,7 +61,8 @@ import kotlinx.coroutines.launch
  * drifts into place behind it. Neither changes size. Pushes play the same transform backwards, so forward and back
  * share one vocabulary. Because the gesture's [BackEventCompat] is read here, the direction follows the edge the
  * swipe came from and the card trails the finger vertically — the two things a transition inside a navigation
- * library cannot know.
+ * library cannot know. A change made [NavStack.instantly] (the keyboard's) has no transition: its top is on screen,
+ * alone and at rest, from the first frame.
  *
  * Each entry gets its own `rememberSaveable` scope and [ViewModelStoreOwner]; both are released once the entry has
  * left the stack and finished animating out.
@@ -121,13 +124,19 @@ fun CursorNavHost(
             focusManager.clearFocus(force = true)
             keyboard?.hide()
         }
+        val instant = stack.instantTop == desired.id && !scene.gestureActive
+        // In step with the render below, which shows the marked top alone until the scene has it. The mark goes either
+        // way: one naming an entry the stack has since moved past is stale.
+        if (instant) scene.jumpTo(desired)
+        stack.instantTop = null
         try {
-            scene.moveTo(desired, stack)
+            if (instant) scene.rest() else scene.moveTo(desired, stack)
         } catch (_: CancellationException) {
             // Superseded: a gesture took over the animation, or the stack changed again.
         }
     }
 
+    val haptics = rememberHaptics()
     PredictiveBackHandler(enabled = backEnabled && stack.canPop) { events ->
         val under = stack.underTop
         if (under == null) {
@@ -148,7 +157,7 @@ fun CursorNavHost(
         var originY: Float? = null
         try {
             scene.beginGesture(under)
-            events.collect { event ->
+            events.feltOnCommit(haptics).collect { event ->
                 if (originY == null) {
                     originY = event.touchY
                     scene.edge = event.swipeEdge
@@ -191,12 +200,22 @@ fun CursorNavHost(
     scene.maxDragPx = maxDragPx
 
     Box(modifier.fillMaxSize()) {
+        // A top put there instantly is shown alone, at rest, from the composition that first sees it; the scene
+        // catches up in the effect above, and the pane keeps its key, so it is kept rather than composed again.
+        val instant = stack.instantTop == desired.id && !scene.gestureActive
         val under = scene.under
-        val panes = if (under != null) listOf(under, scene.top) else listOf(scene.top)
+        val panes = when {
+            instant -> listOf(desired)
+            under != null -> listOf(under, scene.top)
+            else -> listOf(scene.top)
+        }
         for (entry in panes) {
             key(entry.id) {
-                val isTop = entry.id == scene.top.id
-                val paneModifier = if (isTop) Modifier.topPane(scene, cornerPx, colors.strokeStrong) else Modifier.underPane(scene)
+                val paneModifier = when {
+                    instant -> Modifier
+                    entry.id == scene.top.id -> Modifier.topPane(scene, cornerPx, colors.strokeStrong)
+                    else -> Modifier.underPane(scene)
+                }
                 EntryHost(entry, stack, stores, stateHolder, paneModifier) { content(entry.screen) }
             }
         }
@@ -316,6 +335,20 @@ private class NavScene(initialTop: NavEntry) {
     suspend fun seek(fraction: Float, fingerDy: Float) {
         progress.snapTo(fraction.coerceIn(0f, 1f))
         dragY.snapTo((fingerDy * DragFollow).coerceIn(-maxDragPx, maxDragPx))
+    }
+
+    /**
+     * [desired] is on screen alone, at once: the transition under way, if any, is dropped where it was. [rest] puts
+     * the progress back to zero after, which nothing on screen reads while there is no pane underneath.
+     */
+    fun jumpTo(desired: NavEntry) {
+        top = desired
+        under = null
+    }
+
+    suspend fun rest() {
+        progress.snapTo(0f)
+        dragY.snapTo(0f)
     }
 
     /** Brings the scene in line with the stack's new [desired] top. */

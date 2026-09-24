@@ -47,6 +47,7 @@ import com.cursorforandroid.ui.components.HairlineDivider
 import com.cursorforandroid.ui.components.RefreshableSheetHeader
 import com.cursorforandroid.ui.components.cursorSurface
 import com.cursorforandroid.ui.components.pressable
+import com.cursorforandroid.ui.components.rememberHaptics
 import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
 
@@ -165,8 +166,9 @@ internal fun ModelSheet(
 
 @Composable
 private fun OptionRow(label: String, checked: Boolean, onChange: (Boolean) -> Unit) {
+    val haptics = rememberHaptics()
     Row(
-        Modifier.fillMaxWidth().pressable({ onChange(!checked) }, CursorTheme.shapes.base).height(CursorDimens.listRow).padding(horizontal = 20.dp),
+        Modifier.fillMaxWidth().pressable({ haptics.toggle(!checked); onChange(!checked) }, CursorTheme.shapes.base).height(CursorDimens.listRow).padding(horizontal = 20.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(label, style = CursorTheme.typography.base, color = CursorTheme.colors.textPrimary, modifier = Modifier.weight(1f))
@@ -239,6 +241,7 @@ private fun PinButton(pinned: Boolean, modelName: String, onClick: () -> Unit) {
 private fun ModelPickers(axes: List<ModelAxis>, variant: ModelVariant?, onValue: (ModelAxis, String) -> Unit) {
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
+    val haptics = rememberHaptics()
     Column(Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, bottom = 10.dp)) {
         axes.forEach { axis ->
             val current = variant?.param(axis.id)
@@ -246,7 +249,7 @@ private fun ModelPickers(axes: List<ModelAxis>, variant: ModelVariant?, onValue:
                 val on = current.equals(axis.onValue, ignoreCase = true)
                 fun set(checked: Boolean) = onValue(axis, if (checked) axis.onValue else axis.offValue)
                 Row(
-                    Modifier.fillMaxWidth().pressable({ set(!on) }, CursorTheme.shapes.base).height(36.dp),
+                    Modifier.fillMaxWidth().pressable({ haptics.toggle(!on); set(!on) }, CursorTheme.shapes.base).height(36.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Text(axis.displayName, style = type.base, color = colors.textSecondary, modifier = Modifier.weight(1f))

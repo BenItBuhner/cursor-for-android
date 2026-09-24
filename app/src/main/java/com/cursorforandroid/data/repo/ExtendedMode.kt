@@ -50,7 +50,7 @@ class ExtendedMode(
 
     val noticePending: Flow<Boolean> = prefs.extendedModeNoticePending
 
-    /** The transcript engine the mode renders with (see [TranscriptEngine]); Stable unless Beta was chosen. */
+    /** The transcript engine the mode renders with (see [TranscriptEngine]); Beta unless Stable was chosen. */
     val engine: Flow<TranscriptEngine> = prefs.transcriptEngine.distinctUntilChanged()
 
     val capabilities: Flow<Capabilities> = combine(enabled, engine, Capabilities::of).distinctUntilChanged()

@@ -40,13 +40,13 @@ class TranscriptDiagnosticsTest {
     fun `the report carries kinds, names, statuses, payload shapes and argument keys, and none of the text`() {
         val report = render()
         assertThat(report).contains("Cursor for Android 0.3.7 · transcript diagnostics · 2026-09-14T04:00:00Z")
-        // The engine beside the mode: Stable unless Beta was chosen, whatever the mode (see TranscriptEngine).
-        assertThat(report).contains("mode=extended engine=stable")
-        assertThat(TranscriptDiagnostics.render(TranscriptDiagnostics.Input("0.3.7", "2026-09-14T04:00:00Z", extendedMode = true, engine = TranscriptEngine.BETA, agentId = null, agent = null, state = null))).contains("mode=extended engine=beta")
+        // The engine beside the mode: Beta unless Stable was chosen, whatever the mode (see TranscriptEngine).
+        assertThat(report).contains("mode=extended engine=beta")
+        assertThat(TranscriptDiagnostics.render(TranscriptDiagnostics.Input("0.3.7", "2026-09-14T04:00:00Z", extendedMode = true, engine = TranscriptEngine.STABLE, agentId = null, agent = null, state = null))).contains("mode=extended engine=stable")
         assertThat(TranscriptDiagnostics.render(TranscriptDiagnostics.Input("0.3.7", "2026-09-14T04:00:00Z", extendedMode = false, engine = TranscriptEngine.BETA, agentId = null, agent = null, state = null))).contains("mode=default engine=beta")
         assertThat(report).contains("chat=…874668 row=not in list")
         assertThat(report).contains("classification: COORDINATOR listProject=false recordProjectMode=false content=true evidence=sendToAgent,SendMessage,sendMessage")
-        assertThat(report).contains("presented: items=5 folded=0 staleMessages=1 rows=7 stretches=2 messages=3")
+        assertThat(report).contains("presented: items=5 folded=0 staleMessages=1 rows=6 stretches=2 messages=3 subagents=1")
         assertThat(report).contains("  user chars=59 attachments=0")
         assertThat(report).contains("  notification kind=Subagent title=\"Subagent completed\" tone=Success summaryChars=33 bodyChars=23 agent=…74f671")
         assertThat(report).contains("  assistant chars=34")

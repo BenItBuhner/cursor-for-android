@@ -7,9 +7,12 @@ import androidx.activity.ComponentActivity
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.LocalRippleConfiguration
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
+import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.core.graphics.Insets
 import androidx.core.view.ViewCompat
@@ -42,7 +45,7 @@ import java.util.TimeZone
 /**
  * A chat's header under a 24dp status bar, in the demo's chat with a pull request and in its Project's coordinator
  * chat, dark and light: back, the pull request where there is one, the panel and the menu in a 40dp row, and the
- * transcript from right under it; and the chat's menu open, dark and light. Same device qualifiers as [AppScreenshotTest];
+ * transcript from right under it; and the chat's menu open and the Project's (no Pin), dark and light. Same device qualifiers as [AppScreenshotTest];
  * written to `screenshots/` and compared pixel for pixel in CI.
  */
 @RunWith(AndroidJUnit4::class)
@@ -126,12 +129,20 @@ class ChatHeaderScreenshotTest {
     }
 
     /** The coordinator's word to the user on screen and both turns' stretches drawn (see [AppScreenshotTest.projectView]). */
-    private fun project(mode: ThemeMode, name: String) {
+    private fun project(mode: ThemeMode, name: String, menuOpen: Boolean = false) {
         val (graph, id) = show(mode, agentId = DemoData.PROJECT_ID)
         compose.waitUntil(60_000) { onScreen("PR #215 (usage aggregation) is") }
         compose.waitUntil(60_000) { graph.conversations.state(id).value.let { state -> state.items.count { it is ActivityGroup } >= 2 && state.traceStatus.pending == 0 } }
         compose.waitUntil(30_000) { !onScreen("Loading the activity") }
         compose.waitForIdle()
+        if (menuOpen) {
+            compose.onNodeWithContentDescription("More").performClick()
+            compose.waitForIdle()
+            // A Project is not pinned: its menu has no Pin, where a chat's leads with it.
+            compose.onNodeWithText("Reload transcript").assertExists()
+            compose.onAllNodesWithText("Pin").assertCountEquals(0)
+            compose.onAllNodesWithText("Unpin").assertCountEquals(0)
+        }
         captureScreenRoboImage(File(outDir, "$name.png").path, RoborazziOptions())
     }
 
@@ -152,6 +163,12 @@ class ChatHeaderScreenshotTest {
 
     @Test
     fun projectLight() = project(ThemeMode.Light, "130_slim_header_project_light")
+
+    @Test
+    fun projectMenuDark() = project(ThemeMode.Dark, "525_chat_menu_project_dark", menuOpen = true)
+
+    @Test
+    fun projectMenuLight() = project(ThemeMode.Light, "526_chat_menu_project_light", menuOpen = true)
 
     private companion object {
         /** The reference device's status bar at 420dpi. */

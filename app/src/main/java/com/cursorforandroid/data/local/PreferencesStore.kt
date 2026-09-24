@@ -143,7 +143,6 @@ class PreferencesStore(
         val notificationPermissionAsked = booleanPreferencesKey("notification_permission_asked")
         val recentSkills = stringPreferencesKey("recent_skills")
         val autoUpdate = booleanPreferencesKey("auto_update")
-        val includePreReleases = booleanPreferencesKey("update_include_pre_releases")
         val updateLastCheckedAt = longPreferencesKey("update_last_checked_at")
         val pendingUpdateVersionCode = intPreferencesKey("update_pending_version_code")
         val notifiedUpdateVersionCode = intPreferencesKey("update_notified_version_code")
@@ -156,7 +155,7 @@ class PreferencesStore(
         val extendedModeAcknowledgedAt = longPreferencesKey("extended_mode_acknowledged_at")
         val extendedModeIntroduced = booleanPreferencesKey("extended_mode_introduced")
         val extendedModeNoticePending = booleanPreferencesKey("extended_mode_notice_pending")
-        /** Which engine renders transcripts in Extended mode (`stable` / `beta`, see `domain/TranscriptEngine.kt`); absent is Stable. */
+        /** Which engine renders transcripts in Extended mode (`stable` / `beta`, see `domain/TranscriptEngine.kt`); absent is never chosen, and Beta. */
         val transcriptEngine = stringPreferencesKey("transcript_engine")
         val crashReports = booleanPreferencesKey("crash_reports")
         val modeChoicePending = booleanPreferencesKey("mode_choice_pending")
@@ -172,6 +171,9 @@ class PreferencesStore(
         val confirmStop = booleanPreferencesKey("confirm_stop")
         /** The widget kinds whose picker previews the system holds, each with the build and boot it was published on (see `WidgetPreviews`). */
         val widgetPreviewsPublished = stringSetPreferencesKey("widget_previews_published")
+
+        /** Settings that no longer exist; nothing reads them, and [forgetRetiredSettings] deletes them. */
+        val retired: List<Preferences.Key<*>> = listOf(booleanPreferencesKey("update_include_pre_releases"), booleanPreferencesKey("haptic_feedback"))
     }
 
     /** What [clearSession] removes: everything here belongs to the account rather than to the device. */
@@ -209,9 +211,6 @@ class PreferencesStore(
     /** Check GitHub for new releases in the background, download them on Wi-Fi and install when the app is idle. On by default. */
     val autoUpdate: Flow<Boolean> = data.map { it[Keys.autoUpdate] ?: true }
 
-    /** Whether `-rc.N` / `-beta.N` releases are offered; null until the user decides (the installed channel then applies). */
-    val includePreReleases: Flow<Boolean?> = data.map { it[Keys.includePreReleases] }
-
     val updateLastCheckedAt: Flow<Long?> = data.map { it[Keys.updateLastCheckedAt] }
 
     /** versionCode of the update whose install session was committed; equal to the running build once it succeeded. */
@@ -222,7 +221,11 @@ class PreferencesStore(
 
     suspend fun setAutoUpdate(enabled: Boolean) = edit { it[Keys.autoUpdate] = enabled }
 
-    suspend fun setIncludePreReleases(include: Boolean) = edit { it[Keys.includePreReleases] = include }
+    /** Deletes what removed settings left in the file; a no-op, and no write, once they are gone. */
+    suspend fun forgetRetiredSettings(): Boolean {
+        if (data.first().asMap().keys.none { it in Keys.retired }) return true
+        return edit { p -> Keys.retired.forEach { p.remove(it) } }
+    }
 
     // ---- home-screen widgets (device-level: the launcher's, not the account's) ------------------------------------
 
@@ -289,8 +292,9 @@ class PreferencesStore(
     val extendedModeNoticePending: Flow<Boolean> = data.map { it[Keys.extendedModeNoticePending] ?: false }
 
     /**
-     * The transcript engine Extended mode renders with (see `TranscriptEngine`): Stable unless Beta was chosen here —
-     * for every install, upgrades included; it is never inferred from what an earlier build did.
+     * The transcript engine Extended mode renders with (see `TranscriptEngine`): Beta unless Stable was chosen here —
+     * for every install, upgrades included. Only the Settings switch writes it, so an absent key is an install that
+     * never chose and follows the default, and a stored `stable` is an explicit opt-out that stays.
      */
     val transcriptEngine: Flow<TranscriptEngine> = data.map { TranscriptEngine.parse(it[Keys.transcriptEngine]) }
 

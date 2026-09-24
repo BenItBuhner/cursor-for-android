@@ -16,6 +16,21 @@ class NavStackTest {
     private fun agent(n: Int) = Screen.Agent("bc-$n")
 
     @Test
+    fun `a change made instantly marks the top it leaves for the host, and one that leaves the top alone marks nothing`() {
+        val stack = NavStack(Screen.Home)
+        assertThat(stack.instantly { stack.resetTo(agent(1)); "kept" }).isEqualTo("kept")
+        assertThat(stack.instantTop).isEqualTo(stack.top.id)
+
+        stack.instantTop = null
+        stack.instantly { stack.openAgent("bc-1") }
+        assertThat(stack.instantTop).isNull()
+
+        // The finger's navigation is never marked, so the host slides it.
+        stack.openAgent("bc-2")
+        assertThat(stack.instantTop).isNull()
+    }
+
+    @Test
     fun `opening a chat from the New Chat pane pushes it`() {
         val stack = NavStack(Screen.Home)
         stack.openAgent("bc-1")

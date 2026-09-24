@@ -17,6 +17,7 @@ import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalView
 import androidx.core.graphics.drawable.toDrawable
 import androidx.core.view.WindowCompat
+import com.cursorforandroid.ui.components.ProvideHaptics
 
 enum class ThemeMode { System, Dark, Light }
 
@@ -100,8 +101,9 @@ fun CursorTheme(
                 large = shapes.xl,
                 extraLarge = shapes.sheet,
             ),
-            content = content,
-        )
+        ) {
+            ProvideHaptics(content = content)
+        }
     }
 }
 

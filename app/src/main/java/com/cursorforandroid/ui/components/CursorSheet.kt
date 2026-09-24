@@ -34,6 +34,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
 import kotlin.coroutines.cancellation.CancellationException
 import kotlin.math.min
@@ -41,8 +42,9 @@ import kotlinx.coroutines.launch
 
 /**
  * The app's modal bottom sheet: elevated surface, sheet radius, no drag handle, opens straight to its full height,
- * runs edge-to-edge behind the navigation bar (content is inset), never taller than 86 % of the window, and handles
- * predictive back inside its own composition.
+ * runs edge-to-edge behind the navigation bar (content is inset), never taller than 86 % of the window nor wider
+ * than [CursorDimens.sheetMaxWidth] (centred on a tablet or an unfolded foldable), and handles predictive back
+ * inside its own composition.
  *
  * Material's [ModalBottomSheet] registers a window-level back callback when its dialog attaches, after the dialog's
  * `OnBackPressedDispatcher` registered its own at the same priority; the later registration wins, so from Android 13
@@ -84,6 +86,7 @@ fun CursorSheet(
             transformOrigin = TransformOrigin(0.5f, (top + size.height) / size.height)
         },
         sheetState = sheetState,
+        sheetMaxWidth = CursorDimens.sheetMaxWidth,
         containerColor = colors.elevated,
         contentColor = colors.textPrimary,
         shape = CursorTheme.shapes.sheet,
@@ -92,9 +95,10 @@ fun CursorSheet(
         contentWindowInsets = { WindowInsets(0, 0, 0, 0) },
         properties = ModalBottomSheetProperties(shouldDismissOnBackPress = false),
     ) {
+        val haptics = rememberHaptics()
         PredictiveBackHandler { events ->
             try {
-                events.collect { backProgress.snapTo(PredictiveBackEasing.transform(it.progress)) }
+                events.feltOnCommit(haptics).collect { backProgress.snapTo(PredictiveBackEasing.transform(it.progress)) }
             } catch (e: CancellationException) {
                 scope.launch { backProgress.animateTo(0f) }
                 return@PredictiveBackHandler

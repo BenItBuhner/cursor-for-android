@@ -222,16 +222,16 @@ class ComposerPillsTest {
     }
 
     @Test
-    fun `multitask from the plus menu puts a plan off`() {
+    fun `the plus menu has no multitask row, and opening it leaves a plan on`() {
         planMode = true
         show()
 
         compose.onNodeWithContentDescription("Add to prompt").performClick()
-        compose.onNodeWithText("Multitask").performClick()
-        compose.waitUntil(10_000) { value == "/multitask " }
-        compose.runOnIdle { assertThat(planMode).isFalse() }
-        compose.waitUntil(10_000) { pillCount("Plan") == 0 }
-        assertThat(pillCount("Multitask")).isEqualTo(1)
+        compose.onNodeWithText("Skills").assertIsDisplayed()
+        assertThat(pillCount("Multitask")).isEqualTo(0)
+        compose.onAllNodes(hasText("Orchestrate multiple subagents", substring = true)).assertCountEquals(0)
+        compose.runOnIdle { assertThat(planMode).isTrue() }
+        assertThat(pillCount("Plan")).isEqualTo(1)
     }
 
     @Test

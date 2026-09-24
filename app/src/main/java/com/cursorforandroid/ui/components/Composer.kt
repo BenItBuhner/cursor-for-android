@@ -36,10 +36,12 @@ import androidx.compose.foundation.text.input.setTextAndPlaceCursorAtEnd
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -48,6 +50,7 @@ import androidx.compose.runtime.saveable.Saver
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.drawWithContent
@@ -66,6 +69,7 @@ import androidx.compose.ui.input.key.isCtrlPressed
 import androidx.compose.ui.input.key.isMetaPressed
 import androidx.compose.ui.input.key.isShiftPressed
 import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreInterceptKeyBeforeSoftKeyboard
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.LocalContext
@@ -85,6 +89,7 @@ import com.cursorforandroid.domain.ModelSearch
 import com.cursorforandroid.domain.SlashCatalog
 import com.cursorforandroid.domain.SlashCommand
 import com.cursorforandroid.domain.SlashCommands
+import com.cursorforandroid.ui.shortcuts.LocalKeyboardShortcuts
 import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.util.ioThenMain
@@ -94,7 +99,7 @@ import kotlinx.coroutines.launch
 /**
  * Cursor's prompt box as measured on cursor.com/agents: `--cursor-editor` surface, 8 % stroke (20 % focused),
  * 12px padding, 14/22 text, and a footer of round buttons — "+" on the left, opening the
- * Multitask / Files / Skills / MCP Servers menu ([ComposerPlusMenu]), send / stop on the right — with the 13px
+ * Files / Skills / MCP Servers menu ([ComposerPlusMenu]), send / stop on the right — with the 13px
  * model selector hugging send. The field is inset a further [CursorDimens.composerTextInset] on every side so
  * the placeholder and typed text share the edges of the glyphs in those discs, not the discs themselves: the
  * 24dp corners would otherwise leave the first letter sitting in the arc, and the 12dp top pad alone reads
@@ -107,7 +112,7 @@ import kotlinx.coroutines.launch
  * editing anything differently. A few commands are not text at all but pills right of "+", as on the web
  * ([ModePills]): `/multitask`, which the owner's [value] still carries in front so the request is unchanged, and
  * the modes — `/plan`, and with [extendedModes] `/ask` and `/debug` — which are [modePill]. Typing one with a space
- * after it, or picking it from the popover or the "+" menu, turns it into its pill and takes the token out of the
+ * after it, or picking it from the popover, turns it into its pill and takes the token out of the
  * text; the pill's cross puts the mode off again. They are one slot — the one turned on last replaces the other, in
  * the owner's state as well — so at most one pill is ever worn.
  * The corners are [CursorDimens.composerRadius] rather than the web's 12px: concentric with the two discs in the
@@ -191,6 +196,11 @@ fun ComposerBox(
      * (the quick composer over the launcher). Off, arriving on a screen never throws the keyboard up.
      */
     focusOnOpen: Boolean = false,
+    /**
+     * Bumped to put the caret in the field now (Ctrl+N, a chat switched to from the keyboard); a composer composed after
+     * a bump does not answer it again.
+     */
+    focusRequests: Int = 0,
 ) {
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
@@ -212,6 +222,13 @@ fun ComposerBox(
         if (wantsFocus && !menuOpen) {
             wantsFocus = false
             focus.requestFocus()
+        }
+    }
+    var focusRequestsSeen by remember { mutableIntStateOf(focusRequests) }
+    LaunchedEffect(focusRequests) {
+        if (focusRequests != focusRequestsSeen) {
+            focusRequestsSeen = focusRequests
+            wantsFocus = true
         }
     }
     var cancelOffered by remember { mutableStateOf(false) }
@@ -236,7 +253,7 @@ fun ComposerBox(
     // its caret across a rotation, and adopted keeps a restored draft from outliving the owner that cleared it.
     // A TextFieldState field is also what makes image paste possible at all: a value/onValueChange BasicTextField
     // cannot advertise image MIME types to the IME or receive clipboard images.
-    // What is adopted is the presented text: the "+" menu putting `/multitask` in front of the owner's value changes
+    // What is adopted is the presented text: `/multitask` put in front of the owner's value changes
     // nothing the field shows, so the caret stays where it was and only the pill appears.
     val field = rememberTextFieldState(initialText = presented.text, initialSelection = TextRange(presented.text.length))
     var adopted by rememberSaveable { mutableStateOf(value) }
@@ -272,6 +289,15 @@ fun ComposerBox(
     val offer = remember(offeredModes, wornPill, pickableModels, currentModel) { SlashOffer(offeredModes, wornPill, pickableModels, currentModel) }
     val slash = rememberSlashSuggestions(popoverToken, commands, recentSkills, offer)
     val slashOpen = slashPopoverOpen(popoverToken, slash, commands)
+    // The app's shortcuts are read before this field sees a key; while the popover is up, Esc, Ctrl+N and Ctrl+K are
+    // its (see `popoverKeys`) and not the shell's.
+    val keyboardShortcuts = LocalKeyboardShortcuts.current
+    if (slashOpen && keyboardShortcuts != null) {
+        DisposableEffect(keyboardShortcuts) {
+            val release = keyboardShortcuts.popoverOpened()
+            onDispose { release() }
+        }
+    }
     // Whether a physical keyboard has typed here. Until one has, the popover shows no highlight: the rows are for
     // tapping, and an Enter that picks is only ever a physical keyboard's.
     var physicalKeys by remember { mutableStateOf(false) }
@@ -288,6 +314,7 @@ fun ComposerBox(
     val currentWorn by rememberUpdatedState(wornPill)
     val currentOfferedModes by rememberUpdatedState(offeredModes)
     val currentOnPickModel by rememberUpdatedState(onPickModel)
+    val haptics = rememberHaptics()
 
     /** Hands the owner the field's text in its own shape — `/multitask ` in front while that pill is on. */
     fun publish(text: String, multitask: Boolean = currentPresented.multitask) {
@@ -301,6 +328,7 @@ fun ComposerBox(
      * well; this is so the composer never depends on it.
      */
     fun turnOn(pill: ModePills.Pill, text: String) {
+        haptics.perform(Haptic.ToggleOn)
         when (pill) {
             ModePills.Pill.Multitask -> {
                 publish(text, multitask = true)
@@ -315,6 +343,7 @@ fun ComposerBox(
 
     /** Takes off whichever pill is worn, for the field's [text]. */
     fun takeOff(text: String) {
+        haptics.perform(Haptic.ToggleOff)
         publish(text, multitask = false)
         if (currentMode != null) currentOnMode?.invoke(null)
     }
@@ -347,6 +376,7 @@ fun ComposerBox(
         }
         // An edit made here does not pass through the input transformation, so the owner is told directly.
         publish(next.text)
+        haptics.perform(Haptic.Select)
     }
 
     /** A row of the popover picked: a command completed, a mode put on (or off, if it was on), a model set, a section opened. */
@@ -414,51 +444,59 @@ fun ComposerBox(
         Box(Modifier.stylusWriting().padding(CursorDimens.composerTextInset)) {
             // The field's layout, handed over as it is measured and read back as the command highlight draws.
             val textLayout = remember { TextLayoutHandle() }
-            BasicTextField(
-                state = field,
-                textStyle = type.input.copy(color = colors.textPrimary),
-                keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
-                cursorBrush = SolidColor(colors.textPrimary),
-                lineLimits = TextFieldLineLimits.MultiLine(minHeightInLines = minLines, maxHeightInLines = 10),
-                scrollState = textScroll,
-                onTextLayout = { textLayout.get = it },
-                inputTransformation = InputTransformation {
-                    // A `/multitask `, `/plan ` (or, in Extended mode, `/ask ` or `/debug `) the reader has just closed
-                    // with a space becomes its pill: the token leaves the text here, before the field ever shows it,
-                    // and the caret stays on its characters. The last one typed is the one that stays on; the other
-                    // mode goes off with it.
-                    val typed = ModePills.consumeTyped(asCharSequence().toString(), selection, planEnabled = onModePill != null, extended = extendedModes)
-                    val turnedOn = typed.turnedOn
-                    if (turnedOn != null) {
-                        replace(0, length, typed.text)
-                        selection = typed.selection
-                        turnOn(turnedOn, toString())
-                    } else {
-                        publish(toString())
-                    }
-                },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    // One line of `input` at the default font scale, so the box does not shrink under a small system font.
-                    .heightIn(min = 22.dp)
-                    .onPreviewKeyEvent { if (it.isFromHardwareKeyboard) physicalKeys = true; false }
-                    .popoverKeys(slashOpen, slash.selection, composing = { field.composition != null }, onPick = { pick(it) }, onDismiss = { dismissedToken = slashToken })
-                    .onPreviewKeyEvent { cycleMode(it) }
-                    .sendOnHardwareEnter(field, onSend = onSend.takeIf { sendsNow }, onEdited = { publish(it) })
-                    .then(if (receiveImages != null) Modifier.contentReceiver(receiveImages) else Modifier)
-                    .focusRequester(focus)
-                    .onFocusChanged { focused = it.isFocused },
-                decorator = { inner ->
-                    Box {
-                        // The field's own text, not the owner's: a placeholder that follows a lagging owner blinks
-                        // back over the first character typed.
-                        if (field.text.isEmpty()) Text(placeholder, style = type.input, color = colors.textTertiary, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        Box(Modifier.slashCommandHighlight(layout = { textLayout.get?.invoke() }, scroll = textScroll, tints = commandTints)) {
-                            inner()
+            // What the key handlers below make of a physical Enter, for the newline an IME may type in its place.
+            val physicalEnter: (() -> Unit)? = when {
+                slashOpen -> { { slash.selection.highlightedItem?.let { pick(it) } } }
+                sendsNow -> onSend
+                else -> null
+            }
+            ImeEnterFallback(onEnter = physicalEnter, composing = { field.composition != null }) {
+                BasicTextField(
+                    state = field,
+                    textStyle = type.input.copy(color = colors.textPrimary),
+                    keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
+                    cursorBrush = SolidColor(colors.textPrimary),
+                    lineLimits = TextFieldLineLimits.MultiLine(minHeightInLines = minLines, maxHeightInLines = 10),
+                    scrollState = textScroll,
+                    onTextLayout = { textLayout.get = it },
+                    inputTransformation = InputTransformation {
+                        // A `/multitask `, `/plan ` (or, in Extended mode, `/ask ` or `/debug `) the reader has just closed
+                        // with a space becomes its pill: the token leaves the text here, before the field ever shows it,
+                        // and the caret stays on its characters. The last one typed is the one that stays on; the other
+                        // mode goes off with it.
+                        val typed = ModePills.consumeTyped(asCharSequence().toString(), selection, planEnabled = onModePill != null, extended = extendedModes)
+                        val turnedOn = typed.turnedOn
+                        if (turnedOn != null) {
+                            replace(0, length, typed.text)
+                            selection = typed.selection
+                            turnOn(turnedOn, toString())
+                        } else {
+                            publish(toString())
                         }
-                    }
-                },
-            )
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        // One line of `input` at the default font scale, so the box does not shrink under a small system font.
+                        .heightIn(min = 22.dp)
+                        .onPhysicalKey { physicalKeys = true }
+                        .popoverKeys(slashOpen, slash.selection, composing = { field.composition != null }, onPick = { pick(it) }, onDismiss = { dismissedToken = slashToken })
+                        .modeCycleKeys { cycleMode(it) }
+                        .sendOnHardwareEnter(field, onSend = onSend.takeIf { sendsNow }, onEdited = { publish(it) })
+                        .then(if (receiveImages != null) Modifier.contentReceiver(receiveImages) else Modifier)
+                        .focusRequester(focus)
+                        .onFocusChanged { focused = it.isFocused },
+                    decorator = { inner ->
+                        Box {
+                            // The field's own text, not the owner's: a placeholder that follows a lagging owner blinks
+                            // back over the first character typed.
+                            if (field.text.isEmpty()) Text(placeholder, style = type.input, color = colors.textTertiary, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Box(Modifier.slashCommandHighlight(layout = { textLayout.get?.invoke() }, scroll = textScroll, tints = commandTints)) {
+                                inner()
+                            }
+                        }
+                    },
+                )
+            }
             SlashCommandPopover(
                 token = popoverToken,
                 suggestions = slash,
@@ -482,8 +520,6 @@ fun ComposerBox(
                         prompt = value,
                         onPromptChange = { next ->
                             onValueChange(next)
-                            // Multitask from the menu is the same one slot as the pills: it puts the mode off.
-                            if (modePill != null && SlashCommands.has(next, SlashCommands.MULTITASK)) onModePill?.invoke(null)
                             // The command goes in at the front of the prompt and the caret follows the adopted text
                             // to the end, which is where the reader carries on writing; the field is handed back with it.
                             wantsFocus = true
@@ -499,11 +535,11 @@ fun ComposerBox(
             // before a pill would, and send is never pushed out.
             Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
                 if (wornMode != null) {
-                    ModePill(wornMode, onClear = { onModePill?.invoke(null) })
+                    ModePill(wornMode, onClear = { haptics.perform(Haptic.ToggleOff); onModePill?.invoke(null) })
                     Spacer(Modifier.width(6.dp))
                 }
                 if (presented.multitask) {
-                    ModePill(ModePills.Pill.Multitask, onClear = { publish(field.text.toString(), multitask = false) })
+                    ModePill(ModePills.Pill.Multitask, onClear = { haptics.perform(Haptic.ToggleOff); publish(field.text.toString(), multitask = false) })
                     Spacer(Modifier.width(6.dp))
                 }
                 Spacer(Modifier.weight(1f))
@@ -527,7 +563,8 @@ fun ComposerBox(
                 isSending && cancelOffered && onCancelSend != null -> ComposerRoundButton(CursorIcons.Stop, "Cancel sending", onClick = onCancelSend, prominent = true)
                 isSending -> ComposerBusyButton()
                 isRunning && onStop != null && !canSend -> ComposerRoundButton(CursorIcons.Stop, "Stop", onClick = onStop, prominent = true)
-                else -> ComposerRoundButton(CursorIcons.ArrowUp, "Send", onClick = onSend, prominent = canSend, enabled = sendsNow)
+                // The tap is felt, not a hardware Enter: a physical keyboard's keys are their own feedback.
+                else -> ComposerRoundButton(CursorIcons.ArrowUp, "Send", onClick = { haptics.perform(Haptic.Confirm); onSend() }, prominent = canSend, enabled = sendsNow)
             }
         }
     }
@@ -595,6 +632,14 @@ private fun Modifier.slashCommandHighlight(layout: () -> TextLayoutResult?, scro
  * one on the way back.
  */
 private val FocusedSaver = Saver<MutableState<Boolean>, Boolean>(save = { it.value }, restore = { mutableStateOf(it) })
+
+/**
+ * The mode cycle's keys, read before the IME is handed them as well as after, as [popoverKeys] and
+ * [sendOnHardwareEnter] read theirs: an IME that handles the physical keyboard itself would otherwise take Shift+Tab.
+ */
+@OptIn(ExperimentalComposeUiApi::class)
+private fun Modifier.modeCycleKeys(handle: (KeyEvent) -> Boolean): Modifier =
+    onPreInterceptKeyBeforeSoftKeyboard(handle).onPreviewKeyEvent(handle)
 
 /**
  * Advertises image MIME types to the IME and turns clipboard / keyboard / drag-and-drop images into attachments.

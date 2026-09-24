@@ -62,7 +62,9 @@ import com.cursorforandroid.ui.components.FlatIconButton
 import com.cursorforandroid.ui.components.HairlineDivider
 import com.cursorforandroid.ui.components.RunStopCopy
 import com.cursorforandroid.ui.components.SheetHeader
+import com.cursorforandroid.ui.components.contentColumn
 import com.cursorforandroid.ui.components.fadingVerticalScroll
+import com.cursorforandroid.ui.shortcuts.ShortcutsCopy
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.ui.theme.ThemeMode
 import com.cursorforandroid.util.TimeFormat
@@ -110,6 +112,7 @@ object SettingsTags {
     const val WHATS_NEW_ROW = "settings_whats_new"
     const val DEBUG_SHEET = "settings_debug_sheet"
     const val CONFIRM_STOP = "settings_confirm_stop"
+    const val KEYBOARD_SHORTCUTS_ROW = "settings_keyboard_shortcuts"
 }
 
 /**
@@ -132,6 +135,8 @@ fun SettingsScreen(
     onOpenWhatsNew: () -> Unit = {},
     /** The chats list the New Chat pane draws from, for the New chat page picker's miniatures of it. */
     newChatList: AgentListUiState = AgentListUiState(),
+    /** Opens the Keyboard shortcuts page. */
+    onOpenKeyboardShortcuts: () -> Unit = {},
 ) {
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
@@ -171,7 +176,7 @@ fun SettingsScreen(
                 }
             },
         )
-        Column(Modifier.fillMaxSize().navigationBarsPadding().fadingVerticalScroll(surface = colors.canvas).padding(horizontal = 16.dp).padding(bottom = 24.dp)) {
+        Column(Modifier.fillMaxSize().navigationBarsPadding().fadingVerticalScroll(surface = colors.canvas).contentColumn().padding(bottom = 24.dp)) {
             Group(SettingsCopy.GROUP_ACCOUNT)
             SettingsCard {
                 // The demo has no key to describe; a real account's row opens onto its key and where to manage it.
@@ -223,6 +228,14 @@ fun SettingsScreen(
                     HairlineDivider()
                     UnreadThisPhoneRow(graph)
                 }
+                HairlineDivider()
+                SettingsRow(
+                    title = ShortcutsCopy.TITLE,
+                    description = ShortcutsCopy.SETTINGS_DETAIL,
+                    modifier = Modifier.testTag(SettingsTags.KEYBOARD_SHORTCUTS_ROW),
+                    onClick = onOpenKeyboardShortcuts,
+                    trailing = { RowGlyph(CursorIcons.ChevronRight) },
+                )
             }
 
             Group(SettingsCopy.GROUP_NOTIFICATIONS)
@@ -448,7 +461,7 @@ private fun ConfirmStopRow(graph: AppGraph) {
 /**
  * The in-app updater: the installed version with what the last check found and the one action that follows from it
  * (check, download, install, retry); beneath it, while they are unread, the installed version's release notes
- * ([onOpenWhatsNew]); the two preferences; and — until the user has allowed it — the system page where installing
+ * ([onOpenWhatsNew]); automatic updates; and — until the user has allowed it — the system page where installing
  * from this app is permitted. The permission is re-read when the screen resumes. A long press on the version row is
  * the way into the debug sheet ([onDebug]); a tap does nothing, so the row is not announced as a button.
  */
@@ -460,7 +473,6 @@ private fun UpdateRows(graph: AppGraph, open: (String) -> Unit, onDebug: () -> U
     val updates = graph.updates
     val state by updates.state.collectAsStateWithLifecycle()
     val autoUpdate by updates.autoUpdate.collectAsStateWithLifecycle(initialValue = true)
-    val includePreReleases by updates.includePreReleases.collectAsStateWithLifecycle(initialValue = false)
     // On the main dispatcher for the reason the Extended mode switch is (see SettingsScreen): the value comes from
     // the store's thread, and the row must not miss the write that would show it.
     val whatsNew by graph.whatsNew.unread.collectAsStateWithLifecycle(initialValue = null, context = Dispatchers.Main.immediate)
@@ -533,12 +545,6 @@ private fun UpdateRows(graph: AppGraph, open: (String) -> Unit, onDebug: () -> U
         },
         checked = autoUpdate,
         onCheckedChange = { scope.launch { updates.setAutoUpdate(it) } },
-    )
-    HairlineDivider()
-    SettingsToggleRow(
-        title = "Include pre-releases",
-        checked = includePreReleases,
-        onCheckedChange = { scope.launch { updates.setIncludePreReleases(it) } },
     )
     if (!canInstall) {
         HairlineDivider()

@@ -14,7 +14,10 @@ import androidx.compose.material3.windowsizeclass.ExperimentalMaterial3WindowSiz
 import androidx.compose.material3.windowsizeclass.WindowWidthSizeClass
 import androidx.compose.material3.windowsizeclass.calculateWindowSizeClass
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.movableContentOf
 import androidx.compose.runtime.mutableIntStateOf
@@ -27,15 +30,18 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.LifecycleStartEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.cursorforandroid.AppGraph
 import com.cursorforandroid.data.repo.NewChatDrafts
+import com.cursorforandroid.domain.AgentListOrganizer
 import com.cursorforandroid.domain.AgentRow
 import com.cursorforandroid.domain.CursorUser
 import com.cursorforandroid.domain.NewChatHome
+import com.cursorforandroid.domain.TranscriptHit
 import com.cursorforandroid.domain.UpdateState
 import com.cursorforandroid.notifications.NotificationPermissionPrompt
 import com.cursorforandroid.ui.agents.AgentListUiState
@@ -45,7 +51,9 @@ import com.cursorforandroid.ui.agents.DraftRow
 import com.cursorforandroid.ui.agents.Sidebar
 import com.cursorforandroid.ui.agents.SidebarCallbacks
 import com.cursorforandroid.ui.agents.SidebarDestination
+import com.cursorforandroid.ui.agents.SidebarGroup
 import com.cursorforandroid.ui.agents.SidebarShortLists
+import com.cursorforandroid.ui.agents.sidebarGroups
 import com.cursorforandroid.ui.components.CursorDrawer
 import com.cursorforandroid.ui.components.rememberCursorDrawerState
 import com.cursorforandroid.ui.conversation.ConversationScreen
@@ -59,11 +67,19 @@ import com.cursorforandroid.ui.media.rememberMediaViewerState
 import com.cursorforandroid.ui.settings.ExtendedModeUpgradeNotice
 import com.cursorforandroid.ui.projects.ProjectEditorHost
 import com.cursorforandroid.ui.projects.ProjectEditorTarget
+import com.cursorforandroid.ui.settings.KeyboardShortcutsScreen
 import com.cursorforandroid.ui.settings.SettingsScreen
 import com.cursorforandroid.ui.settings.UpdateCopy
 import com.cursorforandroid.ui.settings.WhatsNewCopy
 import com.cursorforandroid.ui.settings.WhatsNewScreen
 import com.cursorforandroid.ui.share.ShareDestinationScreen
+import com.cursorforandroid.ui.shortcuts.LocalChatShortcuts
+import com.cursorforandroid.ui.shortcuts.LocalKeyboardShortcuts
+import com.cursorforandroid.ui.shortcuts.LocalTranscriptFocus
+import com.cursorforandroid.ui.shortcuts.PaletteMode
+import com.cursorforandroid.ui.shortcuts.ShortcutAction
+import com.cursorforandroid.ui.shortcuts.ShortcutHandler
+import com.cursorforandroid.ui.shortcuts.shortcutsBeforeIme
 import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
 import kotlinx.coroutines.launch
@@ -137,13 +153,34 @@ internal fun AppShell(
     var projectEditor by rememberSaveable { mutableStateOf<ProjectEditorTarget?>(null) }
     // Wide layout: the sidebar collapses like on the web, and the toggle moves into the detail pane header.
     var sidebarCollapsed by rememberSaveable { mutableStateOf(false) }
+    // Whether the rail's last change slides: a tap's does, Ctrl+B's is in place in the frame the key lands.
+    var railSlides by remember { mutableStateOf(true) }
     // The long groups the reader listed in full, for this visit to the sidebar: not saved, cut back on leaving.
     val shortLists = remember { SidebarShortLists() }
     val colors = CursorTheme.colors
+    // The activity's hardware-keyboard reader (see MainActivity.dispatchKeyEvent and the shell's pre-IME node below);
+    // null where the shell is composed without one, which leaves every key to the views.
+    val keyboard = LocalKeyboardShortcuts.current
+    val shortcuts = remember { ShellShortcuts() }
+    LaunchedEffect(selectedAgentId) { selectedAgentId?.let(shortcuts::visit) }
+    val mediaViewer = rememberMediaViewerState()
+    val focusManager = LocalFocusManager.current
 
     fun closeDrawer() {
-        if (drawerState.isOpen) scope.launch { drawerState.close() }
+        if (!drawerState.isOpen) return
+        if (shortcuts.keyed) drawerState.jumpTo(DrawerValue.Closed, scope) else scope.launch { drawerState.close() }
     }
+
+    fun setSidebarCollapsed(collapsed: Boolean) {
+        railSlides = !shortcuts.keyed
+        sidebarCollapsed = collapsed
+    }
+
+    /**
+     * A key's action, taken as the keyboard takes it everywhere on desktop: the screen it opens, the rail and the
+     * drawer are where it puts them in the frame the key lands, with no slide (see [NavStack.instantly]).
+     */
+    fun <T> byKey(action: () -> T): T = shortcuts.fromKeyboard { stack.instantly(action) }
 
     /**
      * The reader left the sidebar — a chat or a Project opened, another destination: its long groups go back to five
@@ -155,8 +192,12 @@ internal fun AppShell(
     LaunchedEffect(drawerState) {
         snapshotFlow { !drawerState.isOpen && drawerState.fraction == 0f }.collect { shut -> if (shut) shortLists.reset() }
     }
-    // Back, a launch that failed, anything else that changes what is on top is leaving too.
-    LaunchedEffect(stack.top) { leaveSidebar() }
+    // Back, a launch that failed, anything else that changes what is on top is leaving too; and a composer a key asked
+    // for that is no longer the one on screen is not to be focused once it comes back some other way.
+    LaunchedEffect(stack.top) {
+        leaveSidebar()
+        if (shortcuts.composerFocus.let { it != null && it != stack.top.screen }) shortcuts.composerFocus = null
+    }
 
     // The activity handles size and orientation changes itself, so unfolding a Fold, or turning a phone on its side,
     // swaps the drawer for the rail in place, and the two must agree: a drawer the user had open (or was opening)
@@ -237,6 +278,13 @@ internal fun AppShell(
         leaveSidebar()
     }
 
+    /** Settings › Keyboard shortcuts, over Settings. */
+    fun openKeyboardShortcuts() {
+        closeDrawer()
+        stack.open(Screen.KeyboardShortcuts)
+        leaveSidebar()
+    }
+
     /** A chat opened on its launch that did not go through: back to the composer, if the user is still looking at it. */
     fun leaveFailedLaunch(agentId: String) {
         if ((stack.top.screen as? Screen.Agent)?.id == agentId) stack.pop()
@@ -275,7 +323,7 @@ internal fun AppShell(
     LaunchedEffect(searchRequested) {
         if (searchRequested) {
             navigateTop(Screen.Home)
-            if (!wide) drawerState.open() else sidebarCollapsed = false
+            if (!wide) drawerState.open() else setSidebarCollapsed(false)
             searchRequests++
             onSearchConsumed()
         }
@@ -334,7 +382,7 @@ internal fun AppShell(
     val destination = when (topScreen) {
         Screen.Home -> SidebarDestination.NewChat
         Screen.Settings -> SidebarDestination.Settings
-        Screen.WhatsNew, is Screen.Agent -> null
+        Screen.WhatsNew, Screen.KeyboardShortcuts, is Screen.Agent -> null
     }
     val updateState by graph.updates.state.collectAsStateWithLifecycle()
     val updateHint = when (val s = updateState) {
@@ -367,7 +415,7 @@ internal fun AppShell(
                 onSettings = ::openSettings,
                 onWhatsNew = ::openWhatsNew,
                 onCustomize = { customizeOpen = true },
-                onToggleSidebar = if (inDrawer) ({ closeDrawer() }) else ({ sidebarCollapsed = true; shortLists.reset() }),
+                onToggleSidebar = if (inDrawer) ({ closeDrawer() }) else ({ setSidebarCollapsed(true); shortLists.reset() }),
                 onRefresh = agentsViewModel::refresh,
                 rowActions = rowActions,
                 onLoadMore = { agentsViewModel.loadMore() },
@@ -377,14 +425,16 @@ internal fun AppShell(
                 onRetryLoadMore = { agentsViewModel.retryLoadMore() },
                 onOpenDraft = ::openDraft,
                 onDeleteDraft = { row -> scope.launch { graph.newChatDrafts.remove(row.id) } },
+                onShortcutRows = { shortcuts.railRows = it },
             ),
             modifier = modifier,
+            showShortcutNumbers = keyboard?.showNumbers == true,
         )
     }
 
     val openSidebar: (() -> Unit)? = when {
         !wide -> ({ scope.launch { drawerState.open() } })
-        sidebarCollapsed -> ({ sidebarCollapsed = false })
+        sidebarCollapsed -> ({ setSidebarCollapsed(false) })
         else -> null
     }
     val onBack: (() -> Unit)? = if (wide) null else ({ stack.pop() })
@@ -410,6 +460,8 @@ internal fun AppShell(
                         onNewProject = pane.onNewProject,
                         onOpenSettings = ::openSettings,
                         onReorderProjects = pane.onReorderProjects,
+                        focusComposer = pane.composerFocus == screen,
+                        onComposerFocused = pane.onComposerFocused,
                     )
                     Screen.Settings -> SettingsScreen(
                         graph = graph,
@@ -419,15 +471,19 @@ internal fun AppShell(
                         onBack = pane.onBack,
                         onOpenWhatsNew = ::openWhatsNew,
                         newChatList = pane.listState,
+                        onOpenKeyboardShortcuts = ::openKeyboardShortcuts,
                     )
                     // A page of its own under Settings (or the sidebar's card); back is the stack's in either layout.
                     Screen.WhatsNew -> WhatsNewScreen(graph = graph, onBack = { stack.pop() })
+                    Screen.KeyboardShortcuts -> KeyboardShortcutsScreen(onBack = { stack.pop() })
                     is Screen.Agent -> ConversationScreen(
                         graph = graph,
                         agentId = screen.id,
                         onOpenSidebar = if (pane.wide) pane.openSidebar else null,
                         onBack = pane.onBack,
                         onOpenAgent = ::openAgent,
+                        focusComposer = pane.composerFocus == screen,
+                        onComposerFocused = pane.onComposerFocused,
                     )
                 }
             }
@@ -447,64 +503,181 @@ internal fun AppShell(
         projectsAvailable = isDemo || extendedMode,
         onNewProject = if (isDemo || extendedMode) ({ projectEditor = ProjectEditorTarget.Create }) else null,
         onReorderProjects = { ids -> agentsViewModel.setProjectOrder(ids) },
+        composerFocus = shortcuts.composerFocus,
+        onComposerFocused = { shortcuts.composerFocus = null },
     )
 
-    // The media viewer is a layer over the whole shell — sidebar, chat and panel alike, in either layout — so a
-    // figure opens over all of it, and the open viewer rides out the swap between the layouts like the pane does.
-    MediaViewerHost(state = rememberMediaViewerState(), loader = graph.media) {
-        if (wide) {
-            Row(Modifier.fillMaxSize().background(colors.canvas)) {
-                SidebarRail(expanded = !sidebarCollapsed) {
-                    sidebar(inDrawer = false, modifier = Modifier.fillMaxSize())
-                }
-                detailHost(Modifier.weight(1f).fillMaxHeight(), pane)
-            }
-        } else {
-            CursorDrawer(
-                state = drawerState,
-                drawerWidth = CursorDimens.sidebarWidth,
-                containerColor = colors.sidebar,
-                contentColor = colors.textPrimary,
-                drawerContent = { sidebar(inDrawer = true, modifier = Modifier.fillMaxSize()) },
-            ) {
-                detailHost(Modifier.fillMaxSize(), pane)
+    /**
+     * A chat picked from the keyboard — the palette, the quick switcher, Ctrl+1 … Ctrl+0 — is a pick from the top
+     * level, and opens as its sidebar row does ([switchToAgent]), marked read on the way; with a transcript [hit],
+     * scrolled to it once its rows are in; with [focusComposer] (a switch, rather than a search), with the caret in
+     * its composer, ready for the next message as on desktop.
+     */
+    fun openFromKeyboard(agentId: String, hit: TranscriptHit? = null, focusComposer: Boolean = false) {
+        shortcuts.palette.close()
+        if (hit != null) shortcuts.transcriptFocus.request(agentId, hit)
+        val agent = listState.allAgents.firstOrNull { it.id == agentId }
+        if (agent != null) rowActions.onOpen(AgentListOrganizer.toRow(agent, listState.local, listState.nowMillis)) else switchToAgent(agentId)
+        if (focusComposer) shortcuts.composerFocus = Screen.Agent(agentId)
+    }
+
+    fun chatOnTop() = (stack.top.screen as? Screen.Agent)?.let { shortcuts.chats.target(it.id) }
+
+    fun toggleSidebar() {
+        when {
+            !wide -> drawerState.jumpTo(if (drawerState.targetValue == DrawerValue.Open) DrawerValue.Closed else DrawerValue.Open, scope)
+            sidebarCollapsed -> setSidebarCollapsed(false)
+            else -> {
+                setSidebarCollapsed(true)
+                shortLists.reset()
             }
         }
     }
 
-    if (customizeOpen) {
-        CustomizeSheet(viewModel = agentsViewModel, onDismiss = { customizeOpen = false })
+    fun shortcut(action: ShortcutAction): Boolean {
+        val palette = shortcuts.palette
+        when (action) {
+            ShortcutAction.Search -> palette.openSearch()
+            ShortcutAction.SwitchNext, ShortcutAction.SwitchPrevious -> shortcuts.stepSwitcher(
+                forward = action == ShortcutAction.SwitchNext,
+                current = (stack.top.screen as? Screen.Agent)?.id,
+            ) { ShellShortcuts.entries(listState, archived = false) }
+            ShortcutAction.ToggleSidebar -> toggleSidebar()
+            ShortcutAction.TogglePanel -> return chatOnTop()?.togglePanel() == true
+            is ShortcutAction.OpenRailItem -> {
+                // A collapsed rail is not composed, so has told nothing: its rows are what it would show on opening.
+                val rows = if (wide && sidebarCollapsed) {
+                    val current = (stack.top.screen as? Screen.Agent)?.id
+                    SidebarGroup.numbered(sidebarGroups(listState, listState.query, emptyList(), current, shortLists))
+                } else {
+                    shortcuts.railRows
+                }
+                rows.getOrNull(action.position)?.let { openFromKeyboard(it.agent.id, focusComposer = true) }
+            }
+            ShortcutAction.NewChat -> {
+                palette.close()
+                startNewChat()
+                shortcuts.composerFocus = Screen.Home
+            }
+            ShortcutAction.NewProject -> {
+                if (!isDemo && !extendedMode) return false
+                palette.close()
+                closeDrawer()
+                projectEditor = ProjectEditorTarget.Create
+            }
+            ShortcutAction.OpenSettings -> {
+                palette.close()
+                openSettings()
+            }
+            ShortcutAction.ShowShortcuts -> if (palette.mode == PaletteMode.Shortcuts) palette.close() else palette.openShortcuts()
+            ShortcutAction.CatchUp -> {
+                val chat = chatOnTop() ?: return false
+                palette.close()
+                chat.catchUp()
+            }
+            ShortcutAction.ReloadTranscript -> {
+                val chat = chatOnTop() ?: return false
+                palette.close()
+                chat.reloadTranscript()
+            }
+        }
+        return true
     }
-    projectEditor?.let { target ->
-        // Asked for from the sidebar or the New Chat pane: a Project created here is a new top-level chat.
-        ProjectEditorHost(graph, target, onOpenAgent = ::switchToAgent, onDismiss = { projectEditor = null })
+
+    fun escape() {
+        when {
+            shortcuts.palette.isOpen -> shortcuts.palette.close()
+            mediaViewer.isOpen -> mediaViewer.closeNow()
+            !wide && drawerState.isOpen -> closeDrawer()
+            chatOnTop()?.escape() == true -> Unit
+            else -> focusManager.clearFocus()
+        }
+    }
+
+    // Built afresh each composition, so it reads the layout and the list as they are now; the stack it reads when a
+    // key comes, like the navigation callbacks above.
+    val shortcutHandler = object : ShortcutHandler {
+        override fun onShortcut(action: ShortcutAction): Boolean = byKey { shortcut(action) }
+
+        // Always the app's: the platform's fallback turns an Esc no one took into Back, which would pop the chat.
+        override fun onEscape(): Boolean {
+            byKey { escape() }
+            return true
+        }
+
+        override fun onCtrlReleased(commit: Boolean) = byKey {
+            shortcuts.releaseSwitcher(commit)?.let { openFromKeyboard(it.agentId, focusComposer = true) }
+            Unit
+        }
+    }
+    SideEffect { keyboard?.handler = shortcutHandler }
+    DisposableEffect(keyboard) {
+        onDispose { keyboard?.handler = null }
     }
 
     val shareOffer by graph.share.offer.collectAsStateWithLifecycle()
     val shareLoading by graph.share.loading.collectAsStateWithLifecycle()
     val pendingShare = shareOffer
-    when {
-        shareLoading -> {
-            Box(Modifier.fillMaxSize().background(colors.canvas).hitTestBoundary(), contentAlignment = Alignment.Center) {
-                SpinnerRing(size = 22.dp, strokeWidth = 2.dp)
+    // Every layer of the shell under one node that reads the keys before the IME does: with a field focused anywhere
+    // in it — the composer, the palette's, the sidebar's search — the keyboard app is handed the key after the shell.
+    Box(Modifier.fillMaxSize().shortcutsBeforeIme(keyboard)) {
+        CompositionLocalProvider(LocalChatShortcuts provides shortcuts.chats, LocalTranscriptFocus provides shortcuts.transcriptFocus) {
+            // The media viewer is a layer over the whole shell — sidebar, chat and panel alike, in either layout — so
+            // a figure opens over all of it, and the open viewer rides out the swap between the layouts like the pane.
+            MediaViewerHost(state = mediaViewer, loader = graph.media) {
+                if (wide) {
+                    Row(Modifier.fillMaxSize().background(colors.canvas)) {
+                        SidebarRail(expanded = !sidebarCollapsed, animate = railSlides) {
+                            sidebar(inDrawer = false, modifier = Modifier.fillMaxSize())
+                        }
+                        detailHost(Modifier.weight(1f).fillMaxHeight(), pane)
+                    }
+                } else {
+                    CursorDrawer(
+                        state = drawerState,
+                        drawerWidth = CursorDimens.sidebarWidth,
+                        containerColor = colors.sidebar,
+                        contentColor = colors.textPrimary,
+                        drawerContent = { sidebar(inDrawer = true, modifier = Modifier.fillMaxSize()) },
+                    ) {
+                        detailHost(Modifier.fillMaxSize(), pane)
+                    }
+                }
             }
         }
-        pendingShare != null && pendingShare.target == null -> {
-            ShareDestinationScreen(
-                listState = listState,
-                draft = pendingShare,
-                onNewChat = {
-                    graph.share.setTarget(ShareTarget.NewChat)
-                    navigateTop(Screen.Home)
-                },
-                onPickChat = { row ->
-                    agentsViewModel.markRead(row.agent)
-                    graph.share.setTarget(ShareTarget.Chat(row.agent.id))
-                    switchToAgent(row.agent.id)
-                },
-                onRefresh = agentsViewModel::refresh,
-                onDismiss = graph.share::clear,
-            )
+        PaletteHost(shortcuts, listState, graph.transcriptSearch) { entry, hit -> byKey { openFromKeyboard(entry.agentId, hit) } }
+
+        if (customizeOpen) {
+            CustomizeSheet(viewModel = agentsViewModel, onDismiss = { customizeOpen = false })
+        }
+        projectEditor?.let { target ->
+            // Asked for from the sidebar or the New Chat pane: a Project created here is a new top-level chat.
+            ProjectEditorHost(graph, target, onOpenAgent = ::switchToAgent, onDismiss = { projectEditor = null })
+        }
+
+        when {
+            shareLoading -> {
+                Box(Modifier.fillMaxSize().background(colors.canvas).hitTestBoundary(), contentAlignment = Alignment.Center) {
+                    SpinnerRing(size = 22.dp, strokeWidth = 2.dp)
+                }
+            }
+            pendingShare != null && pendingShare.target == null -> {
+                ShareDestinationScreen(
+                    listState = listState,
+                    draft = pendingShare,
+                    onNewChat = {
+                        graph.share.setTarget(ShareTarget.NewChat)
+                        navigateTop(Screen.Home)
+                    },
+                    onPickChat = { row ->
+                        agentsViewModel.markRead(row.agent)
+                        graph.share.setTarget(ShareTarget.Chat(row.agent.id))
+                        switchToAgent(row.agent.id)
+                    },
+                    onRefresh = agentsViewModel::refresh,
+                    onDismiss = graph.share::clear,
+                )
+            }
         }
     }
 }
@@ -528,4 +701,7 @@ private class DetailPane(
     val onNewProject: (() -> Unit)?,
     /** The Projects as arranged on the New Chat page, first to last. */
     val onReorderProjects: (List<String>) -> Unit,
+    /** The screen whose composer a key asked for (see [ShellShortcuts.composerFocus]); [onComposerFocused] once it has the caret. */
+    val composerFocus: Screen?,
+    val onComposerFocused: () -> Unit,
 )

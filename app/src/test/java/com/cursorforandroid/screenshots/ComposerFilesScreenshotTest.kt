@@ -361,11 +361,11 @@ class ComposerFilesScreenshotTest {
     }
 
     /** The "+" menu open over the composer; the menu is a popup window, so the whole screen is what carries it. */
-    private fun captureMenu(actions: ComposerMenuActions, name: String) {
+    private fun captureMenu(actions: ComposerMenuActions, name: String, value: String = "") {
         compose.setContent {
             Scene {
                 ComposerBox(
-                    value = "",
+                    value = value,
                     onValueChange = {},
                     placeholder = "Follow up…",
                     onSend = {},
@@ -389,6 +389,14 @@ class ComposerFilesScreenshotTest {
     /** The default mode: Images alone, the image-only picker behind the documented `prompt.images[]`. */
     @Test
     fun composerMenuDefault() = captureMenu(ComposerMenuActions(onPickMedia = {}), "82_composer_plus_menu_default")
+
+    /** A draft wearing the Multitask pill: the pill stays in the footer, and the menu over it has no Multitask row. */
+    @Test
+    fun composerMenuOverMultitaskPill() = captureMenu(
+        ComposerMenuActions(onPickMedia = {}, onPickFiles = {}),
+        "550_composer_plus_menu_multitask_pill",
+        value = "/multitask Fan the flaky suites out to subagents",
+    )
 
     /**
      * More attached than fits: one row, scrolling sideways — a picture beside the chips — its end dissolving into the

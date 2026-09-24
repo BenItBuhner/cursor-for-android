@@ -2,6 +2,7 @@ package com.cursorforandroid.ui.agents
 
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -14,6 +15,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
@@ -38,15 +40,19 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.cursorforandroid.domain.AgentIndicator
+import com.cursorforandroid.domain.AgentListOrganizer
 import com.cursorforandroid.domain.AgentRow
 import com.cursorforandroid.domain.EnvType
 import com.cursorforandroid.domain.ListPreferences
@@ -57,6 +63,8 @@ import com.cursorforandroid.ui.components.ProjectGlyph
 import com.cursorforandroid.ui.components.RunningGlyph
 import com.cursorforandroid.ui.components.StateGlyph
 import com.cursorforandroid.ui.components.stylusWriting
+import com.cursorforandroid.ui.components.Haptic
+import com.cursorforandroid.ui.components.rememberHaptics
 import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.util.AppClock
@@ -100,12 +108,15 @@ fun AgentRowItem(
     /** Whether the row's children are listed beneath it; null for a row without children, which has no toggle. */
     childrenExpanded: Boolean? = null,
     onToggleChildren: () -> Unit = {},
+    /** The digit Ctrl+digit opens this row with, shown in place of its glyph while Ctrl is held; null shows the glyph. */
+    shortcutNumber: Int? = null,
 ) {
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
     val shape = CursorTheme.shapes.base
     var menuOpen by rememberSaveable { mutableStateOf(false) }
     val interaction = remember { MutableInteractionSource() }
+    val haptics = rememberHaptics()
     val agent = row.agent
 
     // A stand-in for a Project not loaded yet has nothing to act on: it opens (the chat loads by id) and nothing more.
@@ -120,25 +131,13 @@ fun AgentRowItem(
                     interactionSource = interaction,
                     indication = ripple(color = colors.base),
                     onClick = { actions.onOpen(row) },
-                    onLongClick = if (showMenu && !placeholder && !row.isStandIn) ({ menuOpen = true }) else null,
+                    onLongClick = if (showMenu && !placeholder && !row.isStandIn) ({ haptics.perform(Haptic.LongPress); menuOpen = true }) else null,
                 )
                 .height(CursorDimens.sidebarRow)
                 .padding(start = 8.dp, end = 10.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            // A Project is told by its look, with unread and error as a badge on it; a turn going, an archive or a
-            // snooze still take the slot, as they do on every row — the working dots in the Project's own colour,
-            // as the Agents Window tints them (`progressColorId`).
-            val project = agent.looksLikeProject
-            when {
-                project && row.indicator == AgentIndicator.Read -> ProjectGlyph(agent.projectAppearance)
-                project && row.indicator == AgentIndicator.Unread -> ProjectGlyph(agent.projectAppearance, badge = colors.unreadDot)
-                project && row.indicator == AgentIndicator.Error -> ProjectGlyph(agent.projectAppearance, badge = colors.red)
-                project && row.indicator == AgentIndicator.Running -> Box(Modifier.size(CursorDimens.glyph), contentAlignment = Alignment.Center) {
-                    RunningGlyph(color = colors.projectTone(agent.projectAppearance?.colorId), size = 16.dp)
-                }
-                else -> StateGlyph(row.indicator, hasBranch = agent.hasBranch, hasPullRequest = agent.hasPullRequest, pullRequest = row.pullRequest)
-            }
+            if (shortcutNumber != null) ShortcutKeycap(shortcutNumber) else AgentRowGlyph(row)
             Spacer(Modifier.width(10.dp))
             Text(
                 agent.name,
@@ -202,6 +201,49 @@ fun ChatRowMenu(row: AgentRow, expanded: Boolean, onDismiss: () -> Unit, actions
 }
 
 /**
+ * A row's leading glyph. A Project is told by its look, with unread and error as a badge on it; a turn going, an
+ * archive or a snooze still take the slot, as they do on every row — the working dots in the Project's own colour, as
+ * the Agents Window tints them (`progressColorId`).
+ */
+@Composable
+fun AgentRowGlyph(row: AgentRow) {
+    val colors = CursorTheme.colors
+    val agent = row.agent
+    val project = agent.looksLikeProject
+    when {
+        project && row.indicator == AgentIndicator.Read -> ProjectGlyph(agent.projectAppearance)
+        project && row.indicator == AgentIndicator.Unread -> ProjectGlyph(agent.projectAppearance, badge = colors.unreadDot)
+        project && row.indicator == AgentIndicator.Error -> ProjectGlyph(agent.projectAppearance, badge = colors.red)
+        project && row.indicator == AgentIndicator.Running -> Box(Modifier.size(CursorDimens.glyph), contentAlignment = Alignment.Center) {
+            RunningGlyph(color = colors.projectTone(agent.projectAppearance?.colorId), size = 16.dp)
+        }
+        else -> StateGlyph(row.indicator, hasBranch = agent.hasBranch, hasPullRequest = agent.hasPullRequest, pullRequest = row.pullRequest)
+    }
+}
+
+/** The digit of a Ctrl+digit shortcut as a small key cap, the size of the glyph slot it stands in. */
+@Composable
+private fun ShortcutKeycap(number: Int) {
+    val colors = CursorTheme.colors
+    val shape = RoundedCornerShape(4.dp)
+    Box(
+        Modifier
+            .size(CursorDimens.glyph)
+            .background(colors.fillMedium, shape)
+            .border(CursorDimens.hairline, colors.strokeSubtle, shape)
+            .testTag(AgentRowTags.shortcutNumber(number)),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(number.toString(), style = CursorTheme.typography.small.copy(fontWeight = FontWeight.Medium, fontSize = 10.sp, lineHeight = 10.sp), color = colors.textPrimary, maxLines = 1)
+    }
+}
+
+/** Test tags on a sidebar row. */
+object AgentRowTags {
+    fun shortcutNumber(number: Int): String = "row_shortcut_$number"
+}
+
+/**
  * The count of chats nested under a row and the chevron that shows or hides them — the tree's disclosure, drawn
  * at the trailing edge where the web puts a row's metadata. While collapsed and a hidden chat is working, the
  * working glyph sits beside the count so the activity is not lost with the rows.
@@ -234,7 +276,7 @@ private fun ChildrenToggle(row: AgentRow, expanded: Boolean, onToggle: () -> Uni
 /** Levels past this share the last indent: a deeper tree is still readable at the sidebar's width. */
 private const val MAX_INDENT_DEPTH = 3
 
-/** Pin / rename / link / snooze / archive — the long-press menu on a sidebar or recent-chat row. */
+/** Pin / rename / link / snooze / archive — the long-press menu on a sidebar or recent-chat row; a Project's has no pin. */
 @Composable
 fun ChatOverflowMenu(
     row: AgentRow,
@@ -248,7 +290,7 @@ fun ChatOverflowMenu(
     val uriHandler = LocalUriHandler.current
     val agent = row.agent
     CursorMenu(expanded = expanded, onDismissRequest = onDismiss) {
-        CursorMenuItem(if (row.isPinned) "Unpin" else "Pin", CursorIcons.Pin) { onDismiss(); actions.onTogglePin(row) }
+        if (AgentListOrganizer.canPin(agent)) CursorMenuItem(if (row.isPinned) "Unpin" else "Pin", CursorIcons.Pin) { onDismiss(); actions.onTogglePin(row) }
         val editProject = actions.onEditProject?.takeIf { agent.isProjectRoot }
         if (editProject != null) CursorMenuItem("Edit Project", CursorIcons.Pencil) { onDismiss(); editProject(row) }
         if (actions.onRename != null && editProject == null) CursorMenuItem("Rename", CursorIcons.Pencil) { onRename() }

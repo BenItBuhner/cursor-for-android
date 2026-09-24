@@ -68,6 +68,7 @@ import com.cursorforandroid.ui.components.FadingLazyColumn
 import com.cursorforandroid.ui.components.FlatIconButton
 import com.cursorforandroid.ui.components.HairlineDivider
 import com.cursorforandroid.ui.components.SpinnerRing
+import com.cursorforandroid.ui.components.contentColumn
 import com.cursorforandroid.ui.components.pressable
 import com.cursorforandroid.ui.components.scrollEdgeFade
 import com.cursorforandroid.ui.conversation.DiffBlock
@@ -317,7 +318,7 @@ fun FullFileScreen(
                     tone = if (shown.wakeable) NoticeTone.Warning else NoticeTone.Error,
                     docked = false,
                     titleTag = "full-file-failed-title",
-                    modifier = Modifier.padding(12.dp).testTag("full-file-failed"),
+                    modifier = Modifier.contentColumn(gutter = 12.dp).padding(vertical = 12.dp).testTag("full-file-failed"),
                 ) {
                     if (shown.wakeable) NoticeAction("Wake the machine", { wake = true; attempt++ }, Modifier.testTag("full-file-wake"))
                     if (shown.retryable) NoticeAction("Retry", { attempt++ }, Modifier.testTag("full-file-retry"))

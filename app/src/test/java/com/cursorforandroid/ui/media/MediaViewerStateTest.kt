@@ -59,6 +59,18 @@ class MediaViewerStateTest {
     }
 
     @Test
+    fun `Esc's close puts the viewer away at once, with no close transform asked for`() {
+        val state = MediaViewerState(null)
+        val a = state.register("a.png")
+        state.open("agent", entries, "a.png", slot = a)
+        state.closeNow()
+        assertThat(state.isOpen).isFalse()
+        assertThat(state.phase).isEqualTo(MediaViewerState.Phase.Closed)
+        assertThat(state.closeRequests).isEqualTo(0)
+        assertThat(state.isHidden(a)).isFalse()
+    }
+
+    @Test
     fun `a second open while one is showing is ignored`() {
         val state = MediaViewerState(null)
         state.open("agent", entries, "c.png")

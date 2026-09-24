@@ -375,11 +375,11 @@ class RecordCoordinatorTest {
         val rows = state.rows()
         assertThat(rows.none { it is TranscriptRow.Failure }).isTrue()
         val stretches = rows.filterIsInstance<TranscriptRow.Stretch>().filter { it.single == null }
-        // Turn A's stretches say what was done and nothing of a failure (its two workers are rows of their own);
+        // Turn A's stretches say what was done and nothing of a failure (its two workers' rows among their steps);
         // turn B's ends on the word, its line inside.
-        assertThat(rows.filterIsInstance<TranscriptRow.Subagent>()).hasSize(2)
+        assertThat(rows.filterIsInstance<TranscriptRow.Stretch>().flatMap { it.subagents }).hasSize(2)
         assertThat(stretches.map { it.summary.text }).containsExactly(
-            "1 note",
+            "2 agents · 1 note",
             "Worked 4m 13s · 1 note",
             "Worked 41s · 1 agent · 1 note · failed",
             "1 note",

@@ -66,10 +66,14 @@ import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.unit.dp
 import com.cursorforandroid.ui.components.BackGestureEdges
+import com.cursorforandroid.ui.components.Haptics
 import com.cursorforandroid.ui.components.LocalScrollFadeSurface
 import com.cursorforandroid.ui.components.backGestureEdges
 import com.cursorforandroid.ui.components.coveredFocus
+import com.cursorforandroid.ui.components.feltOnCommit
+import com.cursorforandroid.ui.components.halfwayCrossing
 import com.cursorforandroid.ui.components.rememberBackGestureEdges
+import com.cursorforandroid.ui.components.rememberHaptics
 import com.cursorforandroid.ui.components.rememberSheetFocus
 import com.cursorforandroid.ui.components.sheetFocus
 import com.cursorforandroid.ui.theme.CursorTheme
@@ -122,8 +126,10 @@ fun SidePanelHost(
     val opening = remember(state, scope, edges) { ScrollerHandoff(state, scope, from = SidePanelValue.Closed, edges = edges) }
     val closing = remember(state, scope) { ScrollerHandoff(state, scope, from = SidePanelValue.Open, edges = null) }
     val focus = rememberSheetFocus { state.isOpen }
+    val haptics = rememberHaptics()
     SideEffect {
         state.widthPx = widthPx
+        state.haptics = haptics
         opening.update(gesturesEnabled, rtl, flingThreshold)
         closing.update(gesturesEnabled, rtl, flingThreshold)
     }
@@ -152,7 +158,7 @@ fun SidePanelHost(
         PredictiveBackHandler(enabled = state.isOpen) { events ->
             val start = state.fraction
             try {
-                events.collect { state.seek(start * (1f - it.progress)) }
+                events.feltOnCommit(haptics).collect { state.seek(start * (1f - it.progress)) }
             } catch (_: CancellationException) {
                 scope.launch { state.slideTo(SidePanelValue.Open) }
                 return@PredictiveBackHandler
@@ -250,13 +256,30 @@ class SidePanelState(initialValue: SidePanelValue) {
 
     internal var widthPx = 0f
 
+    /** Plays the drag's half-way threshold (see [halfwayCrossing]); set by the [SidePanel] showing this state. */
+    internal var haptics: Haptics? = null
+
     private val mutex = MutatorMutex()
+
+    /** Counts [jumpTo]s: a slide or fling that began before the latest one no longer moves the sheet. */
+    private var jumps = 0
 
     suspend fun open() = slideTo(SidePanelValue.Open)
 
     suspend fun close() = slideTo(SidePanelValue.Closed)
 
     suspend fun toggle() = if (isOpen) close() else open()
+
+    /**
+     * Puts the sheet at [value] in this frame, with no slide: the keyboard's answer (Ctrl+Shift+B, Esc). A slide or a
+     * drag still holding the sheet stops moving it at once, and is cancelled on [scope].
+     */
+    fun jumpTo(value: SidePanelValue, scope: CoroutineScope) {
+        jumps++
+        targetValue = value
+        fraction = value.fraction
+        if (!mutex.tryMutate { }) scope.launch { snapTo(value) }
+    }
 
     internal suspend fun slideTo(value: SidePanelValue) {
         val target = value.fraction
@@ -268,7 +291,8 @@ class SidePanelState(initialValue: SidePanelValue) {
                 return@mutate
             }
             val millis = (SlideMillis * distance).roundToInt().coerceIn(MinSlideMillis, SlideMillis)
-            runAnimation { animate(fraction, target, animationSpec = tween(millis, easing = SlideEasing)) { v, _ -> fraction = v } }
+            val jump = jumps
+            runAnimation { animate(fraction, target, animationSpec = tween(millis, easing = SlideEasing)) { v, _ -> if (jumps == jump) fraction = v } }
         }
     }
 
@@ -294,8 +318,9 @@ class SidePanelState(initialValue: SidePanelValue) {
         }
         mutex.mutate {
             targetValue = value
+            val jump = jumps
             runAnimation {
-                animate(fraction, value.fraction, initialVelocity = velocity, animationSpec = FlingSpec) { v, _ -> fraction = v.coerceIn(0f, 1f) }
+                animate(fraction, value.fraction, initialVelocity = velocity, animationSpec = FlingSpec) { v, _ -> if (jumps == jump) fraction = v.coerceIn(0f, 1f) }
             }
         }
     }
@@ -312,7 +337,10 @@ class SidePanelState(initialValue: SidePanelValue) {
     internal val draggableState: DraggableState = object : DraggableState {
         private val dragScope = object : DragScope {
             override fun dragBy(pixels: Float) {
-                if (widthPx > 0f) fraction = (fraction + pixels / widthPx).coerceIn(0f, 1f)
+                if (widthPx <= 0f) return
+                val before = fraction
+                fraction = (fraction + pixels / widthPx).coerceIn(0f, 1f)
+                halfwayCrossing(before, fraction, restingOpen = isOpen)?.let { haptics?.perform(it) }
             }
         }
 

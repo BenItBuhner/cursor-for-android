@@ -173,7 +173,7 @@ class BigProjectBetaScreenshotTest {
         // one stretch of events; the coordinator's messages further up.
         val shown = rows.takeLast(SHOWN_ROWS)
         assertThat(shown.count { it is TranscriptRow.Stretch }).isAtLeast(2)
-        assertThat(shown.count { it is TranscriptRow.Subagent }).isAtLeast(2)
+        assertThat(shown.filterIsInstance<TranscriptRow.Stretch>().sumOf { it.subagents.size }).isAtLeast(2)
         assertThat(rows.count { it is TranscriptRow.Message }).isAtLeast(2)
         show(shown)
         capture("195_big_project_beta")

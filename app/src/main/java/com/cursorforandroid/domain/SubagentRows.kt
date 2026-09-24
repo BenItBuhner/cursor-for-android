@@ -231,6 +231,18 @@ object SubagentRows {
         }
     }
 
+    /**
+     * Whether the row's child is still at work, as the group it sits in counts it (the desktop's running tasks,
+     * `composerWorkGroupRunningTasks`): working, starting up, or waiting on the reader. A stop under way is not.
+     * The desktop always knows its children; here a call can be left running by a run that ended without closing
+     * it, so only a [child] reported running or waiting says so once the group is no longer [live].
+     */
+    fun isWorking(subagent: SubagentCall, look: SubagentLook, child: SubagentChild?, live: Boolean): Boolean {
+        if (subagent.source == SubagentCall.Source.Stopped) return false
+        if (look.indicator != SubagentLook.Indicator.Running && look.indicator != SubagentLook.Indicator.Attention) return false
+        return live || child?.waiting == true || child?.status == SubagentChild.Status.Running
+    }
+
     /** The desktop's status text while the child works (`gRa`): its own step, else its latest action, else planning. */
     private fun running(child: SubagentChild?): SubagentLook {
         val text = child?.step?.trim()?.takeIf { it.isNotEmpty() } ?: child?.action?.trim()?.takeIf { it.isNotEmpty() } ?: PLANNING
@@ -423,13 +435,69 @@ object SubagentRows {
             ?: childName?.trim()?.takeIf { it.isNotEmpty() }
             ?: if (subagent.source == SubagentCall.Source.Stopped) SubagentCall.AGENT else SubagentCall.NEW_SUBAGENT
 
+    // -- a subagent's notice -------------------------------------------------------------------------------------
+
+    /** The status line of a worker's notice that is not an ending and said nothing of its own. */
+    const val UPDATE = "Sent an update"
+
+    /** A subagent's or a worker's notice as its row: the call it stands for, the title, and how the child ended. */
+    data class Notice(val subagent: SubagentCall, val title: String, val look: SubagentLook)
+
+    /**
+     * [notification] as the row the transcript draws for the same subagent, or null for a notice that is not a
+     * subagent's or a worker's. The desktop draws a finished background task as a notice naming the task by its
+     * title and saying how it ended (`BACKGROUND_TASK_COMPLETION`, Cursor 3.21.18); here it takes the row's own words
+     * for the ending — "Completed", "Stopped with error" for a failure or a run that timed out, "Stopped" for one
+     * cancelled — and its title, model and glyph come from [start], the call that started the child, when the
+     * transcript holds it (see [Index.startOf]). A worker's update that is not an ending says what it said instead.
+     */
+    fun notice(notification: SystemNotification, start: SubagentCall?, workerName: String? = null, childName: String? = null): Notice? {
+        val kind = notification.kind
+        if (kind != SystemNotification.Kind.Subagent && kind != SystemNotification.Kind.Worker) return null
+        val summary = notification.summary?.trim()?.takeIf { it.isNotEmpty() }
+        val ended = endedAs(notification)
+        val call = start ?: SubagentCall(if (kind == SystemNotification.Kind.Worker) SubagentCall.Source.Created else SubagentCall.Source.Task, null)
+        val subagent = call.copy(
+            title = call.title ?: summary.takeIf { ended != null },
+            agentId = notification.agentId ?: call.agentId,
+        )
+        val look = ended?.let(::settled) ?: SubagentLook(SubagentLook.Indicator.Finished, summary ?: UPDATE)
+        return Notice(subagent, title(subagent, look, workerName, childName), look)
+    }
+
+    /** How [notification] says its child ended, read off its label ("Subagent failed"); null for a notice that is not an ending. */
+    fun endedAs(notification: SystemNotification): SubagentChild.Status? {
+        if (notification.kind != SystemNotification.Kind.Subagent && notification.kind != SystemNotification.Kind.Worker) return null
+        return when (notification.title.substringAfter(' ', "").trim().lowercase()) {
+            "completed", "finished" -> SubagentChild.Status.Succeeded
+            "failed", "timed out" -> SubagentChild.Status.Failed
+            "cancelled" -> SubagentChild.Status.Aborted
+            else -> null
+        }
+    }
+
+    /** A child's ending in the row's words, as [look] says it. */
+    private fun settled(status: SubagentChild.Status): SubagentLook = when (status) {
+        SubagentChild.Status.Running, SubagentChild.Status.Succeeded -> SubagentLook(SubagentLook.Indicator.Finished, COMPLETED)
+        SubagentChild.Status.Failed -> SubagentLook(SubagentLook.Indicator.Error, STOPPED_WITH_ERROR)
+        SubagentChild.Status.Aborted -> SubagentLook(SubagentLook.Indicator.Finished, STOPPED, dimmed = true)
+    }
+
     // -- the rows of a transcript -------------------------------------------------------------------------------
 
     /**
-     * What the rows of one transcript say about its workers, across every turn: the newest row about each worker
-     * (the one whose state is live), and each worker's name and model as the call that created it gave them.
+     * What the rows of one transcript say about its subagents, across every turn: the newest row about each worker
+     * (the one whose state is live); each worker's name and model as the call that created it gave them; for each
+     * subagent's or worker's notice, the task or `create_agent` call that started the child it reports on
+     * ([notices], by the notice's id); and how each such call's child ended, as its newest notice says ([endings],
+     * by the call's id).
      */
-    data class Index(val latest: Map<String, String> = emptyMap(), val workers: Map<String, Worker> = emptyMap()) {
+    data class Index(
+        val latest: Map<String, String> = emptyMap(),
+        val workers: Map<String, Worker> = emptyMap(),
+        val notices: Map<String, SubagentCall> = emptyMap(),
+        val endings: Map<String, SubagentChild.Status> = emptyMap(),
+    ) {
         data class Worker(val name: String?, val modelId: String?)
 
         /** Whether [call]'s row is the newest about its worker; a task, or a row naming no worker, always is. */
@@ -439,31 +507,68 @@ object SubagentRows {
             return latest[id]?.let { it == call.callId } ?: true
         }
 
+        /** The call that started the child [notification] reports on, when the transcript holds it before the notice. */
+        fun startOf(notification: SystemNotification): SubagentCall? = notices[notification.id]
+
+        /** How [call]'s child ended, when a notice after it said so. */
+        fun endingOf(call: ToolCall): SubagentChild.Status? = endings[call.callId]
+
         companion object {
             val EMPTY = Index()
         }
     }
 
+    /**
+     * [rows]' [Index], read in order. A notice is bound to the call that started its child before it: the one that
+     * started the agent it names, else the call its report names (`tool_call_id`), else the newest with its title.
+     */
     fun index(rows: List<TranscriptRow>): Index {
         var latest: MutableMap<String, String>? = null
         var workers: MutableMap<String, Index.Worker>? = null
+        var notices: MutableMap<String, SubagentCall>? = null
+        var endings: MutableMap<String, SubagentChild.Status>? = null
+        val byAgent = HashMap<String, ToolCall>()
+        val byCall = HashMap<String, SubagentCall>()
+        val byTitle = HashMap<String, ToolCall>()
+        fun note(call: ToolCall, subagent: SubagentCall) {
+            if (subagent.source == SubagentCall.Source.Task || subagent.source == SubagentCall.Source.Created) {
+                subagent.agentId?.let { byAgent[it] = call }
+                byCall[call.callId] = subagent
+                subagent.title?.let { byTitle[it] = call }
+            }
+            val id = subagent.agentId ?: return
+            if (!subagent.isWorker) return
+            (latest ?: LinkedHashMap<String, String>().also { latest = it })[id] = call.callId
+            if (subagent.source == SubagentCall.Source.Created) {
+                (workers ?: LinkedHashMap<String, Index.Worker>().also { workers = it })[id] = Index.Worker(subagent.title, subagent.modelId)
+            }
+        }
+        fun bind(notification: SystemNotification) {
+            if (notification.kind != SystemNotification.Kind.Subagent && notification.kind != SystemNotification.Kind.Worker) return
+            val callId = notification.agentId?.let(byAgent::get)?.callId
+                ?: notification.callId?.takeIf { it in byCall }
+                ?: notification.summary?.trim()?.let(byTitle::get)?.callId
+                ?: return
+            (notices ?: LinkedHashMap<String, SubagentCall>().also { notices = it })[notification.id] = byCall.getValue(callId)
+            endedAs(notification)?.let { (endings ?: LinkedHashMap<String, SubagentChild.Status>().also { endings = it })[callId] = it }
+        }
         fun visit(row: TranscriptRow) {
             when (row) {
-                is TranscriptRow.Subagent -> {
-                    val subagent = row.subagent
-                    val id = subagent.agentId ?: return
-                    if (!subagent.isWorker) return
-                    (latest ?: LinkedHashMap<String, String>().also { latest = it })[id] = row.call.callId
-                    if (subagent.source == SubagentCall.Source.Created) {
-                        (workers ?: LinkedHashMap<String, Index.Worker>().also { workers = it })[id] = Index.Worker(subagent.title, subagent.modelId)
+                is TranscriptRow.Stretch -> row.entries.forEach { entry ->
+                    when (entry) {
+                        is TranscriptRow.Entry.Call -> entry.subagent?.let { note(entry.call, it) }
+                        is TranscriptRow.Entry.Event -> bind(entry.row.notification)
+                        is TranscriptRow.Entry.Events -> entry.group.rows.forEach(::visit)
+                        else -> Unit
                     }
                 }
                 is TranscriptRow.Events -> row.rows.forEach(::visit)
+                is TranscriptRow.Event -> bind(row.notification)
                 else -> Unit
             }
         }
         rows.forEach(::visit)
-        if (latest == null) return Index.EMPTY
-        return Index(latest.orEmpty(), workers.orEmpty())
+        if (latest == null && notices == null) return Index.EMPTY
+        return Index(latest.orEmpty(), workers.orEmpty(), notices.orEmpty(), endings.orEmpty())
     }
 }

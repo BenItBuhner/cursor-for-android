@@ -24,7 +24,7 @@ import java.security.MessageDigest
 /**
  * The real device behind [UpdatePlatform]: `PackageManager`, `PackageInstaller`, connectivity and the process lifecycle.
  * [installedVersionName] is the build's own; the screenshot tests hand in a fixed one (through `AppGraph.appVersion`)
- * so what the version decides on screen - the pre-release default, the row - never moves with a release.
+ * so what the version decides on screen - the row - never moves with a release.
  */
 open class AndroidUpdatePlatform(context: Context, override val installedVersionName: String = BuildConfig.VERSION_NAME) : UpdatePlatform {
 

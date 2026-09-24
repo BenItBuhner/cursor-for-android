@@ -85,6 +85,7 @@ import com.cursorforandroid.data.media.MediaLoader
 import com.cursorforandroid.data.repo.AgentFileRepository
 import com.cursorforandroid.data.repo.AgentRepository
 import com.cursorforandroid.data.repo.SubagentActivity
+import com.cursorforandroid.data.repo.TranscriptSearchIndex
 import com.cursorforandroid.data.repo.ArtifactRepository
 import com.cursorforandroid.data.repo.AttachmentUploads
 import com.cursorforandroid.data.repo.CapabilityGatedPullRequestSource
@@ -319,6 +320,13 @@ class AppGraph(
      */
     private val lazyAccountClient = lazy { CursorApiFactory.loginClient().also { it.dispatcher.maxRequestsPerHost = ApiThrottle.ON_THE_WIRE + 2 } }
     private val lazyAccountRpc = lazy { ConnectJsonClient(lazyAccountClient.value, CursorLoginEndpoints.API_URL) }
+
+    /** How long the account's calls are still held off by a pause the server asked for (a `429`, see `ApiThrottle`); 0 when none, or before any call. */
+    fun accountPauseMillis(): Long {
+        if (!lazyAccountRpc.isInitialized()) return 0L
+        val until = lazyAccountRpc.value.throttle.pausedUntil() ?: return 0L
+        return (until - System.currentTimeMillis()).coerceAtLeast(0L)
+    }
     /** The account session the account-level RPCs take, derived from the stored key when needed and kept in memory only; none while Extended mode is off. */
     private val lazySessionTokens = lazy { SessionTokenProvider(lazyAccountClient.value, { keyStore.apiKey() }, sessionAllowed = { extendedMode.isEnabled() }) }
     /** The account's agent list, pins, archive, rename, pull request statuses and sources: what the desktop Agents window and the iOS app show. */
@@ -687,6 +695,10 @@ class AppGraph(
     }
     val conversations: ConversationRepository get() = lazyConversations.value
 
+    /** The search palette's reading of the transcripts kept on this device (Ctrl+F, see [TranscriptSearchIndex]). */
+    private val lazyTranscriptSearch = lazy { TranscriptSearchIndex(caches.conversations, caches.traces) }
+    val transcriptSearch: TranscriptSearchIndex get() = lazyTranscriptSearch.value
+
     /** Sees new chats' launches through once the composer has handed them over, so no screen has to stay for the answer. */
     private val lazyLauncher = lazy { ChatLauncher(conversations) }
     val launcher: ChatLauncher get() = lazyLauncher.value
@@ -863,11 +875,13 @@ class AppGraph(
 
     /**
      * Deletes what an earlier process left in the cache directory and nothing will ever read again: media copies past
-     * their budget, composer previews and staged prompts of sends that never finished, old diagnostics exports. Once
-     * per process; each sweep stands alone, so one directory that cannot be listed leaves the others to theirs.
+     * their budget, composer previews and staged prompts of sends that never finished, old diagnostics exports — and
+     * the values of settings that no longer exist. Once per process; each sweep stands alone, so one directory that
+     * cannot be listed leaves the others to theirs.
      */
     suspend fun sweepLeftovers() {
         if (!swept.compareAndSet(false, true)) return
+        prefs.forgetRetiredSettings()
         withContext(Dispatchers.IO) {
             val now = System.currentTimeMillis()
             runCatching { MediaLoader.sweepCopies(app.cacheDir, now) }
@@ -926,6 +940,7 @@ class AppGraph(
             if (lazyRemote.isInitialized()) remote.reset()
             if (lazyArtifacts.isInitialized()) artifacts.resetAll()
             if (lazyStoreFiles.isInitialized()) storeFiles.resetAll()
+            if (lazyTranscriptSearch.isInitialized()) transcriptSearch.clear()
             media.clearCaches()
             attachments.clear()
             generatedMedia.clear()

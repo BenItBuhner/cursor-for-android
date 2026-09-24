@@ -67,6 +67,7 @@ import com.cursorforandroid.domain.SubagentChild
 import com.cursorforandroid.domain.SystemNotification
 import com.cursorforandroid.domain.SystemNotifications
 import com.cursorforandroid.domain.TimelineItem
+import com.cursorforandroid.domain.newMessageCount
 import com.cursorforandroid.util.AppClock
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
@@ -102,6 +103,13 @@ import java.time.Instant
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
+
+/**
+ * What a catch-up found (see [ConversationRepository.catchUp]): the messages it brought that the screen did not have —
+ * prompts, replies, notices — and whether anything else moved (a turn's steps, its status). [error]: the read failed,
+ * in the server's words; what the screen had stands.
+ */
+data class CatchUp(val newMessages: Int = 0, val changed: Boolean = false, val error: String? = null)
 
 data class ConversationState(
     val agentId: String,
@@ -808,6 +816,10 @@ class ConversationRepository(
         var loadJob: Job? = null
         /** A forced revalidation asked for while [loadJob] was in flight: the chat is read again once it lands (see [revalidateNow]). */
         var rereadAfterLoad = false
+        /** That reread is owed the documented transcript beside the run list (see [revalidateNow]'s `fresh`). */
+        var freshAfterLoad = false
+        /** The reader's catch-up being answered; a second one asked for while it is shares its answer (see [catchUp]). */
+        var catchUpJob: Deferred<CatchUp>? = null
         /** Cuts the window back a while after the last screen left (see [trimWindow]); cancelled by a screen coming back. */
         var trimJob: Job? = null
         /**
@@ -2197,6 +2209,11 @@ class ConversationRepository(
         e.loadJob = e.scope.launch { load(e, agentId, force = true) }
     }
 
+    /** Returns once the chat's load in flight, if any — the one [reload] or [reloadTranscript] just started — is over. */
+    suspend fun awaitLoad(agentId: String) {
+        synchronized(entries) { entries[agentId] }?.loadJob?.join()
+    }
+
     /**
      * Throws away everything kept for the chat — in memory and on disk: its transcript, its traces, the record's
      * window — and reads it again from the server, for a chat that shows less than it should because a copy an
@@ -2214,6 +2231,95 @@ class ConversationRepository(
     }
 
     /**
+     * The reader asked for what the server has that this chat does not (a pull up past the newest message, Ctrl+R):
+     * what is new since the last thing this device has, and only that — not a reload. Beta: the account's record from
+     * the turns in hand (its state, and only the turns whose blob is new or moved; see [readRecordGrowth]) with the run
+     * list's first page beside it; then the live stream is asked again from its offset, its backoff forgotten. Stable:
+     * the run list's first page, and the documented transcript only when that page names a run this device has not
+     * seen or a status that moved — the transcript being the one place a turn's prompt is. Either way a run under way
+     * is followed (the tail of its log, see [startStreaming]) and the chat's running state is the account's word again.
+     * A load already under way is waited for, its turns' traces with it, not doubled — what it brings is not the
+     * catch-up's to count — and a second catch-up asked for while one is being answered shares its answer.
+     */
+    suspend fun catchUp(agentId: String): CatchUp {
+        val e = entry(agentId)
+        val job = synchronized(e) { e.catchUpJob?.takeIf { it.isActive } ?: e.scope.async { catchUpNow(e) }.also { e.catchUpJob = it } }
+        return job.await()
+    }
+
+    private suspend fun catchUpNow(e: Entry): CatchUp {
+        val agentId = e.agentId
+        synchronized(e) { e.loadJob }?.join()
+        // The steps that load asked for are its too: until its turns' traces are in, the chat is still being read.
+        synchronized(e) { e.traceJob }?.join()
+        // A chat still being launched has nothing on the server to read; the launch settles it when the server answers.
+        if (synchronized(e) { e.launching }) return CatchUp()
+        val before = e.state.value
+        // As with [reload]: after the server's own failure the record is asked at once, so the chat is read as a load
+        // reads it; a refusal keeps its pause.
+        val retryRecord = synchronized(e) { (before.recordFallback?.serverError == true).also { if (it) e.recordRefusedUntil = 0L } }
+        val failure = runCatching {
+            val backend = session.current
+            val recordOn = record != null && !backend.isDemo && capabilities().accountTranscript && synchronized(e) { e.recordWindow != null }
+            if (recordOn) {
+                coroutineScope {
+                    val runs = async { net(agentId, "runs"); backend.api.listRuns(agentId, limit = FIRST_RUN_PAGE) }
+                    when (readRecordGrowth(e, strict = true, refreshRuns = false)) {
+                        // No delta to read from what is in hand: the chat is read as a load reads it.
+                        null -> {
+                            runs.cancel()
+                            loadAsJob(e) { load(e, agentId) }
+                        }
+                        else -> {
+                            refreshNewestRuns(e, handed = runs.await())
+                            loadTraces(e, agentId, e.shownRuns())
+                        }
+                    }
+                }
+            } else {
+                net(agentId, "runs")
+                val page = backend.api.listRuns(agentId, limit = FIRST_RUN_PAGE)
+                val held = synchronized(e) { if (!retryRecord && e.fetched && e.messages.isNotEmpty() && e.recordWindow == null) e.runs.associateBy { it.id } to e.local.isEmpty() else null }
+                if (held != null && runsUnchanged(page, held.first, noLocal = held.second)) refreshNewestRuns(e, handed = page)
+                else loadAsJob(e) { load(e, agentId, force = true, handed = page) }
+            }
+            // The run under way, as the account now has it: followed when it is not, and the chat kept running while
+            // the account says so with no run to stream yet (see [keepFollowing]).
+            val active = synchronized(e) { e.latestRun()?.takeIf { e.statusOf(it).isActive } }
+            if (active != null) {
+                if (!e.isFollowing(active.id)) startStreaming(e, agentId, active, unlessMovedOn = true)
+            } else if (accountSaysRunning(e)) {
+                keepFollowing(e, endedRunId = null)
+            }
+        }.exceptionOrNull()
+        if (failure is CancellationException) throw failure
+        // A load swallows its failure onto the screen; the pull says it too, in the same words.
+        val after = e.state.value
+        val shown = (after.error ?: after.transcriptError).takeIf { it != (before.error ?: before.transcriptError) }
+        val error = failure?.userMessage() ?: shown
+        // The live stream asked again from where the reader's copy now stands, its backoff forgotten; the list
+        // entry's word taken afresh.
+        synchronized(e) {
+            if (e.attached > 0 && !e.paused) {
+                e.watchJob?.cancel()
+                e.watchJob = null
+            }
+        }
+        watchWhileOpen(e)
+        return CatchUp(
+            newMessages = newMessageCount(before.items, after.items),
+            changed = after.items != before.items || after.runStatus != before.runStatus || after.activeRunId != before.activeRunId,
+            error = error,
+        )
+    }
+
+    /** [block] as the entry's load, so a revalidation meanwhile waits on it rather than reading the chat a second time; waited for. */
+    private suspend fun loadAsJob(e: Entry, block: suspend () -> Unit) {
+        val job = synchronized(e) { e.scope.launch { block() }.also { e.loadJob = it } }
+        job.join()
+    }
+
+    /**
      * Brings an open chat back up to date after the app returns to the foreground: while it was away the network
      * may have taken the stream down mid-run, or the run may have finished. Loads the history again, which restarts
      * the stream of a run still going and replays one that ended. A load already in flight, or one that completed
@@ -2224,7 +2330,12 @@ class ConversationRepository(
      */
     fun revalidate(agentId: String, force: Boolean = false) = offload(agentId) { e -> revalidateNow(e, force) }
 
-    private fun revalidateNow(e: Entry, force: Boolean = false) {
+    /**
+     * [fresh]: the caller knows the chat has changed on the server — a turn it has not read, the watch's word — so the
+     * documented transcript is read beside the run list rather than after it, and read even when the list, already
+     * merged with the new run, would call it unchanged (see [load]).
+     */
+    private fun revalidateNow(e: Entry, force: Boolean = false, fresh: Boolean = false) {
         synchronized(e) {
             // A chat still being launched has nothing on the server to fetch; the launch settles it when the server answers.
             if (e.attached == 0 || e.launching) return
@@ -2232,11 +2343,12 @@ class ConversationRepository(
             if (inFlight != null) {
                 // The load under way read its run page before whatever prompted this; what it publishes is that
                 // page's word. A forced revalidation is owed a read that postdates the cause: once, when the load lands.
+                if (fresh) e.freshAfterLoad = true
                 if (force && !e.rereadAfterLoad) {
                     e.rereadAfterLoad = true
                     inFlight.invokeOnCompletion {
-                        synchronized(e) { e.rereadAfterLoad = false }
-                        revalidateNow(e, force = true)
+                        val owedFresh = synchronized(e) { e.rereadAfterLoad = false; e.freshAfterLoad.also { e.freshAfterLoad = false } }
+                        revalidateNow(e, force = true, fresh = owedFresh)
                     }
                 }
                 return
@@ -2244,7 +2356,7 @@ class ConversationRepository(
             if (!force && AppClock.now() - e.fetchedAt < REVALIDATE_MIN_INTERVAL_MS) return
             // Beta: confirmed current by the account's word since (see [Entry.currentAt]) — nothing to read.
             if (!force && e.recordAllowedAtLoad == true && e.isCurrent(AppClock.now())) return
-            e.loadJob = e.scope.launch { load(e, e.agentId) }
+            e.loadJob = e.scope.launch { load(e, e.agentId, force = fresh) }
         }
     }
 
@@ -2500,8 +2612,9 @@ class ConversationRepository(
     /**
      * Reads the chat: the account's record (Extended mode), else the documented transcript and runs. [force] reads
      * the documented transcript again even when the run list says nothing changed — the reader's own Reload.
+     * [handed]: the run list's first page, read already by the caller (see [catchUp]), for the documented path.
      */
-    private suspend fun load(e: Entry, agentId: String, force: Boolean = false) {
+    private suspend fun load(e: Entry, agentId: String, force: Boolean = false, handed: ListRunsResponseDto? = null) {
         val backend = session.current
         val tokens = cacheTokens()
         val api = backend.api
@@ -2526,7 +2639,7 @@ class ConversationRepository(
         }
         // The run list's first page the record path read beside the record, handed on when the record was not served:
         // the documented path needs the same page, and the fallback should not cost the round trip twice.
-        var handedRuns: Result<ListRunsResponseDto>? = null
+        var handedRuns: Result<ListRunsResponseDto>? = handed?.let { Result.success(it) }
         if (recordApi != null) {
             val served = try {
                 loadFromRecord(e, agentId, recordApi, backend, tokens).also { handedRuns = it.runPage }.served
@@ -3157,9 +3270,9 @@ class ConversationRepository(
 
     /**
      * Keeps the chat followed while the account calls it running and no stream is open on a run of it. Every few
-     * seconds, with the pause growing to [KEEP_FOLLOWING_MAX_MS]: the agent's record is read for its latest run
-     * (`GET /v1/agents/{id}`, then the run by id), and a run other than [endedRunId] that is active is merged into
-     * the list and followed — the steer's next run, the coordinator's next turn. Until there is one, and in Extended
+     * seconds, with the pause growing to [KEEP_FOLLOWING_MAX_MS] while the account says so: the agent's record is read
+     * for its latest run (`GET /v1/agents/{id}`, then the run by id), and a run other than [endedRunId] that is active
+     * is merged into the list and followed — the steer's next run, the coordinator's next turn. Until there is one, and in Extended
      * mode for as long as no stream says anything, the account's record is read for what the turn has added
      * (`FetchBackgroundComposer` at the known end, the tail re-read when it grew), so the steps arrive from the one
      * source there is: a machine agent whose run list and stream never answer still streams from its record. Ends
@@ -3186,7 +3299,8 @@ class ConversationRepository(
                     // A stream open and speaking is the source; this loop stands down for it.
                     val streamSpeaking = synchronized(e) { e.streamJob?.isActive == true && (e.live?.items?.isNotEmpty() == true || (e.state.value.isStreaming && !e.state.value.isReconnecting && e.live == null)) }
                     if (followed || streamSpeaking) return@launch
-                    if (!accountSaysRunning(e)) {
+                    val idle = !accountSaysRunning(e)
+                    if (idle) {
                         // The account agrees the chat is idle — after a few looks, for a run that ended a moment ago:
                         // the next run of a steer, of a coordinator's next turn, takes a beat to be named. Then the
                         // records' word stands (see [Entry.chatStatus]).
@@ -3200,7 +3314,10 @@ class ConversationRepository(
                         e.publish(transform = { if (runStatus?.isActive != true) copy(runStatus = RunStatus.RUNNING) else this })
                     }
                     delay(wait)
-                    wait = (wait * 2).coerceAtMost(KEEP_FOLLOWING_MAX_MS)
+                    // The looks past a run that ended keep an even pace: the open chat's watch waits for them to end,
+                    // so a turn started elsewhere between two of them is a look away, not a doubled pause (a turn four
+                    // seconds after the last one ended was on screen five and a half seconds later).
+                    if (!idle) wait = (wait * 2).coerceAtMost(KEEP_FOLLOWING_MAX_MS)
                 }
             }
         }
@@ -3232,6 +3349,9 @@ class ConversationRepository(
         // own reading of the record, like every run record that reaches a row (see `AgentRepository.recordRun`).
         agents.recordRun(agentId, run, adopt = true)
         if (follow) startStreaming(e, agentId, run)
+        // A run this device did not send — a turn started elsewhere, a worker's report to its coordinator — has a
+        // prompt its stream never carries: the chat is read for it now, not once the turn is over.
+        if (follow && synchronized(e) { e.local.none { it.run.id == run.id } }) revalidateNow(e, force = true, fresh = true)
         // A new run is where a message the account queued from here lands (see [expectDelivery]).
         requestAdoption(e)
         return true
@@ -3268,6 +3388,10 @@ class ConversationRepository(
         var heardAt = 0L
         var failures = 0
         var silentLive = 0
+        // The live stream refused as a method the server no longer has: the list entry stands in for the rest of the watch.
+        var liveRemoved = false
+        // When a live stream handed over to the list (see [WATCH_LIVE_FAILURES]) is asked for again.
+        var liveAgainAt = 0L
         // The list entry's last word: running, and when it was last active; null until its first answer since the chat came to rest.
         var listed: Pair<Boolean, Long?>? = null
         var movedAt = 0L
@@ -3304,16 +3428,19 @@ class ConversationRepository(
                 continue
             }
             rereads = 0
-            val live = record?.takeIf { caps.accountTranscript && silentLive < WATCH_LIVE_FAILURES && e.state.value.recordFallback.let { it == null || it.serverError } }
+            val liveWanted = !liveRemoved && (silentLive < WATCH_LIVE_FAILURES || System.nanoTime() >= liveAgainAt)
+            val live = record?.takeIf { caps.accountTranscript && liveWanted && e.state.value.recordFallback.let { it == null || it.serverError } }
             if (live != null) {
                 val start = since ?: restingPoint(e)
                 val resume = start.offsetKey != null && (since == null || System.nanoTime() - heardAt < WATCH_REHYDRATE_MS * 1_000_000)
                 val startedAt = System.nanoTime()
+                var failure: Throwable? = null
                 val outcome = try {
                     e.whileAtRest { live.watch(agentId, start, resume) }
                 } catch (c: CancellationException) {
                     throw c
-                } catch (_: Throwable) {
+                } catch (t: Throwable) {
+                    failure = t
                     null
                 }
                 // The chat left rest under the stream: the run's own stream has it, and the watch waits for the end.
@@ -3321,12 +3448,31 @@ class ConversationRepository(
                 // Held open, as the server holds the desktop's: a heartbeat, a change, or a while of quiet. A stream
                 // that ends on its first word is not being held, and a few of those in a row hand over to the list.
                 val held = outcome != null && (outcome.moved || outcome.heartbeats > 0 || System.nanoTime() - startedAt >= WATCH_HELD_MS * 1_000_000)
-                if (held) {
-                    failures = 0
-                    silentLive = 0
-                    heardAt = System.nanoTime()
-                } else {
-                    silentLive++
+                when {
+                    held -> {
+                        failures = 0
+                        silentLive = 0
+                        heardAt = System.nanoTime()
+                    }
+                    // The phone has no network: nothing the stream did. It is asked again from where it left off the
+                    // moment there is one — not after a wait grown while there was none, which left the chat up to a
+                    // minute behind a network that was back.
+                    failure != null && DeviceNetwork.isOnline() == false -> {
+                        while (DeviceNetwork.isOnline() == false) delay(WATCH_NETWORK_LOOK_MS)
+                        failures = 0
+                        continue
+                    }
+                    else -> {
+                        silentLive++
+                        // Handed over to the list, but only a removed method for good: a stream that would not hold
+                        // across a network handoff is asked again at the desktop's reconnect pace, the list entry
+                        // standing in meanwhile (it used to stand in for as long as the chat stayed open, a turn
+                        // started elsewhere then a poll away rather than a heartbeat).
+                        if (silentLive >= WATCH_LIVE_FAILURES) {
+                            if (failure.isRecordRemoved()) liveRemoved = true
+                            else liveAgainAt = System.nanoTime() + watchRetryDelay(silentLive) * 1_000_000
+                        }
+                    }
                 }
                 since = outcome?.point ?: since
                 if (outcome?.moved != true) {
@@ -3348,7 +3494,15 @@ class ConversationRepository(
                 }
                 val before = listed
                 if (word != null) listed = word
-                if (word == null || before == null || before == word) {
+                // The first word since the chat came to rest is the one later words are compared with — unless it
+                // already calls the chat running: the reader's copy is at rest, so that is a turn it has not read, one
+                // that started in the moment before the first look (which left it unseen until the turn's end).
+                val moved = when {
+                    word == null -> false
+                    before == null -> word.first
+                    else -> before != word
+                }
+                if (!moved) {
                     delay(watchPollMs)
                     continue
                 }
@@ -3356,7 +3510,7 @@ class ConversationRepository(
             val gap = WATCH_MIN_GAP_MS - (System.nanoTime() - movedAt) / 1_000_000
             if (gap > 0) delay(gap)
             movedAt = System.nanoTime()
-            revalidateNow(e, force = true)
+            revalidateNow(e, force = true, fresh = true)
         }
     }
 
@@ -3398,53 +3552,61 @@ class ConversationRepository(
         return (base + spread).coerceAtLeast(0L)
     }
 
-    /** Extended mode: what the account's record has added since it was last read, shown as the turn's steps so far. */
-    private suspend fun readRecordGrowth(e: Entry) {
-        val api = record ?: return
-        val known = synchronized(e) { e.recordWindow } ?: return
-        if (session.isDemo || !capabilities().accountTranscript) return
+    /**
+     * Extended mode: what the account's record has added since it was last read, shown as the turn's steps so far.
+     * True when it grew, false when it had nothing new (or could not be read), null when there is no delta to read —
+     * no window in hand, the record off, or the blob-backed record drifted from the window. [strict]: a read that
+     * failed throws, for a caller that says so, rather than leaving the chat as it was. [refreshRuns] off leaves the
+     * run list and the replays to the caller (see [catchUp]).
+     */
+    private suspend fun readRecordGrowth(e: Entry, strict: Boolean = false, refreshRuns: Boolean = true): Boolean? {
+        val api = record ?: return null
+        val known = synchronized(e) { e.recordWindow } ?: return null
+        if (session.isDemo || !capabilities().accountTranscript) return null
         val sink = images?.forAgent(e.agentId)
         val wantTurns = synchronized(e) { e.window }
         val built: RecordWindow
         if (known.turnIndexed) {
             // The blob-backed record: the state, and the turns whose blob it names differently — the one under way, the new ones.
             val want = maxOf(wantTurns, known.turns.size)
-            val state = runCatching { api.state(e.agentId) }.getOrElse { t -> if (t is CancellationException) throw t; return }
+            val state = runCatching { api.state(e.agentId) }.getOrElse { t -> if (t is CancellationException || strict) throw t; return false }
             // A subagent's status and step move with no turn changing: they go out before the turns are compared.
             synchronized(e) { if (e.state.value.subagentRuns != state.subagents) e.state.update { it.copy(subagentRuns = state.subagents) } }
-            val raw = runCatching { RecordPager.tailTurns(api, e.agentId, want, state, TurnPlan.FULL, held = known.held) }.getOrElse { t -> if (t is CancellationException) throw t; return } ?: return
-            if (raw.drift != null) return
-            if (raw.turns.all { it.reused } && state.turnCount == known.turnCount) return
+            val raw = runCatching { RecordPager.tailTurns(api, e.agentId, want, state, TurnPlan.FULL, held = known.held) }.getOrElse { t -> if (t is CancellationException || strict) throw t; return false } ?: return false
+            if (raw.drift != null) return null
+            if (raw.turns.all { it.reused } && state.turnCount == known.turnCount) return false
             built = RecordTranscript.window(raw, known, state, AppClock.now(), wantTurns = want, build = turnBuilder(e.agentId, sink))
         } else if (known.canAppend) {
             // The delta alone: one small read at the known end, the appended steps when there are any (see [RecordTranscript.append]).
-            val delta = runCatching { RecordPager.since(api, e.agentId, known.total) }.getOrElse { t -> if (t is CancellationException) throw t; return }
+            val delta = runCatching { RecordPager.since(api, e.agentId, known.total) }.getOrElse { t -> if (t is CancellationException || strict) throw t; return false }
             if (delta == null) {
                 // Rewound: read from the end again.
-                val raw = runCatching { RecordPager.tail(api, e.agentId, wantTurns, null) }.getOrElse { t -> if (t is CancellationException) throw t; null } ?: return
+                val raw = runCatching { RecordPager.tail(api, e.agentId, wantTurns, null) }.getOrElse { t -> if (t is CancellationException || strict) throw t; null } ?: return false
                 built = RecordTranscript.window(raw, known, state = null, AppClock.now(), wantTurns = wantTurns, build = turnBuilder(e.agentId, sink))
             } else {
-                if (delta.steps.isEmpty()) return
+                if (delta.steps.isEmpty()) return false
                 built = RecordTranscript.append(known, delta, AppClock.now(), wantTurns = wantTurns, build = turnBuilder(e.agentId, sink))
                 // Nothing grew: the newest turn read again as it was.
-                if (built === known) return
+                if (built === known) return false
             }
         } else {
-            val grown = runCatching { RecordPager.grownPast(api, e.agentId, known.total) }.getOrElse { t -> if (t is CancellationException) throw t; false }
-            if (!grown) return
-            val raw = runCatching { RecordPager.tail(api, e.agentId, wantTurns, known.total) }.getOrElse { t -> if (t is CancellationException) throw t; null } ?: return
+            val grown = runCatching { RecordPager.grownPast(api, e.agentId, known.total) }.getOrElse { t -> if (t is CancellationException || strict) throw t; false }
+            if (!grown) return false
+            val raw = runCatching { RecordPager.tail(api, e.agentId, wantTurns, known.total) }.getOrElse { t -> if (t is CancellationException || strict) throw t; null } ?: return false
             built = RecordTranscript.window(raw, known, state = null, AppClock.now(), wantTurns = wantTurns, build = turnBuilder(e.agentId, sink))
         }
         // The record has grown: the prompts sent from here it now holds hand over to it (see [pruneLocal]).
         // A growth read is a fetch: a reader back within [REOPEN_FRESH_MS] of it finds the chat fresh (see [attach]).
         e.publish(mutate = { if (recordWindow === known) recordWindow = built; fetchedAt = AppClock.now(); pruneLocal() })
         persistRecord(e, built, known, session.current, cacheTokens())
+        if (!refreshRuns) return true
         // The turns the record grew by are the chat's newest runs, and the window pairs turns with runs by position
         // from the newest: the list's first page is read again so its newest end is the record's — a Project's
         // injected turns arrive by the dozen between two reads, and a list a dozen runs short paired every turn with
         // the run a dozen before it. The turns the refreshed list pairs and finds finished get their logs replayed.
         refreshNewestRuns(e)
         loadTraces(e, e.agentId, e.shownRuns())
+        return true
     }
 
     /**
@@ -3452,12 +3614,12 @@ class ConversationRepository(
      * run started since) with the order the list came in read as [loadFromRecord] reads it. This serves the pairing
      * of record turns with runs (see [Entry.recordNeedsRuns]); the chat's status and follow are left as they are —
      * except a follow on a run the list now shows over, which ends in the frame that first shows the run's footer
-     * (see [Entry.endFollowIfOver]), never a frame later.
+     * (see [Entry.endFollowIfOver]), never a frame later. [handed]: the first page, read already by the caller.
      */
-    private suspend fun refreshNewestRuns(e: Entry) {
+    private suspend fun refreshNewestRuns(e: Entry, handed: ListRunsResponseDto? = null) {
         val api = session.current.api
         val agentId = e.agentId
-        val first = runCatching { net(agentId, "runs"); api.listRuns(agentId, limit = FIRST_RUN_PAGE) }.getOrElse { t -> if (t is CancellationException) throw t; return }
+        val first = handed ?: runCatching { net(agentId, "runs"); api.listRuns(agentId, limit = FIRST_RUN_PAGE) }.getOrElse { t -> if (t is CancellationException) throw t; return }
         val latestId = agents.agent(agentId)?.latestRunId?.takeUnless { it.startsWith(LOCAL_RUN_PREFIX) }
         val (knownRuns, knownComplete) = synchronized(e) { e.runs to e.runsComplete }
         val newest = newestRuns(api, agentId, first, latestId, knownRuns, knownComplete)
@@ -5389,8 +5551,8 @@ class ConversationRepository(
         /** The pauses between looks for the next run and reads of the record's growth while the account runs on (see [keepFollowing]). */
         const val KEEP_FOLLOWING_BASE_MS = 2_000L
         const val KEEP_FOLLOWING_MAX_MS = 15_000L
-        /** How many looks find the account idle after a run ended before the records' word is taken (see [keepFollowing]). */
-        const val KEEP_FOLLOWING_IDLE_LOOKS = 3
+        /** How many looks, [KEEP_FOLLOWING_BASE_MS] apart, find the account idle after a run ended before the records' word is taken (see [keepFollowing]). */
+        const val KEEP_FOLLOWING_IDLE_LOOKS = 4
         /** How many of the newest runs a chat opens on, and by how many the window widens each time the reader scrolls up to its end. */
         const val WINDOW_RUNS = 10
         /** The widest window the disk copy reopens on: the runs whose traces are read before the first frame. */
@@ -5428,8 +5590,14 @@ class ConversationRepository(
         const val WATCH_MIN_GAP_MS = 2_000L
         /** A live stream quiet this long is asked for the chat afresh rather than resumed from its offset (the desktop's `rehydrateAfterMs`). */
         const val WATCH_REHYDRATE_MS = 120_000L
-        /** Live streams in a row the server did not hold open (see [WATCH_HELD_MS]), after which the chat's list entry stands in (see [watchWhileOpen]). */
+        /**
+         * Live streams in a row the server did not hold open (see [WATCH_HELD_MS]), after which the chat's list entry
+         * stands in (see [watchWhileOpen]) — until the stream is asked again, at the desktop's reconnect pace, or for
+         * good when the server has removed it.
+         */
         const val WATCH_LIVE_FAILURES = 3
+        /** How often a watch whose stream failed for want of a network looks for one again. */
+        const val WATCH_NETWORK_LOOK_MS = 1_000L
         /** A live stream open this long, with nothing to say, was being held: quiet, not refused. */
         const val WATCH_HELD_MS = 10_000L
         /** How long a chat that has just come to rest is left before it is watched (see [watchWhileOpen]). */

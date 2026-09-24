@@ -56,6 +56,7 @@ import com.cursorforandroid.ui.components.keyboardInsetPadding
 import com.cursorforandroid.ui.components.pressable
 import com.cursorforandroid.ui.components.rememberFilePicker
 import com.cursorforandroid.ui.components.rememberMediaPicker
+import com.cursorforandroid.ui.compose.LaunchRefusedHaptic
 import com.cursorforandroid.ui.compose.NewAgentUiState
 import com.cursorforandroid.ui.compose.NewAgentViewModel
 import com.cursorforandroid.ui.compose.rememberComposerMenuActions
@@ -271,6 +272,7 @@ fun QuickComposerSheet(
                 SelectorChip(summary, onClick = onExpandContext, icon = if (state.noRepo) CursorIcons.Cloud else CursorIcons.Repo, modifier = Modifier.weight(1f, fill = false).testTag(QuickComposerTags.CONTEXT))
             }
         }
+        LaunchRefusedHaptic(state)
         ComposerBox(
             value = state.prompt,
             onValueChange = onPrompt,

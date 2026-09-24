@@ -45,15 +45,16 @@ import com.cursorforandroid.domain.QueuedFollowUp
 import com.cursorforandroid.ui.components.CursorIcons
 import com.cursorforandroid.ui.components.CursorMenu
 import com.cursorforandroid.ui.components.CursorMenuItem
+import com.cursorforandroid.ui.components.ImeEnterFallback
 import com.cursorforandroid.ui.components.SlashCommandVisualTransformation
 import com.cursorforandroid.ui.components.SpinnerRing
 import com.cursorforandroid.ui.components.TouchTarget
+import com.cursorforandroid.ui.components.commandTints
 import com.cursorforandroid.ui.components.cursorSurface
 import com.cursorforandroid.ui.components.dockedCard
 import com.cursorforandroid.ui.components.highlightSlashCommands
 import com.cursorforandroid.ui.components.icon
 import com.cursorforandroid.ui.components.sendOnHardwareEnter
-import com.cursorforandroid.ui.components.commandTints
 import com.cursorforandroid.ui.components.stylusWriting
 import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
@@ -296,22 +297,25 @@ private fun AccountQueueRow(
         Spacer(Modifier.width(8.dp))
         if (editing) {
             val save = { editing = false; onUpdate(text.text) }
-            BasicTextField(
-                value = text,
-                onValueChange = { text = it },
-                textStyle = type.input.copy(color = colors.textPrimary),
-                cursorBrush = SolidColor(colors.textPrimary),
-                // The commands painted as they are reworded, the way the composer paints them.
-                visualTransformation = SlashCommandVisualTransformation(commandTints()),
-                modifier = Modifier
-                    .weight(1f)
-                    .stylusWriting()
-                    // A physical Enter saves, as submitting a queued message being edited does on the desktop (it goes back
-                    // into its place in the queue); a message emptied out is not saved from the keyboard.
-                    .sendOnHardwareEnter(text, onValueChange = { text = it }, onSend = save.takeIf { text.text.isNotBlank() })
-                    .padding(vertical = 8.dp)
-                    .testTag("account-queue-edit"),
-            )
+            // A physical Enter saves, as submitting a queued message being edited does on the desktop (it goes back
+            // into its place in the queue); a message emptied out is not saved from the keyboard.
+            val saveOnEnter = save.takeIf { text.text.isNotBlank() }
+            ImeEnterFallback(onEnter = saveOnEnter, composing = { text.composition != null }) {
+                BasicTextField(
+                    value = text,
+                    onValueChange = { text = it },
+                    textStyle = type.input.copy(color = colors.textPrimary),
+                    cursorBrush = SolidColor(colors.textPrimary),
+                    // The commands painted as they are reworded, the way the composer paints them.
+                    visualTransformation = SlashCommandVisualTransformation(commandTints()),
+                    modifier = Modifier
+                        .weight(1f)
+                        .stylusWriting()
+                        .sendOnHardwareEnter(text, onValueChange = { text = it }, onSend = saveOnEnter)
+                        .padding(vertical = 8.dp)
+                        .testTag("account-queue-edit"),
+                )
+            }
             Spacer(Modifier.width(8.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
                 GlyphButton(CursorIcons.Close, "Cancel editing", colors.iconTertiary) { editing = false; text = TextFieldValue(item.text, TextRange(item.text.length)); onEditing(false) }

@@ -86,7 +86,7 @@ object ModePills {
     data class Presented(val text: String, val multitask: Boolean)
 
     /**
-     * [value] with its first closed `/multitask` token — one with whitespace after it, as [compose] and the "+" menu
+     * [value] with its first closed `/multitask` token — one with whitespace after it, as [compose] and the popover
      * write it — and that whitespace taken out. A `/multitask` ending the text is still being typed: it stays text,
      * under the popover, until a space or a pick closes it (see [consumeTyped]).
      */

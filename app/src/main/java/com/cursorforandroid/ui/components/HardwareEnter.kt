@@ -1,7 +1,10 @@
 package com.cursorforandroid.ui.components
 
+import android.content.res.Configuration
+import android.os.SystemClock
 import android.view.KeyCharacterMap
 import androidx.compose.foundation.text.input.TextFieldState
+import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEvent
@@ -11,6 +14,7 @@ import androidx.compose.ui.input.key.isCtrlPressed
 import androidx.compose.ui.input.key.isMetaPressed
 import androidx.compose.ui.input.key.isShiftPressed
 import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreInterceptKeyBeforeSoftKeyboard
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.text.TextRange
@@ -30,8 +34,10 @@ import androidx.compose.ui.text.input.TextFieldValue
  * chord turns on the keyboard's key map. A programmatic edit skips the field's input transformation, so [onEdited]
  * hears the text it leaves.
  *
- * An IME can still take the physical Enter before the app sees it and type a newline itself; that Enter is text by
- * the time it arrives and is not told apart here.
+ * The keys are read before the IME is handed them, not only after: an IME that handles the physical keyboard itself
+ * (for its suggestions, say) takes an Enter it is handed and types a newline of its own, which no key handler hears.
+ * An Enter pressed on a composition still goes to the IME ([HardwareEnter.pressBeforeIme]); put the field inside an
+ * [ImeEnterFallback] as well, which takes the newline the IME may type for it as that Enter.
  */
 fun Modifier.sendOnHardwareEnter(state: TextFieldState, onSend: (() -> Unit)?, onEdited: (String) -> Unit): Modifier =
     hardwareEnter(
@@ -61,16 +67,29 @@ fun Modifier.sendOnHardwareEnter(value: TextFieldValue, onValueChange: (TextFiel
         },
     )
 
-private fun Modifier.hardwareEnter(onSend: (() -> Unit)?, composing: () -> Boolean, settleComposition: () -> Unit, newline: () -> Unit): Modifier =
-    onPreviewKeyEvent { event ->
-        when (HardwareEnter.press(event, canSend = onSend != null, composing = composing())) {
-            HardwareEnter.Press.NotOurs -> false
-            HardwareEnter.Press.Nothing -> true
-            HardwareEnter.Press.Settle -> { settleComposition(); true }
-            HardwareEnter.Press.Newline -> { newline(); true }
-            HardwareEnter.Press.Send -> { onSend?.invoke(); true }
-        }
+@OptIn(ExperimentalComposeUiApi::class)
+private fun Modifier.hardwareEnter(onSend: (() -> Unit)?, composing: () -> Boolean, settleComposition: () -> Unit, newline: () -> Unit): Modifier {
+    fun act(press: HardwareEnter.Press): Boolean = when (press) {
+        HardwareEnter.Press.NotOurs -> false
+        HardwareEnter.Press.Nothing -> true
+        HardwareEnter.Press.Settle -> { settleComposition(); true }
+        HardwareEnter.Press.Newline -> { newline(); true }
+        HardwareEnter.Press.Send -> { onSend?.invoke(); true }
     }
+    return onPreInterceptKeyBeforeSoftKeyboard { event ->
+        PhysicalKeyboard.heard(event, beforeIme = true)
+        act(HardwareEnter.pressBeforeIme(event, canSend = onSend != null, composing = composing()))
+    }.onPreviewKeyEvent { event ->
+        PhysicalKeyboard.heard(event, beforeIme = false)
+        act(HardwareEnter.press(event, canSend = onSend != null, composing = composing()))
+    }
+}
+
+/** Calls [heard] for every key a physical keyboard presses in the field, whether or not the IME then takes it. */
+@OptIn(ExperimentalComposeUiApi::class)
+internal fun Modifier.onPhysicalKey(heard: () -> Unit): Modifier =
+    onPreInterceptKeyBeforeSoftKeyboard { if (it.isFromHardwareKeyboard) heard(); false }
+        .onPreviewKeyEvent { if (it.isFromHardwareKeyboard) heard(); false }
 
 internal object HardwareEnter {
 
@@ -86,7 +105,7 @@ internal object HardwareEnter {
     }
 
     fun press(event: KeyEvent, canSend: Boolean, composing: Boolean): Press {
-        if (event.key != Key.Enter && event.key != Key.NumPadEnter) return Press.NotOurs
+        if (!event.isEnter) return Press.NotOurs
         if (!event.isFromHardwareKeyboard) return Press.NotOurs
         if (event.isAltPressed || event.isCtrlPressed || event.isMetaPressed) return Press.NotOurs
         if (event.type != KeyEventType.KeyDown) return Press.Nothing
@@ -100,7 +119,20 @@ internal object HardwareEnter {
             else -> Press.Nothing
         }
     }
+
+    /**
+     * [press] for a key the IME has not been handed yet. An Enter pressed on a composition goes on to the IME, the one
+     * that knows whether it only accepts the composition (a conversion confirmed) or ends the line as well, as an IME
+     * that holds each word it suggests for does; a newline it types for it is then taken for this Enter
+     * ([ImeEnterFallback]). The rest of that Enter follows it: its release goes to the IME too, its repeats nowhere.
+     */
+    fun pressBeforeIme(event: KeyEvent, canSend: Boolean, composing: Boolean): Press {
+        val press = press(event, canSend, composing)
+        return if (press == Press.NotOurs) press else PhysicalKeyboard.enterBeforeIme(event, press)
+    }
 }
+
+private val KeyEvent.isEnter: Boolean get() = key == Key.Enter || key == Key.NumPadEnter
 
 /**
  * Whether a physical keyboard sent this key. The on-screen keyboard's keys reach the app as events from the virtual
@@ -114,3 +146,85 @@ internal val KeyEvent.isFromHardwareKeyboard: Boolean
         if (native.deviceId == KeyCharacterMap.VIRTUAL_KEYBOARD) return false
         return native.device?.isVirtual != true
     }
+
+/**
+ * What the physical keyboard's keys have shown the app, for telling whether a newline an IME types was a physical
+ * Enter's ([ImeEnterFallback]). It is the process's, not a field's: the keyboard and the IME are the device's.
+ */
+internal object PhysicalKeyboard {
+    /** How long after a physical Enter goes on to the IME a newline from the IME is still taken as its answer. */
+    const val ImeAnswerMillis = 1_000L
+
+    /** How long after the last physical key the keyboard still counts as attached whatever the configuration says. */
+    const val RecentKeyMillis = 30_000L
+
+    private const val Never = Long.MIN_VALUE
+
+    /**
+     * A physical key has reached a field before the IME was handed it. From then on a physical Enter only ever reaches
+     * the IME when [enterBeforeIme] sends it there.
+     */
+    var reachesFieldsFirst = false
+        private set
+
+    private var lastKeyAt = Never
+    private var shiftHeld = false
+    private var enterToImeAt = Never
+
+    /** The IME has been handed the press of a physical Enter, and is handed its release. */
+    private var imeHasEnter = false
+
+    /** Notes [event], a key reaching a field before the IME ([beforeIme]) or after it. */
+    fun heard(event: KeyEvent, beforeIme: Boolean) {
+        if (!event.isFromHardwareKeyboard) return
+        if (beforeIme) reachesFieldsFirst = true
+        lastKeyAt = SystemClock.uptimeMillis()
+        shiftHeld = event.isShiftPressed
+        // An Enter the IME hands on is one it typed nothing for.
+        if (!beforeIme && event.isEnter && event.type == KeyEventType.KeyDown) enterToImeAt = Never
+    }
+
+    /** Where [press], [HardwareEnter.press]'s reading of a physical Enter the IME has not been handed, sends it. */
+    fun enterBeforeIme(event: KeyEvent, press: HardwareEnter.Press): HardwareEnter.Press = when {
+        press == HardwareEnter.Press.Settle -> {
+            imeHasEnter = true
+            // A newline the IME types for Shift+Enter is the newline Shift+Enter asks for.
+            enterToImeAt = if (event.isShiftPressed) Never else SystemClock.uptimeMillis()
+            HardwareEnter.Press.NotOurs
+        }
+        !imeHasEnter -> press
+        event.type == KeyEventType.KeyUp -> { imeHasEnter = false; HardwareEnter.Press.NotOurs }
+        event.nativeKeyEvent.repeatCount > 0 -> HardwareEnter.Press.Nothing
+        // A fresh press: the release of the one the IME had was lost on the way.
+        else -> { imeHasEnter = false; press }
+    }
+
+    /**
+     * Whether a newline the IME types now is a physical Enter's: one typed just after a physical Enter went on to the
+     * IME is; failing that, none is once physical keys are known to reach the fields first ([reachesFieldsFirst]),
+     * since such an Enter would have been taken there; failing that, one is while a hardware keyboard is attached (by
+     * [configuration], or a physical key lately) and Shift was not held. [alone] is false for a newline committed on
+     * the end of other text, which counts only in the first case. A newline taken for the Enter sent on is spent.
+     */
+    fun typedEnter(configuration: Configuration, alone: Boolean): Boolean {
+        val now = SystemClock.uptimeMillis()
+        val sentOn = enterToImeAt != Never && now - enterToImeAt <= ImeAnswerMillis
+        enterToImeAt = Never
+        if (sentOn) return true
+        if (!alone || reachesFieldsFirst || shiftHeld) return false
+        return configuration.hardwareKeyboardAttached || lastKeyAt != Never && now - lastKeyAt <= RecentKeyMillis
+    }
+
+    /** Back to having seen no keys, as at the start of the process. */
+    fun forget() {
+        reachesFieldsFirst = false
+        lastKeyAt = Never
+        shiftHeld = false
+        enterToImeAt = Never
+        imeHasEnter = false
+    }
+}
+
+/** A hardware keyboard present and not hidden, as the configuration reports it. */
+internal val Configuration.hardwareKeyboardAttached: Boolean
+    get() = keyboard != Configuration.KEYBOARD_NOKEYS && hardKeyboardHidden == Configuration.HARDKEYBOARDHIDDEN_NO

@@ -63,7 +63,7 @@ import java.util.TimeZone
  * Settings on a signed-in install — the demo walkthrough in [AppScreenshotTest] never shows the account's own rows
  * or the Advanced section. The whole list on one tall canvas, dark and light, so its structure reads in one image;
  * its scroll edges on a phone-height frame at the top, the middle and the end, dark and light; the bottom of the page with Extended mode off (the transcript engine beside it dimmed, with the reason) and on
- * (the engine live, Stable), and with Beta chosen; the account sheet, dark and light; and the debug sheet a long
+ * (the engine live and on, Beta being the default), and with it switched off; the account sheet, dark and light; and the debug sheet a long
  * press on the version row opens, with the exports, About and the credits that left the list, dark and light. Same
  * device qualifiers as [AppScreenshotTest], but for the tall frames.
  */
@@ -161,13 +161,13 @@ class SettingsScreenshotTest {
 
     /** The whole list at once, on a canvas tall enough to hold it: the account first and the disclaimer last. */
     @Test
-    @Config(sdk = [35], qualifiers = "w411dp-h1880dp-night-420dpi")
+    @Config(sdk = [35], qualifiers = "w411dp-h1900dp-night-420dpi")
     fun settingsEssentials() {
         essentials(ThemeMode.Dark, "65_settings_essentials")
     }
 
     @Test
-    @Config(sdk = [35], qualifiers = "w411dp-h1880dp-notnight-420dpi")
+    @Config(sdk = [35], qualifiers = "w411dp-h1900dp-notnight-420dpi")
     fun settingsEssentialsLight() {
         essentials(ThemeMode.Light, "160_settings_essentials_light")
     }
@@ -239,9 +239,9 @@ class SettingsScreenshotTest {
         composeSettings()
         scrollToBottom()
         compose.onNode(hasTestTag(ExtendedModeTags.TOGGLE) and isOff()).assertIsDisplayed()
-        // The engine beside the switch, dimmed, saying why it does nothing yet.
+        // The engine beside the switch, dimmed and off, saying why it does nothing yet: default mode's row as it always was.
         compose.onNodeWithText(ExtendedModeCopy.NEEDS_MODE).assertIsDisplayed()
-        compose.onNodeWithTag(ExtendedModeTags.ENGINE_TOGGLE).assertIsNotEnabled()
+        compose.onNodeWithTag(ExtendedModeTags.ENGINE_TOGGLE).assertIsNotEnabled().assertIsOff()
         capture("66_settings_extended_off")
     }
 
@@ -251,35 +251,38 @@ class SettingsScreenshotTest {
         composeSettings()
         compose.waitUntil(30_000) { modeReadsOn() }
         scrollToBottom()
-        // The transcript engine beside the switch, off — Stable, the default for every install.
+        // The transcript engine beside the switch, on — Beta, the default for every install that never chose.
+        compose.waitUntil(10_000) { compose.onAllNodes(isOn() and hasTestTag(ExtendedModeTags.ENGINE_TOGGLE)).fetchSemanticsNodes().isNotEmpty() }
         compose.onNodeWithText(ExtendedModeCopy.ENGINE_DETAIL).assertIsDisplayed()
-        compose.onNodeWithTag(ExtendedModeTags.ENGINE_TOGGLE).assertIsEnabled().assertIsOff()
-        assertThat(runBlocking { graph.extendedMode.engine() }).isEqualTo(TranscriptEngine.STABLE)
+        compose.onNodeWithTag(ExtendedModeTags.ENGINE_TOGGLE).assertIsEnabled()
+        assertThat(runBlocking { graph.extendedMode.engine() }).isEqualTo(TranscriptEngine.BETA)
         capture("67_settings_extended_on")
     }
 
-    /** Beta chosen: the flip writes the setting and the switch reads on. */
+    /** Switched off, the way back to the documented path: the flip writes Stable and the switch reads off. */
     @Test
-    fun transcriptEngineBeta() {
+    fun transcriptEngineSwitchedOff() {
         turnExtendedModeOn()
         composeSettings()
         compose.waitUntil(30_000) { modeReadsOn() }
         scrollToBottom()
-        compose.onNodeWithText(ExtendedModeCopy.ENGINE_TITLE).performClick()
         compose.waitUntil(10_000) { compose.onAllNodes(isOn() and hasTestTag(ExtendedModeTags.ENGINE_TOGGLE)).fetchSemanticsNodes().isNotEmpty() }
-        assertThat(runBlocking { graph.extendedMode.engine() }).isEqualTo(TranscriptEngine.BETA)
-        assertThat(runBlocking { graph.extendedMode.capabilities() }.accountTranscript).isTrue()
-        capture("123_settings_transcript_engine_beta")
+        compose.onNodeWithText(ExtendedModeCopy.ENGINE_TITLE).performClick()
+        compose.waitUntil(10_000) { compose.onAllNodes(isOff() and hasTestTag(ExtendedModeTags.ENGINE_TOGGLE)).fetchSemanticsNodes().isNotEmpty() }
+        assertThat(runBlocking { graph.extendedMode.engine() }).isEqualTo(TranscriptEngine.STABLE)
+        assertThat(runBlocking { graph.extendedMode.capabilities() }.accountTranscript).isFalse()
+        capture("477_settings_transcript_engine_off")
     }
 
-    /** With the mode off the engine chooses nothing: its switch is shown, dimmed, and a tap on it changes nothing. */
+    /** With the mode off the engine chooses nothing: its switch is shown dimmed and off, and a tap on it changes nothing. */
     @Test
     fun transcriptEngineInertWithModeOff() {
         composeSettings()
         scrollToBottom()
         compose.onNodeWithText(ExtendedModeCopy.ENGINE_TITLE).performClick()
         compose.waitForIdle()
-        assertThat(runBlocking { graph.extendedMode.engine() }).isEqualTo(TranscriptEngine.STABLE)
+        compose.onNodeWithTag(ExtendedModeTags.ENGINE_TOGGLE).assertIsNotEnabled().assertIsOff()
+        assertThat(runBlocking { graph.extendedMode.engine() }).isEqualTo(TranscriptEngine.BETA)
         assertThat(runBlocking { graph.extendedMode.capabilities() }.accountTranscript).isFalse()
     }
 

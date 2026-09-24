@@ -2,7 +2,10 @@ package com.cursorforandroid.ui.settings
 
 import android.app.Application
 import android.content.Intent
+import android.view.HapticFeedbackConstants
+import android.view.View
 import androidx.activity.ComponentActivity
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertHasClickAction
 import androidx.compose.ui.test.assertHasNoClickAction
@@ -61,6 +64,7 @@ class SettingsScreenTest {
     val folder = TemporaryFolder()
 
     private lateinit var graph: AppGraph
+    private lateinit var view: View
 
     @Before
     fun setUp() {
@@ -70,6 +74,7 @@ class SettingsScreenTest {
     private fun composeSettings(isDemo: Boolean) {
         compose.setContent {
             CursorTheme(mode = ThemeMode.Dark) {
+                view = LocalView.current
                 SettingsScreen(graph, USER, isDemo = isDemo, onOpenSidebar = null, onBack = {})
             }
         }
@@ -91,8 +96,7 @@ class SettingsScreenTest {
         composeSettings(isDemo = false)
 
         // Account, with the way out of it, first; then appearance (ending on how long the sidebar's Projects list
-        // runs), what the New Chat pane lists, the chats (whether stopping asks first, which chats may show as
-        // unread), notifications, Extended mode and beside it the transcript engine, the version with its updater and
+        // runs), what the New Chat pane lists, the chats (whether stopping asks first, which chats may show as unread), notifications, Extended mode and beside it the transcript engine, the version with its updater and
         // the crash report consent; the one-line disclaimer last.
         val order = listOf(
             SettingsCopy.GROUP_ACCOUNT, SettingsCopy.SIGN_OUT, SettingsCopy.GROUP_APPEARANCE, SettingsCopy.SHORTEN_PROJECTS,
@@ -105,7 +109,7 @@ class SettingsScreenTest {
         assertThat(tops).isInOrder()
 
         // The essentials themselves.
-        listOf("Match system", "Cursor Dark", "Cursor Light", "OLED black", "Live notifications", "Check for updates", "Automatic updates", "Include pre-releases")
+        listOf("Match system", "Cursor Dark", "Cursor Light", "OLED black", "Live notifications", "Check for updates", "Automatic updates")
             .forEach { compose.onNodeWithText(it).assertExists() }
         listOf("notif-count-project-agents", "notif-project-coordinators", "notif-project-members", ExtendedModeTags.TOGGLE, ExtendedModeTags.ENGINE_TOGGLE, SettingsTags.VERSION_ROW, SettingsTags.SIGN_OUT)
             .forEach { compose.onNodeWithTag(it).assertExists() }
@@ -113,8 +117,9 @@ class SettingsScreenTest {
         // The key details wait behind the account row; the acknowledgment, the pin sync and its status are gone
         // with the mode following the switch alone; the exports, About and the credits wait behind the version row;
         // the engine's header, its two choices and their footnote are one switch now. No label heads a single row
-        // with that row's own name.
+        // with that row's own name. Updates are stable releases only, and haptics follow the system's switch alone.
         assertAbsent(
+            "Include pre-releases", "Haptic feedback", "Feedback",
             "Signed in with", "Key expires", "Key storage", "Manage this app's key", "Manage API keys", "Open cursor.com/agents",
             "Warning acknowledged", "Sync pinned chats", "Last synced",
             ProjectDiagnosticsCopy.TITLE, TranscriptDiagnosticsCopy.TITLE, SendDiagnosticsCopy.TITLE, SettingsDebugCopy.API_DOCS, SettingsDebugCopy.SOURCE,
@@ -218,6 +223,21 @@ class SettingsScreenTest {
         compose.waitUntil(10_000) { runBlocking { graph.prefs.shortenSidebarLists.first() } }
         compose.waitUntil(10_000) { compose.onAllNodes(toggle and isOn()).fetchSemanticsNodes().isNotEmpty() }
         compose.onNode(toggle).assertIsOn()
+    }
+
+    @Test
+    fun `a switch is felt each way it flips, with no app setting in front of the system's`() {
+        composeSettings(isDemo = false)
+        val off = isOff() and hasAnyAncestor(hasTestTag(SettingsTags.SHORTEN_PROJECTS))
+        val on = isOn() and hasAnyAncestor(hasTestTag(SettingsTags.SHORTEN_PROJECTS))
+
+        compose.onNodeWithTag(SettingsTags.SHORTEN_PROJECTS).performScrollTo().performClick()
+        compose.waitUntil(10_000) { compose.onAllNodes(off).fetchSemanticsNodes().isNotEmpty() }
+        assertThat(shadowOf(view).lastHapticFeedbackPerformed()).isEqualTo(HapticFeedbackConstants.TOGGLE_OFF)
+
+        compose.onNodeWithTag(SettingsTags.SHORTEN_PROJECTS).performClick()
+        compose.waitUntil(10_000) { compose.onAllNodes(on).fetchSemanticsNodes().isNotEmpty() }
+        assertThat(shadowOf(view).lastHapticFeedbackPerformed()).isEqualTo(HapticFeedbackConstants.TOGGLE_ON)
     }
 
     private fun confirmStopSwitch() = compose.onNode(isToggleable() and hasAnyAncestor(hasTestTag(SettingsTags.CONFIRM_STOP)))

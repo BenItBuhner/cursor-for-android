@@ -6,9 +6,10 @@ import com.cursorforandroid.util.TimeFormat
  * One row of the transcript as the list draws it. The messages — the user's prompts, the turns Cursor injected, an
  * agent's replies, a Project coordinator's `SendMessage` updates — are rows of their own; everything the agent did
  * between two of them is one [Stretch]: a summary line ("Worked 1m 48s · 4 edits · 1 thought") that opens onto the
- * whole sequence, verbatim and in order — its thoughts, its tool calls with the detail each opens onto, its
- * working notes, its run's footer. A subagent's row, the pictures a step produced and the question a run is paused
- * on are never behind the summary: they stay rows of their own, where they were.
+ * whole sequence, verbatim and in order — its thoughts, its tool calls with the detail each opens onto (a subagent's
+ * row among them, as Cursor's desktop keeps a task's row inside its work group), its working notes, its run's
+ * footer. The pictures a step produced and the question a run is paused on are never behind the summary: they stay
+ * rows of their own, where they were.
  */
 sealed interface TranscriptRow {
     /** Stable across rebuilds while the run streams: the list's key and the row's saved-state key. */
@@ -21,11 +22,15 @@ sealed interface TranscriptRow {
 
     /**
      * A turn Cursor injected — a subagent's report, a subscribed pull request's change, a timer — as its one-line
-     * row. [count] is above one when the same notice arrived that many times in a row ("#12 · synchronize ×2").
+     * row. [count] is above one when the same notice arrived that many times in a row ("#12 · synchronize ×2"); a
+     * subagent's row says it once, with the newest report (see `TranscriptRows.foldEvents`).
      */
     data class Event(val notification: SystemNotification, val count: Int = 1) : TranscriptRow {
         override val key: String get() = notification.id
         val line: EventLine get() = EventLine.of(notification)
+
+        /** Which agent a subagent's or worker's notice is about, for counting agents rather than notices. */
+        internal val agentKey: String get() = notification.agentId ?: notification.summary?.trim() ?: key
     }
 
     /**
@@ -49,14 +54,6 @@ sealed interface TranscriptRow {
     /** A Project coordinator's message to the user, drawn as a reply. */
     data class Message(val group: ActivityGroup, val call: ToolCall) : TranscriptRow {
         override val key: String get() = "${group.id}:${call.callId}"
-    }
-
-    /**
-     * A subagent's row, as Cursor's desktop draws one: a task the agent delegated, or a Project worker the
-     * coordinator created, messaged or stopped (see [SubagentCall]).
-     */
-    data class Subagent(val group: ActivityGroup, val call: ToolCall, val subagent: SubagentCall) : TranscriptRow {
-        override val key: String get() = "${group.id}:${call.callId}:subagent"
     }
 
     /** The pictures and recordings the calls of a stretch produced, shown whether or not the stretch is open. */
@@ -83,8 +80,9 @@ sealed interface TranscriptRow {
      * Everything between two messages the reader sees, behind one summary: the agent's thoughts, its tool calls, a
      * coordinator's working notes, the turns Cursor injected (as their event rows, a run of them behind one line),
      * and the footers of the runs it spans. [live] while the run is still writing into it: the summary then reads
-     * "Working" and shimmers. A stretch of one step — a tool call, a thought, a footer, an event — is drawn as that
-     * step, not as a summary of it; a note is never drawn alone, it reads under the summary with the rest.
+     * "Working" and shimmers; a subagent of it still at work keeps it from settling too (see [StretchSummary.of]).
+     * A stretch of one step — a tool call, a subagent, a thought, a footer, an event — is drawn as that step, not as
+     * a summary of it; a note is never drawn alone, it reads under the summary with the rest.
      */
     data class Stretch(val entries: List<Entry>, val live: Boolean = false) : TranscriptRow {
         // By its first step's own key: an event it opens with keeps it when the next event folds the two into a group.
@@ -109,6 +107,9 @@ sealed interface TranscriptRow {
         /** The failed runs the stretch holds, as their lines (see [Entry.Failure]). */
         val failures: List<Entry.Failure> get() = entries.filterIsInstance<Entry.Failure>()
 
+        /** The calls of the stretch drawn as a subagent's row, in order (see [Entry.Call.subagent]). */
+        val subagents: List<Entry.Call> by lazy { entries.filter { it is Entry.Call && it.subagent != null }.map { it as Entry.Call } }
+
         /** How many injected turns the stretch holds, a repeated one counted each time it came. */
         val eventCount: Int get() = entries.sumOf { entry ->
             when (entry) {
@@ -124,7 +125,12 @@ sealed interface TranscriptRow {
         val key: String
 
         data class Thought(val block: ThinkingBlock, override val key: String) : Entry
-        data class Call(val call: ToolCall, override val key: String) : Entry
+
+        /**
+         * A tool call. [subagent] is the row it is drawn as when it is a subagent's — a task the agent delegated, a
+         * Project worker the coordinator created, messaged or stopped (see [SubagentCall]) — else null.
+         */
+        data class Call(val call: ToolCall, override val key: String, val subagent: SubagentCall? = SubagentCall.of(call)) : Entry
 
         /** A coordinator's working note: the prose it wrote between tool calls, which is not its message. */
         data class Note(val message: AssistantMessage) : Entry {
@@ -168,8 +174,9 @@ sealed interface TranscriptRow {
 
 /**
  * The summary line of a [TranscriptRow.Stretch]: the verb — "Worked 1m 48s" from the run's footer, "Working" while
- * the run still writes, else the first count — then the counts of what the stretch holds, largest kinds first
- * ("4 edits · 2 files · 1 thought"), the line counts of its edits set apart.
+ * the run still writes, "2 working" while subagents of it still work, else the first count — then the counts of
+ * what the stretch holds, largest kinds first ("4 edits · 2 files · 1 thought"), the line counts of its edits set
+ * apart.
  */
 data class StretchSummary(val action: String, val details: String?, val lineStats: String?, val busy: Boolean) {
     /** The whole line, for tests and for the diagnostics. */
@@ -179,17 +186,30 @@ data class StretchSummary(val action: String, val details: String?, val lineStat
         /** How many counts the line carries; a failure is always among them. */
         private const val MAX_COUNTS = 3
 
-        fun of(stretch: TranscriptRow.Stretch): StretchSummary {
-            val all = stretch.entries.filterIsInstance<TranscriptRow.Entry.Call>().map { it.call }
+        /**
+         * [stretch]'s line. [working] are the rows of its subagents still at work, in order (see
+         * [SubagentRows.isWorking]): as the desktop's work group reads (Cursor 3.21.18), the stretch does not settle to
+         * "Worked" while one works, whether or not the run that started it has ended. The verb counts them — "2
+         * Working" while the run still writes, "2 working" once it has stopped — and in a Project's chat
+         * ([coordinator]) it is "2 Working" either way, followed by where the newest of them stands ("Editing
+         * AgentListOrganizer.kt") instead of the counts. The line shimmers while any works.
+         */
+        fun of(stretch: TranscriptRow.Stretch, working: List<SubagentLook> = emptyList(), coordinator: Boolean = false): StretchSummary {
+            val entries = stretch.entries.filterIsInstance<TranscriptRow.Entry.Call>()
             // A call that failed is counted once, as a failure, not as the edit or read it did not manage.
-            val failed = all.count { it.isError }
-            val calls = all.filterNot { it.isError }
+            val failed = entries.count { it.call.isError }
+            val done = entries.filterNot { it.call.isError }
+            val calls = done.map { it.call }
             val work = WorkSummary.of(calls)
             val thoughts = stretch.entries.count { it is TranscriptRow.Entry.Thought && it.block.text.isNotBlank() }
             val notes = stretch.entries.count { it is TranscriptRow.Entry.Note && it.message.markdown.isNotBlank() }
-            val agents = work.taskCalls + calls.count { it.kind == ToolKind.Coordinator && it.payload is ToolPayload.WorkerAction }
+            // Every subagent's row, whatever the call carried, and a coordinator's check on its workers.
+            val agents = done.count { it.subagent != null || (it.call.kind == ToolKind.Coordinator && it.call.payload is ToolPayload.WorkerAction) }
             // The calls no count above names — a mode switch, a to-do update, a plan — are steps; a question has its card.
-            val steps = calls.count { it.kind == ToolKind.Other || it.kind == ToolKind.Todo || it.kind == ToolKind.Plan || (it.kind == ToolKind.Coordinator && it.payload !is ToolPayload.WorkerAction) }
+            val steps = done.count { entry ->
+                val it = entry.call
+                entry.subagent == null && (it.kind == ToolKind.Other || it.kind == ToolKind.Todo || it.kind == ToolKind.Plan || (it.kind == ToolKind.Coordinator && it.payload !is ToolPayload.WorkerAction))
+            }
             val counts = listOfNotNull(
                 plural(stretch.eventCount, "event"),
                 plural(work.edits + work.deletes, "edit"),
@@ -213,19 +233,21 @@ data class StretchSummary(val action: String, val details: String?, val lineStat
                 if (durations.isEmpty()) f else f.copy(durationMs = durations.sum())
             }
             val action = when {
+                working.isNotEmpty() -> "${working.size} ${if (stretch.live || coordinator) "Working" else "working"}"
                 // Still being written: whatever earlier runs closed inside it, the stretch is working.
                 stretch.live -> "Working"
                 footer != null -> footerLabel(footer, interrupted = last?.interrupted == true)
                 else -> counts.firstOrNull() ?: failure ?: "Worked"
             }
-            val rest = if (footer != null || stretch.live) counts else counts.drop(1)
+            val rest = if (footer != null || stretch.live || working.isNotEmpty()) counts else counts.drop(1)
             // The reader's next message cut the run short: said at the end of the line, quietly, never as a warning.
             val interrupted = INTERRUPTED.takeIf { !stretch.live && footerEntries.any { it.interrupted } }
             // A run the server says failed: its line is inside the stretch (see Entry.Failure), and the summary's last
             // word says it is there — the verb stays what the run did ("Worked 2m 3s"), the failure is not a banner.
             val runFailed = FAILED.takeIf { !stretch.live && stretch.entries.any { it is TranscriptRow.Entry.Failure } }
-            val details = (rest.take(MAX_COUNTS) + listOfNotNull(failure.takeIf { action != failure }, interrupted, runFailed)).joinToString(" \u00B7 ").ifEmpty { null }
-            return StretchSummary(action, details, work.lineStats, busy = stretch.live)
+            val status = working.lastOrNull()?.status?.takeIf { coordinator }
+            val details = status ?: (rest.take(MAX_COUNTS) + listOfNotNull(failure.takeIf { action != failure }, interrupted, runFailed)).joinToString(" \u00B7 ").ifEmpty { null }
+            return StretchSummary(action, details, work.lineStats, busy = stretch.live || working.isNotEmpty())
         }
 
         /**
@@ -320,6 +342,8 @@ data class EventLine(val source: Source, val subject: String, val verb: String?,
 /**
  * The line of a collapsed [TranscriptRow.Events]: how many notices, then which kinds, most first ("14 events ·
  * 9 GitHub · 5 subagents"), then how long they span when the turns carry their times and it is a minute or more.
+ * Subagents and workers are counted as agents, each once however many times it reported ("3 events · 2 subagents"):
+ * their rows carry no count for a repeat. Every other kind counts its notices.
  */
 data class EventGroupSummary(val count: String, val kinds: String?, val span: String?) {
     val text: String get() = listOfNotNull(count, kinds, span).joinToString(" \u00B7 ")
@@ -330,7 +354,10 @@ data class EventGroupSummary(val count: String, val kinds: String?, val span: St
         fun of(group: TranscriptRow.Events): EventGroupSummary {
             val events = group.events
             val total = group.count
-            val byKind = events.groupBy { it.line.source }.mapValues { (_, rows) -> rows.sumOf { it.count } }
+            val byKind = events.groupBy { it.line.source }.mapValues { (source, rows) ->
+                if (source == EventLine.Source.Subagent || source == EventLine.Source.Worker) rows.distinctBy { it.agentKey }.size
+                else rows.sumOf { it.count }
+            }
             val kinds = byKind.entries
                 .sortedWith(compareByDescending<Map.Entry<EventLine.Source, Int>> { it.value }.thenBy { it.key.ordinal })
                 .take(MAX_KINDS)
@@ -362,9 +389,9 @@ data class EventGroupSummary(val count: String, val kinds: String?, val span: St
  * Cuts a transcript into [TranscriptRow]s. A message ends the stretch before it — the user's prompt, an injected
  * turn's row, a notice, an agent's reply, and in a coordinator's chat ([coordinatorMode]) the coordinator's message
  * to the user, which sits among the steps of its group; a coordinator's plain reply is a note inside the stretch
- * instead. A subagent's row cuts the stretch the same way and stands on its own; a step's pictures and the question
- * a run is paused on follow the stretch they belong to as rows of their own. [runActive] marks the newest stretch
- * as still being written when the run is.
+ * instead, and a subagent's row one of its steps, behind its summary with the rest. A step's pictures and the
+ * question a run is paused on follow the stretch they belong to as rows of their own. [runActive] marks the newest
+ * stretch as still being written when the run is.
  */
 object TranscriptRows {
 
@@ -461,13 +488,6 @@ object TranscriptRows {
                                     rows += TranscriptRow.Message(item, step)
                                 }
                                 else -> {
-                                    val subagent = SubagentCall.of(step)
-                                    if (subagent != null) {
-                                        // A subagent is a row of its own wherever it starts, is steered or is stopped.
-                                        flush()
-                                        rows += TranscriptRow.Subagent(item, step, subagent)
-                                        return@forEachIndexed
-                                    }
                                     open += TranscriptRow.Entry.Call(step, "${item.id}:${step.callId}")
                                     if (step.hasMedia) pictures += step
                                     if (step.pendingQuestion != null) questions += TranscriptRow.Question(item, step)
@@ -564,7 +584,8 @@ object TranscriptRows {
 
     /**
      * The stretch's entries with its injected turns folded: the same notice arriving several times in a row — a
-     * pull request synchronized twice — is one row counted twice, and two or more events in a row (the footers of
+     * pull request synchronized twice, a subagent reporting again — is one row counted twice, with the newest
+     * report (see [merged]), and two or more events in a row (the footers of
      * their runs between them, which the summary carries) are one [TranscriptRow.Events] behind one line. Anything
      * else between two events — a note, a thought, a call — keeps them apart.
      */
@@ -574,7 +595,8 @@ object TranscriptRows {
         for (entry in entries) {
             val previous = deduped.lastOrNull { it !is TranscriptRow.Entry.Footer }
             if (entry is TranscriptRow.Entry.Event && previous is TranscriptRow.Entry.Event && sameNotice(previous.row.notification, entry.row.notification)) {
-                deduped[deduped.indexOf(previous)] = TranscriptRow.Entry.Event(previous.row.copy(count = previous.row.count + entry.row.count))
+                val merged = merged(previous.row.notification, entry.row.notification)
+                deduped[deduped.indexOf(previous)] = TranscriptRow.Entry.Event(TranscriptRow.Event(merged, previous.row.count + entry.row.count))
             } else {
                 deduped += entry
             }
@@ -609,6 +631,19 @@ object TranscriptRows {
 
     private fun sameNotice(a: SystemNotification, b: SystemNotification): Boolean =
         a.kind == b.kind && a.title == b.title && a.summary == b.summary && a.agentId == b.agentId
+
+    /**
+     * The row a repeated notice folds into: the first one's place (its id and time, which key the row and start the
+     * group's span), the newest one's report, and every remark the agent folded under either, in order.
+     */
+    private fun merged(first: SystemNotification, next: SystemNotification): SystemNotification {
+        val remarks = listOfNotNull(first.narration, next.narration).map { it.trim() }.filter { it.isNotEmpty() }.distinct()
+        return first.copy(
+            body = next.body ?: first.body,
+            raw = next.raw,
+            narration = remarks.joinToString("\n\n").ifEmpty { null },
+        )
+    }
 
     /** The newest group of events in the transcript opens on its own when it holds fewer than [OPEN_BELOW] events. */
     private fun openNewestGroup(rows: List<TranscriptRow>): List<TranscriptRow> {

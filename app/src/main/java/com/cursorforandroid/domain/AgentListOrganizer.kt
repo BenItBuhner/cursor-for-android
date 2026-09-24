@@ -129,10 +129,17 @@ object AgentListOrganizer {
         return agent.listedAtMillis > marker
     }
 
+    /**
+     * Whether a pin means anything for [agent]. A Project's does not: `VuC` keeps a pinned Project in Projects, which
+     * already lead the list in the reader's own order ([LocalAgentState.projectOrder]), so no menu offers it and a pin
+     * one carries from elsewhere is read as none.
+     */
+    fun canPin(agent: Agent): Boolean = !agent.isProjectRoot
+
     fun toRow(agent: Agent, local: LocalAgentState, nowMillis: Long = AppClock.now()): AgentRow = AgentRow(
         agent = agent,
         indicator = indicatorFor(agent, local, nowMillis),
-        isPinned = agent.id in local.pinnedIds,
+        isPinned = agent.id in local.pinnedIds && canPin(agent),
         isUnread = isUnread(agent, local, nowMillis),
         launchedFromThisDevice = agent.id in local.launchedHereIds,
         pullRequest = agent.prUrl?.let { local.pullRequests[it] },

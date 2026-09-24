@@ -12,6 +12,30 @@ sealed interface TimelineItem {
     val id: String
 }
 
+/**
+ * The prompts, replies and notices in [after] that [before] did not have, told by what they say rather than their
+ * ids: a read again rebuilds the chat from its runs' traces, and a reply read off the conversation comes back from the
+ * trace under a new id; a prompt sent from here hands over to the server's copy. The same words twice are two.
+ */
+fun newMessageCount(before: List<TimelineItem>, after: List<TimelineItem>): Int {
+    val seen = HashMap<String, Int>()
+    before.forEach { item -> item.messageKey()?.let { seen.merge(it, 1, Int::plus) } }
+    return after.count { item ->
+        val key = item.messageKey() ?: return@count false
+        val left = seen[key] ?: 0
+        if (left > 0) seen[key] = left - 1
+        left == 0
+    }
+}
+
+/** A reply still streaming is not a message yet: its words are only part of what it will say. */
+private fun TimelineItem.messageKey(): String? = when (this) {
+    is UserMessage -> "u:" + QueuePlacement.textKey(text)
+    is AssistantMessage -> if (isStreaming) null else "a:" + markdown.trim()
+    is SystemNotification -> "n:$id"
+    else -> null
+}
+
 @Serializable
 @SerialName("user")
 data class UserMessage(
@@ -497,6 +521,8 @@ data class SystemNotification(
      * its coordinator, or a cloud subagent. The row opens that agent's conversation.
      */
     val agentId: String? = null,
+    /** The tool call that started the task the notice reports on (`tool_call_id`), when the report named it. */
+    val callId: String? = null,
     /**
      * What the agent said in reply to the notice when that was brief and it said nothing else to the user — a
      * coordinator's "Noted; the release worker is done." — folded under the row rather than shown as a line of its
