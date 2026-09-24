@@ -12,6 +12,7 @@ import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.semantics.getOrNull
 import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.SemanticsNodeInteraction
+import androidx.compose.ui.test.TouchInjectionScope
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsFocused
 import androidx.compose.ui.test.assertIsNotFocused
@@ -24,6 +25,7 @@ import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onFirst
 import androidx.compose.ui.test.onNodeWithContentDescription
+import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.test.performSemanticsAction
@@ -34,6 +36,7 @@ import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.cursorforandroid.AppGraph
 import com.cursorforandroid.domain.CursorUser
+import com.cursorforandroid.ui.components.BackEdgeMinWidth
 import com.cursorforandroid.ui.panel.PaneWidthClass
 import com.cursorforandroid.ui.shortcuts.KeyboardShortcuts
 import com.cursorforandroid.ui.shortcuts.LocalKeyboardShortcuts
@@ -116,9 +119,12 @@ class PinnedPanelFlowTest {
     /** How wide the rail's chat list is laid out, in pixels (a dp here), past the clip its slide draws it through. */
     private fun railListWidth(): Int = compose.onAllNodes(hasScrollToNodeAction()).onFirst().fetchSemanticsNode().size.width
 
-    /** How wide a resize handle says its pane is, as TalkBack reads it. */
-    private fun handleSays(handle: String): String? =
-        compose.onNodeWithContentDescription(handle).fetchSemanticsNode().config.getOrNull(SemanticsProperties.StateDescription)
+    /** How wide a resize edge says its pane is, as TalkBack reads it. */
+    private fun edgeSays(edge: String): String? =
+        compose.onNodeWithContentDescription(edge).fetchSemanticsNode().config.getOrNull(SemanticsProperties.StateDescription)
+
+    /** Where a resize edge's boundary is across the window: the middle of the strip that straddles it. */
+    private fun edgeX(edge: String): Float = bounds(hasContentDescription(edge)).center.x
 
     private fun <T> kept(read: suspend AppGraph.() -> T): T = runBlocking { graph.read() }
 
@@ -180,12 +186,22 @@ class PinnedPanelFlowTest {
         compose.waitForIdle()
     }
 
-    /** A finger down on the handle, across by [dx] and up: past touch slop, so the edge moves [dx] less the slop. */
-    private fun drag(handle: String, dx: Float) {
-        compose.onNodeWithContentDescription(handle).performTouchInput {
+    /** A finger down on the boundary, across by [dx] and up: the edge follows it the whole way. */
+    private fun drag(edge: String, dx: Float) {
+        compose.onNodeWithContentDescription(edge).performTouchInput {
             down(center)
             moveBy(Offset(dx, 0f))
             up()
+        }
+        compose.waitForIdle()
+    }
+
+    /** A finger down at [from] in the window's coordinates, moved by ([dx], [dy]) a frame at a time, then [finish]ed. */
+    private fun gesture(from: Offset, dx: Float, dy: Float = 0f, finish: TouchInjectionScope.() -> Unit = { up() }) {
+        compose.onRoot().performTouchInput {
+            down(from)
+            repeat(10) { moveBy(Offset(dx / 10, dy / 10), delayMillis = 16) }
+            finish()
         }
         compose.waitForIdle()
     }
@@ -307,13 +323,13 @@ class PinnedPanelFlowTest {
         showShell()
         openChat(CLI)
         openPanel()
-        assertThat(handleSays(RESIZE_PANEL)).isEqualTo("400 dp wide")
-        assertThat(handleSays(RESIZE_SIDEBAR)).isEqualTo("278 dp wide")
+        assertThat(edgeSays(RESIZE_PANEL)).isEqualTo("400 dp wide")
+        assertThat(edgeSays(RESIZE_SIDEBAR)).isEqualTo("278 dp wide")
 
         // Dragged past its widest it stops there, half the window; past its narrowest, likewise.
         drag(RESIZE_PANEL, -400f)
         assertThat(panelBounds().width).isWithin(0.5f).of(640f)
-        assertThat(handleSays(RESIZE_PANEL)).isEqualTo("640 dp wide")
+        assertThat(edgeSays(RESIZE_PANEL)).isEqualTo("640 dp wide")
         assertThat(chatBounds().right).isWithin(0.5f).of(640f)
         assertKept(640) { prefs.panelWidthDp.first() }
         drag(RESIZE_PANEL, 600f)
@@ -322,7 +338,7 @@ class PinnedPanelFlowTest {
 
         // The rail as wide as it goes, which the narrow panel leaves it room for.
         drag(RESIZE_SIDEBAR, 200f)
-        assertThat(handleSays(RESIZE_SIDEBAR)).isEqualTo("400 dp wide")
+        assertThat(edgeSays(RESIZE_SIDEBAR)).isEqualTo("400 dp wide")
         assertThat(chatBounds().left).isWithin(0.5f).of(400f)
         assertThat(chatBounds().right).isWithin(0.5f).of(1000f)
         assertKept(400) { prefs.railWidthDp.first() }
@@ -330,10 +346,63 @@ class PinnedPanelFlowTest {
         // The panel widened again takes the rail's room before the chat's: the rail narrows, the chat keeps its least.
         drag(RESIZE_PANEL, -400f)
         assertThat(panelBounds().width).isWithin(0.5f).of(640f)
-        assertThat(handleSays(RESIZE_SIDEBAR)).isEqualTo("320 dp wide")
+        assertThat(edgeSays(RESIZE_SIDEBAR)).isEqualTo("320 dp wide")
         assertThat(chatBounds().width).isWithin(0.5f).of(320f)
         // Only for as long as the panel needs it: what the reader dragged the rail to is what is kept.
         assertKept(400) { prefs.railWidthDp.first() }
+    }
+
+    @Test
+    fun `either edge drags from anywhere along it, and a scroll that starts on it is the pane's under it`() {
+        showShell()
+        openChat(CLI)
+        openPanel()
+        val low = composer.fetchSemanticsNode().boundsInRoot.center.y
+        // At the top, level with the panel's tabs, just inside the panel.
+        gesture(Offset(edgeX(RESIZE_PANEL) + 5f, bounds(hasTestTag(PANEL_TABS)).center.y), dx = -100f)
+        assertThat(panelBounds().width).isWithin(0.5f).of(500f)
+        // Low down, level with the composer, just inside the chat.
+        gesture(Offset(edgeX(RESIZE_PANEL) - 5f, low), dx = 100f)
+        assertThat(panelBounds().width).isWithin(0.5f).of(400f)
+        assertKept(400) { prefs.panelWidthDp.first() }
+        // The rail's the same: level with its header just inside it, then level with the composer just inside the chat.
+        gesture(Offset(edgeX(RESIZE_SIDEBAR) - 5f, 24f), dx = 40f)
+        assertThat(edgeSays(RESIZE_SIDEBAR)).isEqualTo("318 dp wide")
+        gesture(Offset(edgeX(RESIZE_SIDEBAR) + 5f, low), dx = -40f)
+        assertThat(edgeSays(RESIZE_SIDEBAR)).isEqualTo("278 dp wide")
+        assertKept(278) { prefs.railWidthDp.first() }
+
+        // Up the rail's list from the strip over its edge, a little sideways drift and all: the list scrolls, and
+        // neither pane moves.
+        val rail = compose.onAllNodes(hasScrollToNodeAction()).onFirst()
+        val scrolledBy = { rail.fetchSemanticsNode().config[SemanticsProperties.VerticalScrollAxisRange].value() }
+        val before = scrolledBy()
+        gesture(Offset(edgeX(RESIZE_SIDEBAR) - 4f, 600f), dx = 12f, dy = -300f)
+        assertThat(scrolledBy()).isGreaterThan(before)
+        assertThat(edgeSays(RESIZE_SIDEBAR)).isEqualTo("278 dp wide")
+        assertThat(panelBounds().width).isWithin(0.5f).of(400f)
+    }
+
+    @Test
+    fun `a back swipe from the window's edge while the panel slides open is back's, not the panel's edge's`() {
+        showShell()
+        openChat(CLI)
+        compose.mainClock.autoAdvance = false
+        compose.onNodeWithContentDescription(OPEN_PANEL).performClick()
+        repeat(4) { if (!described(RESIZE_PANEL)) compose.mainClock.advanceTimeByFrame() }
+        // Just set out, the panel's edge, and the strip that drags it, are still inside the window's right back strip.
+        val edge = edgeX(RESIZE_PANEL)
+        val window = compose.onRoot().fetchSemanticsNode().size.width.toFloat()
+        assertThat(edge).isGreaterThan(window - BackEdgeMinWidth.value)
+        // On 3-button navigation the finger lifts; with gestures the system takes it, and the app hears a cancel.
+        gesture(Offset(edge - 2f, 400f), dx = -150f)
+        gesture(Offset(edge - 2f, 400f), dx = -150f) { cancel() }
+        compose.mainClock.autoAdvance = true
+        compose.waitUntil(10_000) { panelShown() }
+        compose.waitForIdle()
+        assertThat(panelBounds().width).isWithin(0.5f).of(400f)
+        assertThat(edgeSays(RESIZE_PANEL)).isEqualTo("400 dp wide")
+        assertThat(kept { prefs.panelWidthDp.first() }).isNull()
     }
 
     @Test
@@ -366,7 +435,7 @@ class PinnedPanelFlowTest {
         assertThat(panelBounds().width).isWithin(0.5f).of(280f)
         compose.waitUntil(10_000) { railShown() && !described(OPEN_SIDEBAR) }
         compose.waitForIdle()
-        assertThat(handleSays(RESIZE_SIDEBAR)).isEqualTo("240 dp wide")
+        assertThat(edgeSays(RESIZE_SIDEBAR)).isEqualTo("240 dp wide")
         assertThat(chatBounds().width).isWithin(0.5f).of(320f)
         drag(RESIZE_PANEL, -200f)
         compose.waitUntil(10_000) { !railShown() && described(OPEN_SIDEBAR) }
@@ -414,7 +483,7 @@ class PinnedPanelFlowTest {
         assertThat(described(HIDE_PANEL)).isTrue()
         assertThat(panelShown()).isTrue()
         assertThat(panelBounds().width).isWithin(0.5f).of(480f)
-        assertThat(handleSays(RESIZE_SIDEBAR)).isEqualTo("240 dp wide")
+        assertThat(edgeSays(RESIZE_SIDEBAR)).isEqualTo("240 dp wide")
         assertThat(chatBounds().left).isWithin(0.5f).of(240f)
         assertThat(chatBounds().right).isWithin(0.5f).of(800f)
     }
@@ -449,6 +518,7 @@ class PinnedPanelFlowTest {
         const val DISMISS_PANEL = "Dismiss panel"
         const val RESIZE_PANEL = "Resize panel"
         const val RESIZE_SIDEBAR = "Resize sidebar"
+        const val PANEL_TABS = "panel-tabs"
         const val SEARCH_CHATS = "Search chats"
         const val OPEN_SIDEBAR = "Open sidebar"
         const val CLOSE_DRAWER = "Close navigation menu"

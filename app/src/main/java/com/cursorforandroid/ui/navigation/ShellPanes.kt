@@ -24,9 +24,11 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.coerceIn
 import androidx.compose.ui.unit.dp
 import com.cursorforandroid.data.local.PreferencesStore
-import com.cursorforandroid.ui.components.PaneResizeHandle
-import com.cursorforandroid.ui.components.PaneResizeHandleWidth
+import com.cursorforandroid.ui.components.PaneResizeEdge
+import com.cursorforandroid.ui.components.PaneResizeEdgeWidth
 import com.cursorforandroid.ui.components.PaneSide
+import com.cursorforandroid.ui.components.backGestureEdges
+import com.cursorforandroid.ui.components.rememberBackGestureEdges
 import com.cursorforandroid.ui.panel.LocalPinnedPanel
 import com.cursorforandroid.ui.panel.PaneWidthClass
 import com.cursorforandroid.ui.panel.PaneWidths
@@ -156,9 +158,9 @@ internal class ShellPanes(
 }
 
 /**
- * The wide window's row: the rail, while it stands beside the chat, at the width it was dragged to and with the handle
- * that resizes it on its edge; then the detail pane, which a chat shares with its panel wherever the window has room
- * to pin it ([LocalPinnedPanel]).
+ * The wide window's row: the rail, while it stands beside the chat, at the width it was dragged to, its edge draggable
+ * to resize it; then the detail pane, which a chat shares with its panel wherever the window has room to pin it
+ * ([LocalPinnedPanel]).
  */
 @Composable
 internal fun WidePanes(
@@ -169,13 +171,15 @@ internal fun WidePanes(
     detail: @Composable (Modifier) -> Unit,
 ) {
     val density = LocalDensity.current
-    // The rail's edge as it is drawn, sliding in and out included, for the handle to ride.
+    val edges = rememberBackGestureEdges()
+    // The rail's edge as it is drawn, sliding in and out included, for the resize strip to ride.
     var railEdge by remember { mutableIntStateOf(0) }
     Box(
         Modifier
             .fillMaxSize()
             .background(CursorTheme.colors.canvas)
-            .onSizeChanged { panes.measure(with(density) { it.width.toDp() }) },
+            .onSizeChanged { panes.measure(with(density) { it.width.toDp() }) }
+            .backGestureEdges(edges),
     ) {
         Row(Modifier.fillMaxSize()) {
             SidebarRail(expanded = railShown, width = { panes.railColumn() }, modifier = Modifier.onSizeChanged { railEdge = it.width }, content = rail)
@@ -184,15 +188,16 @@ internal fun WidePanes(
             }
         }
         if (railShown) {
-            PaneResizeHandle(
+            PaneResizeEdge(
                 side = PaneSide.Start,
                 paneWidth = { panes.widths.rail },
                 onResize = panes::resizeRail,
                 onResizeDone = panes::resizeRailDone,
                 contentDescription = RESIZE_SIDEBAR,
+                edges = edges,
                 modifier = Modifier
                     .align(Alignment.CenterStart)
-                    .offset { IntOffset(railEdge - PaneResizeHandleWidth.roundToPx() / 2, 0) },
+                    .offset { IntOffset(railEdge - PaneResizeEdgeWidth.roundToPx() / 2, 0) },
             )
         }
     }

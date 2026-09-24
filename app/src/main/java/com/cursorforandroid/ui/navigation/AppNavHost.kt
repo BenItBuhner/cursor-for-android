@@ -165,7 +165,7 @@ internal fun AppShell(
     val panes = remember { ShellPanes(graph.prefs, scope, railExpanded = { !sidebarCollapsed }, chatOnTop = { stack.top.screen is Screen.Agent }) }
     panes.configure(LocalConfiguration.current.screenWidthDp.dp)
     LaunchedEffect(panes) { panes.load() }
-    // Read coarse, so a drag at either handle resizes the panes without recomposing the shell.
+    // Read coarse, so a drag at either edge resizes the panes without recomposing the shell.
     val railShown by remember(panes) { derivedStateOf { panes.widths.railShown } }
     val pinnable by remember(panes) { derivedStateOf { panes.widths.pinnable } }
     // The drawer on a wide window: the rail over the chat, where the window has no room for it beside the chat.

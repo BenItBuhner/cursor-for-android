@@ -78,8 +78,8 @@ import androidx.compose.ui.unit.dp
 import com.cursorforandroid.ui.components.BackGestureEdges
 import com.cursorforandroid.ui.components.Haptics
 import com.cursorforandroid.ui.components.LocalScrollFadeSurface
-import com.cursorforandroid.ui.components.PaneResizeHandle
-import com.cursorforandroid.ui.components.PaneResizeHandleWidth
+import com.cursorforandroid.ui.components.PaneResizeEdge
+import com.cursorforandroid.ui.components.PaneResizeEdgeWidth
 import com.cursorforandroid.ui.components.PaneSide
 import com.cursorforandroid.ui.components.backGestureEdges
 import com.cursorforandroid.ui.components.coveredFocus
@@ -122,8 +122,8 @@ import kotlinx.coroutines.launch
  * [pinned], the panel stands beside the content instead of over it: the content narrows to the room the panel leaves
  * it and reflows as the panel slides, there is no scrim, and the panel is a pane of the layout like the wide window's
  * rail, opened and shut by its buttons and the keyboard alone: a swipe across the chat is the chat's, back is the
- * chat's, and a composer holding the keyboard keeps it as the panel opens. A handle on the boundary resizes it
- * ([PaneResizeHandle]), and the shell keeps it open or shut for every chat ([PinnedPanelSync]).
+ * chat's, and a composer holding the keyboard keeps it as the panel opens. Its edge drags to resize it
+ * ([PaneResizeEdge]), and the shell keeps it open or shut for every chat ([PinnedPanelSync]).
  */
 @Composable
 fun SidePanelHost(
@@ -235,17 +235,18 @@ fun SidePanelHost(
                 }
             }
         }
-        // Over the boundary, riding it as the panel slides; last, so it hears a drag across before either side does.
+        // Over the boundary, riding it as the panel slides; last, so hit testing reaches it before either side.
         if (pinned != null && state.isVisible) {
-            PaneResizeHandle(
+            PaneResizeEdge(
                 side = PaneSide.End,
                 paneWidth = { pinned.width },
                 onResize = pinned::resize,
                 onResizeDone = pinned::resizeDone,
                 contentDescription = ResizePanel,
+                edges = edges,
                 modifier = Modifier
                     .align(Alignment.CenterEnd)
-                    .offset { IntOffset((PaneResizeHandleWidth.toPx() / 2 - state.fraction * widthPx).roundToInt(), 0) },
+                    .offset { IntOffset((PaneResizeEdgeWidth.toPx() / 2 - state.fraction * widthPx).roundToInt(), 0) },
             )
         }
     }
@@ -298,7 +299,7 @@ fun panelWidthFor(maxWidth: Dp): Dp = minOf(maxWidth - PanelMargin, PanelMaxWidt
  * control does; put away, it comes back at its column's width. The surface is the chat's canvas, as the web's panel is.
  *
  * Where the shell has room to pin the panel beside the chat ([LocalPinnedPanel]), it stands there at the width the
- * shell gives it, and widening over the chat gives way to the handle that resizes it.
+ * shell gives it, and widening over the chat gives way to dragging its edge.
  */
 @Composable
 fun SidePanel(
