@@ -113,6 +113,9 @@ class PinnedPanelFlowTest {
     /** The chat's column, as its transcript spans it. */
     private fun chatBounds() = bounds(hasTestTag("transcript"))
 
+    /** How wide the rail's chat list is laid out, in pixels (a dp here), past the clip its slide draws it through. */
+    private fun railListWidth(): Int = compose.onAllNodes(hasScrollToNodeAction()).onFirst().fetchSemanticsNode().size.width
+
     /** How wide a resize handle says its pane is, as TalkBack reads it. */
     private fun handleSays(handle: String): String? =
         compose.onNodeWithContentDescription(handle).fetchSemanticsNode().config.getOrNull(SemanticsProperties.StateDescription)
@@ -376,6 +379,28 @@ class PinnedPanelFlowTest {
         compose.waitForIdle()
         assertThat(railShown()).isTrue()
         assertThat(chatBounds().left).isWithin(0.5f).of(278f)
+    }
+
+    @Test
+    @Config(qualifiers = "w840dp-h700dp-night-mdpi")
+    fun `on a foldable the rail the pinned panel puts away slides off as wide as it stood, not narrowed first`() {
+        showShell()
+        openChat(CLI)
+        val stood = railListWidth()
+
+        // The panel takes the rail's room in the same write that sends the rail away: laid out again at its narrowest
+        // for the frames it is still seen, it would jump in by the difference, and the chat out with it.
+        compose.mainClock.autoAdvance = false
+        compose.onNodeWithContentDescription(OPEN_PANEL).performClick()
+        compose.mainClock.advanceTimeByFrame()
+        assertThat(railListWidth()).isEqualTo(stood)
+        assertThat(chatBounds().left).isGreaterThan(200.5f)
+        compose.mainClock.advanceTimeBy(SidebarRailMillis / 2L)
+        assertThat(railListWidth()).isEqualTo(stood)
+        compose.mainClock.autoAdvance = true
+        compose.waitUntil(10_000) { !railShown() && described(OPEN_SIDEBAR) }
+        compose.waitForIdle()
+        assertThat(chatBounds().left).isWithin(0.5f).of(0f)
     }
 
     @Test

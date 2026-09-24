@@ -78,6 +78,23 @@ internal class ShellPanes(
     /** The rail over the chat, where the window has no room for it beside the chat: as wide as it was dragged to. */
     val flyoutWidth: Dp get() = (railWant ?: CursorDimens.sidebarWidth).coerceIn(RailMinWidth, RailMaxWidth)
 
+    /** A plain field, not state: [railColumn] writes it at layout, where a state write would invalidate that layout. */
+    private var railStood: Dp? = null
+
+    /**
+     * The rail column's width, read at layout: as [widths] has it while the rail stands beside the chat, and the width it
+     * last stood at while it is away. The rail's room goes in the same write that sends it away (a panel pinned beside the
+     * chat leaves it none), and it slides off as it stood rather than narrowed to that room first. Read from the same
+     * snapshot as its room, it holds whether the frame lays the rail out before or after the rail is told to go.
+     */
+    fun railColumn(): Dp {
+        val widths = widths
+        val stood = railStood
+        if (!widths.railShown && stood != null) return stood
+        railStood = widths.rail
+        return widths.rail
+    }
+
     override val open: Boolean?
         get() = when (PaneWidthClass.of(window)) {
             PaneWidthClass.Medium -> openMedium
@@ -161,7 +178,7 @@ internal fun WidePanes(
             .onSizeChanged { panes.measure(with(density) { it.width.toDp() }) },
     ) {
         Row(Modifier.fillMaxSize()) {
-            SidebarRail(expanded = railShown, width = { panes.widths.rail }, modifier = Modifier.onSizeChanged { railEdge = it.width }, content = rail)
+            SidebarRail(expanded = railShown, width = { panes.railColumn() }, modifier = Modifier.onSizeChanged { railEdge = it.width }, content = rail)
             CompositionLocalProvider(LocalPinnedPanel provides if (pinnable) panes else null) {
                 detail(Modifier.weight(1f).fillMaxHeight())
             }
