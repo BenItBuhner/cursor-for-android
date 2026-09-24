@@ -3279,6 +3279,10 @@ class ConversationRepository(
         var heardAt = 0L
         var failures = 0
         var silentLive = 0
+        // The live stream refused as a method the server no longer has: the list entry stands in for the rest of the watch.
+        var liveRemoved = false
+        // When a live stream handed over to the list (see [WATCH_LIVE_FAILURES]) is asked for again.
+        var liveAgainAt = 0L
         // The list entry's last word: running, and when it was last active; null until its first answer since the chat came to rest.
         var listed: Pair<Boolean, Long?>? = null
         var movedAt = 0L
@@ -3315,11 +3319,13 @@ class ConversationRepository(
                 continue
             }
             rereads = 0
-            val live = record?.takeIf { caps.accountTranscript && silentLive < WATCH_LIVE_FAILURES && e.state.value.recordFallback.let { it == null || it.serverError } }
+            val liveWanted = !liveRemoved && (silentLive < WATCH_LIVE_FAILURES || System.nanoTime() >= liveAgainAt)
+            val live = record?.takeIf { caps.accountTranscript && liveWanted && e.state.value.recordFallback.let { it == null || it.serverError } }
             if (live != null) {
                 val start = since ?: restingPoint(e)
                 val resume = start.offsetKey != null && (since == null || System.nanoTime() - heardAt < WATCH_REHYDRATE_MS * 1_000_000)
                 val startedAt = System.nanoTime()
+                var failure: Throwable? = null
                 val outcome = try {
                     e.whileAtRest { live.watch(agentId, start, resume) }
                 } catch (c: CancellationException) {
@@ -3332,12 +3338,31 @@ class ConversationRepository(
                 // Held open, as the server holds the desktop's: a heartbeat, a change, or a while of quiet. A stream
                 // that ends on its first word is not being held, and a few of those in a row hand over to the list.
                 val held = outcome != null && (outcome.moved || outcome.heartbeats > 0 || System.nanoTime() - startedAt >= WATCH_HELD_MS * 1_000_000)
-                if (held) {
-                    failures = 0
-                    silentLive = 0
-                    heardAt = System.nanoTime()
-                } else {
-                    silentLive++
+                when {
+                    held -> {
+                        failures = 0
+                        silentLive = 0
+                        heardAt = System.nanoTime()
+                    }
+                    // The phone has no network: nothing the stream did. It is asked again from where it left off the
+                    // moment there is one — not after a wait grown while there was none, which left the chat up to a
+                    // minute behind a network that was back.
+                    failure != null && DeviceNetwork.isOnline() == false -> {
+                        while (DeviceNetwork.isOnline() == false) delay(WATCH_NETWORK_LOOK_MS)
+                        failures = 0
+                        continue
+                    }
+                    else -> {
+                        silentLive++
+                        // Handed over to the list, but only a removed method for good: a stream that would not hold
+                        // across a network handoff is asked again at the desktop's reconnect pace, the list entry
+                        // standing in meanwhile (it used to stand in for as long as the chat stayed open, a turn
+                        // started elsewhere then a poll away rather than a heartbeat).
+                        if (silentLive >= WATCH_LIVE_FAILURES) {
+                            if (failure.isRecordRemoved()) liveRemoved = true
+                            else liveAgainAt = System.nanoTime() + watchRetryDelay(silentLive) * 1_000_000
+                        }
+                    }
                 }
                 since = outcome?.point ?: since
                 if (outcome?.moved != true) {
@@ -3354,7 +3379,8 @@ class ConversationRepository(
                     poll(agentId)?.let { it.isRunning to it.activityAtMillis }
                 } catch (c: CancellationException) {
                     throw c
-                } catch (_: Throwable) {
+                } catch (t: Throwable) {
+                    failure = t
                     null
                 }
                 val before = listed
@@ -5447,8 +5473,14 @@ class ConversationRepository(
         const val WATCH_MIN_GAP_MS = 2_000L
         /** A live stream quiet this long is asked for the chat afresh rather than resumed from its offset (the desktop's `rehydrateAfterMs`). */
         const val WATCH_REHYDRATE_MS = 120_000L
-        /** Live streams in a row the server did not hold open (see [WATCH_HELD_MS]), after which the chat's list entry stands in (see [watchWhileOpen]). */
+        /**
+         * Live streams in a row the server did not hold open (see [WATCH_HELD_MS]), after which the chat's list entry
+         * stands in (see [watchWhileOpen]) — until the stream is asked again, at the desktop's reconnect pace, or for
+         * good when the server has removed it.
+         */
         const val WATCH_LIVE_FAILURES = 3
+        /** How often a watch whose stream failed for want of a network looks for one again. */
+        const val WATCH_NETWORK_LOOK_MS = 1_000L
         /** A live stream open this long, with nothing to say, was being held: quiet, not refused. */
         const val WATCH_HELD_MS = 10_000L
         /** How long a chat that has just come to rest is left before it is watched (see [watchWhileOpen]). */
