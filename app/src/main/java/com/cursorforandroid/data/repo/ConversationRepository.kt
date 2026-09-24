@@ -3359,7 +3359,15 @@ class ConversationRepository(
                 }
                 val before = listed
                 if (word != null) listed = word
-                if (word == null || before == null || before == word) {
+                // The first word since the chat came to rest is the one later words are compared with — unless it
+                // already calls the chat running: the reader's copy is at rest, so that is a turn it has not read, one
+                // that started in the moment before the first look (which left it unseen until the turn's end).
+                val moved = when {
+                    word == null -> false
+                    before == null -> word.first
+                    else -> before != word
+                }
+                if (!moved) {
                     delay(watchPollMs)
                     continue
                 }
