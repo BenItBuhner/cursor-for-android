@@ -13,6 +13,7 @@ import com.cursorforandroid.domain.RepoRemote
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
@@ -85,11 +86,14 @@ fun interface AgentStartApi {
  *
  * On one of the user's machines ([StartRequest.machine]) the request is the desktop's for a machine picked with its
  * repository (3.21.18: the New Agent submit → `iZS` → `QPl` → `createAgent` → `_createAgentReal` →
- * `startBackgroundComposerFromSnapshot`): the same body plus `use_private_worker: true`, `selected_private_worker_id`
- * when the worker is known, and `labels` — `repo=<owner/name>` from the repository's URL (`T1t`), then `name=<worker>`
- * and `cursor.private_worker.shared_assignment_allowed=true` when that is the repository the worker registered
- * (`Mel` → `OOa`), with `private_worker_owner_filter {owner_cursor_user_id}` beside the name (`QPl`). Cursor routes
- * it by those labels and trusts the machine's checkout. A team pool is not started here.
+ * `startBackgroundComposerFromSnapshot`, the same RPC as a cloud start): the repository the account's own project for
+ * it names (see [machineRepository]) in `repo_url`, `snapshot_name_or_id` and the starting point — with the project's
+ * environment when it is one — plus `use_private_worker: true`, `selected_private_worker_id` when the worker is known,
+ * and `labels` — `repo=<owner/name>` from that URL (`T1t`), then `name=<worker>` and
+ * `cursor.private_worker.shared_assignment_allowed=true` when that is the repository the worker registered
+ * (`Mel` → `OOa`), with `private_worker_owner_filter {owner_cursor_user_id}` beside the name (`QPl`). No branch goes
+ * with it unless one was picked: the desktop's rows for a machine come from a local workspace, which a phone has none
+ * of (`ZXS`). A team pool is not started here.
  */
 class ConnectAgentStartApi(
     private val rpc: ConnectJsonClient,
@@ -100,13 +104,19 @@ class ConnectAgentStartApi(
 
     override suspend fun start(request: StartRequest): ComposerSnapshot {
         require(request.agentId.isNotBlank()) { "A start needs the client-minted agent id." }
-        val repo = request.repoUrl?.let(ConnectProjectCreationApi::canonicalUrl)?.takeIf { it.isNotEmpty() }
+        val requested = request.repoUrl?.let(ConnectProjectCreationApi::canonicalUrl)?.takeIf { it.isNotEmpty() }
+        val onMachineRepo = if (requested != null && request.machine != null) machineRepository(requested) else null
+        val repo = onMachineRepo?.url ?: requested
         val ref = request.ref?.trim()?.takeIf { it.isNotEmpty() }
         val environmentName = request.environmentName?.trim()?.takeIf { it.isNotEmpty() }
         val startingPoint: StartingPointDto
         val snapshotName: String
         if (repo != null) {
-            startingPoint = StartingPointDto(url = repo, ref = ref, environmentName = environmentName)
+            startingPoint = if (onMachineRepo != null) {
+                StartingPointDto(url = repo, ref = ref, environmentName = onMachineRepo.environmentName, environmentPublicId = onMachineRepo.environmentPublicId)
+            } else {
+                StartingPointDto(url = repo, ref = ref, environmentName = environmentName)
+            }
             snapshotName = ConnectProjectCreationApi.snapshotName(repo)
         } else if (environmentName != null) {
             startingPoint = StartingPointDto(environmentName = environmentName)
@@ -181,6 +191,38 @@ class ConnectAgentStartApi(
         return record ?: ComposerSnapshot(request.agentId, name = request.name, archived = false)
     }
 
+    /** The repository a machine's start names, and the account environment it is Cursor's copy of, when one is. */
+    private class MachineRepository(val url: String, val environmentPublicId: String?, val environmentName: String?)
+
+    /**
+     * The desktop's `nZS` → `D0t` → `_resolveCloudStartTarget` for a machine picked with [requested]: the account's own
+     * project for the repository the machine registered, matched by its host-less `owner/name` (`T1t`, any case). An
+     * account environment whose one repository has that label (`ListEnvironments`, `BSS`) gives its URL, its public id
+     * (`environment_public_id`) and its name (`environment_name`); without one the repository goes as picked — the
+     * catalogue's URL, or the worker's own — named `owner/name` as the desktop names a repository template. Whatever
+     * the account cannot say leaves the repository as picked: the start goes out all the same.
+     */
+    private suspend fun machineRepository(requested: String): MachineRepository {
+        val label = RepoRemote.label(requested)
+        val environment = label?.let { wanted -> runCatching { environmentFor(wanted) }.getOrNull() }
+        if (environment != null) {
+            val url = ConnectProjectCreationApi.canonicalUrl(environment.repoUrl).ifEmpty { requested }
+            return MachineRepository(url, environment.publicId, environment.name)
+        }
+        return MachineRepository(requested, environmentPublicId = null, environmentName = label)
+    }
+
+    /** The account's single-repository environment for [label], the first the account lists (`qZ` keeps one per repository). */
+    private suspend fun environmentFor(label: String): AccountEnvironment? {
+        var pageToken: String? = null
+        for (page in 0 until ConnectProjectCreationApi.MAX_ENVIRONMENT_PAGES) {
+            val listed = call("ListEnvironments", ListEnvironmentsDto(includeEnvironmentJson = false, pageToken = pageToken), ListEnvironmentsDto.serializer(), ListEnvironmentsResponseDto.serializer())
+            listed.environments.firstNotNullOfOrNull { entry -> AccountEnvironment.of(entry)?.takeIf { RepoRemote.label(it.repoUrl).equals(label, ignoreCase = true) } }?.let { return it }
+            pageToken = listed.nextPageToken?.takeIf { listed.hasMore && it.isNotBlank() } ?: return null
+        }
+        return null
+    }
+
     private class PrivateWorkerFields(val labels: List<LabelDto>, val ownerFilter: OwnerFilterDto?, val workerId: String?)
 
     /**
@@ -243,6 +285,39 @@ class ConnectAgentStartApi(
         /** Field 55. */
         val usePrivateWorker: Boolean? = null,
     )
+
+    /** `aiserver.v1.ListEnvironmentsRequest` as `_fetchLogicalEnvironments` sends it: `{include_environment_json: false}`, then the page. */
+    @Serializable
+    private data class ListEnvironmentsDto(val includeEnvironmentJson: Boolean, val pageToken: String? = null)
+
+    /** Each environment kept as it came and read on its own ([AccountEnvironment.of]): one this build cannot read costs nothing else. */
+    @Serializable
+    private data class ListEnvironmentsResponseDto(val environments: List<JsonElement> = emptyList(), val hasMore: Boolean = false, val nextPageToken: String? = null)
+
+    /** `aiserver.v1.LogicalEnvironment {public_id, name, repo_config {repos[{repo_url}]}}`, the fields `BSS` keeps. */
+    @Serializable
+    private data class EnvironmentDto(val publicId: String? = null, val name: String? = null, val repoConfig: EnvironmentRepoConfigDto? = null)
+
+    @Serializable
+    private data class EnvironmentRepoConfigDto(val repos: List<EnvironmentRepoDto> = emptyList())
+
+    @Serializable
+    private data class EnvironmentRepoDto(val repoUrl: String = "")
+
+    /** An environment of one repository, as `BSS` makes a template of it: several repositories, or none, is no machine's. */
+    private class AccountEnvironment(val repoUrl: String, val publicId: String?, val name: String?) {
+        companion object {
+            fun of(entry: JsonElement): AccountEnvironment? {
+                val environment = runCatching { CursorJson.decodeFromJsonElement(EnvironmentDto.serializer(), entry) }.getOrNull() ?: return null
+                val urls = environment.repoConfig?.repos.orEmpty().map { it.repoUrl.trim() }.filter { it.isNotEmpty() }
+                val url = urls.firstOrNull() ?: return null
+                if (urls.map(ConnectProjectCreationApi::snapshotName).distinct().size > 1) return null
+                // `LWe`: a public id of digits alone is a legacy row id, which no start names.
+                val publicId = environment.publicId?.trim()?.takeIf { it.isNotEmpty() && !it.all(Char::isDigit) }
+                return AccountEnvironment(url, publicId, environment.name?.trim()?.takeIf { it.isNotEmpty() })
+            }
+        }
+    }
 
     @Serializable
     private data class LabelDto(val key: String, val value: String)

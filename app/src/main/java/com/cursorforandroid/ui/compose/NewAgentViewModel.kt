@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.cursorforandroid.AppGraph
+import com.cursorforandroid.data.api.AccountBranch
 import com.cursorforandroid.data.api.userMessage
 import com.cursorforandroid.data.local.DraftStore
 import com.cursorforandroid.data.local.PreferencesStore.ComposerDefaults
@@ -16,6 +17,7 @@ import com.cursorforandroid.data.repo.SlashScope
 import com.cursorforandroid.domain.AccountModel
 import com.cursorforandroid.domain.Agent
 import com.cursorforandroid.domain.BranchOption
+import com.cursorforandroid.domain.RepoRemote
 import com.cursorforandroid.domain.DeviceOption
 import com.cursorforandroid.domain.DeviceTarget
 import com.cursorforandroid.domain.EnvType
@@ -41,6 +43,7 @@ import com.cursorforandroid.ui.components.PendingAttachment
 import com.cursorforandroid.ui.components.PendingFile
 import com.cursorforandroid.ui.components.withinSlots
 import com.cursorforandroid.util.AppClock
+import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.delay
@@ -50,6 +53,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.channelFlow
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
@@ -86,8 +90,18 @@ data class NewAgentUiState(
      * branch is called — `GET /v1/repositories` returns bare URLs — so it is never guessed at.
      */
     val ref: String = "",
-    /** What the branch picker lists for [selectedRepo]: the branches its agents started from or pushed, most recent first. */
+    /**
+     * What the branch picker lists for [selectedRepo]: the branches its agents started from or pushed, most recent
+     * first, then — in Extended mode — the rest of what the account lists for it (`GetRepositoryBranches`).
+     */
     val branches: List<BranchOption> = emptyList(),
+    /** Some of [branches] came from the account's list of the repository's branches. */
+    val branchesListedByAccount: Boolean = false,
+    /**
+     * Extended mode's machine start is on (`Capabilities.machineStart`): a chat on a machine goes out the desktop's way,
+     * from the machine's checkout as it is unless a branch is picked.
+     */
+    val machineStartEnabled: Boolean = false,
     val models: List<ModelOption> = emptyList(),
     val selectedModel: ModelOption? = null,
     val selectedVariant: ModelVariant? = null,
@@ -136,6 +150,10 @@ data class NewAgentUiState(
      */
     val modelLabel: String get() = selectedModel?.displayName ?: AccountModel.AUTO_LABEL
     val deviceLabel: String get() = selectedDevice.label
+    /** The machine's own checkout decides where an unpicked branch starts: what the desktop sends for a machine (no ref). */
+    val startsFromCheckout: Boolean get() = machineStartEnabled && selectedDevice.type == EnvType.MACHINE && selectedRepo != null && !noRepo
+    /** The branch chip's text: the ref picked, else what leaving it unpicked means here. */
+    val branchLabel: String get() = ref.trim().ifEmpty { if (startsFromCheckout) CURRENT_BRANCH else DEFAULT_BRANCH }
     /**
      * The source chip's text: the repository's short name, or — with none chosen — what the web composer calls the
      * same choice, "Start from scratch"; "Repository" only while there is neither yet.
@@ -157,6 +175,8 @@ data class NewAgentUiState(
     companion object {
         /** The web composer's name for a chat with no repository: the source the Agents Window offers beside the repositories. */
         const val START_FROM_SCRATCH = "Start from scratch"
+        const val DEFAULT_BRANCH = "default"
+        const val CURRENT_BRANCH = "current"
     }
 }
 
@@ -233,6 +253,8 @@ class NewAgentViewModel(
     private var agents: List<Agent> = emptyList()
     /** Live workers and pools from the fleet endpoints; merged with [agents] for the device picker. */
     private var liveDevices: List<DeviceOption> = emptyList()
+    /** The account's branches for each repository asked about this session (see [AppGraph.accountBranches]). */
+    private val accountBranches = ConcurrentHashMap<String, List<AccountBranch>>()
 
     /** Where each attachment's bytes already are in the open draft's directory, by attachment id, so a save rewrites none of them. */
     @Volatile private var savedImages: Map<String, DraftStore.Image> = emptyMap()
@@ -300,12 +322,20 @@ class NewAgentViewModel(
             graph.prefs.pinnedModelIds.collect { ids -> _state.update { it.copy(pinnedModelIds = ids) } }
         }
         viewModelScope.launch {
+            // Extended mode: the branch picker lists the repository's real refs as the account has them, beside the agents' own.
+            graph.extendedMode.capabilities
+                .combine(_state.map { s -> s.selectedRepo?.takeIf { !s.noRepo }?.url }.distinctUntilChanged()) { caps, url -> url.takeIf { caps.accountSession } }
+                .distinctUntilChanged()
+                .collectLatest { url -> if (url != null) loadAccountBranches(url) }
+        }
+        viewModelScope.launch {
             // Files of any type ride the account's start alone: with the mode turned off under attached files, the
             // files come off rather than stay to refuse the launch.
             graph.extendedMode.capabilities.collect { caps ->
                 val allowed = caps.promptFiles && !graph.session.isDemo
                 if (!allowed) _state.value.files.forEach { graph.attachmentUploads.cancel(it.id) }
-                _state.update { s -> if (allowed) s.copy(canAttachFiles = true) else s.copy(canAttachFiles = false, files = emptyList()) }
+                val machineStart = caps.machineStart && !graph.session.isDemo
+                _state.update { s -> (if (allowed) s.copy(canAttachFiles = true) else s.copy(canAttachFiles = false, files = emptyList())).copy(machineStartEnabled = machineStart) }
             }
         }
         viewModelScope.launch {
@@ -551,8 +581,18 @@ class NewAgentViewModel(
     private fun NewAgentUiState.withPickerLists(): NewAgentUiState = withDevices().withBranches().withRecentRepos()
 
     private fun NewAgentUiState.withBranches(): NewAgentUiState {
-        val repo = selectedRepo?.takeIf { !noRepo } ?: return copy(branches = emptyList())
-        return copy(branches = KnownBranches.forRepository(agents, repo.url))
+        val repo = selectedRepo?.takeIf { !noRepo } ?: return copy(branches = emptyList(), branchesListedByAccount = false)
+        val listed = accountBranches[repo.url].orEmpty()
+        return copy(branches = BranchOption.merged(KnownBranches.forRepository(agents, repo.url), listed.map { it.name to it.isDefault }), branchesListedByAccount = listed.isNotEmpty())
+    }
+
+    /** Asks the account for [repoUrl]'s branches, once a session, and puts them in the picker when they come. */
+    private suspend fun loadAccountBranches(repoUrl: String) {
+        if (accountBranches.containsKey(repoUrl)) return
+        val listed = graph.accountBranches(repoUrl)
+        if (listed.isEmpty()) return
+        accountBranches[repoUrl] = listed
+        _state.update { s -> if (s.selectedRepo?.url == repoUrl) s.withBranches() else s }
     }
 
     /**
@@ -569,19 +609,33 @@ class NewAgentViewModel(
 
     /**
      * Puts the device's repository [url] in the selection, as a pick of it would (see [withRepo]), and marks the
-     * selection the device's. The catalogue's own row stands for it when the catalogue lists it.
+     * selection the device's. The account's own copy of it stands for it when the account has one (see
+     * [accountRepositoryFor]): a worker registers its checkout only as `owner/name`, and [url] may be a guess.
      */
     private fun NewAgentUiState.following(url: String): NewAgentUiState {
-        val repo = repositories.firstOrNull { it.isAt(url) } ?: Repository(url)
+        val repo = accountRepositoryFor(url) ?: repositories.firstOrNull { it.isAt(url) } ?: Repository(url)
         val already = !noRepo && selectedRepo?.isAt(url) == true
         // A branch chosen for the repository this replaces says nothing about the machine's checkout.
         val replaced = noRepo || (selectedRepo != null && !already)
         val next = when {
-            already -> this
+            // The same repository, perhaps known as the account's own copy only now: the branch picked for it stays.
+            already -> if (selectedRepo?.url == repo.url) this else copy(selectedRepo = repo)
             replaced -> withRepo(repo).copy(ref = "")
             else -> withRepo(repo)
         }
         return next.copy(repoFollowsDevice = true, deviceRepoUrl = url)
+    }
+
+    /**
+     * The desktop's `nZS` for a machine's repository [url]: the project the account already has for the same host-less
+     * `owner/name` (`T1t`, any case) — the catalogue's row, else the repository the account's chats ran on — rather
+     * than the URL the worker's listing gave, which is `https://github.com/{owner}/{name}` when it gave none.
+     */
+    private fun NewAgentUiState.accountRepositoryFor(url: String): Repository? {
+        val label = RepoRemote.label(url)?.lowercase() ?: return null
+        repositories.firstOrNull { RepoRemote.label(it.url)?.lowercase() == label }?.let { return it }
+        val ran = agents.firstNotNullOfOrNull { agent -> agent.repoUrl?.takeIf { RepoRemote.label(it)?.lowercase() == label } } ?: return null
+        return Repository(RepoRemote.canonical(ran) ?: ran)
     }
 
     /**
