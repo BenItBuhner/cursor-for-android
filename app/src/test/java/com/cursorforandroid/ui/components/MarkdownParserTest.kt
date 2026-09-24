@@ -517,15 +517,28 @@ class InlineMarkdownTest {
 
     private val commandColor = Color(0xFFF1B467)
 
-    private fun renderCommands(text: String) = InlineMarkdown.render(
+    /** One colour for every command, modes' included, so these tests are about which tokens are painted. */
+    private fun renderCommands(text: String, tints: CommandTints = CommandTints(commandColor, emptyMap())) = InlineMarkdown.render(
         text = text,
         base = TextStyle(fontSize = 14.sp),
         codeColor = Color.Black,
         codeBackground = Color.LightGray,
         linkColor = Color.Blue,
         boldColor = Color.Black,
-        commandColor = commandColor,
+        commandTints = tints,
     )
+
+    @Test
+    fun `a mode's token in a bubble takes its pill's tint and any other command the command yellow`() {
+        val prompt = "/multitask fix the flaky test, **then /review it** and /debug the rest"
+        val rendered = renderCommands(prompt, CommandTints.forTheme(dark = true))
+        val painted = rendered.spanStyles.filter { it.item.color.alpha > 0f && it.item.color != Color.Black }.map { rendered.text.substring(it.start, it.end) to it.item.color }
+        assertThat(painted).containsExactly(
+            "/multitask" to Color(0xFF9386F2),
+            "/review" to Color(0xFFF1B467),
+            "/debug" to Color(0xFFFC6B83),
+        ).inOrder()
+    }
 
     /** The stretches of [text]'s rendered form drawn in the command colour, in order. */
     private fun commandsIn(text: String): List<String> {

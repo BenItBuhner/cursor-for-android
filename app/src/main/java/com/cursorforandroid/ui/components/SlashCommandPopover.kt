@@ -11,10 +11,14 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.MutableState
+import androidx.compose.runtime.Stable
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.TextFieldValue
@@ -64,6 +68,30 @@ object SlashTokens {
     }
 
     /**
+     * A `/` phrase a model's name may be typed as — "/Opus 4", "/gpt-5.5", "/opus 4.7 max" — where the cursor is in no
+     * [at] token: from a slash that opens the text or follows whitespace, on the cursor's line, to the end of the word
+     * the cursor is in, made of letters, digits, spaces, dots and dashes and no longer than a model's name with its
+     * parameters. Whether it names a model is the caller's to ask ([com.cursorforandroid.domain.ModelSearch]); a
+     * phrase that names none is the message being written after a command.
+     */
+    fun phraseAt(text: String, selection: TextRange): SlashToken? {
+        if (!selection.collapsed) return null
+        val cursor = selection.start
+        if (cursor < 2 || cursor > text.length) return null
+        val lineStart = text.lastIndexOf('\n', cursor - 1) + 1
+        val start = text.lastIndexOf('/', cursor - 1)
+        if (start < lineStart || (start > 0 && !text[start - 1].isWhitespace())) return null
+        var end = cursor
+        while (end < text.length && !text[end].isWhitespace()) end++
+        val body = text.substring(start + 1, end)
+        if (body.length > PHRASE_MAX || !PHRASE.matches(body)) return null
+        return SlashToken(start, end, body.lowercase())
+    }
+
+    private val PHRASE = Regex("^[A-Za-z0-9][A-Za-z0-9. -]*$")
+    private const val PHRASE_MAX = 48
+
+    /**
      * [value] with the token replaced by `/name` and one space, the cursor after the space, so the argument (or the
      * message) is typed next. A space already following the token is not doubled.
      */
@@ -80,19 +108,35 @@ object SlashTokens {
 }
 
 /**
- * What the `/` popover lists for [token] and which of it a physical keyboard has highlighted ([popoverKeys]). The
- * highlight starts on the first row as the popover opens on a token, and goes back to it whenever the query starts or
- * stops being empty, as the desktop's `/` menu has it.
+ * What the `/` popover lists ([SlashMenu.items]), which row a physical keyboard has highlighted ([selection], for
+ * [popoverKeys]), and which sections a "Show N more" row has opened ([expand]).
+ */
+@Stable
+class SlashSuggestions internal constructor(val selection: PopoverSelection<SlashItem>, private val expanded: MutableState<Set<SlashSection>>) {
+    val items: List<SlashItem> get() = selection.items
+
+    /** Lists all of [section], the highlight staying on the row it was on: the first of those just shown. */
+    fun expand(section: SlashSection) {
+        expanded.value = expanded.value + section
+    }
+}
+
+/**
+ * The `/` popover's rows for [token] and [offer]. The highlight starts on the first row as the popover opens on a
+ * token, and goes back to it whenever the query starts or stops being empty, as the desktop's `/` menu has it; the
+ * sections a "Show N more" opened stay open until the popover opens on another token.
  */
 @Composable
-fun rememberSlashSuggestions(token: SlashToken?, catalog: SlashCatalog, recent: List<String>): PopoverSelection<SlashCommand> {
+fun rememberSlashSuggestions(token: SlashToken?, catalog: SlashCatalog, recent: List<String>, offer: SlashOffer = SlashOffer.None): SlashSuggestions {
+    val expanded = remember(token?.start) { mutableStateOf(emptySet<SlashSection>()) }
     // Held against the query rather than recomputed: this follows the composer, which follows every caret move and —
     // while a run streams — every delta, and the search walks the whole catalog.
     val query = token?.query
-    val results = remember(query, catalog, recent) {
-        if (query == null) emptyList() else catalog.search(query, recent)
+    val open = expanded.value
+    val results = remember(query, catalog, recent, offer, open) {
+        if (query == null) emptyList() else SlashMenu.items(query, catalog, recent, offer, open)
     }
-    return rememberPopoverSelection(results, token?.start, query.isNullOrEmpty())
+    return SlashSuggestions(rememberPopoverSelection(results, token?.start, query.isNullOrEmpty()), expanded)
 }
 
 /**
@@ -100,23 +144,24 @@ fun rememberSlashSuggestions(token: SlashToken?, catalog: SlashCatalog, recent: 
  * with nothing to list, which is the state the popover's notice exists for: the command being typed may be one the
  * machine has not reported yet.
  */
-fun slashPopoverOpen(token: SlashToken?, suggestions: PopoverSelection<SlashCommand>, catalog: SlashCatalog): Boolean =
+fun slashPopoverOpen(token: SlashToken?, suggestions: SlashSuggestions, catalog: SlashCatalog): Boolean =
     token != null && (suggestions.items.isNotEmpty() || catalog.pending)
 
 /**
- * The composer's `/` popover, as on cursor.com/agents: typing `/` under the cursor lists the commands and skills the
- * chat can lead with ([suggestions]), narrowed by what follows the slash, and a tap completes the token. It floats
- * over the composer's footer from the text field it is anchored to and, unlike the "+" menu, takes no focus, so the
- * keyboard stays up and typing carries on narrowing the list until it is empty or the token is left. With
- * [showHighlight], the row a physical keyboard's Enter would pick wears the highlight.
+ * The composer's `/` popover, as on cursor.com/agents and the desktop: typing `/` under the cursor lists the commands
+ * and skills the chat can lead with, the modes it can wear and the models it can switch to ([suggestions]), each
+ * under its small header, narrowed by what follows the slash; a tap completes the token, puts the mode on (or off)
+ * or sets the model. It floats over the composer's footer from the text field it is anchored to and, unlike the "+"
+ * menu, takes no focus, so the keyboard stays up and typing carries on narrowing the list until it is empty or the
+ * token is left. With [showHighlight], the row a physical keyboard's Enter would pick wears the highlight.
  */
 @Composable
 fun SlashCommandPopover(
     token: SlashToken?,
-    suggestions: PopoverSelection<SlashCommand>,
+    suggestions: SlashSuggestions,
     catalog: SlashCatalog,
     showHighlight: Boolean,
-    onPick: (SlashCommand) -> Unit,
+    onPick: (SlashItem) -> Unit,
     onDismiss: () -> Unit,
 ) {
     val colors = CursorTheme.colors
@@ -139,8 +184,21 @@ fun SlashCommandPopover(
         modifier = Modifier.semantics { contentDescription = "Slash commands" },
     ) {
         Column(Modifier.width(PopoverWidth).heightIn(max = PopoverMaxHeight).fadingVerticalScroll(surface = colors.elevated)) {
-            results.forEachIndexed { index, entry ->
-                SlashCommandRow(entry, highlighted = showHighlight && index == suggestions.highlighted, onClick = { onPick(entry) })
+            results.forEachIndexed { index, item ->
+                if (index == 0 || results[index - 1].section != item.section) SlashSectionHeader(item.section, first = index == 0)
+                val highlighted = showHighlight && index == suggestions.selection.highlighted
+                when (item) {
+                    is SlashItem.Command -> SlashCommandRow(item.command, highlighted, onClick = { onPick(item) })
+                    is SlashItem.Mode -> SlashModeRow(item, highlighted, onClick = { onPick(item) })
+                    is SlashItem.Model -> SlashModelRow(item, highlighted, onClick = { onPick(item) })
+                    is SlashItem.ShowMore -> CursorMenuItem(
+                        "Show ${item.remaining} more",
+                        icon = null,
+                        tint = colors.textTertiary,
+                        highlighted = highlighted,
+                        onClick = { onPick(item) },
+                    )
+                }
             }
         }
         if (catalog.pending) {
@@ -151,6 +209,61 @@ fun SlashCommandPopover(
             }
         }
     }
+}
+
+/** A section's small header above its first row, as the desktop's slash menu titles its groups. */
+@Composable
+private fun SlashSectionHeader(section: SlashSection, first: Boolean) {
+    Text(
+        section.title,
+        style = CursorTheme.typography.small,
+        color = CursorTheme.colors.textTertiary,
+        maxLines = 1,
+        modifier = Modifier
+            .padding(horizontal = CursorDimens.menuInset + CursorDimens.menuItemPadding)
+            .padding(top = if (first) 2.dp else 8.dp, bottom = 2.dp)
+            .semantics { heading() },
+    )
+}
+
+/** A mode: its name and the desktop's line for it, its glyph in its own colour; a check while it is worn. */
+@Composable
+private fun SlashModeRow(item: SlashItem.Mode, highlighted: Boolean, onClick: () -> Unit) {
+    val tint = pillTint(item.pill)
+    CursorMenuItem(
+        item.pill.label,
+        icon = null,
+        subtitle = item.pill.description,
+        subtitleMaxLines = 1,
+        highlighted = highlighted,
+        trailing = {
+            if (item.on) {
+                Icon(CursorIcons.Check, "On", tint = CursorTheme.colors.iconSecondary, modifier = Modifier.size(CursorDimens.menuIcon))
+                Spacer(Modifier.width(8.dp))
+            }
+            Icon(item.pill.icon, null, tint = tint, modifier = Modifier.size(CursorDimens.menuIcon))
+        },
+        onClick = onClick,
+    )
+}
+
+/**
+ * A model: its name, with the parameters a pick sets beside it when they are not the model's defaults ("Max effort ·
+ * Fast"), and a check on the one the composer is on.
+ */
+@Composable
+private fun SlashModelRow(item: SlashItem.Model, highlighted: Boolean, onClick: () -> Unit) {
+    val choice = item.choice
+    val variant = choice.variant
+    val hint = variant?.takeIf { it != choice.model.defaultVariant }?.let(choice.model::qualifier)
+    CursorMenuItem(
+        choice.label,
+        icon = null,
+        hint = hint,
+        highlighted = highlighted,
+        trailing = if (item.current) ({ Icon(CursorIcons.Check, "Current model", tint = CursorTheme.colors.iconSecondary, modifier = Modifier.size(CursorDimens.menuIcon)) }) else null,
+        onClick = onClick,
+    )
 }
 
 /** One suggestion: `/name` with its argument hint, and the description (or origin) beneath. */

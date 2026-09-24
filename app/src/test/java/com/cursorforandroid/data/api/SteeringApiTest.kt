@@ -139,6 +139,27 @@ class SteeringApiTest {
     }
 
     @Test
+    fun `Debug, Plan and a follow-up led by multitask carry their mode on both fields, the token kept in the text`() = runBlocking<Unit> {
+        server.enqueue(session("s"))
+        fun sent(followup: AccountFollowup): Triple<String?, String?, String?> {
+            server.enqueue(MockResponse().setBody("{}"))
+            runBlocking { api.addFollowup("bc-1", followup, synchronous = false) }
+            val body = generateSequence { server.takeRequest() }.first { it.path!!.endsWith("AddAsyncFollowupBackgroundComposer") }.json()
+            val message = body["followupMessage"]!!.jsonObject
+            val user = body["followupConversationAction"]!!.jsonObject["userMessageAction"]!!.jsonObject["userMessage"]!!.jsonObject
+            return Triple(message["agentMode"]?.jsonPrimitive?.content, user["mode"]?.jsonPrimitive?.content, user["text"]?.jsonPrimitive?.content)
+        }
+
+        assertThat(sent(AccountFollowup("It crashes on save", mode = AgentMode.DEBUG)))
+            .isEqualTo(Triple("AGENT_MODE_DEBUG", "AGENT_MODE_DEBUG", "It crashes on save"))
+        assertThat(sent(AccountFollowup("Now the tests", mode = AgentMode.PLAN)))
+            .isEqualTo(Triple("AGENT_MODE_PLAN", "AGENT_MODE_PLAN", "Now the tests"))
+        assertThat(sent(AccountFollowup("/multitask Split it up")))
+            .isEqualTo(Triple("AGENT_MODE_MULTITASK", "AGENT_MODE_MULTITASK", "/multitask Split it up"))
+        assertThat(sent(AccountFollowup("/multitask Split it up", mode = AgentMode.AGENT)).first).isEqualTo("AGENT_MODE_MULTITASK")
+    }
+
+    @Test
     fun `a follow-up with files carries them as selected_documents, uploaded by reference or inline, beside the images`() = runBlocking<Unit> {
         server.enqueue(session("s"))
         server.enqueue(MockResponse().setBody("""{"runId":"run-8"}"""))

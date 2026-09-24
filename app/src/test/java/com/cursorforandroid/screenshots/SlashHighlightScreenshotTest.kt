@@ -42,8 +42,10 @@ import java.io.File
 /**
  * A `/command` wherever the reader's own words are drawn, in one frame: the `/goal` prompt as its bubble in the
  * transcript, a `/review` follow-up on its queued card, and a `/review` still in the composer beside the Plan pill.
- * The command tokens take the pill's tint (`slashCommandTint`) and the rest of each text stays as it is, so the
- * three surfaces and the pill read as one thing; once in the dark theme, once in the light. Same device qualifiers
+ * The command tokens take the desktop's command yellow, the Plan pill's (`CommandTints`), and the rest of each text
+ * stays as it is, so the three surfaces and the pill read as one thing; once in the dark theme, once in the light.
+ * Then the modes' own tokens among them — `/multitask` and `/debug` in a sent prompt, `/ask` on a queued card — each
+ * in its mode's colour beside a `/review` in the yellow. Same device qualifiers
  * as [AppScreenshotTest]; the layout is the chat's own — the transcript's page over the dock, the composer's gutter
  * at each side, the card docked over the box.
  */
@@ -59,10 +61,13 @@ class SlashHighlightScreenshotTest {
 
     private val prompt = UserMessage("m1", "/goal Make me a million dollars. Make no mistakes", 1_789_380_000_000L)
     private val queued = listOf(QueuedFollowUp("q-1", "/review Check the tax treatment before you wire anything", queuedAtMillis = 1_000L))
+    private val modesPrompt =
+        UserMessage("m2", "/multitask Split the payout fix across the ledger and the wire step, /review each half, then /debug what still fails", 1_789_380_000_000L)
+    private val modesQueued = listOf(QueuedFollowUp("q-2", "/ask Why does the wire step round the fee down?", queuedAtMillis = 1_000L))
 
     @OptIn(ExperimentalMaterial3Api::class)
     @Composable
-    private fun Scene(mode: ThemeMode) {
+    private fun Scene(mode: ThemeMode, prompt: UserMessage = this.prompt, queued: List<QueuedFollowUp> = this.queued) {
         CursorTheme(mode = mode) {
             // Ripples on API 31+ animate a noise "sparkle", so a frame caught mid-fade is never reproducible.
             CompositionLocalProvider(LocalRippleConfiguration provides null) {
@@ -122,5 +127,17 @@ class SlashHighlightScreenshotTest {
     fun lightTheme() {
         compose.setContent { Scene(ThemeMode.Light) }
         capture("111_slash_highlight_light")
+    }
+
+    @Test
+    fun modeTokensDark() {
+        compose.setContent { Scene(ThemeMode.Dark, modesPrompt, modesQueued) }
+        capture("499_slash_highlight_modes_dark")
+    }
+
+    @Test
+    fun modeTokensLight() {
+        compose.setContent { Scene(ThemeMode.Light, modesPrompt, modesQueued) }
+        capture("517_slash_highlight_modes_light")
     }
 }

@@ -78,6 +78,8 @@ class DraftStore(context: Context) {
         val modelChosen: Boolean = false,
         val autoCreatePr: Boolean = false,
         val planMode: Boolean = false,
+        /** Ask or Debug as [com.cursorforandroid.domain.AgentMode] names it, for a draft in one of Extended mode's modes; null otherwise. */
+        val mode: String? = null,
         val nonce: String = "",
         /** The chat this draft was sent as, while the server has yet to take it; the sidebar shows the chat, not the draft. */
         val launchedAs: String? = null,

@@ -16,12 +16,12 @@ import androidx.compose.ui.semantics.getOrNull
 import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsFocused
 import androidx.compose.ui.test.hasContentDescription
 import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
-import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
@@ -41,7 +41,7 @@ import org.robolectric.annotation.GraphicsMode
 import kotlin.math.abs
 
 /**
- * The composer's Plan and Multitask pills and its `/command` highlight in the Plan pill's tint: what the owner holds
+ * The composer's Plan and Multitask pills and its `/command` highlight in the desktop's tints: what the owner holds
  * and sends stays the prompt it always was (`/multitask …` in front, plan mode as a flag), and only the presentation
  * changes.
  */
@@ -90,7 +90,8 @@ class ComposerPillsTest {
 
     private fun bounds(matcher: SemanticsMatcher): Rect = compose.onNode(matcher).fetchSemanticsNode().boundsInRoot
 
-    private fun pillCount(label: String) = compose.onAllNodesWithText(label).fetchSemanticsNodes().size
+    /** The pills worn, by their crosses: the popover's mode rows carry the same words. */
+    private fun pillCount(label: String) = compose.onAllNodes(hasContentDescription("Remove $label")).fetchSemanticsNodes().size
 
     @Test
     fun `plan mode is a pill between plus and the model chip, and its cross puts it off`() {
@@ -172,9 +173,10 @@ class ComposerPillsTest {
     fun `picking plan or multitask from the popover makes the pill instead of text`() {
         show()
 
+        // The modes are rows of their own, named and described as the desktop's mode menu has them.
         field.performTextInput("/pl")
-        compose.waitUntil(10_000) { compose.onAllNodes(hasText("Explore first and draft a plan", substring = true)).fetchSemanticsNodes().isNotEmpty() }
-        compose.onNodeWithText("/plan").performClick()
+        compose.waitUntil(10_000) { compose.onAllNodes(hasText("Generate an implementation plan", substring = true)).fetchSemanticsNodes().isNotEmpty() }
+        compose.onNodeWithText("Generate an implementation plan").performClick()
         compose.waitUntil(10_000) { planMode }
         assertThat(shown()).isEmpty()
         compose.runOnIdle { assertThat(value).isEmpty() }
@@ -182,7 +184,7 @@ class ComposerPillsTest {
         // Multitask picked next replaces the plan: one slot, one pill.
         field.performTextInput("/mu")
         compose.waitUntil(10_000) { compose.onAllNodes(hasText("Orchestrate multiple subagents", substring = true)).fetchSemanticsNodes().isNotEmpty() }
-        compose.onNodeWithText("/multitask").performClick()
+        compose.onNodeWithText("Orchestrate multiple subagents in parallel").performClick()
         compose.waitUntil(10_000) { value == "/multitask " }
         assertThat(shown()).isEmpty()
         compose.runOnIdle {
@@ -231,6 +233,53 @@ class ComposerPillsTest {
         compose.onAllNodes(hasText("Orchestrate multiple subagents", substring = true)).assertCountEquals(0)
         compose.runOnIdle { assertThat(planMode).isTrue() }
         assertThat(pillCount("Plan")).isEqualTo(1)
+    }
+
+    @Test
+    fun `the plus menu opens on Plan alone, which puts a multitask off, and puts itself off again`() {
+        value = "/multitask fix the flaky test"
+        show(extended = true)
+
+        compose.onNodeWithContentDescription("Add to prompt").performClick()
+        val planRow = hasText(ModePills.Pill.Plan.description)
+        compose.onNode(planRow).assertIsDisplayed()
+        // First, over the pickers, as the desktop's menu opens on its modes; and the only mode, Extended or not.
+        assertThat(bounds(planRow).bottom).isLessThan(bounds(hasText(MEDIA_LABEL_IMAGES)).top)
+        for (other in listOf(ModePills.Pill.Multitask, ModePills.Pill.Ask, ModePills.Pill.Debug)) {
+            compose.onAllNodes(hasText(other.description)).assertCountEquals(0)
+        }
+        compose.onAllNodes(hasContentDescription("On")).assertCountEquals(0)
+
+        compose.onNode(planRow).performClick()
+        compose.runOnIdle {
+            assertThat(planMode).isTrue()
+            assertThat(value).isEqualTo("fix the flaky test")
+            assertThat(modeChanges).containsExactly(ModePills.Pill.Plan)
+        }
+        compose.onAllNodes(hasText("Skills")).assertCountEquals(0)
+        assertThat(pillCount("Plan")).isEqualTo(1)
+        assertThat(pillCount("Multitask")).isEqualTo(0)
+        // The field is handed back, as the desktop refocuses its editor after a pick.
+        field.assertIsFocused()
+
+        compose.onNodeWithContentDescription("Add to prompt").performClick()
+        compose.onNodeWithContentDescription("On").assertIsDisplayed()
+        compose.onNode(planRow).performClick()
+        compose.runOnIdle {
+            assertThat(planMode).isFalse()
+            assertThat(value).isEqualTo("fix the flaky test")
+            assertThat(modeChanges).containsExactly(ModePills.Pill.Plan, null).inOrder()
+        }
+        assertThat(pillCount("Plan")).isEqualTo(0)
+    }
+
+    @Test
+    fun `a composer that sets no mode has no Plan row in its plus menu`() {
+        show(plan = false)
+
+        compose.onNodeWithContentDescription("Add to prompt").performClick()
+        compose.onNodeWithText("Skills").assertIsDisplayed()
+        compose.onAllNodes(hasText(ModePills.Pill.Plan.description)).assertCountEquals(0)
     }
 
     @Test
@@ -329,29 +378,29 @@ class ComposerPillsTest {
     }
 
     @Test
-    fun `slash commands are painted in the Plan pill's tint and the rest of the text is not`() {
+    fun `slash commands are painted in the desktop's command yellow and the rest of the text is not`() {
         show()
 
         field.performTextInput("ship it")
         compose.waitForIdle()
-        assertThat(pixelsOfTintInField(PillAmberDark)).isEqualTo(0)
+        assertThat(pixelsOfTintInField(YellowDark)).isEqualTo(0)
 
         field.performTextClearance()
         field.performTextInput("/goal ship it")
         compose.waitForIdle()
-        assertThat(pixelsOfTintInField(PillAmberDark)).isGreaterThan(0)
-        // The pill's tint and no other: the brand orange the commands once wore is gone from the field.
+        assertThat(pixelsOfTintInField(YellowDark)).isGreaterThan(0)
+        // The yellow and no other: the brand orange the commands once wore is gone from the field.
         assertThat(pixelsOfTintInField(Color(0xFFF54E00))).isEqualTo(0)
     }
 
     @Test
-    fun `the highlight is drawn in the light theme too, in the light pill's tint`() {
+    fun `the highlight is drawn in the light theme too, in the light yellow`() {
         show(mode = ThemeMode.Light)
 
         field.performTextInput("/review ship it")
         compose.waitForIdle()
-        assertThat(pixelsOfTintInField(PillAmberLight)).isGreaterThan(0)
-        assertThat(pixelsOfTintInField(PillAmberDark)).isEqualTo(0)
+        assertThat(pixelsOfTintInField(YellowLight)).isGreaterThan(0)
+        assertThat(pixelsOfTintInField(YellowDark)).isEqualTo(0)
     }
 
     @Test
@@ -362,8 +411,20 @@ class ComposerPillsTest {
         field.performTextInput("/review ship it")
         compose.waitForIdle()
         // The pill's label is drawn in its tint; the field's command in the same one — the two are one thing.
-        assertThat(pixelsOfTint(compose.onNode(hasText("Plan")).fetchSemanticsNode().boundsInWindow, PillAmberDark)).isGreaterThan(0)
-        assertThat(pixelsOfTintInField(PillAmberDark)).isGreaterThan(0)
+        assertThat(pixelsOfTint(compose.onNode(hasText("Plan")).fetchSemanticsNode().boundsInWindow, YellowDark)).isGreaterThan(0)
+        assertThat(pixelsOfTintInField(YellowDark)).isGreaterThan(0)
+    }
+
+    @Test
+    fun `a mode's token left in the field wears its pill's tint, not the command yellow and never blue`() {
+        // Seeded rather than typed: a closed token becomes its pill, and an open one under the caret opens the popover.
+        value = "ship it /ask then /debug"
+        show(extended = true)
+
+        assertThat(pixelsOfTintInField(Color(0xFF3FA266))).isGreaterThan(0)
+        assertThat(pixelsOfTintInField(Color(0xFFFC6B83))).isGreaterThan(0)
+        assertThat(pixelsOfTintInField(YellowDark)).isEqualTo(0)
+        assertThat(pixelsOfTintInField(Color(0xFF82AAFF))).isEqualTo(0)
     }
 
     /** Pixels inside the field whose colour is [tint], the glyphs of a command being drawn in it (see [pixelsOfTint]). */
@@ -392,3 +453,7 @@ class ComposerPillsTest {
 
 /** How far a channel may be from the tint's and still be the tint: a rounding step of 8-bit colour, not a blend. */
 private const val Tolerance = 2.5f / 255f
+
+/** The desktop's glass `--cursor-yellow`, dark and light: the command chip's text and the Plan pill's tint. */
+private val YellowDark = Color(0xFFF1B467)
+private val YellowLight = Color(0xFFA46701)

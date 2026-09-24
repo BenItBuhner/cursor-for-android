@@ -34,6 +34,28 @@ class SlashTokensTest {
         assertThat(SlashTokens.at(TextFieldValue("/go", TextRange(1, 3)))).isNull()
     }
 
+    private fun phrase(text: String, cursor: Int = text.length) = SlashTokens.phraseAt(text, TextRange(cursor))
+
+    @Test
+    fun `a phrase a model's name is typed as runs from its slash to the end of the cursor's word`() {
+        assertThat(phrase("/Opus 5")).isEqualTo(SlashToken(0, 7, "opus 5"))
+        assertThat(phrase("/gpt-5.6")).isEqualTo(SlashToken(0, 8, "gpt-5.6"))
+        assertThat(phrase("/opus 5.5 max ")).isEqualTo(SlashToken(0, 14, "opus 5.5 max "))
+        assertThat(phrase("fix it /Grok 4.7", 13)).isEqualTo(SlashToken(7, 16, "grok 4.7"))
+        assertThat(phrase("first line\n/sonnet 5")).isEqualTo(SlashToken(11, 20, "sonnet 5"))
+    }
+
+    @Test
+    fun `no phrase across a line, after a path, for other characters, past a name's length, or for a selection`() {
+        assertThat(phrase("/opus\n5")).isNull()
+        assertThat(phrase("see src/main 5")).isNull()
+        assertThat(phrase("/goal fix the (login)")).isNull()
+        assertThat(phrase("/" + "a".repeat(49))).isNull()
+        assertThat(phrase("/")).isNull()
+        assertThat(phrase("/ opus")).isNull()
+        assertThat(SlashTokens.phraseAt("/opus 5", TextRange(2, 7))).isNull()
+    }
+
     @Test
     fun `completing replaces the token with the command and one space, and puts the cursor after it`() {
         val typed = TextFieldValue("/go", TextRange(3))

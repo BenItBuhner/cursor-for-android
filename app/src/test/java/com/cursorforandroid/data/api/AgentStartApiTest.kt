@@ -1,6 +1,7 @@
 package com.cursorforandroid.data.api
 
 import com.cursorforandroid.data.auth.SessionTokenProvider
+import com.cursorforandroid.domain.AgentMode
 import com.cursorforandroid.domain.McpServer
 import com.cursorforandroid.domain.McpTransport
 import com.cursorforandroid.domain.ModelParam
@@ -19,6 +20,7 @@ import org.junit.After
 import org.junit.Before
 import org.junit.Test
 import java.util.Base64
+import java.util.concurrent.TimeUnit
 
 /**
  * The desktop's ordinary cloud-agent start on the wire (Cursor 3.20.21 `workbench.glass.main.js`,
@@ -67,7 +69,7 @@ class AgentStartApiTest {
                 ref = "feature/spec",
                 modelId = "claude-4",
                 modelParams = listOf(ModelParam("effort", "high")),
-                planMode = true,
+                mode = AgentMode.PLAN,
                 autoCreatePr = true,
                 name = "Spec work",
                 mcpServers = listOf(
@@ -230,6 +232,29 @@ class AgentStartApiTest {
         assertThat(startingPoint["url"]?.jsonPrimitive?.content).isEqualTo("https://github.com/acme/billing")
         assertThat(startingPoint["environmentName"]?.jsonPrimitive?.content).isEqualTo("staging")
         assertThat(startingPoint.containsKey("ref")).isFalse()
+    }
+
+    @Test
+    fun `Ask and Debug go out on user_message mode, and a prompt led by multitask as Multitask with its token kept, as the desktop starts them`() = runBlocking<Unit> {
+        server.enqueue(session("s"))
+        fun sent(request: StartRequest): Pair<String?, String?> {
+            server.enqueue(MockResponse().setBody("{}"))
+            runBlocking { api.start(request) }
+            val start = generateSequence { server.takeRequest(5, TimeUnit.SECONDS) }.first { it.path!!.endsWith("StartBackgroundComposerFromSnapshot") }
+            val message = start.json()["conversationAction"]!!.jsonObject["userMessageAction"]!!.jsonObject["userMessage"]!!.jsonObject
+            return message["mode"]?.jsonPrimitive?.content to message["text"]?.jsonPrimitive?.content
+        }
+        val repo = "https://github.com/acme/billing"
+
+        assertThat(sent(StartRequest(agentId = "bc-m1", text = "Why is the build slow?", repoUrl = repo, mode = AgentMode.ASK)))
+            .isEqualTo("AGENT_MODE_ASK" to "Why is the build slow?")
+        assertThat(sent(StartRequest(agentId = "bc-m2", text = "The login loops", repoUrl = repo, mode = AgentMode.DEBUG)))
+            .isEqualTo("AGENT_MODE_DEBUG" to "The login loops")
+        assertThat(sent(StartRequest(agentId = "bc-m3", text = "/multitask Port the three services", repoUrl = repo)))
+            .isEqualTo("AGENT_MODE_MULTITASK" to "/multitask Port the three services")
+        // A mode asked for outright wins over the token, as the composer never sends both.
+        assertThat(sent(StartRequest(agentId = "bc-m4", text = "/multitask Port them", repoUrl = repo, mode = AgentMode.PLAN)).first)
+            .isEqualTo("AGENT_MODE_PLAN")
     }
 
     @Test

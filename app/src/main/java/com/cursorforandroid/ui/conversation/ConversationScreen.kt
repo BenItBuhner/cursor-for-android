@@ -740,6 +740,10 @@ fun ConversationScreen(
                 modePill = picker.modePill,
                 onModePill = viewModel::setModePill,
                 extendedModes = capabilities.agentModes && !isDemo,
+                // The `/` popover's models switch the next follow-up's model, as the chip's picker does.
+                models = picker.models,
+                currentModel = picker.selected,
+                onPickModel = if (archived) null else ({ viewModel.selectModel(it.model, it.variant) }),
                 focusRequests = composerFocusRequests,
                 modifier = Modifier.widthIn(max = CursorDimens.composerMaxWidth).then(headerClearance.composerColumn).testTag("follow-up-composer"),
             )

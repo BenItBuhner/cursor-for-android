@@ -23,26 +23,30 @@ import com.cursorforandroid.domain.AgentMode
 import com.cursorforandroid.domain.SlashCommands
 import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
+import com.cursorforandroid.ui.theme.ProjectPalette
 
 /**
  * The slash commands the composer wears as pills instead of text, as cursor.com/agents does: `/multitask`, which
  * still travels in the prompt as its token, and the modes — `/plan`, which is plan mode (`mode: "plan"` on the run),
- * and in Extended mode `/ask` and `/debug`, which are `agent.v1.AgentMode` ASK and DEBUG on the account's follow-up —
+ * and in Extended mode `/ask` and `/debug`, which are `agent.v1.AgentMode` ASK and DEBUG on the account's start and follow-up —
  * none of which travels as text at all. They are settings of one slot — a run is planned, or answers, or debugs, or
  * fans out to subagents, not two of those — so turning any on takes the others off, and the composer only ever wears one.
  *
  * Everything here is presentation. The owner of the composer keeps holding the prompt the way it has always been
  * sent — `/multitask fix the flaky test` — and the field shows `fix the flaky test` beside a Multitask pill; every
  * keystroke hands the owner the text with the token back in front ([compose]). Only these become pills: `/goal`, a
- * skill or a machine command stay in the text, painted as commands in the Plan pill's tint ([slashCommandTint]).
+ * skill or a machine command stay in the text, painted as commands ([CommandTints]).
  */
 object ModePills {
-    /** A pill: the slash command it stands for, and the word on it. */
-    enum class Pill(val command: String, val label: String) {
-        Multitask(SlashCommands.MULTITASK, "Multitask"),
-        Plan(SlashCommands.PLAN, "Plan"),
-        Ask(SlashCommands.ASK, "Ask"),
-        Debug(SlashCommands.DEBUG, "Debug"),
+    /**
+     * A pill: the slash command it stands for, the word on it, the line the desktop's mode menu gives it, and the
+     * colour it names (3.21.18 `modeConfig.js`, `color`), which [pillTint] resolves.
+     */
+    enum class Pill(val command: String, val label: String, val description: String, val colorId: String) {
+        Multitask(SlashCommands.MULTITASK, "Multitask", "Orchestrate multiple subagents in parallel", "purple"),
+        Plan(SlashCommands.PLAN, "Plan", "Generate an implementation plan", "yellow"),
+        Ask(SlashCommands.ASK, "Ask", "Answer questions without making edits", "green"),
+        Debug(SlashCommands.DEBUG, "Debug", "Pinpoint the root cause of an issue", "red"),
         ;
 
         /** The mode a pill asks the run for; null for Multitask, which rides in the text instead. */
@@ -60,7 +64,22 @@ object ModePills {
         companion object {
             /** The pill for a mode the owner holds; null for none, and for a mode the composer has no pill for. */
             fun of(mode: AgentMode?): Pill? = entries.firstOrNull { it.agentMode != null && it.agentMode == mode }
+
+            /** The order the desktop lists the modes in, and Shift+Tab steps through them (3.21.18 `Ans`: plan, debug, multitask, chat). */
+            val desktopOrder: List<Pill> = listOf(Plan, Debug, Multitask, Ask)
         }
+    }
+
+    /**
+     * The mode Shift+Tab moves to from [current], as the desktop's "Cycle Mode" does: no mode, then each of
+     * [desktopOrder] this composer can wear ([available]), then no mode again. A pill that is not in the cycle
+     * starts it over at its first mode. Null when there is nothing to cycle through.
+     */
+    fun next(current: Pill?, available: (Pill) -> Boolean): Pill? {
+        val cycle = listOf<Pill?>(null) + Pill.desktopOrder.filter(available)
+        if (cycle.size == 1) return null
+        val at = cycle.indexOf(current)
+        return if (at < 0) cycle[1] else cycle[(at + 1) % cycle.size]
     }
 
     /** What the field shows of the owner's value, and whether the Multitask pill is on. */
@@ -153,46 +172,21 @@ object ModePills {
     }
 }
 
-/**
- * The violet cursor.com/agents paints its Multitask pill in, measured off the official capture: glyph, label and
- * cross at #A296EC on a 12 % wash of the same over the composer's surface (the wash reads #272532 on #181818, as
- * the reference does). Not the theme's `purple` — the Anysphere mauve, #B48EAD — which is grey at that alpha. The
- * light theme keeps the hue two steps darker so the label holds its contrast on the light surface.
- */
-internal val PillVioletDark = Color(0xFFA296EC)
-internal val PillVioletLight = Color(0xFF6A5ACD)
-
-/**
- * Plan mode's amber: Cursor Dark Anysphere's own `charts.yellow` (#F1B467). The `/commands` in the reader's text are
- * painted in this same tint ([slashCommandTint]) — in the composer and wherever the message is shown after it — so a
- * command and the pill a command can become read as one thing. The light theme takes the light theme's counterpart
- * (#A46700) deepened to #8F5C00, the lightest step at which the label clears 4.5:1 on its wash.
- */
-internal val PillAmberDark = Color(0xFFF1B467)
-internal val PillAmberLight = Color(0xFF8F5C00)
-
-/** Ask mode's blue: the theme's `charts.blue` line (#82AAFF), deepened for the light surface the same way. */
-internal val PillBlueDark = Color(0xFF82AAFF)
-internal val PillBlueLight = Color(0xFF2456B8)
-
-/** Debug mode's teal: `charts.green` at its cooler end (#5FD3B3), so it reads apart from the git-added green of the diffs. */
-internal val PillTealDark = Color(0xFF5FD3B3)
-internal val PillTealLight = Color(0xFF0F766E)
-
-/** How much of its tint a pill's wash carries over the surface, dark or light. */
+/** How much of its tint a pill's wash carries over the surface, dark or light: the desktop's `color-mix(… 12%, transparent)`. */
 private const val PillWashAlpha = 0.12f
 
-/** A pill's tint in the theme in force: Multitask the web's violet, Plan the theme's amber, Ask blue, Debug teal. */
+/** A pill's tint in the theme in force: Multitask purple, Plan yellow, Ask green, Debug red, as the desktop paints them. */
 @Composable
-internal fun pillTint(pill: ModePills.Pill): Color {
-    val dark = CursorTheme.colors.isDark
-    return when (pill) {
-        ModePills.Pill.Multitask -> if (dark) PillVioletDark else PillVioletLight
-        ModePills.Pill.Plan -> if (dark) PillAmberDark else PillAmberLight
-        ModePills.Pill.Ask -> if (dark) PillBlueDark else PillBlueLight
-        ModePills.Pill.Debug -> if (dark) PillTealDark else PillTealLight
-    }
-}
+internal fun pillTint(pill: ModePills.Pill): Color = pillTint(pill, CursorTheme.colors.isDark)
+
+/**
+ * The desktop's colour for [pill]'s [ModePills.Pill.colorId]; the default agent mode names none and has no pill. The
+ * mode chip is the `filled` Pill (3.21.18 `Pill.js`): glyph and label in `--cursor-text-<id>-primary`, which is
+ * `--cursor-<id>`, over `--cursor-bg-<id>-secondary`, the same colour mixed 12 % into transparent ([PillWashAlpha]).
+ * In the Agents Window those tokens are Cursor's core themes (`cursor-core-themes.js`, injected for
+ * `body[data-cursor-glass-mode=true]`), not the editor theme's: the palette a Project is painted in, [ProjectPalette].
+ */
+internal fun pillTint(pill: ModePills.Pill, dark: Boolean): Color = checkNotNull(ProjectPalette.color(pill.colorId, dark)) { pill.colorId }
 
 /**
  * A mode the message goes out under, worn in the composer footer the way cursor.com/agents wears Multitask: a
@@ -221,7 +215,7 @@ fun ModePill(pill: ModePills.Pill, onClear: () -> Unit, modifier: Modifier = Mod
     }
 }
 
-private val ModePills.Pill.icon: ImageVector
+internal val ModePills.Pill.icon: ImageVector
     get() = when (this) {
         ModePills.Pill.Multitask -> CursorIcons.Multitask
         ModePills.Pill.Plan -> CursorIcons.Plan

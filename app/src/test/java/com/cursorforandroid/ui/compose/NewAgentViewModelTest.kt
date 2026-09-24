@@ -19,11 +19,14 @@ import com.cursorforandroid.data.repo.CursorBackend
 import com.cursorforandroid.data.repo.LaunchIdempotency
 import com.cursorforandroid.data.repo.LaunchRequest
 import com.cursorforandroid.data.repo.NewChatDrafts
+import com.cursorforandroid.domain.AgentMode
 import com.cursorforandroid.domain.DeviceTarget
+import com.cursorforandroid.domain.ModelChoice
 import com.cursorforandroid.domain.PromptImage
 import com.cursorforandroid.domain.RunStatus
 import com.cursorforandroid.domain.UserMessage
 import com.cursorforandroid.ui.agents.DraftRow
+import com.cursorforandroid.ui.components.ModePills
 import com.cursorforandroid.ui.components.PendingAttachment
 import com.cursorforandroid.util.AppClock
 import com.cursorforandroid.util.HeldDispatcher
@@ -587,6 +590,50 @@ class NewAgentViewModelTest {
         assertThat(vm.state.value.planMode).isTrue()
         vm.applyShare("/multitask more", emptyList())
         assertThat(vm.state.value.planMode).isFalse()
+    }
+
+    @Test
+    fun `the composer's mode pill is one slot with multitask, and Ask and Debug wait for the account's modes`() {
+        val vm = loaded()
+        vm.setPrompt("/multitask fan the suites out")
+        vm.setModePill(ModePills.Pill.Plan)
+        assertThat(vm.state.value.modePill).isEqualTo(ModePills.Pill.Plan)
+        assertThat(vm.state.value.prompt).isEqualTo("fan the suites out")
+
+        // The demo has no account service: Ask is not taken, and Plan goes off with the pick, as one slot.
+        vm.setModePill(ModePills.Pill.Ask)
+        assertThat(vm.state.value.extendedModes).isFalse()
+        assertThat(vm.state.value.accountMode).isNull()
+        assertThat(vm.state.value.modePill).isNull()
+
+        vm.setModePill(ModePills.Pill.Plan)
+        vm.setModePill(null)
+        assertThat(vm.state.value.planMode).isFalse()
+        assertThat(vm.state.value.modePill).isNull()
+    }
+
+    @Test
+    fun `Ask and Debug are worn and sent only while the account's modes are on, and win over a plan`() {
+        val asking = NewAgentUiState(accountMode = AgentMode.ASK, extendedModes = true, planMode = true)
+        assertThat(asking.sentAccountMode).isEqualTo(AgentMode.ASK)
+        assertThat(asking.modePill).isEqualTo(ModePills.Pill.Ask)
+        assertThat(NewAgentUiState(accountMode = AgentMode.DEBUG, extendedModes = true).modePill).isEqualTo(ModePills.Pill.Debug)
+        // Held for the draft while the modes are off, but neither worn nor sent; a plan beside it shows instead.
+        val off = asking.copy(extendedModes = false)
+        assertThat(off.sentAccountMode).isNull()
+        assertThat(off.modePill).isEqualTo(ModePills.Pill.Plan)
+        // The documented modes are not account modes at all.
+        assertThat(NewAgentUiState(accountMode = AgentMode.PLAN, extendedModes = true).sentAccountMode).isNull()
+    }
+
+    @Test
+    fun `a model picked from the slash popover is the composer's model at the variant picked`() {
+        val vm = loaded()
+        val model = vm.state.value.models.first { !it.isAuto && it.variants.size > 1 }
+        val variant = model.variants.first { it != model.defaultVariant }
+        vm.selectModel(model, variant)
+        assertThat(vm.state.value.modelChoice).isEqualTo(ModelChoice(model, variant))
+        assertThat(vm.state.value.modelLabel).isEqualTo(model.displayName)
     }
 
     @Test
