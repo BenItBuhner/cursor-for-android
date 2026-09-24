@@ -126,8 +126,11 @@ class KeyboardShortcutsFlowTest {
     /** The keys the keyboard app was handed. */
     private val imeHeard = mutableListOf<Int>()
 
-    /** Samsung Keyboard and Gboard as far as Ctrl goes: a chord pressed in a field is theirs, and the window hears nothing of it. */
-    private val answersCtrlChords: (KeyEvent) -> Boolean = { it.isCtrlPressed && !KeyEvent.isModifierKey(it.keyCode) }
+    /**
+     * Samsung Keyboard and Gboard as far as Ctrl goes, at their most possessive: Ctrl itself and every chord on it
+     * pressed in a field are theirs, and the window hears nothing of them after.
+     */
+    private val answersCtrlChords: (KeyEvent) -> Boolean = { it.isCtrlPressed || KeyEvent.isModifierKey(it.keyCode) }
 
     private var eventTime = 0L
 
@@ -387,6 +390,46 @@ class KeyboardShortcutsFlowTest {
         press(KeyEvent.KEYCODE_ESCAPE)
         compose.waitUntil(5_000) { !exists(hasTestTag(PaletteTags.CARD)) }
         assertTrue(listOf(KeyEvent.KEYCODE_B, KeyEvent.KEYCODE_K).none { it in imeHeard })
+    }
+
+    @Test
+    fun `typing in the composer, with that keyboard app, Ctrl+Tab, Ctrl+1 to 0, Ctrl+N and Ctrl+F are the shell's, letting go of Ctrl too`() {
+        showShell(wide = true)
+        searchAndOpen("Cli exploration", CLI)
+        searchAndOpen("House environment", HOUSE)
+        imeAnswers = answersCtrlChords
+        val composer = compose.onNode(hasSetTextAction() and hasText(CHAT_PLACEHOLDER, substring = true))
+        composer.performClick()
+        composer.assertIsFocused()
+        val composerFocused = { exists(isFocused() and hasSetTextAction() and hasText(CHAT_PLACEHOLDER, substring = true)) }
+
+        // The switcher steps both ways, and letting go of Ctrl, which the keyboard app keeps as well, opens the pick.
+        ctrlDown()
+        press(KeyEvent.KEYCODE_TAB, ctrl = true)
+        press(KeyEvent.KEYCODE_TAB, ctrl = true)
+        press(KeyEvent.KEYCODE_TAB, ctrl = true, shift = true)
+        compose.onNode(resultRow(1, CLI)).assertIsSelected()
+        ctrlUp()
+        compose.waitUntil(20_000) { chatOpen(CLI) }
+        compose.waitUntil(10_000) { composerFocused() }
+
+        chord(KeyEvent.KEYCODE_1)
+        compose.waitUntil(20_000) { chatOpen(PROJECT) }
+        compose.waitUntil(10_000) { composerFocused() }
+        chord(KeyEvent.KEYCODE_0)
+        compose.waitUntil(20_000) { exists(CHAT_HEADER) && !chatOpen(PROJECT) }
+        compose.waitUntil(10_000) { composerFocused() }
+
+        chord(KeyEvent.KEYCODE_N)
+        compose.waitUntil(20_000) { exists(isFocused() and hasSetTextAction() and hasText(HOME_PLACEHOLDER, substring = true)) }
+
+        chord(KeyEvent.KEYCODE_F)
+        compose.waitUntil(10_000) { exists(hasTestTag(PaletteTags.CARD)) }
+        paletteField.assertIsFocused()
+
+        assertTrue(KeyEvent.KEYCODE_CTRL_LEFT in imeHeard)
+        val shells = listOf(KeyEvent.KEYCODE_TAB, KeyEvent.KEYCODE_1, KeyEvent.KEYCODE_0, KeyEvent.KEYCODE_N, KeyEvent.KEYCODE_F)
+        assertTrue(shells.none { it in imeHeard })
     }
 
     @Test

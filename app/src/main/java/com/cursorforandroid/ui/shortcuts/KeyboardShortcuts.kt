@@ -175,7 +175,9 @@ class KeyboardShortcuts(private val scope: CoroutineScope, private val holdMilli
 /**
  * Hands [keys] every key while something under this node holds the focus, in the views' pass before the IME is given
  * it (see [KeyboardShortcuts.onKeyEventPreIme]); a key it takes goes no further. Around the whole shell, so a chord
- * reaches it from the composer, the palette's field, any field of the window.
+ * reaches it from the composer, the palette's field, any field of the window. The pass runs from the root down, so
+ * this reads a key before the focused field's own pass does ([com.cursorforandroid.ui.components.sendOnHardwareEnter],
+ * [com.cursorforandroid.ui.components.popoverKeys]); what it leaves to an open popover goes on to it there.
  */
 @OptIn(ExperimentalComposeUiApi::class)
 fun Modifier.shortcutsBeforeIme(keys: KeyboardShortcuts?): Modifier =
