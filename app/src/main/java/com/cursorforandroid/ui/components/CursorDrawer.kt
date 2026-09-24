@@ -181,8 +181,10 @@ class CursorDrawerState(initialValue: DrawerValue) {
 
     internal var widthPx = 0f
 
-    /** Plays the drag's half-way threshold (see [halfwayCrossing]); set by the [CursorDrawer] showing this state. */
+    /** Plays a swipe's open or close as the sheet lands ([SheetLanding]); set by the [CursorDrawer] showing this state. */
     internal var haptics: Haptics? = null
+
+    private val landing = SheetLanding()
 
     private val mutex = MutatorMutex()
 
@@ -252,10 +254,17 @@ class CursorDrawerState(initialValue: DrawerValue) {
             else -> DrawerValue.Closed
         }
         mutex.mutate {
+            landing.released(wasOpen = isOpen, open = value == DrawerValue.Open)
             targetValue = value
+            landing.at(fraction)?.let { haptics?.perform(it) }
             val jump = jumps
             runAnimation {
-                animate(fraction, value.fraction, initialVelocity = velocity, animationSpec = FlingSpec) { v, _ -> if (jumps == jump) fraction = v.coerceIn(0f, 1f) }
+                animate(fraction, value.fraction, initialVelocity = velocity, animationSpec = FlingSpec) { v, _ ->
+                    if (jumps == jump) {
+                        fraction = v.coerceIn(0f, 1f)
+                        landing.at(fraction)?.let { haptics?.perform(it) }
+                    }
+                }
             }
         }
     }
@@ -274,9 +283,8 @@ class CursorDrawerState(initialValue: DrawerValue) {
         private val dragScope = object : DragScope {
             override fun dragBy(pixels: Float) {
                 if (widthPx <= 0f) return
-                val before = fraction
+                landing.dragged(fraction)
                 fraction = (fraction + pixels / widthPx).coerceIn(0f, 1f)
-                halfwayCrossing(before, fraction, restingOpen = isOpen)?.let { haptics?.perform(it) }
             }
         }
 
