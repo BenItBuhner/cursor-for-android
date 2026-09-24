@@ -62,6 +62,8 @@ import com.cursorforandroid.ui.components.ProjectGlyph
 import com.cursorforandroid.ui.components.RunningGlyph
 import com.cursorforandroid.ui.components.StateGlyph
 import com.cursorforandroid.ui.components.stylusWriting
+import com.cursorforandroid.ui.components.Haptic
+import com.cursorforandroid.ui.components.rememberHaptics
 import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.util.AppClock
@@ -113,6 +115,7 @@ fun AgentRowItem(
     val shape = CursorTheme.shapes.base
     var menuOpen by rememberSaveable { mutableStateOf(false) }
     val interaction = remember { MutableInteractionSource() }
+    val haptics = rememberHaptics()
     val agent = row.agent
 
     // A stand-in for a Project not loaded yet has nothing to act on: it opens (the chat loads by id) and nothing more.
@@ -127,7 +130,7 @@ fun AgentRowItem(
                     interactionSource = interaction,
                     indication = ripple(color = colors.base),
                     onClick = { actions.onOpen(row) },
-                    onLongClick = if (showMenu && !placeholder && !row.isStandIn) ({ menuOpen = true }) else null,
+                    onLongClick = if (showMenu && !placeholder && !row.isStandIn) ({ haptics.perform(Haptic.LongPress); menuOpen = true }) else null,
                 )
                 .height(CursorDimens.sidebarRow)
                 .padding(start = 8.dp, end = 10.dp),
