@@ -1,0 +1,163 @@
+name: PR commands
+
+# Commands a worker (or anyone with write access) types as a pull request comment, for the things the workers' read-only
+# `gh` cannot do and an empty commit used to stand in for:
+#
+#   /rerun-ci                        re-runs the failed jobs of the newest `CI` run on the PR's head commit (a flaky
+#                                    shard reruns alone, ~10 min instead of a full run), or starts a run when the head
+#                                    has none (GitHub sometimes raises no `pull_request` run for a push).
+#   /update-screenshots              re-records screenshots/ on the PR branch, pushes the changed PNGs as a commit to
+#                                    the branch, and starts `CI` on the new head.
+#   /update-screenshots merge-main   the same, after merging origin/main into the branch first; conflicting goldens are
+#                                    taken from main and then re-recorded, any other conflict stops the command.
+#
+# The command answers with a reaction (eyes: started, rocket: done, confused: failed) and a comment linking its run.
+# Pushes made with the workflow's token raise no workflow runs of their own, which is why the CI run is started with
+# an explicit dispatch; its checks land on the pushed commit, so the PR's `CI` status follows. After a command pushed,
+# `git pull` before pushing again.
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  actions: write
+  contents: write
+  issues: write
+  pull-requests: write
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  command:
+    # Pull request comments only, from people with write access or the Cursor agents' app, starting with a command.
+    if: >-
+      github.event.issue.pull_request &&
+      (startsWith(github.event.comment.body, '/rerun-ci') || startsWith(github.event.comment.body, '/update-screenshots')) &&
+      (contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association) ||
+       github.event.comment.user.login == 'cursor[bot]')
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    concurrency:
+      group: pr-command-${{ github.event.issue.number }}
+      cancel-in-progress: false
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      PR: ${{ github.event.issue.number }}
+      COMMENT_ID: ${{ github.event.comment.id }}
+      BODY: ${{ github.event.comment.body }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - name: Acknowledge
+        run: gh api "repos/$GH_REPO/issues/comments/$COMMENT_ID/reactions" -f content=eyes >/dev/null
+
+      - name: Read the pull request
+        id: pr
+        run: |
+          pr="$(gh pr view "$PR" --json headRefName,headRefOid,headRepositoryOwner,state)"
+          echo "$pr"
+          if [[ "$(jq -r .state <<<"$pr")" != "OPEN" ]]; then
+            echo "::error::#$PR is not open"; exit 1
+          fi
+          # Never check out and run a fork's code with this token.
+          if [[ "$(jq -r .headRepositoryOwner.login <<<"$pr")" != "${GH_REPO%%/*}" ]]; then
+            echo "::error::#$PR comes from a fork; commands run only on branches of this repository"; exit 1
+          fi
+          first_line="$(head -n1 <<<"$BODY" | tr -d '\r')"
+          command="$(awk '{print $1}' <<<"$first_line")"
+          argument="$(awk '{print $2}' <<<"$first_line")"
+          {
+            echo "branch=$(jq -r .headRefName <<<"$pr")"
+            echo "sha=$(jq -r .headRefOid <<<"$pr")"
+            echo "command=$command"
+            echo "argument=$argument"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Re-run CI
+        if: steps.pr.outputs.command == '/rerun-ci'
+        env:
+          BRANCH: ${{ steps.pr.outputs.branch }}
+          SHA: ${{ steps.pr.outputs.sha }}
+        run: |
+          run="$(gh run list --workflow ci.yml --commit "$SHA" --limit 1 --json databaseId,status,conclusion,url --jq '.[0] // empty')"
+          if [[ -z "$run" ]]; then
+            gh workflow run ci.yml --ref "$BRANCH"
+            echo "note=No CI run existed for \`${SHA::8}\`; started one on \`$BRANCH\`." >> "$GITHUB_ENV"
+            exit 0
+          fi
+          id="$(jq -r .databaseId <<<"$run")"; status="$(jq -r .status <<<"$run")"; conclusion="$(jq -r .conclusion <<<"$run")"
+          url="$(jq -r .url <<<"$run")"
+          if [[ "$status" != "completed" ]]; then
+            echo "note=[CI]($url) on \`${SHA::8}\` is still $status; nothing to re-run until it finishes." >> "$GITHUB_ENV"
+          elif [[ "$conclusion" == "success" ]]; then
+            echo "note=[CI]($url) on \`${SHA::8}\` already passed." >> "$GITHUB_ENV"
+          elif [[ "$conclusion" == "cancelled" ]]; then
+            gh run rerun "$id"
+            echo "note=Re-running every job of [CI]($url) on \`${SHA::8}\` (it was cancelled)." >> "$GITHUB_ENV"
+          else
+            gh run rerun "$id" --failed
+            echo "note=Re-running the failed jobs of [CI]($url) on \`${SHA::8}\`." >> "$GITHUB_ENV"
+          fi
+
+      - uses: actions/checkout@v7
+        if: steps.pr.outputs.command == '/update-screenshots'
+        with:
+          ref: ${{ steps.pr.outputs.branch }}
+          fetch-depth: 0
+          fetch-tags: true # the version is derived from the release tags (app/build.gradle.kts)
+
+      - name: Merge main
+        if: steps.pr.outputs.command == '/update-screenshots' && steps.pr.outputs.argument == 'merge-main'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if ! git merge --no-edit origin/main; then
+            others="$(git diff --name-only --diff-filter=U | grep -v '^screenshots/.*\.png$' || true)"
+            if [[ -n "$others" ]]; then
+              echo "::error::merging main conflicts outside screenshots/: $(paste -sd' ' <<<"$others")"
+              echo "note=Merging main conflicts outside \`screenshots/\` (resolve these by hand): $(paste -sd' ' <<<"$others" | sed 's/[^ ]*/`&`/g')" >> "$GITHUB_ENV"
+              exit 1
+            fi
+            git diff --name-only --diff-filter=U | xargs -r git checkout --theirs --
+            git add -A screenshots/
+            git commit --no-edit
+          fi
+
+      - uses: ./.github/actions/android-toolchain
+        if: steps.pr.outputs.command == '/update-screenshots'
+
+      - name: Record screenshots
+        if: steps.pr.outputs.command == '/update-screenshots'
+        run: ./gradlew :app:recordRoborazziDebug --tests '*ScreenshotTest*'
+
+      - name: Push and start CI
+        if: steps.pr.outputs.command == '/update-screenshots'
+        env:
+          BRANCH: ${{ steps.pr.outputs.branch }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A screenshots/
+          changed="$(git diff --cached --name-only | wc -l)"
+          if [[ "$changed" -gt 0 ]]; then
+            git commit -m "Re-record screenshots (/update-screenshots, $RUN_URL)"
+          fi
+          if [[ "$(git rev-parse HEAD)" == "$(git rev-parse "origin/$BRANCH")" ]]; then
+            echo "note=Every golden already matches; nothing to push." >> "$GITHUB_ENV"
+            exit 0
+          fi
+          git push origin "HEAD:$BRANCH"
+          gh workflow run ci.yml --ref "$BRANCH"
+          echo "note=Pushed \`$(git rev-parse --short=8 HEAD)\` to \`$BRANCH\` ($changed golden(s) re-recorded) and started CI on it. \`git pull\` before your next push." >> "$GITHUB_ENV"
+
+      - name: Report
+        if: always()
+        env:
+          OUTCOME: ${{ job.status }}
+        run: |
+          if [[ "$OUTCOME" == "success" ]]; then reaction=rocket; else reaction=confused; fi
+          gh api "repos/$GH_REPO/issues/comments/$COMMENT_ID/reactions" -f content="$reaction" >/dev/null || true
+          gh pr comment "$PR" --body "${note:-The command failed.} ([run]($RUN_URL))" || true
