@@ -95,9 +95,10 @@ fun CursorSheet(
         contentWindowInsets = { WindowInsets(0, 0, 0, 0) },
         properties = ModalBottomSheetProperties(shouldDismissOnBackPress = false),
     ) {
+        val haptics = rememberHaptics()
         PredictiveBackHandler { events ->
             try {
-                events.collect { backProgress.snapTo(PredictiveBackEasing.transform(it.progress)) }
+                events.feltOnCommit(haptics).collect { backProgress.snapTo(PredictiveBackEasing.transform(it.progress)) }
             } catch (e: CancellationException) {
                 scope.launch { backProgress.animateTo(0f) }
                 return@PredictiveBackHandler

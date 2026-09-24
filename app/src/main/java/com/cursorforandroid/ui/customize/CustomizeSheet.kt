@@ -62,7 +62,9 @@ import com.cursorforandroid.ui.components.CursorToggle
 import com.cursorforandroid.ui.components.FlatIconButton
 import com.cursorforandroid.ui.components.HairlineDivider
 import com.cursorforandroid.ui.components.SheetHeaderHeight
+import com.cursorforandroid.ui.components.feltOnCommit
 import com.cursorforandroid.ui.components.pressable
+import com.cursorforandroid.ui.components.rememberHaptics
 import com.cursorforandroid.ui.components.rewind
 import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
@@ -92,10 +94,11 @@ fun CustomizeSheet(viewModel: AgentsViewModel, onDismiss: () -> Unit) {
     }
 
     CursorSheet(onDismiss = onDismiss) {
+        val haptics = rememberHaptics()
         PredictiveBackHandler(enabled = page != null) { events ->
             rewindJob?.cancel()
             try {
-                events.collect { pageTransition.seekTo(it.progress, targetState = null) }
+                events.feltOnCommit(haptics).collect { pageTransition.seekTo(it.progress, targetState = null) }
             } catch (e: CancellationException) {
                 rewindJob = scope.launch { pageTransition.rewind(PageTransitionMillis) }
                 return@PredictiveBackHandler
@@ -266,7 +269,8 @@ private fun PickerRow(icon: ImageVector, label: String, options: List<String>, s
 
 @Composable
 private fun ToggleRow(icon: ImageVector, label: String, checked: Boolean, onChange: (Boolean) -> Unit) {
-    RowShell(icon, label, onClick = { onChange(!checked) }) { CursorToggle(checked = checked, onCheckedChange = onChange) }
+    val haptics = rememberHaptics()
+    RowShell(icon, label, onClick = { haptics.toggle(!checked); onChange(!checked) }) { CursorToggle(checked = checked, onCheckedChange = onChange) }
 }
 
 @Composable

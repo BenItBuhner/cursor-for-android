@@ -35,14 +35,12 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.isSpecified
-import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.PointerInputChange
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.UriHandler
 import androidx.compose.ui.semantics.contentDescription
@@ -824,18 +822,16 @@ private fun Modifier.copyInlineSpanOnLongPress(paragraph: ParagraphHolder, onCop
 private object Cancelled
 
 /**
- * Copies code to the clipboard with a tick and the confirmation the message menu gives: the system's own overlay
- * on Android 13+, a toast before that.
+ * Copies code to the clipboard with the confirmation the message menu gives: the system's own overlay on Android 13+,
+ * a toast before that. The clipboard itself plays the copy's haptic (see [ProvideHaptics]).
  */
 @Composable
 internal fun rememberCopyCode(): (String) -> Unit {
     val context = LocalContext.current
     val clipboard = LocalClipboardManager.current
-    val haptics = LocalHapticFeedback.current
-    return remember(context, clipboard, haptics) {
+    return remember(context, clipboard) {
         { code: String ->
             clipboard.setText(AnnotatedString(code))
-            haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
             if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) Toast.makeText(context, "Copied", Toast.LENGTH_SHORT).show()
         }
     }

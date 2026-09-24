@@ -54,13 +54,15 @@ object RunStopTags {
  * stopped by accident costs a re-prompt — so the question is asked unless the user has said not to.
  *
  * The setting is read as the screen collects it; a tap in the moment before its first value has arrived reads the
- * store instead of guessing either way.
+ * store instead of guessing either way. The interruption is felt as a [Haptic.Confirm] when it goes through, whichever
+ * way it does.
  */
 @Stable
 class RunStopConfirmation internal constructor(
     private val setting: State<Boolean?>,
     private val prefs: PreferencesStore,
     private val scope: CoroutineScope,
+    private val haptics: Haptics? = null,
 ) {
     internal class Pending(val kind: RunInterruption, val subject: String, val action: () -> Unit)
 
@@ -71,8 +73,8 @@ class RunStopConfirmation internal constructor(
     fun ask(kind: RunInterruption, subject: String, action: () -> Unit) {
         when (setting.value) {
             true -> pending = Pending(kind, subject, action)
-            false -> action()
-            null -> scope.launch { if (prefs.confirmStop.first()) pending = Pending(kind, subject, action) else action() }
+            false -> interrupt(action)
+            null -> scope.launch { if (prefs.confirmStop.first()) pending = Pending(kind, subject, action) else interrupt(action) }
         }
     }
 
@@ -87,7 +89,12 @@ class RunStopConfirmation internal constructor(
     internal fun accept() {
         val held = pending ?: return
         pending = null
-        held.action()
+        interrupt(held.action)
+    }
+
+    private fun interrupt(action: () -> Unit) {
+        haptics?.perform(Haptic.Confirm)
+        action()
     }
 
     internal fun keepRunning() {
@@ -112,7 +119,8 @@ fun rememberRunStopConfirmation(prefs: PreferencesStore): RunStopConfirmation {
     // can be lost to the recomposer's bookkeeping under the test harness's unconfined dispatcher.
     val setting: State<Boolean?> = prefs.confirmStop.collectAsStateWithLifecycle(initialValue = null, context = Dispatchers.Main.immediate)
     val scope = rememberCoroutineScope()
-    return remember(setting, prefs, scope) { RunStopConfirmation(setting, prefs, scope) }
+    val haptics = rememberHaptics()
+    return remember(setting, prefs, scope, haptics) { RunStopConfirmation(setting, prefs, scope, haptics) }
 }
 
 /** The question [confirmation] holds, while it holds one. */

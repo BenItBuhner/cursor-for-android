@@ -70,7 +70,9 @@ import androidx.core.view.WindowInsetsControllerCompat
 import com.cursorforandroid.data.media.MediaLoader
 import com.cursorforandroid.domain.MediaRef
 import com.cursorforandroid.ui.components.PredictiveBackEasing
+import com.cursorforandroid.ui.components.feltOnCommit
 import com.cursorforandroid.ui.components.hitTestBoundary
+import com.cursorforandroid.ui.components.rememberHaptics
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -260,11 +262,12 @@ private fun MediaViewerOverlay(state: MediaViewerState, session: MediaViewerStat
 
     // Back scrubs the close: the picture shrinks toward its thumbnail with the finger, and either finishes the trip
     // or comes back up, the way the drawer and the sheets answer the same gesture.
+    val haptics = rememberHaptics()
     PredictiveBackHandler(enabled = true) { events ->
         val startProgress = state.progress.value
         beginClose()
         try {
-            events.collect { event -> state.progress.snapTo(startProgress * (1f - BackScrubShare * PredictiveBackEasing.transform(event.progress))) }
+            events.feltOnCommit(haptics).collect { event -> state.progress.snapTo(startProgress * (1f - BackScrubShare * PredictiveBackEasing.transform(event.progress))) }
         } catch (_: CancellationException) {
             scope.launch { reopen() }
             return@PredictiveBackHandler

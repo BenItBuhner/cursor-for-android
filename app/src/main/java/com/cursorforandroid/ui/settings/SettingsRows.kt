@@ -23,6 +23,7 @@ import androidx.compose.ui.unit.dp
 import com.cursorforandroid.ui.components.CursorCard
 import com.cursorforandroid.ui.components.CursorIcons
 import com.cursorforandroid.ui.components.CursorToggle
+import com.cursorforandroid.ui.components.rememberHaptics
 import com.cursorforandroid.ui.components.pressable
 import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
@@ -78,7 +79,10 @@ internal fun SettingsRow(
     }
 }
 
-/** A setting that is a switch: the whole row flips it, the switch at the end says which way it is. */
+/**
+ * A setting that is a switch: the whole row flips it, the switch at the end says which way it is, and the flip is felt
+ * as the switch's own toggle haptic. Without [felt] the row plays nothing itself, for a switch that decides its own.
+ */
 @Composable
 internal fun SettingsToggleRow(
     title: String,
@@ -88,14 +92,19 @@ internal fun SettingsToggleRow(
     description: String? = null,
     enabled: Boolean = true,
     toggleModifier: Modifier = Modifier,
+    felt: Boolean = true,
 ) {
+    val haptics = rememberHaptics()
     SettingsRow(
         title = title,
         description = description,
         modifier = modifier,
-        onClick = { onCheckedChange(!checked) },
+        onClick = {
+            if (felt) haptics.toggle(!checked)
+            onCheckedChange(!checked)
+        },
         enabled = enabled,
-        trailing = { CursorToggle(checked = checked, onCheckedChange = onCheckedChange, modifier = toggleModifier, enabled = enabled) },
+        trailing = { CursorToggle(checked = checked, onCheckedChange = onCheckedChange, modifier = toggleModifier, enabled = enabled, felt = felt) },
     )
 }
 

@@ -17,6 +17,7 @@ import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalView
 import androidx.core.graphics.drawable.toDrawable
 import androidx.core.view.WindowCompat
+import com.cursorforandroid.ui.components.ProvideHaptics
 
 enum class ThemeMode { System, Dark, Light }
 
@@ -53,6 +54,8 @@ fun CursorTheme(
      * would otherwise cover.
      */
     paintWindow: Boolean = true,
+    /** Settings › Haptic feedback, for everything in the window (see [ProvideHaptics]). */
+    haptics: Boolean = true,
     content: @Composable () -> Unit,
 ) {
     val colors = cursorColorsFor(mode, oledBlack, isSystemInDarkTheme())
@@ -100,8 +103,9 @@ fun CursorTheme(
                 large = shapes.xl,
                 extraLarge = shapes.sheet,
             ),
-            content = content,
-        )
+        ) {
+            ProvideHaptics(enabled = haptics, content = content)
+        }
     }
 }
 

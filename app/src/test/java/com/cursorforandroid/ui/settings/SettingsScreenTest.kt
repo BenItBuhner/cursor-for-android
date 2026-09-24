@@ -2,7 +2,10 @@ package com.cursorforandroid.ui.settings
 
 import android.app.Application
 import android.content.Intent
+import android.view.HapticFeedbackConstants
+import android.view.View
 import androidx.activity.ComponentActivity
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertHasClickAction
 import androidx.compose.ui.test.assertHasNoClickAction
@@ -61,6 +64,7 @@ class SettingsScreenTest {
     val folder = TemporaryFolder()
 
     private lateinit var graph: AppGraph
+    private lateinit var view: View
 
     @Before
     fun setUp() {
@@ -70,6 +74,7 @@ class SettingsScreenTest {
     private fun composeSettings(isDemo: Boolean) {
         compose.setContent {
             CursorTheme(mode = ThemeMode.Dark) {
+                view = LocalView.current
                 SettingsScreen(graph, USER, isDemo = isDemo, onOpenSidebar = null, onBack = {})
             }
         }
@@ -90,13 +95,13 @@ class SettingsScreenTest {
     fun `the list is the essentials in order, and none of what was cut`() {
         composeSettings(isDemo = false)
 
-        // Account, with the way out of it, first; then appearance (ending on how long the sidebar's Projects list
-        // runs), what the New Chat pane lists, the chats (whether stopping asks first, which chats may show as
+        // Account, with the way out of it, first; then appearance (how long the sidebar's Projects list runs, then
+        // whether the app plays its haptics), what the New Chat pane lists, the chats (whether stopping asks first, which chats may show as
         // unread), notifications, Extended mode and beside it the transcript engine, the version with its updater and
         // the crash report consent; the one-line disclaimer last.
         val order = listOf(
             SettingsCopy.GROUP_ACCOUNT, SettingsCopy.SIGN_OUT, SettingsCopy.GROUP_APPEARANCE, SettingsCopy.SHORTEN_PROJECTS,
-            NewChatHomePickerCopy.GROUP, NewChatHomePickerCopy.NEEDS_MODE, SettingsCopy.GROUP_CHATS, RunStopCopy.SETTING_TITLE,
+            SettingsCopy.HAPTIC_FEEDBACK, NewChatHomePickerCopy.GROUP, NewChatHomePickerCopy.NEEDS_MODE, SettingsCopy.GROUP_CHATS, RunStopCopy.SETTING_TITLE,
             SettingsCopy.UNREAD_THIS_PHONE, SettingsCopy.GROUP_NOTIFICATIONS,
             SettingsCopy.GROUP_ADVANCED, ExtendedModeCopy.SETTING_TITLE, ExtendedModeCopy.ENGINE_TITLE,
             SettingsCopy.GROUP_UPDATES, "Version ${BuildConfig.VERSION_NAME}", CrashReportCopy.TITLE, SettingsCopy.DISCLAIMER,
@@ -218,6 +223,29 @@ class SettingsScreenTest {
         compose.waitUntil(10_000) { runBlocking { graph.prefs.shortenSidebarLists.first() } }
         compose.waitUntil(10_000) { compose.onAllNodes(toggle and isOn()).fetchSemanticsNodes().isNotEmpty() }
         compose.onNode(toggle).assertIsOn()
+    }
+
+    @Test
+    fun `Haptic feedback is on until switched off, stays the phone's through a sign-out, and is felt only turning on`() {
+        composeSettings(isDemo = false)
+        val on = isOn() and hasAnyAncestor(hasTestTag(SettingsTags.HAPTIC_FEEDBACK))
+        val off = isOff() and hasAnyAncestor(hasTestTag(SettingsTags.HAPTIC_FEEDBACK))
+
+        compose.onNodeWithText(SettingsCopy.HAPTIC_FEEDBACK_DETAIL).assertExists()
+        compose.waitUntil(10_000) { compose.onAllNodes(on).fetchSemanticsNodes().isNotEmpty() }
+
+        compose.onNodeWithTag(SettingsTags.HAPTIC_FEEDBACK).performScrollTo().performClick()
+        compose.waitUntil(10_000) { compose.onAllNodes(off).fetchSemanticsNodes().isNotEmpty() }
+        assertThat(runBlocking { graph.prefs.hapticFeedback.first() }).isFalse()
+        // Switching the haptics off is not itself felt.
+        assertThat(shadowOf(view).lastHapticFeedbackPerformed()).isNotEqualTo(HapticFeedbackConstants.TOGGLE_OFF)
+        runBlocking { graph.prefs.clearSession() }
+        assertThat(runBlocking { graph.prefs.hapticFeedback.first() }).isFalse()
+
+        compose.onNodeWithTag(SettingsTags.HAPTIC_FEEDBACK).performClick()
+        compose.waitUntil(10_000) { compose.onAllNodes(on).fetchSemanticsNodes().isNotEmpty() }
+        assertThat(runBlocking { graph.prefs.hapticFeedback.first() }).isTrue()
+        assertThat(shadowOf(view).lastHapticFeedbackPerformed()).isEqualTo(HapticFeedbackConstants.TOGGLE_ON)
     }
 
     private fun confirmStopSwitch() = compose.onNode(isToggleable() and hasAnyAncestor(hasTestTag(SettingsTags.CONFIRM_STOP)))
