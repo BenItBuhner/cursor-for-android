@@ -1121,6 +1121,8 @@ class AppGraph(
                 placement = agentId?.let { agents.placementOf(it) },
                 load = agentId?.let { conversations.loadDiagnostics(it) },
                 fileReads = agentId?.takeIf { lazyAgentFileReads.isInitialized() }?.let { id -> agentFileReads.attempts(id).map { it.text } }.orEmpty(),
+                media = agentId?.takeIf { lazyMedia.isInitialized() }?.let { id -> lazyMedia.value.loads.lines(id) }.orEmpty(),
+                throttle = lazyAccountRpc.takeIf { it.isInitialized() }?.value?.throttle?.describe(),
                 perf = agentId?.let { com.cursorforandroid.domain.TranscriptPerf.sessionOrNull(it)?.snapshot() },
                 send = agentId?.let { sendDiagnostics(it) },
             ),
