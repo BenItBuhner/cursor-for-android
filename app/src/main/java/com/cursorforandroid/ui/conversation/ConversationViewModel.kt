@@ -810,10 +810,15 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
         refreshWithWord { reloadTranscript() }
     }
 
+    /**
+     * A load already under way — the chat's first read, just opened — is waited for before the chat is taken as it
+     * was: what that load brings was never the refresh's to count, as the pull's catch-up counts it.
+     */
     private fun refreshWithWord(start: () -> Unit) {
-        val before = conversation.value
-        start()
         refreshWordJob = viewModelScope.launch {
+            graph.conversations.awaitLoad(agentId)
+            val before = conversation.value
+            start()
             graph.conversations.awaitLoad(agentId)
             toast.value = RefreshWord.of(before, conversation.value)
         }

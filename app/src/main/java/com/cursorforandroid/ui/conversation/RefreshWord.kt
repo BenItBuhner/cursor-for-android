@@ -2,6 +2,8 @@ package com.cursorforandroid.ui.conversation
 
 import com.cursorforandroid.data.repo.ConversationState
 import com.cursorforandroid.domain.AssistantMessage
+import com.cursorforandroid.domain.QueuePlacement
+import com.cursorforandroid.domain.SystemNotification
 import com.cursorforandroid.domain.TimelineItem
 import com.cursorforandroid.domain.UserMessage
 
@@ -21,11 +23,27 @@ object RefreshWord {
         return if (count == 0) UP_TO_DATE else new(count)
     }
 
-    /** The prompts and replies in [after] that [before] did not have. */
+    /**
+     * The prompts, replies and notices in [after] that [before] did not have, told by what they say rather than their
+     * ids: a reload rebuilds the chat from its runs' traces, and a reply read off the conversation comes back from the
+     * trace under a new id; a prompt sent from here hands over to the server's copy. The same words twice are two.
+     */
     fun newMessages(before: List<TimelineItem>, after: List<TimelineItem>): Int {
-        val seen = before.asSequence().filter { it.isMessage }.mapTo(HashSet()) { it.id }
-        return after.count { it.isMessage && it.id !in seen }
+        val seen = HashMap<String, Int>()
+        before.forEach { item -> item.messageKey()?.let { seen.merge(it, 1, Int::plus) } }
+        return after.count { item ->
+            val key = item.messageKey() ?: return@count false
+            val left = seen[key] ?: 0
+            if (left > 0) seen[key] = left - 1
+            left == 0
+        }
     }
 
-    private val TimelineItem.isMessage: Boolean get() = this is UserMessage || this is AssistantMessage
+    /** A reply still streaming is not a message yet: its words are only part of what it will say. */
+    private fun TimelineItem.messageKey(): String? = when (this) {
+        is UserMessage -> "u:" + QueuePlacement.textKey(text)
+        is AssistantMessage -> if (isStreaming) null else "a:" + markdown.trim()
+        is SystemNotification -> "n:$id"
+        else -> null
+    }
 }
