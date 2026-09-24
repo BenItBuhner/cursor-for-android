@@ -17,8 +17,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.layout.onSizeChanged
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.coerceIn
@@ -97,10 +97,12 @@ internal class ShellPanes(
         return widths.rail
     }
 
+    /** Open or shut as the window's size class was left; shut on a window with no room to pin it, a Fold's cover. */
     override val open: Boolean?
-        get() = when (PaneWidthClass.of(window)) {
-            PaneWidthClass.Medium -> openMedium
-            PaneWidthClass.Expanded -> openExpanded
+        get() = when {
+            !PaneWidths.pinnable(window) -> false
+            PaneWidthClass.of(window) == PaneWidthClass.Medium -> openMedium
+            else -> openExpanded
         }
 
     override val width: Dp get() = widths.panel
@@ -176,7 +178,6 @@ internal fun WidePanes(
     rail: @Composable () -> Unit,
     detail: @Composable (Modifier) -> Unit,
 ) {
-    val density = LocalDensity.current
     val edges = rememberBackGestureEdges()
     // The rail's edge as it is drawn, sliding in and out included, for the resize strip to ride.
     var railEdge by remember { mutableIntStateOf(0) }
@@ -184,7 +185,14 @@ internal fun WidePanes(
         Modifier
             .fillMaxSize()
             .background(CursorTheme.colors.canvas)
-            .onSizeChanged { panes.measure(with(density) { it.width.toDp() }) }
+            // Measured before the panes in it, so a window changed under them is the one they are laid out for in the same
+            // pass: the chat's panel is composed as it is measured, and would otherwise be laid out once more at the new
+            // size as the old window had it, open where the new one has it shut.
+            .layout { measurable, constraints ->
+                panes.measure(constraints.maxWidth.toDp())
+                val placeable = measurable.measure(constraints)
+                layout(placeable.width, placeable.height) { placeable.place(0, 0) }
+            }
             .backGestureEdges(edges),
     ) {
         Row(Modifier.fillMaxSize()) {

@@ -74,8 +74,11 @@ data class PaneWidths(
     val panelMax: Dp,
 ) {
     companion object {
+        /** Whether a window of [window] has room for the panel at its narrowest beside the chat at its narrowest. */
+        fun pinnable(window: Dp): Boolean = window - ChatMinWidth >= PinnedPanelMinWidth
+
         fun of(window: Dp, railExpanded: Boolean, railWidth: Dp, panelOpen: Boolean, panelWidth: Dp): PaneWidths {
-            val pinnable = window - ChatMinWidth >= PinnedPanelMinWidth
+            val pinnable = pinnable(window)
             val panelMax = if (pinnable) (window - ChatMinWidth).coerceAtMost(PinnedPanelMaxWidth) else PinnedPanelMinWidth
             val panel = panelWidth.coerceIn(PinnedPanelMinWidth, panelMax)
             val panelShown = pinnable && panelOpen

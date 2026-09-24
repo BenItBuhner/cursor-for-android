@@ -161,6 +161,18 @@ fun SidePanelHost(
         closing.update(swipes, rtl, flingThreshold)
     }
     PinnedPanelSync(state, pinned)
+    // Pinned, the panel is composed where the shell has it from the frame the window changes, not from the frame after
+    // it that PinnedPanelSync's snap lands in: composed for that frame, a panel on its way out would lay its tabs out in
+    // a window it never shows in, cutting a list scrolled further than that window has room for back to fit, and one on
+    // its way in would stand blank. A window that no longer pins it puts it away; a slide of its own heads where the
+    // shell has it and shows as it goes; a panel the shell takes over as the device unfolds shows if either had it open.
+    val shown = when {
+        pinned == null -> !state.isPinned && state.isVisible
+        else -> {
+            val open = pinned.open
+            if (open == null || open == state.isOpen) state.isVisible else open || !state.isPinned
+        }
+    }
 
     // The sheet lives at the end edge, so dragging toward the start opens it: the drawer's direction, reversed. The
     // release velocity arrives in the same reversed frame, positive toward open, which is what `settle` takes. It
@@ -198,7 +210,7 @@ fun SidePanelHost(
         }
 
         // Open, or on its way: the scrim covers the content and takes the drag, so the sheet can be swiped shut from anywhere.
-        if (state.isVisible && !beside) {
+        if (shown && !beside) {
             Scrim(
                 onClose = { if (gesturesEnabled) scope.launch { state.close() } },
                 fraction = { state.fraction },
@@ -230,14 +242,14 @@ fun SidePanelHost(
             // would otherwise be measured and kept up to date off screen for the whole of every chat. The surface runs
             // edge to edge, under the status bar and the navigation bar alike; the content insets itself
             // (`panelInsetPadding` at the panel's root), so the one consumption is the content's whichever host it is in.
-            if (state.isVisible) {
+            if (shown) {
                 Surface(color = containerColor, contentColor = contentColor, shape = RectangleShape, modifier = Modifier.fillMaxSize()) {
                     CompositionLocalProvider(LocalScrollFadeSurface provides containerColor, content = panelContent)
                 }
             }
         }
         // Over the boundary, riding it as the panel slides; last, so hit testing reaches it before either side.
-        if (pinned != null && state.isVisible) {
+        if (pinned != null && shown) {
             PaneResizeEdge(
                 side = PaneSide.End,
                 paneWidth = { pinned.width },
@@ -493,8 +505,16 @@ class SidePanelState(initialValue: SidePanelValue) {
     }
 
     companion object {
-        /** A pinned panel is kept by the shell, and comes back as the window has it rather than as the chat left it. */
-        val Saver: Saver<SidePanelState, SidePanelValue> = Saver(save = { if (it.isPinned) null else it.targetValue }, restore = { SidePanelState(it) })
+        /**
+         * A pinned panel is kept by the shell, and comes back as the window has it rather than as the chat left it. A
+         * sheet comes back as it was left; brought back beside [pinned], as a chat left on a Fold's cover is when it
+         * unfolds, it is open if the sheet was or the window has the panel open, where [PinnedPanelSync] would put it a
+         * frame later.
+         */
+        fun saver(pinned: PinnedPanel?): Saver<SidePanelState, SidePanelValue> = Saver(
+            save = { if (it.isPinned) null else it.targetValue },
+            restore = { SidePanelState(if (it == SidePanelValue.Open || pinned.standsOpen()) SidePanelValue.Open else SidePanelValue.Closed) },
+        )
     }
 }
 
@@ -502,18 +522,19 @@ class SidePanelState(initialValue: SidePanelValue) {
 @Composable
 fun rememberSidePanelState(initialValue: SidePanelValue = SidePanelValue.Closed): SidePanelState {
     val pinned = LocalPinnedPanel.current
-    return rememberSaveable(saver = SidePanelState.Saver) {
-        // Unobserved: what follows the first frame is PinnedPanelSync's, not a recomposition of the chat.
-        val open = pinned?.let { Snapshot.withoutReadObservation { it.open } }
+    return rememberSaveable(saver = remember(pinned) { SidePanelState.saver(pinned) }) {
         SidePanelState(
             when {
                 pinned == null -> initialValue
-                open == true -> SidePanelValue.Open
+                pinned.standsOpen() -> SidePanelValue.Open
                 else -> SidePanelValue.Closed
             },
         )
     }
 }
+
+/** Whether the shell has the panel open, unobserved: what follows the first frame is PinnedPanelSync's, not a recomposition of the chat. */
+private fun PinnedPanel?.standsOpen(): Boolean = this != null && Snapshot.withoutReadObservation { open } == true
 
 private val SidePanelValue.fraction: Float get() = if (this == SidePanelValue.Open) 1f else 0f
 
