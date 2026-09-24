@@ -10,7 +10,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.widthIn
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -31,6 +30,7 @@ import com.cursorforandroid.ui.components.CursorHeader
 import com.cursorforandroid.ui.components.CursorIcons
 import com.cursorforandroid.ui.components.FlatIconButton
 import com.cursorforandroid.ui.components.MarkdownText
+import com.cursorforandroid.ui.components.contentColumn
 import com.cursorforandroid.ui.components.fadingVerticalScroll
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.util.TimeFormat
@@ -92,7 +92,8 @@ fun WhatsNewScreen(graph: AppGraph, onBack: () -> Unit, modifier: Modifier = Mod
         Column(
             Modifier.weight(1f).fillMaxWidth()
                 .fadingVerticalScroll(surface = colors.canvas)
-                .padding(horizontal = 16.dp, vertical = 12.dp),
+                .contentColumn()
+                .padding(vertical = 12.dp),
         ) {
             val current = notes
             if (current != null) {
@@ -102,7 +103,7 @@ fun WhatsNewScreen(graph: AppGraph, onBack: () -> Unit, modifier: Modifier = Mod
             }
         }
         Row(
-            Modifier.fillMaxWidth().navigationBarsPadding().padding(horizontal = 16.dp, vertical = 12.dp),
+            Modifier.navigationBarsPadding().contentColumn().padding(vertical = 12.dp),
             horizontalArrangement = Arrangement.spacedBy(10.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -125,7 +126,7 @@ private fun Notes(notes: ReleaseNotes) {
         notes.markdown,
         style = CursorTheme.typography.message,
         color = CursorTheme.colors.textPrimary,
-        modifier = Modifier.fillMaxWidth().widthIn(max = 640.dp).testTag(WhatsNewTags.NOTES),
+        modifier = Modifier.fillMaxWidth().testTag(WhatsNewTags.NOTES),
     )
     Spacer(Modifier.height(8.dp))
 }
@@ -134,7 +135,7 @@ private fun Notes(notes: ReleaseNotes) {
 private fun Unavailable(versionName: String) {
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
-    Column(Modifier.fillMaxWidth().widthIn(max = 640.dp).padding(top = 8.dp)) {
+    Column(Modifier.fillMaxWidth().padding(top = 8.dp)) {
         Text(WhatsNewCopy.unavailable(versionName), style = type.base, color = colors.textPrimary)
         Spacer(Modifier.height(6.dp))
         Text(WhatsNewCopy.UNAVAILABLE_HINT, style = type.small, color = colors.textTertiary)
