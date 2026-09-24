@@ -16,6 +16,7 @@ import com.cursorforandroid.data.repo.DocumentedCloudAgentsServer
 import com.cursorforandroid.data.repo.NewChatDrafts
 import com.cursorforandroid.domain.DeviceTarget
 import com.cursorforandroid.domain.EnvType
+import com.cursorforandroid.domain.TranscriptEngine
 import com.cursorforandroid.fixtures.MachineFixtures
 import com.cursorforandroid.util.MainDispatcherRule
 import com.google.common.truth.Truth.assertThat
@@ -92,6 +93,9 @@ class MachineStartWireTest {
         graph.drafts.clear()
         graph.extendedMode.acknowledge()
         check(graph.extendedMode.enable()) { "Extended mode could not be turned on." }
+        // A launched chat's load under Beta would read the account's record over the graph's own api2 client, which
+        // no fake here stands in for; the launch wire under test does not depend on the engine.
+        check(graph.extendedMode.setEngine(TranscriptEngine.STABLE)) { "The transcript engine could not be set." }
     }
 
     @After

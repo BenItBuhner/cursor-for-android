@@ -72,9 +72,9 @@ object ExtendedModeCopy {
     /** The dialog's text as one string, for the tests that pin the wording. */
     val DIALOG_TEXT: String get() = listOf(DIALOG_INTRO, DIALOG_POINTS.joinToString("\n") { "• $it" }, DIALOG_CLOSING).joinToString("\n\n")
 
-    /** The transcript engine (see TranscriptEngine) as one switch: on is Beta, off is Stable, the default. */
-    const val ENGINE_TITLE = "Beta transcript engine"
-    const val ENGINE_DETAIL = "Experimental transcript features that can break."
+    /** The transcript engine (see TranscriptEngine) as one switch: on is Beta, the default, off is Stable. */
+    const val ENGINE_TITLE = "Full transcript history"
+    const val ENGINE_DETAIL = "Reads each chat's full record from your Cursor account. Off: the documented API only."
 }
 
 /** Test tags, for the tests that drive the toggle and its dialog. */
@@ -135,10 +135,11 @@ fun ExtendedModeRow(graph: AppGraph, enabled: Boolean) {
 }
 
 /**
- * The transcript engine (see [TranscriptEngine]) as one switch: on is Beta, off is Stable, which stays the default.
- * A setting of its own, beside Extended mode rather than under it; but the record Beta reads is a private surface,
- * so with the mode off the switch does nothing, and it says so — dimmed, the reason as its description — while still
- * showing what is stored. Written the moment it is flipped; a chat reads it when it next opens.
+ * The transcript engine (see [TranscriptEngine]) as one switch: on is Beta, the default, off is Stable — the way back
+ * to the documented path. A setting of its own, beside Extended mode rather than under it; but the record Beta reads
+ * is a private surface, so with the mode off the switch does nothing, and it says so: dimmed, the reason as its
+ * description, and off, as nothing reads the record then — the row default mode has always shown. The stored choice
+ * shows again the moment the mode is on. Written the moment it is flipped; a chat reads it when it next opens.
  */
 @Composable
 fun TranscriptEngineRow(graph: AppGraph, extendedMode: Boolean) {
@@ -147,7 +148,7 @@ fun TranscriptEngineRow(graph: AppGraph, extendedMode: Boolean) {
     SettingsToggleRow(
         title = ExtendedModeCopy.ENGINE_TITLE,
         description = if (extendedMode) ExtendedModeCopy.ENGINE_DETAIL else ExtendedModeCopy.NEEDS_MODE,
-        checked = engine == TranscriptEngine.BETA,
+        checked = extendedMode && engine == TranscriptEngine.BETA,
         onCheckedChange = { beta -> scope.launch { graph.extendedMode.setEngine(if (beta) TranscriptEngine.BETA else TranscriptEngine.STABLE) } },
         enabled = extendedMode,
         modifier = Modifier.semantics { testTag = ExtendedModeTags.ENGINE_ROW },

@@ -5,10 +5,12 @@ import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.cursorforandroid.data.repo.SlashScope
 import com.cursorforandroid.data.repo.SteeringRepository
+import com.cursorforandroid.domain.Capabilities
 import com.cursorforandroid.domain.CursorUser
 import com.cursorforandroid.domain.QueueLoad
 import com.cursorforandroid.domain.SlashCatalog
 import com.cursorforandroid.domain.ToolPayload
+import com.cursorforandroid.domain.TranscriptEngine
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
@@ -128,6 +130,28 @@ class AppGraphExtendedModeTest {
         assertThat(graph.extendedMode.noticePending.first()).isFalse()
         assertThat(graph.prefs.extendedModeIntroduced.first()).isTrue()
         assertThat(graph.builtParts()).isEmpty()
+    }
+
+    @Test
+    fun `the transcript engine outlives the mode's wipe and a sign-out, never chosen staying Beta and an explicit Stable staying Stable`() = runBlocking<Unit> {
+        val graph = AppGraph(app)
+        graph.extendedMode.acknowledge()
+        graph.extendedMode.enable()
+        assertThat(graph.extendedMode.engine()).isEqualTo(TranscriptEngine.BETA)
+        assertThat(graph.extendedMode.capabilities()).isEqualTo(Capabilities.EXTENDED)
+
+        graph.extendedMode.disable()
+        graph.signOut()
+        graph.extendedMode.enable()
+        assertThat(graph.extendedMode.engine()).isEqualTo(TranscriptEngine.BETA)
+        assertThat(graph.extendedMode.capabilities()).isEqualTo(Capabilities.EXTENDED)
+
+        graph.extendedMode.setEngine(TranscriptEngine.STABLE)
+        graph.extendedMode.disable()
+        graph.signOut()
+        graph.extendedMode.enable()
+        assertThat(graph.extendedMode.engine()).isEqualTo(TranscriptEngine.STABLE)
+        assertThat(graph.extendedMode.capabilities()).isEqualTo(Capabilities.EXTENDED_STABLE)
     }
 
     private fun write(file: File): File {
