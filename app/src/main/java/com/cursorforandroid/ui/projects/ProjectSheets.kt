@@ -54,6 +54,7 @@ import com.cursorforandroid.ui.components.CursorIcons
 import com.cursorforandroid.ui.components.CursorSheet
 import com.cursorforandroid.ui.components.FadingLazyColumn
 import com.cursorforandroid.ui.components.HairlineDivider
+import com.cursorforandroid.ui.components.ImeEnterFallback
 import com.cursorforandroid.ui.components.SheetHeader
 import com.cursorforandroid.ui.components.fadingVerticalScroll
 import com.cursorforandroid.ui.components.pressable
@@ -388,20 +389,22 @@ private fun SheetField(
                 .heightIn(min = 38.dp)
                 .padding(horizontal = 12.dp, vertical = 10.dp),
         ) {
-            BasicTextField(
-                value = value,
-                onValueChange = onValueChange,
-                minLines = minLines,
-                textStyle = type.base.copy(color = colors.textPrimary),
-                cursorBrush = SolidColor(colors.textPrimary),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .then(if (onSubmit != null) Modifier.sendOnHardwareEnter(value, onValueChange, onSend = onSubmit.takeIf { canSubmit }) else Modifier)
-                    .semantics { contentDescription = placeholder },
-                decorationBox = { inner ->
-                    Box { if (value.text.isEmpty()) Text(placeholder, style = type.base, color = colors.textQuaternary); inner() }
-                },
-            )
+            ImeEnterFallback(onEnter = onSubmit?.takeIf { canSubmit }, composing = { value.composition != null }) {
+                BasicTextField(
+                    value = value,
+                    onValueChange = onValueChange,
+                    minLines = minLines,
+                    textStyle = type.base.copy(color = colors.textPrimary),
+                    cursorBrush = SolidColor(colors.textPrimary),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .then(if (onSubmit != null) Modifier.sendOnHardwareEnter(value, onValueChange, onSend = onSubmit.takeIf { canSubmit }) else Modifier)
+                        .semantics { contentDescription = placeholder },
+                    decorationBox = { inner ->
+                        Box { if (value.text.isEmpty()) Text(placeholder, style = type.base, color = colors.textQuaternary); inner() }
+                    },
+                )
+            }
         }
     }
 }
