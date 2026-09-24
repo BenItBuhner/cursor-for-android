@@ -10,8 +10,6 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.LocalRippleConfiguration
@@ -25,9 +23,7 @@ import androidx.compose.ui.test.hasContentDescription
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
-import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
-import androidx.compose.ui.test.performClick
 import androidx.compose.ui.unit.dp
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -37,29 +33,27 @@ import com.cursorforandroid.data.demo.DemoData
 import com.cursorforandroid.data.local.SecureKeyStore
 import com.cursorforandroid.data.media.MediaLoader
 import com.cursorforandroid.data.repo.ArtifactRepository
-import com.cursorforandroid.domain.ActivityGroup
+import com.cursorforandroid.domain.Agent
+import com.cursorforandroid.domain.AgentParent
+import com.cursorforandroid.domain.AgentParentKind
 import com.cursorforandroid.domain.AgentStoreKind
 import com.cursorforandroid.domain.AgentStoreRef
 import com.cursorforandroid.domain.Capabilities
 import com.cursorforandroid.domain.ContextDocument
 import com.cursorforandroid.domain.ContextEntry
 import com.cursorforandroid.domain.ContextStores
-import com.cursorforandroid.domain.CursorUser
 import com.cursorforandroid.domain.ProjectAppearance
 import com.cursorforandroid.domain.RecentContextFile
-import com.cursorforandroid.domain.Subscriptions
+import com.cursorforandroid.domain.RepoFile
 import com.cursorforandroid.ui.components.LocalMarkdownMedia
 import com.cursorforandroid.ui.components.MarkdownMediaContext
-import com.cursorforandroid.ui.conversation.ConversationPills
-import com.cursorforandroid.ui.conversation.ConversationPillsState
-import com.cursorforandroid.ui.navigation.AppShell
-import com.cursorforandroid.ui.navigation.RailState
 import com.cursorforandroid.ui.panel.ContextPanelState
 import com.cursorforandroid.ui.panel.ConversationPanel
+import com.cursorforandroid.ui.panel.FileView
+import com.cursorforandroid.ui.panel.LocalPanelGraph
 import com.cursorforandroid.ui.panel.PanelActions
 import com.cursorforandroid.ui.panel.PanelFixtures
 import com.cursorforandroid.ui.panel.PanelState
-import com.cursorforandroid.ui.panel.PanelSurface
 import com.cursorforandroid.ui.panel.PanelTab
 import com.cursorforandroid.ui.panel.PanelTabsState
 import com.cursorforandroid.ui.panel.RemoteLoad
@@ -68,7 +62,6 @@ import com.cursorforandroid.ui.theme.ThemeMode
 import com.cursorforandroid.util.AppClock
 import com.github.takahirom.roborazzi.RoborazziOptions
 import com.github.takahirom.roborazzi.captureRoboImage
-import com.github.takahirom.roborazzi.captureScreenRoboImage
 import kotlinx.coroutines.runBlocking
 import okhttp3.OkHttpClient
 import org.junit.After
@@ -79,15 +72,13 @@ import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 import java.io.File
-import java.time.Instant
 import java.util.Locale
 import java.util.TimeZone
 
 /**
- * The panel as a tabbed surface, tab by tab, in the states the fixtures leave them in: the Project's notes, All Files
- * with its two trees and Recents, a document in Preview and in Source; the pills above the composer; a Task row; and
- * the whole shell on a tablet with the glyph rail and the panel pinned as a pane. Written to `screenshots/`; CI
- * compares them pixel for pixel.
+ * The panel tab by tab, in the states the fixtures leave them in: the Project's notes, All Files with its two trees
+ * and Recents, a document in Preview and in Source, another chat's transcript, a file of the repository and a
+ * picture, each under the strip of tabs. Written to `screenshots/`; CI compares them pixel for pixel.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @RunWith(AndroidJUnit4::class)
@@ -116,6 +107,7 @@ class PanelTabsScreenshotTest {
     private val userStore = AgentStoreRef("st-user", AgentStoreKind.USER)
     private val coordinator = PanelFixtures.agent.copy(id = "bc-root", name = "Cursor for Android", branches = emptyList(), isProject = true, projectAppearance = ProjectAppearance("rocket", "purple"))
 
+    private val repo = "https://github.com/BenItBuhner/cursor-for-android"
     private val notes = ContextDocument(
         projectStore,
         "notes.md",
@@ -125,9 +117,9 @@ class PanelTabsScreenshotTest {
         ## Shipping
 
         - [ ] Next patch 0.3.14 — main at `4571ac8`; no pending work assigned; Fable 5.1 Max usable again (rate limit lifted 2026-09-15)
-        - [x] Release v0.3.13 — shipped 2026-09-15 from `69b6e18`: icon fidelity audit (#140); main bumped to 0.3.14
-        - [ ] Signing key handoff — `release.jks` and secrets sit in the store's internal/release-signing; Bennett must back them up and set the four repo secrets plus `RELEASE_CERT_SHA256` so CI can sign releases
-        - [x] Release v0.3.12 — shipped 2026-09-15 from `95b105f`: panel header alignment (#138)
+        - [x] [Release v0.3.13]($repo/releases/tag/v0.3.13) — shipped 2026-09-15 from `69b6e18`: icon fidelity audit ([#140]($repo/pull/140)); main bumped to 0.3.14
+        - [ ] Signing key handoff — `release.jks` and the four repo secrets plus `RELEASE_CERT_SHA256`, so CI can sign releases
+        - [x] [Release v0.3.12]($repo/releases/tag/v0.3.12) — shipped 2026-09-15 from `95b105f`: panel header alignment ([#138]($repo/pull/138))
 
         ## Deferred features (Extended mode)
 
@@ -137,10 +129,10 @@ class PanelTabsScreenshotTest {
 
         ## Direction and reference
 
-        - [x] **Project context** — living: decisions, release/PR state, Extended mode scope
-        - [x] **Execution plan** — living: 47 slices; wave 5 delivered, only the license gate (G2) still blocks anything
-        - [x] **API integration spec** — final: public-vs-private map, leak root cause, panel sections
-        - [ ] **Private edition feasibility** — SDK-only now; full features via Extended mode
+        - [x] [Project context](docs/project-context.md) — living: decisions, release/PR state, Extended mode scope
+        - [x] [Execution plan](docs/execution-plan.md) — living: 47 slices; wave 5 delivered, only the license gate (G2) still blocks anything
+        - [x] [API integration spec](docs/api-integration-spec.md) — final: public-vs-private map, leak root cause, panel sections
+        - [x] [Private edition feasibility](docs/private-edition-feasibility.md) — SDK-only now; full features via Extended mode
 
         Older items: [archived](archived.md)
         """.trimIndent(),
@@ -163,45 +155,44 @@ class PanelTabsScreenshotTest {
         | Projects | `CreateProjectWorker` | private, beta |
         """.trimIndent(),
     )
+    private val feasibilityTab = PanelTab.Document(projectStore.storeId, feasibility.path)
+    private val triageTab = PanelTab.Document(projectStore.storeId, "docs/readiness-triage.md")
 
     private val hour = 60 * 60_000L
     private val day = 24 * hour
 
-    private fun context(thumbnail: String): ContextPanelState {
-        val docsTab = PanelTab.Document(projectStore.storeId, feasibility.path)
-        return ContextPanelState(
-            stores = RemoteLoad.Loaded(ContextStores(projectStore, userStore)),
-            notes = RemoteLoad.Loaded(notes),
-            listings = mapOf(
-                ContextPanelState.folderKey(projectStore, "") to RemoteLoad.Loaded(
-                    listOf(
-                        ContextEntry("docs", isDirectory = true, updatedAtMillis = PanelFixtures.NOW - 11 * hour),
-                        ContextEntry("inbox", isDirectory = true, updatedAtMillis = PanelFixtures.NOW - 4 * day),
-                        ContextEntry("internal", isDirectory = true, updatedAtMillis = PanelFixtures.NOW - 11 * hour),
-                        ContextEntry("media", isDirectory = true, updatedAtMillis = PanelFixtures.NOW - 11 * hour),
-                        ContextEntry("archived.md", isDirectory = false, sizeBytes = 2_400, updatedAtMillis = PanelFixtures.NOW - 11 * hour),
-                        ContextEntry("notes.md", isDirectory = false, sizeBytes = 6_100, updatedAtMillis = PanelFixtures.NOW - 11 * hour),
-                    ),
-                ),
-                ContextPanelState.folderKey(userStore, "") to RemoteLoad.Loaded(
-                    listOf(
-                        ContextEntry("handoff", isDirectory = true, updatedAtMillis = PanelFixtures.NOW - 6 * day),
-                        ContextEntry("preferences.md", isDirectory = false, sizeBytes = 900, updatedAtMillis = PanelFixtures.NOW - day),
-                    ),
-                ),
-            ),
-            expandedFolders = setOf(ContextPanelState.folderKey(projectStore, ""), ContextPanelState.folderKey(userStore, "")),
-            recents = RemoteLoad.Loaded(
+    private fun context(thumbnail: String): ContextPanelState = ContextPanelState(
+        stores = RemoteLoad.Loaded(ContextStores(projectStore, userStore)),
+        notes = RemoteLoad.Loaded(notes),
+        listings = mapOf(
+            ContextPanelState.folderKey(projectStore, "") to RemoteLoad.Loaded(
                 listOf(
-                    RecentContextFile(projectStore, ContextEntry("media/transcript-rich-content.png", isDirectory = false, updatedAtMillis = PanelFixtures.NOW - hour), thumbnail),
-                    RecentContextFile(projectStore, ContextEntry("media/settings-extended-section.png", isDirectory = false, updatedAtMillis = PanelFixtures.NOW - 2 * hour), thumbnail),
-                    RecentContextFile(projectStore, ContextEntry("notes.md", isDirectory = false, updatedAtMillis = PanelFixtures.NOW - 11 * hour)),
-                    RecentContextFile(projectStore, ContextEntry("media/sidebar-pinned-and-running.png", isDirectory = false, updatedAtMillis = PanelFixtures.NOW - 12 * hour), thumbnail),
+                    ContextEntry("docs", isDirectory = true, updatedAtMillis = PanelFixtures.NOW - 11 * hour),
+                    ContextEntry("inbox", isDirectory = true, updatedAtMillis = PanelFixtures.NOW - 4 * day),
+                    ContextEntry("internal", isDirectory = true, updatedAtMillis = PanelFixtures.NOW - 11 * hour),
+                    ContextEntry("media", isDirectory = true, updatedAtMillis = PanelFixtures.NOW - 11 * hour),
+                    ContextEntry("archived.md", isDirectory = false, sizeBytes = 2_400, updatedAtMillis = PanelFixtures.NOW - 11 * hour),
+                    ContextEntry("notes.md", isDirectory = false, sizeBytes = 6_100, updatedAtMillis = PanelFixtures.NOW - 11 * hour),
                 ),
             ),
-            documents = mapOf(docsTab.key to RemoteLoad.Loaded(feasibility)),
-        )
-    }
+            ContextPanelState.folderKey(userStore, "") to RemoteLoad.Loaded(
+                listOf(
+                    ContextEntry("handoff", isDirectory = true, updatedAtMillis = PanelFixtures.NOW - 6 * day),
+                    ContextEntry("preferences.md", isDirectory = false, sizeBytes = 900, updatedAtMillis = PanelFixtures.NOW - day),
+                ),
+            ),
+        ),
+        expandedFolders = setOf(ContextPanelState.folderKey(projectStore, ""), ContextPanelState.folderKey(userStore, "")),
+        recents = RemoteLoad.Loaded(
+            listOf(
+                RecentContextFile(projectStore, ContextEntry("media/transcript-rich-content.png", isDirectory = false, updatedAtMillis = PanelFixtures.NOW - hour), thumbnail),
+                RecentContextFile(projectStore, ContextEntry("media/settings-extended-section.png", isDirectory = false, updatedAtMillis = PanelFixtures.NOW - 2 * hour), thumbnail),
+                RecentContextFile(projectStore, ContextEntry("notes.md", isDirectory = false, updatedAtMillis = PanelFixtures.NOW - 11 * hour)),
+                RecentContextFile(projectStore, ContextEntry("media/sidebar-pinned-and-running.png", isDirectory = false, updatedAtMillis = PanelFixtures.NOW - 12 * hour), thumbnail),
+            ),
+        ),
+        documents = mapOf(feasibilityTab.key to RemoteLoad.Loaded(feasibility)),
+    )
 
     /** A swatch standing in for a screenshot in the store, written where a local file would be. */
     private fun thumbnail(): String {
@@ -221,32 +212,29 @@ class PanelTabsScreenshotTest {
         return "file://${file.absolutePath}"
     }
 
-    private fun coordinatorState(thumbnail: String, tab: PanelTab, allFiles: Boolean = false): PanelState {
-        val docsTab = PanelTab.Document(projectStore.storeId, feasibility.path)
-        return PanelFixtures.loaded().copy(
+    /** The coordinator's panel with two of its documents open as tabs, as reference 02 has them, and [selected] showing. */
+    private fun coordinatorState(thumbnail: String, selected: PanelTab? = null, allFiles: Boolean = false, more: List<PanelTab> = emptyList()): PanelState =
+        PanelFixtures.loaded().copy(
             agentId = coordinator.id,
             agent = coordinator,
             capabilities = Capabilities.EXTENDED,
             pullRequest = RemoteLoad.Idle,
-            surface = PanelSurface.Project,
-            tabs = PanelTabsState(open = listOf(PanelTab.Project, docsTab), selected = tab),
+            tabs = PanelTabsState(open = listOf(feasibilityTab, triageTab) + more, selectedKey = selected?.key),
             context = context(thumbnail).copy(allFiles = allFiles),
         )
-    }
 
-    @OptIn(ExperimentalMaterial3Api::class)
     @Composable
-    private fun Panel(state: PanelState) {
+    private fun Panel(state: PanelState, graph: AppGraph? = null) {
         val appContext = ApplicationProvider.getApplicationContext<Context>()
         val loader = remember { MediaLoader(appContext, OkHttpClient(), ArtifactRepository(api = { FakeCursorApi() })) }
         val media = remember(loader) { MarkdownMediaContext("bc-root", loader) }
         CursorTheme(mode = ThemeMode.Dark) {
-            CompositionLocalProvider(LocalRippleConfiguration provides null, LocalMarkdownMedia provides media) {
-                // The panel as it sits on a phone: the sheet over the chat's canvas, the width the host gives it, on
-                // the canvas colour as the web's panel is.
+            CompositionLocalProvider(LocalRippleConfiguration provides null, LocalMarkdownMedia provides media, LocalPanelGraph provides graph) {
+                // The panel as it sits on a phone: the sheet over the chat's canvas at the width the host gives it
+                // there, on the canvas colour as the web's panel is.
                 Box(Modifier.fillMaxSize().background(CursorTheme.colors.canvas).testTag("scene")) {
                     Box(Modifier.align(Alignment.CenterEnd).width(363.dp).fillMaxHeight().background(CursorTheme.colors.canvas)) {
-                        ConversationPanel(state, PanelActions.None, onClose = {}, onExpand = {})
+                        ConversationPanel(state, PanelActions.None, onClose = {})
                     }
                 }
             }
@@ -258,113 +246,122 @@ class PanelTabsScreenshotTest {
         compose.onNodeWithTag("scene").captureRoboImage(File(outDir, "$name.png").path, RoborazziOptions())
     }
 
-    /** The Project tab: the notes under the Project's glyph and name, as cursor.com renders a Project. */
+    private fun waitForTag(tag: String, timeoutMillis: Long = 10_000) =
+        compose.waitUntil(timeoutMillis) { compose.onAllNodes(hasTestTag(tag)).fetchSemanticsNodes().isNotEmpty() }
+
+    /** The Project tab: the notes under the Project's glyph and name, as cursor.com renders a Project (reference 02). */
     @Test
     fun projectTab() {
-        compose.setContent { Panel(coordinatorState(thumbnail(), PanelTab.Project)) }
+        compose.setContent { Panel(coordinatorState(thumbnail())) }
         compose.waitUntil(10_000) { compose.onAllNodes(hasText("Shipping")).fetchSemanticsNodes().isNotEmpty() }
-        capture("69_panel_project_tab")
+        capture("480_panel_tab_project")
     }
 
-    /** All Files: the Project's tree and the user's, each entry with when it was written, then Recents with its thumbnails. */
+    /** All Files: the Project's tree and the user's, each entry with when it was written, then Recents with its thumbnails (reference 03). */
     @Test
     fun allFilesTab() {
-        compose.setContent { Panel(coordinatorState(thumbnail(), PanelTab.Project, allFiles = true)) }
+        compose.setContent { Panel(coordinatorState(thumbnail(), allFiles = true)) }
         // The pictures decode off the main thread, in no fixed order and slowly on a loaded CI runner; the frame waits
         // for all three to be on screen.
-        compose.waitUntil(60_000) { compose.onAllNodes(hasContentDescription("Thumbnail of ", substring = true)).fetchSemanticsNodes().size == 3 }
-        capture("70_panel_all_files")
+        compose.waitUntil(60_000) { compose.onAllNodes(hasTestTag("recent-thumbnail"), useUnmergedTree = true).fetchSemanticsNodes().size == 3 }
+        capture("481_panel_tab_all_files")
     }
 
-    /** A document tab in Preview: the breadcrumb, the toggle, the markdown rendered. */
+    /** A document tab in Preview: the breadcrumb, the toggle, the markdown rendered (reference 04). */
     @Test
     fun documentPreview() {
-        compose.setContent { Panel(coordinatorState(thumbnail(), PanelTab.Document(projectStore.storeId, feasibility.path))) }
-        compose.waitUntil(10_000) { compose.onAllNodes(hasTestTag("document-preview")).fetchSemanticsNodes().isNotEmpty() }
-        capture("71_panel_document_preview")
+        compose.setContent { Panel(coordinatorState(thumbnail(), feasibilityTab)) }
+        waitForTag("document-preview")
+        capture("482_panel_tab_document_preview")
     }
 
     /** The same document under Source: the text with its line numbers. */
     @Test
     fun documentSource() {
-        val tab = PanelTab.Document(projectStore.storeId, feasibility.path)
-        val state = coordinatorState(thumbnail(), tab).let { it.copy(context = it.context.copy(sourceTabs = setOf(tab.key))) }
+        val state = coordinatorState(thumbnail(), feasibilityTab).let { it.copy(context = it.context.copy(sourceTabs = setOf(feasibilityTab.key))) }
         compose.setContent { Panel(state) }
-        compose.waitUntil(10_000) { compose.onAllNodes(hasTestTag("document-source")).fetchSemanticsNodes().isNotEmpty() }
-        capture("72_panel_document_source")
-    }
-
-    /** The pills above the composer, every one of them on: Agents with a worker working, Listening 3, Changes, Open Desktop. */
-    @Test
-    fun composerPills() {
-        compose.setContent {
-            CursorTheme(mode = ThemeMode.Dark) {
-                CompositionLocalProvider(LocalRippleConfiguration provides null) {
-                    Box(Modifier.fillMaxWidth().background(CursorTheme.colors.canvas).padding(12.dp).testTag("scene")) {
-                        ConversationPills(
-                            ConversationPillsState(
-                                agents = ConversationPillsState.AgentsSummary(total = 2, working = 1, needsInput = 0),
-                                listening = Subscriptions.Listening(listOf("GitHub PR", "GitHub CI", "Timer")),
-                                changes = ConversationPillsState.ChangesSummary(3167, 139, 9),
-                                canOpenDesktop = true,
-                            ),
-                            onAgents = {},
-                            onChanges = {},
-                            onOpenDesktop = {},
-                        )
-                    }
-                }
-            }
-        }
-        capture("73_composer_pills")
+        waitForTag("document-source")
+        capture("483_panel_tab_document_source")
     }
 
     /**
-     * The shell on a tablet with the sidebar hidden: the coordinator's chat with its Agents pill above the composer,
-     * and the panel pinned beside it as a pane on the Project tab.
+     * One of the demo Project's workers opened from the coordinator's panel: its name and where it stands over its
+     * transcript, read from the demo as the live panel reads it.
      */
     @Test
-    @Config(sdk = [35], qualifiers = "w1000dp-h720dp-night-320dpi")
-    fun tabletPane() {
-        AppClock.nowMillis = { FIXED_NOW }
+    fun agentTab() {
         val appContext = ApplicationProvider.getApplicationContext<Context>()
         val graph = AppGraph(appContext, SecureKeyStore(appContext) { appContext.getSharedPreferences("stand-in-secure", Context.MODE_PRIVATE) })
         runBlocking {
             graph.session.enterDemo()
-            // The sidebar hidden, so the window has room for the chat and the panel side by side.
-            graph.prefs.setRailState("Expanded", RailState.Hidden.name)
-            // The chat is open in the frame, so its Project reads as read whatever the demo's rows do meanwhile.
-            graph.prefs.markRead(DemoData.PROJECT_ID, FIXED_NOW + 365L * 24 * 60 * 60_000L)
+            graph.agents.refresh()
         }
-        compose.setContent {
-            CursorTheme(mode = ThemeMode.Dark) {
-                CompositionLocalProvider(LocalRippleConfiguration provides null) {
-                    AppShell(
-                        graph = graph,
-                        user = CursorUser("Demo", "demo@cursor.local", "Demo", "User", null),
-                        isDemo = true,
-                        windowWidthDp = 1000,
-                        windowHeightDp = 720,
-                        deepLinkAgentId = DemoData.PROJECT_ID,
-                        onDeepLinkConsumed = {},
-                    )
-                }
-            }
-        }
-        compose.waitUntil(60_000) { compose.onAllNodes(hasText("Follow up", substring = true)).fetchSemanticsNodes().isNotEmpty() }
-        compose.waitUntil(60_000) { graph.agents.state.value.let { it.hasLoaded && !it.isRefreshing } }
-        compose.waitUntil(60_000) { graph.conversations.state(DemoData.PROJECT_ID).value.items.count { it is ActivityGroup } >= 2 }
-        compose.waitUntil(60_000) { compose.onAllNodes(hasText("PR #215 (usage aggregation) is", substring = true)).fetchSemanticsNodes().isNotEmpty() }
-        compose.waitUntil(30_000) { compose.onAllNodes(hasContentDescription("Open sidebar")).fetchSemanticsNodes().isNotEmpty() }
-        compose.onNodeWithContentDescription("Open panel").performClick()
-        compose.waitUntil(30_000) { compose.onAllNodes(hasTestTag("panel-pane")).fetchSemanticsNodes().isNotEmpty() }
-        compose.waitUntil(30_000) { compose.onAllNodes(hasText("Shipping")).fetchSemanticsNodes().isNotEmpty() }
-        compose.waitForIdle()
-        captureScreenRoboImage(File(outDir, "75_tablet_pane.png").path, RoborazziOptions())
+        val project = checkNotNull(graph.agents.agent(DemoData.PROJECT_ID))
+        val worker = checkNotNull(graph.agents.agent(WORKER_ID))
+        compose.setContent { Panel(agentState(project, worker), graph) }
+        waitForTag("agent-transcript", timeoutMillis = 60_000)
+        compose.waitUntil(60_000) { compose.onAllNodes(hasText("The HTTP action verifies", substring = true)).fetchSemanticsNodes().isNotEmpty() }
+        compose.waitUntil(20_000) { compose.onAllNodes(hasText("Handle Stripe", substring = true)).fetchSemanticsNodes().isNotEmpty() }
+        capture("484_panel_tab_agent")
+    }
+
+    private fun agentState(project: Agent, worker: Agent): PanelState {
+        val tab = PanelTab.Agent(worker.id)
+        return PanelState(
+            agentId = project.id,
+            agent = project,
+            runStatus = project.runStatus,
+            capabilities = Capabilities.EXTENDED,
+            tabs = PanelTabsState(open = listOf(tab), selectedKey = tab.key),
+            tabAgents = mapOf(worker.id to worker),
+        )
+    }
+
+    /** A file of the repository opened from a worker's sections: the path down to it, where the copy came from, the source. */
+    @Test
+    fun fileTab() {
+        val worker = PanelFixtures.agent.copy(parent = AgentParent(coordinator.id, AgentParentKind.PROJECT_WORKER))
+        val path = "app/src/main/java/com/cursorforandroid/ui/theme/CursorTheme.kt"
+        val file = RepoFile(path, THEME_SOURCE.toByteArray(), sizeBytes = 5_812, sha = "4571ac8", downloadUrl = "https://raw.githubusercontent.com/BenItBuhner/cursor-for-android/main/$path")
+        val state = PanelFixtures.withFile(PanelFixtures.loaded().copy(agent = worker, parentAgent = coordinator), FileView.Repository(file))
+        compose.setContent { Panel(state) }
+        waitForTag("file-caption")
+        capture("485_panel_tab_file")
+    }
+
+    /** A picture from the Project's Recents as its own tab, as large as the tab. */
+    @Test
+    fun mediaTab() {
+        val tab = PanelTab.Media(thumbnail(), "transcript-rich-content.png")
+        compose.setContent { Panel(coordinatorState(tab.src, tab, more = listOf(tab))) }
+        compose.waitUntil(60_000) { compose.onAllNodes(hasContentDescription(tab.name)).fetchSemanticsNodes().isNotEmpty() }
+        capture("486_panel_tab_media")
     }
 
     private companion object {
-        /** Wednesday 2025-01-15 14:00 UTC; the walkthrough's clock, so the demo's ages read the same. */
-        val FIXED_NOW: Long = Instant.parse("2025-01-15T14:00:00Z").toEpochMilli()
+        /** The demo Project's open worker: "Stripe webhook handler", its PR waiting on a decision. */
+        const val WORKER_ID = "bc-demo-0020"
+
+        val THEME_SOURCE = """
+            package com.cursorforandroid.ui.theme
+
+            import androidx.compose.runtime.Composable
+            import androidx.compose.runtime.CompositionLocalProvider
+
+            /** The app's theme: the palette for [mode], OLED black on request, the type and shapes shared by both. */
+            @Composable
+            fun CursorTheme(mode: ThemeMode, oledBlack: Boolean = false, content: @Composable () -> Unit) {
+                val colors = when (mode) {
+                    ThemeMode.Light -> LightColors
+                    else -> if (oledBlack) OledColors else DarkColors
+                }
+                CompositionLocalProvider(
+                    LocalCursorColors provides colors,
+                    LocalCursorTypography provides CursorTypography,
+                    LocalCursorShapes provides CursorShapes,
+                    content = content,
+                )
+            }
+        """.trimIndent()
     }
 }
