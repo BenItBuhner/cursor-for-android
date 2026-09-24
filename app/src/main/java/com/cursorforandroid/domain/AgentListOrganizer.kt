@@ -85,6 +85,11 @@ data class LocalAgentState(
      * read or unread anywhere because of it. Off here, as the neutral state; the setting itself defaults on.
      */
     val unreadOnlyTouchedHere: Boolean = false,
+    /**
+     * The Projects as the reader arranged them on the New Chat page, first to last; empty until they have been. The
+     * sidebar's Projects group and the New Chat shortcuts both follow it (see [AgentListOrganizer.arranged]).
+     */
+    val projectOrder: List<String> = emptyList(),
 ) {
     /** Whether [agentId] may read as unread on this phone at all; its read marker decides whether it does. */
     fun mayShowUnread(agentId: String): Boolean = !unreadOnlyTouchedHere || agentId in touchedHereIds
@@ -286,8 +291,12 @@ object AgentListOrganizer {
         } + placeholders(shownChildren, known + standInIds, nowMillis, unavailableProjects)
         val sorted = tree.mapNotNull { it.matching(query) }
 
-        // kf: Projects lead; the loaded ones in the list's order, the registry's stand-ins after them by name.
-        val projects = sorted.filter { it.agent.isProjectRoot }.sortedWith(compareBy<AgentRow> { it.isStandIn }.thenBy { if (it.isStandIn) it.agent.name.lowercase() else "" })
+        // kf: Projects lead; the loaded ones in the list's order, the registry's stand-ins after them by name — or as
+        // the reader arranged them, once they have.
+        val projects = arranged(
+            sorted.filter { it.agent.isProjectRoot }.sortedWith(compareBy<AgentRow> { it.isStandIn }.thenBy { if (it.isStandIn) it.agent.name.lowercase() else "" }),
+            local.projectOrder,
+        )
         // VuC: the pinned top-level rows that are not Projects.
         val pinned = sorted.filter { it.isPinned && !it.agent.isProjectRoot }
         val rest = sorted.filterNot { it.isPinned || it.agent.isProjectRoot }
@@ -339,6 +348,19 @@ object AgentListOrganizer {
      */
     fun projectRows(sections: List<AgentSection>): List<AgentRow> =
         sections.firstOrNull { it.key == PROJECTS_KEY }?.rows.orEmpty().filterNot { it.isPlaceholder }
+
+    /**
+     * [projects] in the order the reader arranged them ([order], ids first to last; see [LocalAgentState.projectOrder]).
+     * A Project the order does not name — made since, or never arranged — keeps its place ahead of the arranged ones,
+     * in the order it came in, so a new Project is never pushed behind the sidebar's "Show N more"; a registry
+     * stand-in the order does not name stays last. An empty order leaves [projects] as they are.
+     */
+    fun arranged(projects: List<AgentRow>, order: List<String>): List<AgentRow> {
+        if (order.isEmpty()) return projects
+        val rank = HashMap<String, Int>(order.size)
+        order.forEachIndexed { index, id -> rank.putIfAbsent(id, index) }
+        return projects.sortedBy { rank[it.agent.id] ?: if (it.isStandIn) Int.MAX_VALUE else -1 }
+    }
 
     /**
      * The desktop's tree: each of the [primary] (top-level) rows with the rows of [nested] that hang off it beneath

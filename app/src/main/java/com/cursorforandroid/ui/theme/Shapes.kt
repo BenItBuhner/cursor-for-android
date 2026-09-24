@@ -174,6 +174,11 @@ object CursorDimens {
     val previewCardWidth = 124.dp
     val previewCardHeight = 80.dp
     val recentRowGap = 18.dp
+    /**
+     * How far the New Chat page's lists sit inside the composer's edges: a recent chat's card and a Project's
+     * shortcut alike, so the page reads as one column under the composer whichever it lists.
+     */
+    val recentRowInset = 6.dp
     /** Card → title gap. */
     val previewToTitle = 16.dp
     /** Recent-row dot. */

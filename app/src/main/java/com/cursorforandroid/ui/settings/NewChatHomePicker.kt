@@ -33,6 +33,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
@@ -53,22 +54,26 @@ object NewChatHomePickerCopy {
     const val GROUP = "New chat page"
     const val RECENT = "Recent agents"
     const val PROJECTS = "Projects"
+    const val COMPOSER = "Composer only"
     const val NEEDS_MODE = "Projects need Extended mode"
     const val NEEDS_MODE_DETAIL = "Until it is on, the Projects page lists your recent agents under a note."
 
     fun label(home: NewChatHome): String = when (home) {
         NewChatHome.RECENT -> RECENT
         NewChatHome.PROJECTS -> PROJECTS
+        NewChatHome.COMPOSER -> COMPOSER
     }
 }
 
 object NewChatHomePickerTags {
     const val RECENT = "settings_new_chat_recent"
     const val PROJECTS = "settings_new_chat_projects"
+    const val COMPOSER = "settings_new_chat_composer"
 
     fun of(home: NewChatHome): String = when (home) {
         NewChatHome.RECENT -> RECENT
         NewChatHome.PROJECTS -> PROJECTS
+        NewChatHome.COMPOSER -> COMPOSER
     }
 }
 
@@ -181,7 +186,13 @@ private fun PickerOption(
             )
         }
         Spacer(Modifier.height(10.dp))
-        Text(label, style = type.base, color = if (selected) colors.textPrimary else colors.textSecondary, maxLines = 1)
+        Text(
+            label,
+            style = type.base,
+            color = if (selected) colors.textPrimary else colors.textSecondary,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
         Spacer(Modifier.height(8.dp))
         CheckCircle(selected)
     }

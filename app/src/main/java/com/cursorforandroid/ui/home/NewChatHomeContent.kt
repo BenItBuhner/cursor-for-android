@@ -2,18 +2,18 @@ package com.cursorforandroid.ui.home
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.focusGroup
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.systemBars
@@ -39,6 +39,7 @@ import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Constraints
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -62,7 +63,6 @@ import com.cursorforandroid.ui.components.FlatIconButton
 import com.cursorforandroid.ui.components.RunningGlyph
 import com.cursorforandroid.ui.components.SelectorChip
 import com.cursorforandroid.ui.components.SelectorRow
-import com.cursorforandroid.ui.components.pressable
 import com.cursorforandroid.ui.compose.NewAgentUiState
 import com.cursorforandroid.ui.compose.NewAgentViewModel
 import com.cursorforandroid.ui.theme.CursorDimens
@@ -94,6 +94,7 @@ object NewChatHomeCopy {
 }
 
 object NewChatHomeTags {
+    const val COMPOSER = "new_chat_composer"
     const val PROJECT_SHORTCUT = "new_chat_project_shortcut"
     const val PROJECTS_NOTE = "new_chat_projects_note"
 }
@@ -129,8 +130,9 @@ internal sealed interface HomeBlock {
 /**
  * The pane under its composer for [home]. Recent: the recent chats, or the empty line once the list has loaded.
  * Projects: the Project shortcuts; with none to show — Extended mode off, or none created — a note saying so over the
- * recent chats, so the page is never left bare; a failed first read is the error line, as the recents show it. Null
- * [home] (the preference not read yet) lists nothing, rather than one layout and then the other.
+ * recent chats, so the page is never left bare; a failed first read is the error line, as the recents show it.
+ * Composer only: nothing. Null [home] (the preference not read yet) lists nothing, rather than one layout and then the
+ * other.
  */
 internal fun homeBlocks(home: NewChatHome?, list: AgentListUiState, projectsAvailable: Boolean): List<HomeBlock> {
     fun recent(): List<HomeBlock> = when {
@@ -139,7 +141,7 @@ internal fun homeBlocks(home: NewChatHome?, list: AgentListUiState, projectsAvai
         else -> emptyList()
     }
     return when {
-        home == null -> emptyList()
+        home == null || home == NewChatHome.COMPOSER -> emptyList()
         home == NewChatHome.RECENT -> recent()
         !projectsAvailable -> listOf(HomeBlock.Note(ProjectsNote.NeedsExtendedMode)) + recent()
         list.projectRows.isNotEmpty() -> listOf(HomeBlock.Projects(list.projectRows))
@@ -155,12 +157,18 @@ internal class HomeBlockActions(
     val rowActions: AgentRowActions?,
     val onNewProject: (() -> Unit)?,
     val onOpenSettings: (() -> Unit)?,
+    /** The page's hold on its Project shortcuts (the menu open, the arranging); null where they are only shown. */
+    val projectGrid: ProjectGridState? = null,
+    /** The Projects as arranged on the page, first to last; null where they cannot be arranged. */
+    val onReorderProjects: ((List<String>) -> Unit)? = null,
 )
 
 @Composable
 internal fun HomeBlockView(block: HomeBlock, nowMillis: Long, actions: HomeBlockActions) {
     val colors = CursorTheme.colors
     val column = Modifier.widthIn(max = CursorDimens.composerMaxWidth).fillMaxWidth()
+    // The Projects and their notes line up with the recent chats' cards, inside the composer's edges.
+    val inset = column.padding(horizontal = CursorDimens.recentRowInset)
     when (block) {
         is HomeBlock.Chat -> RecentChatRow(
             block.row,
@@ -175,57 +183,48 @@ internal fun HomeBlockView(block: HomeBlock, nowMillis: Long, actions: HomeBlock
             color = if (block.error != null) colors.red else colors.textQuaternary,
             modifier = Modifier.widthIn(max = CursorDimens.composerMaxWidth).padding(top = 24.dp, start = 7.dp, end = 7.dp),
         )
-        is HomeBlock.Projects -> ProjectShortcutGrid(block.rows, onOpen = actions.onOpenAgent, modifier = column)
+        is HomeBlock.Projects -> ProjectShortcutGrid(
+            block.rows,
+            modifier = inset,
+            onOpen = actions.onOpenAgent,
+            actions = actions.rowActions,
+            state = actions.projectGrid,
+            onReorder = actions.onReorderProjects,
+        )
         is HomeBlock.Note -> ProjectsNoteCard(
             block.note,
             onAction = when (block.note) {
                 ProjectsNote.NeedsExtendedMode -> actions.onOpenSettings
                 ProjectsNote.NoProjects -> actions.onNewProject
             },
-            modifier = column.padding(bottom = 12.dp),
+            modifier = inset.padding(bottom = 12.dp),
         )
-    }
-}
-
-/** The shortcuts, two to a row on a phone and three once the column is wide enough for three to keep their names. */
-@Composable
-internal fun ProjectShortcutGrid(rows: List<AgentRow>, onOpen: ((AgentRow) -> Unit)?, modifier: Modifier = Modifier) {
-    BoxWithConstraints(modifier) {
-        val columns = if (maxWidth >= 520.dp) 3 else 2
-        Column(verticalArrangement = Arrangement.spacedBy(ShortcutGap)) {
-            rows.chunked(columns).forEach { line ->
-                Row(horizontalArrangement = Arrangement.spacedBy(ShortcutGap)) {
-                    line.forEach { row ->
-                        ProjectShortcut(row, onClick = onOpen?.let { open -> { open(row) } }, modifier = Modifier.weight(1f))
-                    }
-                    repeat(columns - line.size) { Spacer(Modifier.weight(1f)) }
-                }
-            }
-        }
     }
 }
 
 /**
  * A Project pinned to the New Chat pane: its icon in its colour on a tint of it, as the Project's own view heads it;
  * its name; and what is working in it — the working glyph in the Project's colour and "2 working" — or how many chats
- * it holds. An unread Project carries the unread dot where the glyph would be, a failed one the red dot.
+ * it holds. An unread Project carries the unread dot where the glyph would be, a failed one the red dot. While the
+ * shortcuts are being [arranging], each shows its grip there instead, and the one [lifted] under the finger its edge
+ * drawn stronger. What it does when touched is [ProjectShortcutGrid]'s.
  */
 @Composable
-internal fun ProjectShortcut(row: AgentRow, onClick: (() -> Unit)?, modifier: Modifier = Modifier) {
+internal fun ProjectShortcut(row: AgentRow, modifier: Modifier = Modifier, arranging: Boolean = false, lifted: Boolean = false) {
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
     val agent = row.agent
     val appearance = agent.projectAppearance
     val tone = colors.projectTone(appearance?.colorId)
     val shape = CursorTheme.shapes.xl
-    val press = if (onClick != null) Modifier.pressable(onClick, shape) else Modifier
-    CursorCard(modifier.testTag(NewChatHomeTags.PROJECT_SHORTCUT).then(press), shape = shape, contentPadding = PaddingValues(12.dp)) {
+    CursorCard(modifier, shape = shape, border = if (lifted) colors.strokeStrong else colors.strokeSubtle, contentPadding = PaddingValues(12.dp)) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Box(Modifier.size(32.dp).background(tone.copy(alpha = 0.14f), CircleShape), contentAlignment = Alignment.Center) {
                 Icon(CursorIcons.project(appearance?.icon), null, tint = tone, modifier = Modifier.size(17.dp))
             }
             Spacer(Modifier.weight(1f))
             when {
+                arranging -> Icon(CursorIcons.GripVertical, null, tint = if (lifted) colors.iconSecondary else colors.iconTertiary, modifier = Modifier.size(16.dp))
                 row.workingCount > 0 -> RunningGlyph(size = 16.dp, color = tone)
                 row.indicator == AgentIndicator.Unread -> Dot(colors.unreadDot, size = CursorDimens.recentDot)
                 row.indicator == AgentIndicator.Error -> Dot(colors.red, size = CursorDimens.recentDot)
@@ -325,8 +324,9 @@ internal fun rememberComposerChips(graph: AppGraph): ComposerChips {
 
 /**
  * The New Chat pane in miniature, for the Settings picker: the page as it is laid out at [pageSize] — header, the
- * composer with [chips] on its selectors, and [homeBlocks] for [home] from the live [list] — drawn from the pane's own
- * composables and scaled down to the width it is given. It takes no focus and no touches (the picker's option does),
+ * composer with [chips] on its selectors, and [homeBlocks] for [home] from the live [list], in the middle of the page
+ * while they fit as the pane puts them — drawn from the pane's own composables and scaled down to the width it is
+ * given. It takes no focus and no touches (the picker's option does),
  * and says nothing to accessibility services, which hear the option's label instead.
  */
 @OptIn(ExperimentalComposeUiApi::class)
@@ -346,31 +346,36 @@ internal fun NewChatPageMiniature(
         homeBlocks(home, list, projectsAvailable).take(MiniatureBlocks).map { if (it is HomeBlock.Projects) HomeBlock.Projects(it.rows.take(MiniatureShortcuts)) else it }
     }
     val menu = remember { ComposerMenuActions(onPickMedia = {}) }
+    // The page's list keeps its last row clear of the navigation bar, and so its middle is this much higher.
+    val navigationBar = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
     Box(modifier) {
         ScaledPage(pageSize, Modifier.focusProperties { enter = { FocusRequester.Cancel } }.focusGroup()) {
             Column(Modifier.fillMaxSize().background(colors.canvas).consumeWindowInsets(WindowInsets.systemBars)) {
                 if (withHeader) CursorHeader(leading = { FlatIconButton(CursorIcons.Sidebar, null, onClick = {}) })
-                Column(
-                    Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = if (withHeader) 8.dp else 48.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
+                CentredWhileItFits(
+                    top = pageTopPadding(withHeader),
+                    bottom = PageBottomPadding + navigationBar,
+                    modifier = Modifier.fillMaxWidth().weight(1f),
                 ) {
-                    Column(Modifier.widthIn(max = CursorDimens.composerMaxWidth).fillMaxWidth()) {
-                        NewChatSelectors(chips.repoLabel, chips.noRepo, chips.ref.ifBlank { NewAgentUiState.DEFAULT_BRANCH }, chips.device, onRepo = {}, onBranch = {}, onDevice = {})
-                        ComposerBox(
-                            value = "",
-                            onValueChange = {},
-                            placeholder = NewChatHomeCopy.PLACEHOLDER,
-                            onSend = {},
-                            canSend = false,
-                            minLines = 3,
-                            plusMenu = menu,
-                            modelLabel = chips.modelLabel,
-                            onModel = {},
-                            onModePill = {},
-                        )
+                    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                        Column(Modifier.widthIn(max = CursorDimens.composerMaxWidth).fillMaxWidth()) {
+                            NewChatSelectors(chips.repoLabel, chips.noRepo, chips.ref.ifBlank { NewAgentUiState.DEFAULT_BRANCH }, chips.device, onRepo = {}, onBranch = {}, onDevice = {})
+                            ComposerBox(
+                                value = "",
+                                onValueChange = {},
+                                placeholder = NewChatHomeCopy.PLACEHOLDER,
+                                onSend = {},
+                                canSend = false,
+                                minLines = 3,
+                                plusMenu = menu,
+                                modelLabel = chips.modelLabel,
+                                onModel = {},
+                                onModePill = {},
+                            )
+                        }
+                        if (blocks.isNotEmpty()) Spacer(Modifier.height(ComposerGap))
+                        blocks.forEach { HomeBlockView(it, nowMillis = list.nowMillis, actions = MiniatureActions) }
                     }
-                    Spacer(Modifier.height(ComposerGap))
-                    blocks.forEach { HomeBlockView(it, nowMillis = list.nowMillis, actions = MiniatureActions) }
                 }
             }
         }
@@ -402,9 +407,30 @@ private fun ScaledPage(pageSize: DpSize, modifier: Modifier = Modifier, content:
     }
 }
 
+/**
+ * [content] in the middle of the height this is given, between [top] and [bottom], while it fits there; taller, it
+ * starts at [top] and is cut off at the foot. The miniature's page, laid out as the pane's list arranges its items.
+ */
+@Composable
+private fun CentredWhileItFits(top: Dp, bottom: Dp, modifier: Modifier = Modifier, content: @Composable () -> Unit) {
+    Layout(content = content, modifier = modifier.clipToBounds()) { measurables, constraints ->
+        val placeable = measurables.single().measure(constraints.copy(minHeight = 0, maxHeight = Constraints.Infinity))
+        val height = if (constraints.hasBoundedHeight) constraints.maxHeight else placeable.height
+        val room = height - top.roundToPx() - bottom.roundToPx()
+        layout(constraints.maxWidth, height) {
+            placeable.place(0, top.roundToPx() + ((room - placeable.height) / 2f).roundToInt().coerceAtLeast(0))
+        }
+    }
+}
+
+/** Above the composer: clear of the pane's 44dp header where it has one, else of the window's top. */
+internal fun pageTopPadding(withHeader: Boolean): Dp = if (withHeader) 8.dp else 48.dp
+
+/** Under the pane's last row, before the navigation bar. */
+internal val PageBottomPadding = 32.dp
+
 /** Between the composer and what the pane lists under it. */
 internal val ComposerGap = 26.dp
-private val ShortcutGap = 10.dp
 private const val MiniatureBlocks = 12
 private const val MiniatureShortcuts = 12
 

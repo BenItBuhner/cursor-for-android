@@ -79,6 +79,29 @@ class PreferencesStoreTest {
     }
 
     @Test
+    fun `the Projects keep the order they were dropped in, the ones not shown after them, until sign-out`() = runBlocking {
+        val prefs = PreferencesStore(ApplicationProvider.getApplicationContext())
+        assertThat(prefs.localAgentState.first().projectOrder).isEmpty()
+
+        prefs.setProjectOrder(listOf("bc-c", "bc-a", "bc-b"))
+        assertThat(prefs.localAgentState.first().projectOrder).containsExactly("bc-c", "bc-a", "bc-b").inOrder()
+
+        // Arranged again while one was not on the page (archived, filtered out): it keeps its place behind the ones that were.
+        prefs.setProjectOrder(listOf("bc-a", "bc-c", "bc-a"))
+        assertThat(prefs.localAgentState.first().projectOrder).containsExactly("bc-a", "bc-c", "bc-b").inOrder()
+
+        // Bounded at 500 ids, the ones furthest down forgotten first.
+        prefs.setProjectOrder((0 until 520).map { "bc-p$it" })
+        val bounded = prefs.localAgentState.first().projectOrder
+        assertThat(bounded).hasSize(500)
+        assertThat(bounded.first()).isEqualTo("bc-p0")
+        assertThat(bounded.last()).isEqualTo("bc-p499")
+
+        prefs.clearSession()
+        assertThat(prefs.localAgentState.first().projectOrder).isEmpty()
+    }
+
+    @Test
     fun `a pin the settings could not save is not reported as saved`() = runBlocking<Unit> {
         val store = FailingWrites(ApplicationProvider.getApplicationContext())
         val prefs = PreferencesStore(ApplicationProvider.getApplicationContext(), store)
@@ -244,13 +267,17 @@ class PreferencesStoreTest {
     }
 
     @Test
-    fun `the new chat page lists recent chats until Projects is chosen, and the choice is the device's`() = runBlocking<Unit> {
+    fun `the new chat page lists recent chats until another layout is chosen, and the choice is the device's`() = runBlocking<Unit> {
         val prefs = PreferencesStore(ApplicationProvider.getApplicationContext())
         assertThat(prefs.newChatHome.first()).isEqualTo(NewChatHome.RECENT)
         prefs.setNewChatHome(NewChatHome.PROJECTS)
         assertThat(prefs.newChatHome.first()).isEqualTo(NewChatHome.PROJECTS)
         prefs.clearSession()
         assertThat(prefs.newChatHome.first()).isEqualTo(NewChatHome.PROJECTS)
+        prefs.setNewChatHome(NewChatHome.COMPOSER)
+        assertThat(prefs.newChatHome.first()).isEqualTo(NewChatHome.COMPOSER)
+        prefs.clearSession()
+        assertThat(prefs.newChatHome.first()).isEqualTo(NewChatHome.COMPOSER)
         prefs.setNewChatHome(NewChatHome.RECENT)
         assertThat(prefs.newChatHome.first()).isEqualTo(NewChatHome.RECENT)
     }
@@ -260,6 +287,7 @@ class PreferencesStoreTest {
         assertThat(NewChatHome.parse("pinned")).isEqualTo(NewChatHome.RECENT)
         assertThat(NewChatHome.parse(null)).isEqualTo(NewChatHome.RECENT)
         assertThat(NewChatHome.parse(NewChatHome.PROJECTS.key)).isEqualTo(NewChatHome.PROJECTS)
+        assertThat(NewChatHome.parse("composer")).isEqualTo(NewChatHome.COMPOSER)
     }
 
     @Test
