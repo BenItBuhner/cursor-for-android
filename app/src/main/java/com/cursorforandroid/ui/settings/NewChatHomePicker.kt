@@ -7,6 +7,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -14,7 +15,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.shape.CircleShape
@@ -100,7 +101,6 @@ internal fun NewChatHomeCard(
     // On the main dispatcher for the reason the Extended mode switch is (see SettingsScreen).
     val chosen by graph.prefs.newChatHome.collectAsStateWithLifecycle(initialValue = null, context = Dispatchers.Main.immediate)
     val chips = rememberComposerChips(graph)
-    val maxWidth = miniatureMaxWidth(pageSize)
     SettingsCard {
         Row(
             Modifier.fillMaxWidth().selectableGroup().padding(horizontal = RowInset, vertical = 16.dp),
@@ -111,7 +111,7 @@ internal fun NewChatHomeCard(
                     label = NewChatHomePickerCopy.label(option),
                     selected = chosen == option,
                     onClick = { scope.launch { graph.prefs.setNewChatHome(option) } },
-                    maxWidth = maxWidth,
+                    pageSize = pageSize,
                     modifier = Modifier.weight(1f).testTag(NewChatHomePickerTags.of(option)),
                 ) { miniatureModifier ->
                     NewChatPageMiniature(
@@ -139,16 +139,16 @@ internal fun NewChatHomeCard(
 }
 
 /**
- * One layout to choose: its miniature, at most [maxWidth] wide and ringed in the accent while chosen with a
- * hairline's gap between ring and page, then its name and a round check under it. The whole column is the radio
- * button, read as its name.
+ * One layout to choose: its miniature of the page at [pageSize], sized to the column ([miniatureSize]) and ringed in
+ * the accent while chosen with a hairline's gap between ring and page, then its name and a round check under it. The
+ * whole column is the radio button, read as its name.
  */
 @Composable
 private fun PickerOption(
     label: String,
     selected: Boolean,
     onClick: () -> Unit,
-    maxWidth: Dp,
+    pageSize: DpSize,
     modifier: Modifier = Modifier,
     miniature: @Composable (Modifier) -> Unit,
 ) {
@@ -169,21 +169,24 @@ private fun PickerOption(
             .padding(vertical = 4.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Box(
-            Modifier
-                .widthIn(max = maxWidth + RingGap * 2 + RingWidth * 2)
-                .fillMaxWidth()
-                .border(RingWidth, ring, RoundedCornerShape(MiniatureRadius + RingGap + RingWidth))
-                .padding(RingWidth + RingGap),
-        ) {
-            val page = RoundedCornerShape(MiniatureRadius)
-            miniature(
+        BoxWithConstraints(Modifier.fillMaxWidth(), contentAlignment = Alignment.TopCenter) {
+            val size = miniatureSize(pageSize, maxWidth - RingInset * 2)
+            val radius = miniatureRadius(size.width)
+            Box(
                 Modifier
-                    .fillMaxWidth()
-                    .clip(page)
-                    .border(CursorDimens.hairline, colors.strokeSubtle, page)
-                    .clearAndSetSemantics { },
-            )
+                    .width(size.width + RingInset * 2)
+                    .border(RingWidth, ring, RoundedCornerShape(radius + RingInset))
+                    .padding(RingInset),
+            ) {
+                val page = RoundedCornerShape(radius)
+                miniature(
+                    Modifier
+                        .size(size)
+                        .clip(page)
+                        .border(CursorDimens.hairline, colors.strokeSubtle, page)
+                        .clearAndSetSemantics { },
+                )
+            }
         }
         Spacer(Modifier.height(10.dp))
         Text(
@@ -215,17 +218,29 @@ private fun CheckCircle(checked: Boolean) {
 }
 
 /**
- * A miniature's widest: the page at the scale a phone's is drawn (156dp for a 411dp pane, a little under two fifths),
- * never less than a phone's — so the words in a foldable's or a tablet's miniature read as large as a phone's do,
- * whatever the width the card gives it.
+ * A miniature's size in [room] (its option's width, less the ring): nine tenths of it, so the three stand apart, but
+ * never wider than [MiniatureMaxWidth] nor taller than [MiniatureMaxHeight] — a large phone's, a foldable's and a
+ * tablet's thirds are wider than a phone's, and an upright page is tall, which drawn at the full width made each
+ * miniature loom over the card. Its height is the [page]'s at that width.
  */
-internal fun miniatureMaxWidth(page: DpSize): Dp = maxOf(PhoneMiniatureWidth, PhoneMiniatureWidth * (page.width / PhonePaneWidth))
+internal fun miniatureSize(page: DpSize, room: Dp): DpSize {
+    val aspect = page.height / page.width
+    val width = minOf(room * 0.9f, MiniatureMaxWidth, MiniatureMaxHeight / aspect).coerceAtLeast(0.dp)
+    return DpSize(width, width * aspect)
+}
 
-private val PhoneMiniatureWidth = 156.dp
-private val PhonePaneWidth = 411.dp
-private val MiniatureRadius = 12.dp
+/**
+ * A miniature's corner: a twentieth of its width, between 4dp and 6dp — a screen's corner at the scale it is drawn.
+ * The ring's corner is this plus the gap and the ring, so the two stay concentric and the ring is no rounder than the
+ * card around it.
+ */
+internal fun miniatureRadius(width: Dp): Dp = (width * 0.05f).coerceIn(4.dp, 6.dp)
+
+internal val MiniatureMaxWidth = 132.dp
+internal val MiniatureMaxHeight = 172.dp
 private val RingWidth = 2.dp
-private val RingGap = 3.dp
+private val RingGap = 2.dp
+private val RingInset = RingWidth + RingGap
 
 /**
  * The page a miniature draws: the pane's width up to the New Chat page's column and its gutters, and its height up
