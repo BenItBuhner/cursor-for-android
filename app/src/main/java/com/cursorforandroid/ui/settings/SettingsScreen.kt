@@ -390,7 +390,7 @@ private fun ShortenProjectsRow(graph: AppGraph) {
  * Cursor's account service, so without Extended mode the row is dimmed and reads as off whatever was stored.
  */
 @Composable
-private fun VoiceInputRow(graph: AppGraph, extendedMode: Boolean) {
+internal fun VoiceInputRow(graph: AppGraph, extendedMode: Boolean) {
     val scope = rememberCoroutineScope()
     // On the main dispatcher for the reason the Extended mode switch is (see SettingsScreen).
     val enabled by graph.prefs.voiceInput.collectAsStateWithLifecycle(initialValue = false, context = Dispatchers.Main.immediate)

@@ -73,6 +73,7 @@ import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
 import java.io.IOException
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -153,6 +154,8 @@ class VoiceInput(
     private val transcription: TranscriptionApi,
     private val newCapture: () -> AudioCapture,
     private val clock: () -> Long = SystemClock::elapsedRealtime,
+    /** Where the recorder is stopped and its file read back; the tests' own dispatcher there. */
+    private val io: CoroutineDispatcher = Dispatchers.IO,
 ) {
     var state: VoiceState by mutableStateOf(VoiceState.Idle)
         private set
@@ -211,7 +214,7 @@ class VoiceInput(
         onFeedback(Haptic.ToggleOff)
         job = scope.launch {
             try {
-                val clip = withContext(Dispatchers.IO) { recording.stop() }
+                val clip = withContext(io) { recording.stop() }
                 if (clip == null || clip.durationMillis < MinClipMillis) {
                     state = VoiceState.Idle
                     return@launch
