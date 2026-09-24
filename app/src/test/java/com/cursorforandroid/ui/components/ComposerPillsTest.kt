@@ -21,7 +21,6 @@ import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
-import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
@@ -90,7 +89,8 @@ class ComposerPillsTest {
 
     private fun bounds(matcher: SemanticsMatcher): Rect = compose.onNode(matcher).fetchSemanticsNode().boundsInRoot
 
-    private fun pillCount(label: String) = compose.onAllNodesWithText(label).fetchSemanticsNodes().size
+    /** The pills worn, by their crosses: the popover's mode rows carry the same words. */
+    private fun pillCount(label: String) = compose.onAllNodes(hasContentDescription("Remove $label")).fetchSemanticsNodes().size
 
     @Test
     fun `plan mode is a pill between plus and the model chip, and its cross puts it off`() {
@@ -172,9 +172,10 @@ class ComposerPillsTest {
     fun `picking plan or multitask from the popover makes the pill instead of text`() {
         show()
 
+        // The modes are rows of their own, named and described as the desktop's mode menu has them.
         field.performTextInput("/pl")
-        compose.waitUntil(10_000) { compose.onAllNodes(hasText("Explore first and draft a plan", substring = true)).fetchSemanticsNodes().isNotEmpty() }
-        compose.onNodeWithText("/plan").performClick()
+        compose.waitUntil(10_000) { compose.onAllNodes(hasText("Generate an implementation plan", substring = true)).fetchSemanticsNodes().isNotEmpty() }
+        compose.onNodeWithText("Generate an implementation plan").performClick()
         compose.waitUntil(10_000) { planMode }
         assertThat(shown()).isEmpty()
         compose.runOnIdle { assertThat(value).isEmpty() }
@@ -182,7 +183,7 @@ class ComposerPillsTest {
         // Multitask picked next replaces the plan: one slot, one pill.
         field.performTextInput("/mu")
         compose.waitUntil(10_000) { compose.onAllNodes(hasText("Orchestrate multiple subagents", substring = true)).fetchSemanticsNodes().isNotEmpty() }
-        compose.onNodeWithText("/multitask").performClick()
+        compose.onNodeWithText("Orchestrate multiple subagents in parallel").performClick()
         compose.waitUntil(10_000) { value == "/multitask " }
         assertThat(shown()).isEmpty()
         compose.runOnIdle {

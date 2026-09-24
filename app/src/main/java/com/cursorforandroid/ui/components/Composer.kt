@@ -71,6 +71,9 @@ import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.cursorforandroid.data.media.MediaLoader
+import com.cursorforandroid.domain.ModelChoice
+import com.cursorforandroid.domain.ModelOption
+import com.cursorforandroid.domain.ModelSearch
 import com.cursorforandroid.domain.SlashCatalog
 import com.cursorforandroid.domain.SlashCommand
 import com.cursorforandroid.domain.SlashCommands
@@ -90,7 +93,8 @@ import kotlinx.coroutines.launch
  * tighter than the 16dp left. The text is the largest thing in the box and the round buttons the smallest
  * controls ([CursorDimens.roundButton] beside [CursorTypography.input]), as on the web; the chips sit in between.
  * Typing `/` opens the [SlashCommandPopover] under the cursor with [commands] — `/goal`, the skills, the machine's
- * commands — narrowed by what follows the slash; the same catalog backs the "+" menu's Skills page. A `/command`
+ * commands — then the modes this composer can wear and the [models] it can switch to, narrowed by what follows the
+ * slash ("/Opus 4" leaves the matching models); the same catalog backs the "+" menu's Skills page. A `/command`
  * standing in the text is painted in the Plan pill's tint ([slashCommandTint]) over the field's own glyphs, without
  * the field editing anything differently. A few commands are not text at all but pills right of "+", as on the web
  * ([ModePills]): `/multitask`, which the owner's [value] still carries in front so the request is unchanged, and
@@ -165,6 +169,13 @@ fun ComposerBox(
     onModePill: ((ModePills.Pill?) -> Unit)? = null,
     /** Whether `/ask` and `/debug` become pills here (Extended mode); off, they stay in the text like any other command. */
     extendedModes: Boolean = false,
+    /**
+     * The catalog's models, listed under "Models" in the `/` popover with [currentModel] checked; a pick hands
+     * [onPickModel] the model at the variant its words spelled. Null [onPickModel] lists none.
+     */
+    models: List<ModelOption> = emptyList(),
+    currentModel: ModelChoice? = null,
+    onPickModel: ((ModelChoice) -> Unit)? = null,
     footerExtra: (@Composable RowScope.() -> Unit)? = null,
     minLines: Int = 1,
     /**
@@ -238,11 +249,20 @@ fun ComposerBox(
     // The `/` token under the cursor, while the field has focus: what the popover lists completions for. A token the
     // popover closed on (nothing matched) is not reopened until the cursor moves on to another. The state's text and
     // selection are snapshot state, so the token follows every keystroke and cursor move.
-    val slashToken = if (focused) SlashTokens.at(field.text.toString(), field.selection) else null
+    // A phrase ("/Opus 4") counts only while it names a model; otherwise it is the message typed after a command.
+    val offeredModes = remember(onModePill != null, extendedModes) {
+        ModePills.Pill.entries.filter { ModePills.pillFor(it.command, planEnabled = onModePill != null, extended = extendedModes) != null }
+    }
+    val pickableModels = if (onPickModel != null) models else emptyList()
+    val phrase = if (focused) SlashTokens.phraseAt(field.text.toString(), field.selection) else null
+    val phraseNamesModel = remember(phrase?.query, pickableModels) { phrase != null && ModelSearch.search(pickableModels, phrase.query).isNotEmpty() }
+    val slashToken = if (focused) SlashTokens.at(field.text.toString(), field.selection) ?: phrase?.takeIf { phraseNamesModel } else null
     var dismissedToken by remember { mutableStateOf<SlashToken?>(null) }
     val recentSkills = plusMenu?.recentSkills.orEmpty()
     val popoverToken = slashToken?.takeIf { it != dismissedToken }
-    val slash = rememberSlashSuggestions(popoverToken, commands, recentSkills)
+    val wornPill = wornMode ?: ModePills.Pill.Multitask.takeIf { presented.multitask }
+    val offer = remember(offeredModes, wornPill, pickableModels, currentModel) { SlashOffer(offeredModes, wornPill, pickableModels, currentModel) }
+    val slash = rememberSlashSuggestions(popoverToken, commands, recentSkills, offer)
     val slashOpen = slashPopoverOpen(popoverToken, slash, commands)
     // Whether a physical keyboard has typed here. Until one has, the popover shows no highlight: the rows are for
     // tapping, and an Enter that picks is only ever a physical keyboard's.
@@ -257,6 +277,7 @@ fun ComposerBox(
     val currentOnMode by rememberUpdatedState(onModePill)
     val currentMode by rememberUpdatedState(modePill)
     val currentExtended by rememberUpdatedState(extendedModes)
+    val currentOnPickModel by rememberUpdatedState(onPickModel)
 
     /** Hands the owner the field's text in its own shape — `/multitask ` in front while that pill is on. */
     fun publish(text: String, multitask: Boolean = currentPresented.multitask) {
@@ -282,17 +303,29 @@ fun ComposerBox(
         }
     }
 
+    /** Takes off whichever pill is worn, for the field's [text]. */
+    fun takeOff(text: String) {
+        publish(text, multitask = false)
+        if (currentMode != null) currentOnMode?.invoke(null)
+    }
+
+    /** The field without the `/` token under the cursor, handed to the owner, for a pick that leaves no text behind. */
+    fun consumeToken(): String? {
+        val token = currentToken ?: return null
+        val next = ModePills.consumeToken(field.text.toString(), token)
+        field.edit {
+            replace(0, length, next.text)
+            if (next.selection.start >= length) placeCursorAtEnd() else placeCursorBeforeCharAt(next.selection.start)
+        }
+        return next.text
+    }
+
     fun complete(entry: SlashCommand) {
         val token = currentToken ?: return
         val pill = ModePills.pillFor(entry.name, planEnabled = currentOnMode != null, extended = currentExtended)
         if (pill != null) {
             // Multitask and Plan are pills, not text: the token goes, the mode goes on.
-            val next = ModePills.consumeToken(field.text.toString(), token)
-            field.edit {
-                replace(0, length, next.text)
-                if (next.selection.start >= length) placeCursorAtEnd() else placeCursorBeforeCharAt(next.selection.start)
-            }
-            turnOn(pill, next.text)
+            turnOn(pill, consumeToken() ?: return)
             return
         }
         // A name the catalog does not list — typed, or picked before — is remembered so it is one tap away next time.
@@ -304,6 +337,22 @@ fun ComposerBox(
         }
         // An edit made here does not pass through the input transformation, so the owner is told directly.
         publish(next.text)
+    }
+
+    /** A row of the popover picked: a command completed, a mode put on (or off, if it was on), a model set, a section opened. */
+    fun pick(item: SlashItem) {
+        when (item) {
+            is SlashItem.Command -> complete(item.command)
+            is SlashItem.Mode -> {
+                val text = consumeToken() ?: return
+                if (item.on) takeOff(text) else turnOn(item.pill, text)
+            }
+            is SlashItem.Model -> {
+                publish(consumeToken() ?: return)
+                currentOnPickModel?.invoke(item.choice)
+            }
+            is SlashItem.ShowMore -> slash.expand(item.section)
+        }
     }
 
     Column(
@@ -363,7 +412,7 @@ fun ComposerBox(
                     // One line of `input` at the default font scale, so the box does not shrink under a small system font.
                     .heightIn(min = 22.dp)
                     .onPreviewKeyEvent { if (it.isFromHardwareKeyboard) physicalKeys = true; false }
-                    .popoverKeys(slashOpen, slash, composing = { field.composition != null }, onPick = { complete(it) }, onDismiss = { dismissedToken = slashToken })
+                    .popoverKeys(slashOpen, slash.selection, composing = { field.composition != null }, onPick = { pick(it) }, onDismiss = { dismissedToken = slashToken })
                     .sendOnHardwareEnter(field, onSend = onSend.takeIf { sendsNow }, onEdited = { publish(it) })
                     .then(if (receiveImages != null) Modifier.contentReceiver(receiveImages) else Modifier)
                     .focusRequester(focus)
@@ -384,7 +433,7 @@ fun ComposerBox(
                 suggestions = slash,
                 catalog = commands,
                 showHighlight = physicalKeys,
-                onPick = { complete(it) },
+                onPick = { pick(it) },
                 onDismiss = { dismissedToken = slashToken },
             )
         }
