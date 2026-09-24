@@ -189,7 +189,15 @@ private fun QuickComposer(
         )
     }
     if (branchSheet) {
-        BranchSheet(repo = state.selectedRepo, branches = state.branches, selected = state.ref, onSelect = viewModel::setRef, onDismiss = { branchSheet = false })
+        BranchSheet(
+            repo = state.selectedRepo,
+            branches = state.branches,
+            selected = state.ref,
+            fromCheckout = state.startsFromCheckout,
+            listedByAccount = state.branchesListedByAccount,
+            onSelect = viewModel::setRef,
+            onDismiss = { branchSheet = false },
+        )
     }
     if (deviceSheet) {
         DeviceSheet(devices = state.devices, selected = state.selectedDevice, loading = state.isLoadingDevices, onSelect = viewModel::selectDevice, onRefresh = viewModel::refreshDevices, onDismiss = { deviceSheet = false })
@@ -250,12 +258,12 @@ fun QuickComposerSheet(
         if (contextExpanded) {
             SelectorRow {
                 SelectorChip(state.repoLabel, onClick = onRepo, icon = if (state.noRepo) CursorIcons.Cloud else CursorIcons.Repo, modifier = Modifier.weight(1f, fill = false))
-                if (!state.noRepo) SelectorChip(state.ref.ifBlank { "default" }, onClick = onBranch, icon = CursorIcons.GitBranch)
+                if (!state.noRepo) SelectorChip(state.branchLabel, onClick = onBranch, icon = CursorIcons.GitBranch)
                 SelectorChip(state.deviceLabel, onClick = onDevice, icon = deviceIcon(state.selectedDevice))
             }
         } else {
             // One chip for the three: what the chat will run against, as the last launch left it, until it is opened.
-            val summary = listOfNotNull(state.repoLabel, state.ref.ifBlank { "default" }.takeUnless { state.noRepo }, state.deviceLabel).joinToString(" · ")
+            val summary = listOfNotNull(state.repoLabel, state.branchLabel.takeUnless { state.noRepo }, state.deviceLabel).joinToString(" · ")
             SelectorRow {
                 SelectorChip(summary, onClick = onExpandContext, icon = if (state.noRepo) CursorIcons.Cloud else CursorIcons.Repo, modifier = Modifier.weight(1f, fill = false).testTag(QuickComposerTags.CONTEXT))
             }
