@@ -1,8 +1,5 @@
 package com.cursorforandroid.ui.conversation
 
-import androidx.compose.animation.core.Animatable
-import androidx.compose.animation.core.Spring
-import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -18,7 +15,6 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -58,7 +54,6 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.AnnotatedString
-import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.LifecycleStartEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -121,7 +116,6 @@ import com.cursorforandroid.ui.panel.rememberPanelActions
 import com.cursorforandroid.ui.panel.rememberSidePanelState
 import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
-import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 
 /**
@@ -266,18 +260,13 @@ fun ConversationScreen(
     val listState = rememberLazyListState(prefetchStrategy = remember { TranscriptPrefetchStrategy() })
     val transcriptScroll = rememberTranscriptScroll(listState, agentId)
     val scope = rememberCoroutineScope()
-    // The pull past the newest message that catches the chat up (see CatchUpOverscroll): the list lifted with the
-    // finger over the indicator beneath it, then over the answer while it shows; read where it is drawn, so the pull
-    // recomposes nothing but the indicator.
+    // The pull past the newest message that catches the chat up (see CatchUpOverscroll): it draws the indicator's tab
+    // out from under the composer with the finger and keeps it out over the answer, the list lifted clear of it; read
+    // where it is drawn, so the pull recomposes nothing but the indicator.
     val density = LocalDensity.current
     val catchUpPull = remember(agentId, density) { with(density) { CatchUpPull(CatchUpPullThreshold.toPx(), CatchUpPullReveal.toPx()) } }
     val catchUpStatus by viewModel.catchUpStatus.collectAsStateWithLifecycle()
-    val catchUpLift = remember(catchUpPull) { Animatable(0f) }
-    LaunchedEffect(catchUpPull) {
-        snapshotFlow { catchUpPull.holding to catchUpPull.liftPx(catchUpStatus) }.collectLatest { (holding, px) ->
-            if (holding) catchUpLift.snapTo(px) else catchUpLift.animateTo(px, spring(stiffness = Spring.StiffnessMediumLow))
-        }
-    }
+    val catchUpReveal = rememberCatchUpReveal(catchUpPull, catchUpStatus)
     var menuOpen by rememberSaveable { mutableStateOf(false) }
     var modelSheet by rememberSaveable { mutableStateOf(false) }
     var renameOpen by rememberSaveable { mutableStateOf(false) }
@@ -565,7 +554,7 @@ fun ConversationScreen(
                         .fillMaxWidth()
                         .align(Alignment.TopCenter)
                         .onSizeChanged { listHeight = it.height }
-                        .graphicsLayer { translationY = -catchUpLift.value }
+                        .graphicsLayer { translationY = -catchUpListLift(catchUpReveal.value, areaHeight - listHeight) }
                         .scrollEdgeFade(listState, reverseLayout = listReversed, surface = colors.canvas)
                         .readerScrolling(transcriptScroll, pull = catchUpPull, canCatchUp = viewModel::canCatchUp, onCatchUp = viewModel::catchUp)
                         .testTag("transcript"),
@@ -586,12 +575,13 @@ fun ConversationScreen(
                 }
                 SideEffect { transcriptScroll.orient(following, order) }
             }
-            // Under the newest message: a transcript short enough to fit ends above the bottom of the area.
+            // The composer's width, at the area's clipped bottom edge: the top of the composer's stack.
             CatchUpIndicator(
                 catchUpPull,
                 catchUpStatus,
+                catchUpReveal,
                 onDismiss = viewModel::dismissCatchUp,
-                modifier = Modifier.align(Alignment.BottomCenter).offset { IntOffset(0, -(areaHeight - listHeight).coerceAtLeast(0)) },
+                modifier = Modifier.align(Alignment.BottomCenter).padding(horizontal = CursorDimens.composerGutter).widthIn(max = CursorDimens.composerMaxWidth).fillMaxWidth(),
             )
 
             androidx.compose.animation.AnimatedVisibility(

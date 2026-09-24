@@ -14,7 +14,8 @@ import org.junit.Test
  * The pull to catch up read off the platform's overscroll ([CatchUpOverscroll]): the reader's drag past the newest
  * message stretches it and arms it at the threshold, and a release armed pulls once; a drag back relaxes it, a fling
  * reaching the edge never pulls, a chat that cannot be caught up stretches without pulling, and every
- * delta still reaches the platform's own stretch.
+ * delta still reaches the platform's own stretch. What it reveals goes with the finger, the answer keeps the whole tab
+ * out, and the transcript is lifted only as far as it must be to clear it.
  */
 @OptIn(ExperimentalFoundationApi::class)
 class CatchUpPullTest {
@@ -89,6 +90,45 @@ class CatchUpPullTest {
         release()
         assertThat(pulls).isEqualTo(0)
         assertThat(platform.scrolls).hasSize(2)
+    }
+
+    @Test
+    fun `the reveal goes with the finger at first, then slows short of its cap`() {
+        drag(-5f)
+        assertThat(pull.revealPx).isWithin(0.3f).of(5f)
+        drag(-45f)
+        assertThat(pull.revealPx).isLessThan(pull.distance)
+        drag(-400f)
+        assertThat(pull.revealPx).isWithin(0.1f).of(50f)
+    }
+
+    @Test
+    fun `only an armed release counts as a pull`() {
+        drag(-60f)
+        release()
+        assertThat(pull.pulls).isEqualTo(0)
+        drag(-120f)
+        release()
+        assertThat(pull.pulls).isEqualTo(1)
+    }
+
+    @Test
+    fun `the answer keeps the whole tab out, and nothing is out without one`() {
+        pull.tabPx = 34f
+        drag(-20f)
+        assertThat(pull.liftPx(CatchUpStatus.Idle)).isEqualTo(pull.revealPx)
+        release()
+        assertThat(pull.liftPx(CatchUpStatus.Checking)).isEqualTo(34f)
+        assertThat(pull.liftPx(CatchUpStatus.Done(newMessages = 1, changed = true))).isEqualTo(34f)
+        assertThat(pull.liftPx(CatchUpStatus.Idle)).isEqualTo(0f)
+    }
+
+    @Test
+    fun `a transcript that fills the screen is lifted by the whole reveal, one short enough to fit only by what its room does not clear`() {
+        assertThat(catchUpListLift(revealPx = 40f, roomPx = 0)).isEqualTo(40f)
+        assertThat(catchUpListLift(revealPx = 40f, roomPx = 15)).isEqualTo(25f)
+        assertThat(catchUpListLift(revealPx = 40f, roomPx = 300)).isEqualTo(0f)
+        assertThat(catchUpListLift(revealPx = 0f, roomPx = -5)).isEqualTo(0f)
     }
 
     @Test

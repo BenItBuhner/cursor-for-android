@@ -6,7 +6,9 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.material3.LocalRippleConfiguration
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
@@ -24,6 +26,8 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.cursorforandroid.domain.AssistantMessage
 import com.cursorforandroid.domain.TimelineItem
 import com.cursorforandroid.domain.UserMessage
+import com.cursorforandroid.ui.components.ComposerBox
+import com.cursorforandroid.ui.components.composerDockPadding
 import com.cursorforandroid.ui.conversation.CATCH_UP_TEST_TAG
 import com.cursorforandroid.ui.conversation.CatchUpIndicator
 import com.cursorforandroid.ui.conversation.CatchUpPull
@@ -31,6 +35,8 @@ import com.cursorforandroid.ui.conversation.CatchUpPullReveal
 import com.cursorforandroid.ui.conversation.CatchUpPullThreshold
 import com.cursorforandroid.ui.conversation.CatchUpStatus
 import com.cursorforandroid.ui.conversation.TimelineItemView
+import com.cursorforandroid.ui.conversation.rememberCatchUpReveal
+import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.ui.theme.ThemeMode
 import com.cursorforandroid.util.AppClock
@@ -47,10 +53,12 @@ import org.robolectric.annotation.GraphicsMode
 import java.io.File
 
 /**
- * The pull to catch up at the bottom of a transcript, one frame per state of its indicator: the finger partway
- * ("Pull to catch up", the list lifted with it), past the threshold ("Release to catch up"), then let go — "Catching
- * up…", the server's pause being waited out, "1 new" with the turn started elsewhere on screen, "Up to date", and a
- * failure in the words the app has for it. The list is lifted as the screen lifts it (see ConversationScreen).
+ * The pull to catch up at the bottom of a transcript, over the follow-up composer, one frame per state of its tab:
+ * partway out from under the composer's top edge with the finger ("Pull to catch up"), all the way out past the
+ * threshold ("Release to catch up"), then let go and kept out for the answer — "Catching up…", the server's pause
+ * being waited out, "1 new" with the turn started elsewhere on screen, "Up to date", and a failure in the words the
+ * app has for it. The transcript is lifted clear of the tab and the tab sits at the composer's width, as the screen
+ * does both (see ConversationScreen).
  */
 @RunWith(AndroidJUnit4::class)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
@@ -103,27 +111,47 @@ class CatchUpScreenshotTest {
         compose.setContent {
             CursorTheme(mode = ThemeMode.Dark) {
                 CompositionLocalProvider(LocalRippleConfiguration provides null) {
-                    Box(Modifier.fillMaxSize().background(CursorTheme.colors.canvas).clipToBounds()) {
-                        Column(
-                            Modifier.fillMaxSize().graphicsLayer { translationY = -pull.liftPx(status) }.padding(start = 16.dp, end = 16.dp, bottom = 12.dp),
-                            verticalArrangement = Arrangement.spacedBy(10.dp, Alignment.Bottom),
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                        ) {
-                            items.forEach { TimelineItemView(it) }
+                    val reveal = rememberCatchUpReveal(pull, status)
+                    Column(Modifier.fillMaxSize().background(CursorTheme.colors.canvas)) {
+                        Box(Modifier.weight(1f).fillMaxWidth().clipToBounds()) {
+                            Column(
+                                Modifier.fillMaxSize().graphicsLayer { translationY = -reveal.value }.padding(start = 16.dp, end = 16.dp, bottom = 12.dp),
+                                verticalArrangement = Arrangement.spacedBy(10.dp, Alignment.Bottom),
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                            ) {
+                                items.forEach { TimelineItemView(it) }
+                            }
+                            CatchUpIndicator(
+                                pull,
+                                status,
+                                reveal,
+                                onDismiss = {},
+                                modifier = Modifier.align(Alignment.BottomCenter).padding(horizontal = CursorDimens.composerGutter).widthIn(max = CursorDimens.composerMaxWidth).fillMaxWidth(),
+                            )
                         }
-                        CatchUpIndicator(pull, status, onDismiss = {}, modifier = Modifier.align(Alignment.BottomCenter))
+                        Column(Modifier.fillMaxWidth().composerDockPadding(), horizontalAlignment = Alignment.CenterHorizontally) {
+                            ComposerBox(
+                                value = "",
+                                onValueChange = {},
+                                placeholder = "Follow up…",
+                                onSend = {},
+                                modelLabel = "Claude Fable 5.1",
+                                onModel = {},
+                                modifier = Modifier.widthIn(max = CursorDimens.composerMaxWidth),
+                            )
+                        }
                     }
                 }
             }
         }
         compose.waitForIdle()
 
-        pull.stretch(pull.thresholdPx * 0.55f)
+        pull.stretch(pull.thresholdPx * 0.3f)
         frame()
         compose.onNodeWithText("Pull to catch up").assertExists()
         capture("440_catch_up_pulling")
 
-        pull.stretch(pull.thresholdPx * 0.75f)
+        pull.stretch(pull.thresholdPx * 0.9f)
         frame()
         compose.onNodeWithText("Release to catch up").assertExists()
         capture("441_catch_up_armed")
