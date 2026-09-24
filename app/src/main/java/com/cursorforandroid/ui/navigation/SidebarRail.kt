@@ -14,6 +14,8 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.layout.layout
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntSize
 import com.cursorforandroid.ui.components.rememberSheetFocus
 import com.cursorforandroid.ui.components.sheetFocus
@@ -24,11 +26,12 @@ import com.cursorforandroid.ui.theme.CursorTheme
  * The sidebar as a column beside the detail pane on wide windows (tablets, the inner screen of a foldable, a phone on
  * its side), with the same slide the phone drawer has when it collapses and comes back.
  *
- * The column is measured at [CursorDimens.sidebarWidth] throughout and only its visible width animates: the content
- * stays anchored to the moving edge, so it travels off to the start of the window and returns from there rather than
- * being wiped, and nothing inside it — the chat list, the search field — lays out again for any frame of the motion.
- * The detail pane beside it reflows into the room the rail gives up, as on cursor.com. The hairline that separates the
- * two rides inside the animated box so it always marks the boundary while it moves.
+ * The column is measured at [width] — [CursorDimens.sidebarWidth] until the reader drags it wider or narrower — and
+ * only its visible width animates: the content stays anchored to the moving edge, so it travels off to the start of
+ * the window and returns from there rather than being wiped, and nothing inside it — the chat list, the search field —
+ * lays out again for any frame of the motion. The detail pane beside it reflows into the room the rail gives up, as on
+ * cursor.com. The hairline that separates the two rides inside the animated box so it always marks the boundary while
+ * it moves. [width] is read at layout, so a drag resizes the column without recomposing the list in it.
  *
  * Unlike the phone drawer it covers nothing: the pane reflows beside it, so a composer holding the keyboard keeps both
  * while the rail comes back, where the drawer takes them. Collapsing, the rail is the drawer shutting: its own search,
@@ -41,7 +44,12 @@ import com.cursorforandroid.ui.theme.CursorTheme
  * plain `if`.
  */
 @Composable
-fun SidebarRail(expanded: Boolean, modifier: Modifier = Modifier, content: @Composable () -> Unit) {
+fun SidebarRail(
+    expanded: Boolean,
+    modifier: Modifier = Modifier,
+    width: () -> Dp = { CursorDimens.sidebarWidth },
+    content: @Composable () -> Unit,
+) {
     val colors = CursorTheme.colors
     val focus = rememberSheetFocus { expanded }
     // Around the slide rather than on it: hidden, the slide composes nothing, so nothing on it would stay to hear a
@@ -54,7 +62,15 @@ fun SidebarRail(expanded: Boolean, modifier: Modifier = Modifier, content: @Comp
             label = "sidebarRail",
         ) {
             Row(Modifier.fillMaxHeight()) {
-                Box(Modifier.width(CursorDimens.sidebarWidth).fillMaxHeight()) { content() }
+                Box(
+                    Modifier
+                        .fillMaxHeight()
+                        .layout { measurable, constraints ->
+                            val columnWidth = width().roundToPx()
+                            val placeable = measurable.measure(constraints.copy(minWidth = columnWidth, maxWidth = columnWidth))
+                            layout(columnWidth, placeable.height) { placeable.placeRelative(0, 0) }
+                        },
+                ) { content() }
                 Box(Modifier.fillMaxHeight().width(CursorDimens.hairline).background(colors.strokeSubtle))
             }
         }
