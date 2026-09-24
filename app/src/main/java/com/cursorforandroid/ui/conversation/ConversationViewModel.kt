@@ -439,12 +439,18 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
         graph.followUps.setDraftMode(agentId, mode)
     }
 
-    /** The catalog is shared with the home composer and fetched once per session; a saved copy shows meanwhile. */
+    /**
+     * The catalog is shared with the home composer and kept fresh by its refresh policy (see `CatalogRepository`); a
+     * saved copy shows meanwhile, and a list fetched later reaches the picker through [modelPicker].
+     */
     private suspend fun loadModels(force: Boolean = false) {
         picker.update { it.copy(isLoading = true) }
         graph.catalog.loadModels(force)
             .onSuccess { picker.update { it.copy(isLoading = false, unavailable = false) } }
-            .onFailure { picker.update { it.copy(isLoading = false, unavailable = graph.catalog.models.value.isEmpty()) } }
+            .onFailure { t ->
+                picker.update { it.copy(isLoading = false, unavailable = graph.catalog.models.value.isEmpty()) }
+                if (force) toast.value = t.userMessage()
+            }
     }
 
     fun refreshModels() = viewModelScope.launch { loadModels(force = true) }
