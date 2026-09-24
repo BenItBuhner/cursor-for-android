@@ -2236,8 +2236,9 @@ class ConversationRepository(
      * again from its offset, its backoff forgotten. Stable: the run list's first page, and the documented transcript
      * only when that page names a run this device has not seen or a status that moved — the transcript being the one
      * place a turn's prompt is. Either way a run under way is followed (the tail of its log, see [startStreaming]) and
-     * the chat's running state is the account's word again. A load already under way is waited for, not doubled, and
-     * a second pull while one is being answered shares its answer.
+     * the chat's running state is the account's word again. A load already under way is waited for, its turns' traces
+     * with it, not doubled — what it brings is not the pull's to count — and a second pull while one is being answered
+     * shares its answer.
      */
     suspend fun catchUp(agentId: String): CatchUp {
         val e = entry(agentId)
@@ -2248,6 +2249,8 @@ class ConversationRepository(
     private suspend fun catchUpNow(e: Entry): CatchUp {
         val agentId = e.agentId
         synchronized(e) { e.loadJob }?.join()
+        // The steps that load asked for are its too: until its turns' traces are in, the chat is still being read.
+        synchronized(e) { e.traceJob }?.join()
         val before = e.state.value
         val seen = before.items.messageKeys()
         val failure = runCatching {
