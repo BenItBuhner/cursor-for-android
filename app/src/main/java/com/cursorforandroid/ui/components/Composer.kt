@@ -111,6 +111,9 @@ import kotlinx.coroutines.launch
  * fading, once it runs past the composer's width; each file goes up the moment it is attached, its chip filling
  * meanwhile, the footer saying so in [sendHint]. The chat's composer sends regardless — the message finishes its
  * uploads on its own bubble — and empties at the tap; the New Chat composer holds its launch until the files are up.
+ *
+ * A physical keyboard's Enter presses send whenever send could be tapped, and does nothing otherwise; Shift+Enter, and
+ * the on-screen keyboard's Enter, put in a newline ([sendOnHardwareEnter]).
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -197,6 +200,9 @@ fun ComposerBox(
             cancelOffered = true
         }
     }
+    // Exactly when the send slot below is an enabled Send: a physical Enter presses it then and at no other time, so
+    // it never stops a run, cancels a launch, or sends past files still going up.
+    val sendsNow = canSend && !isSending
     val pad = CursorDimens.composerPadding
     val border by animateColorAsState(if (focused) colors.strokeStrong else colors.strokeSubtle, tween(160), label = "border")
     // The field owns the text and the selection; [value] only says what the owner last made of it. Comparing the two
@@ -347,6 +353,7 @@ fun ComposerBox(
                     .fillMaxWidth()
                     // One line of `input` at the default font scale, so the box does not shrink under a small system font.
                     .heightIn(min = 22.dp)
+                    .sendOnHardwareEnter(field, onSend = onSend.takeIf { sendsNow }, onEdited = { publish(it) })
                     .then(if (receiveImages != null) Modifier.contentReceiver(receiveImages) else Modifier)
                     .focusRequester(focus)
                     .onFocusChanged { focused = it.isFocused },
@@ -428,7 +435,7 @@ fun ComposerBox(
                 isSending && cancelOffered && onCancelSend != null -> ComposerRoundButton(CursorIcons.Stop, "Cancel sending", onClick = onCancelSend, prominent = true)
                 isSending -> ComposerBusyButton()
                 isRunning && onStop != null && !canSend -> ComposerRoundButton(CursorIcons.Stop, "Stop", onClick = onStop, prominent = true)
-                else -> ComposerRoundButton(CursorIcons.ArrowUp, "Send", onClick = onSend, prominent = canSend, enabled = canSend)
+                else -> ComposerRoundButton(CursorIcons.ArrowUp, "Send", onClick = onSend, prominent = canSend, enabled = sendsNow)
             }
         }
     }

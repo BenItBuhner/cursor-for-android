@@ -4,6 +4,7 @@ import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.cursorforandroid.data.FakeCursorApi
 import com.cursorforandroid.data.FakeRunStreamer
+import com.cursorforandroid.data.api.ApiThrottle
 import com.cursorforandroid.data.api.dto.ModelListItemDto
 import com.cursorforandroid.data.api.dto.PoolDto
 import com.cursorforandroid.data.api.dto.WorkerDto
@@ -16,13 +17,19 @@ import com.cursorforandroid.data.local.JsonDiskCache
 import com.cursorforandroid.data.local.PreferencesStore
 import com.cursorforandroid.data.local.SecureKeyStore
 import com.cursorforandroid.domain.ModelOption
+import com.cursorforandroid.domain.ModelSlugs
 import com.cursorforandroid.domain.Repository
 import com.cursorforandroid.util.AppClock
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.test.TestScope
+import kotlinx.coroutines.test.advanceTimeBy
+import kotlinx.coroutines.test.runCurrent
+import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.yield
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.Protocol
@@ -66,10 +73,10 @@ class CatalogRepositoryTest {
     }
 
     @Test
-    fun `saved catalogs show first and the rate-limited repository call is skipped while they are fresh`() = runBlocking<Unit> {
+    fun `saved catalogs show first and neither is fetched again while it is fresh`() = runBlocking<Unit> {
         cache.writeModels(listOf(ModelOption("claude", "Claude")))
         cache.writeRepositories(listOf(Repository("https://github.com/acme/app")))
-        now += 10 * 60 * 1000
+        now += 5 * 60 * 1000
         api.modelItems = listOf(ModelListItemDto(id = "claude", displayName = "Claude"), ModelListItemDto(id = "gpt", displayName = "GPT"))
         api.repositoryUrls = listOf("https://github.com/acme/app", "https://github.com/acme/web")
         val catalog = CatalogRepository(session, cache)
@@ -78,17 +85,18 @@ class CatalogRepositoryTest {
         assertThat(catalog.models.value.map { it.id }).containsExactly("claude")
         assertThat(catalog.repositories.value.map { it.shortName }).containsExactly("app")
 
-        // Repositories were fetched ten minutes ago: still inside the TTL, so no request is spent.
+        // Both were saved five minutes ago: inside the one freshness window, so no request is spent on either.
         assertThat(catalog.loadRepositories().getOrThrow().map { it.shortName }).containsExactly("app")
+        assertThat(catalog.loadModels().getOrThrow().map { it.id }).containsExactly("claude")
         assertThat(api.repositoriesCalls).isEqualTo(0)
-        // Models are revalidated once per session and the fresh list replaces the saved one.
+        assertThat(api.modelsCalls).isEqualTo(0)
+
+        // Once stale, each is fetched again, replaces the saved one and is saved in its stead.
+        now += CatalogRefresher.STALE_AFTER_MS
         assertThat(catalog.loadModels().getOrThrow().map { it.id }).containsExactly("claude", "gpt").inOrder()
         assertThat(catalog.loadModels().getOrThrow()).hasSize(2)
         assertThat(api.modelsCalls).isEqualTo(1)
         assertThat(cache.readModels()!!.value.map { it.id }).containsExactly("claude", "gpt").inOrder()
-
-        // Past the TTL the repositories are fetched and saved again.
-        now += 30 * 60 * 1000
         assertThat(catalog.loadRepositories().getOrThrow().map { it.shortName }).containsExactly("app", "web").inOrder()
         assertThat(api.repositoriesCalls).isEqualTo(1)
         assertThat(cache.readRepositories()!!.value).hasSize(2)
@@ -134,7 +142,7 @@ class CatalogRepositoryTest {
         assertThat(catalog.loadRepositories(force = true).getOrThrow()).hasSize(1)
         assertThat(api.repositoriesCalls).isEqualTo(1)
 
-        // A forced refresh does skip the half-hour freshness window, once the minute is up.
+        // A forced refresh does skip the freshness window, once the minute is up.
         now += 65 * 1000
         assertThat(catalog.loadRepositories(force = true).getOrThrow()).hasSize(2)
         assertThat(api.repositoriesCalls).isEqualTo(2)
@@ -232,6 +240,143 @@ class CatalogRepositoryTest {
         assertThat(catalog.repositories.value).hasSize(2)
         assertThat(catalog.loadRepositories().getOrThrow()).hasSize(2)
         assertThat(api.repositoriesCalls).isEqualTo(0)
+    }
+
+    /** [AppClock] on the test's virtual clock, so [CatalogRepository.keepFresh]'s sleeps and the catalogs' ages agree. */
+    private fun TestScope.clockOnVirtualTime() {
+        val base = now
+        AppClock.nowMillis = { base + testScheduler.currentTime }
+    }
+
+    private fun TestScope.passes(catalog: CatalogRepository, allowed: () -> Boolean = { true }) {
+        backgroundScope.launch { catalog.keepFresh(allowed) }
+        runCurrent()
+    }
+
+    @Test
+    fun `in the foreground each catalog is fetched again as it goes stale, and a model announced meanwhile turns up`() = runTest {
+        session.signIn("key_test").getOrThrow()
+        clockOnVirtualTime()
+        api.modelItems = listOf(ModelListItemDto(id = "claude-sonnet-4.6", displayName = "Claude Sonnet 4.6"))
+        api.repositoryUrls = listOf("https://github.com/acme/app")
+        val catalog = CatalogRepository(session, cache)
+
+        passes(catalog)
+        assertThat(api.modelsCalls).isEqualTo(1)
+        assertThat(api.repositoriesCalls).isEqualTo(1)
+
+        // Cursor announces a model and the user connects a repository; nothing is asked while the lists are fresh.
+        api.modelItems += ModelListItemDto(id = "claude-opus-5.5", displayName = "Claude Opus 5.5")
+        api.repositoryUrls += "https://github.com/acme/web"
+        advanceTimeBy(CatalogRefresher.STALE_AFTER_MS - 1)
+        assertThat(api.modelsCalls).isEqualTo(1)
+        assertThat(api.repositoriesCalls).isEqualTo(1)
+
+        advanceTimeBy(2)
+        assertThat(api.modelsCalls).isEqualTo(2)
+        assertThat(api.repositoriesCalls).isEqualTo(2)
+        assertThat(catalog.models.value.map { it.id }).containsExactly("claude-sonnet-4.6", "claude-opus-5.5").inOrder()
+        assertThat(catalog.repositories.value.map { it.shortName }).containsExactly("app", "web").inOrder()
+        // The #306 normalizer places the new model's slugs against the refreshed list, as it does any other's.
+        assertThat(ModelSlugs.resolve(catalog.models.value, "claude-5-5-opus")?.model?.id).isEqualTo("claude-opus-5.5")
+        assertThat(cache.readModels()!!.value.map { it.id }).contains("claude-opus-5.5")
+    }
+
+    @Test
+    fun `a pass skips what another caller has just brought`() = runTest {
+        session.signIn("key_test").getOrThrow()
+        clockOnVirtualTime()
+        api.modelItems = listOf(ModelListItemDto(id = "claude", displayName = "Claude"))
+        api.repositoryUrls = listOf("https://github.com/acme/app")
+        val catalog = CatalogRepository(session, cache)
+        catalog.loadModels().getOrThrow()
+        catalog.loadRepositories().getOrThrow()
+
+        catalog.revalidateDue()
+        assertThat(api.modelsCalls).isEqualTo(1)
+        assertThat(api.repositoriesCalls).isEqualTo(1)
+        assertThat(catalog.nextPassIn(AppClock.now())).isEqualTo(CatalogRefresher.STALE_AFTER_MS)
+    }
+
+    @Test
+    fun `no pass goes out without the device's say-so, signed out, or while the account service's throttle holds every call`() = runTest {
+        clockOnVirtualTime()
+        api.modelItems = listOf(ModelListItemDto(id = "claude", displayName = "Claude"))
+        val throttle = ApiThrottle(now = AppClock::now)
+        val catalog = CatalogRepository(session, cache, throttlePausedUntil = throttle::pausedUntil)
+
+        // Signed out: nothing to fetch for.
+        catalog.revalidateDue()
+        assertThat(api.modelsCalls).isEqualTo(0)
+
+        session.signIn("key_test").getOrThrow()
+        // No connection, a low battery, power saving: the loop wakes but asks nothing.
+        var allowed = false
+        passes(catalog) { allowed }
+        advanceTimeBy(3 * CatalogRefresher.STALE_AFTER_MS)
+        assertThat(api.modelsCalls).isEqualTo(0)
+        assertThat(api.repositoriesCalls).isEqualTo(0)
+
+        // A 429 elsewhere pauses every caller: the pass waits it out rather than add to it.
+        allowed = true
+        throttle.pause(10_000)
+        catalog.revalidateDue()
+        assertThat(api.modelsCalls).isEqualTo(0)
+        advanceTimeBy(10_001)
+        catalog.revalidateDue()
+        assertThat(api.modelsCalls).isEqualTo(1)
+        assertThat(api.repositoriesCalls).isEqualTo(1)
+    }
+
+    @Test
+    fun `a picker's own fetch waits out the account service's pause before it goes out`() = runTest {
+        session.signIn("key_test").getOrThrow()
+        clockOnVirtualTime()
+        api.modelItems = listOf(ModelListItemDto(id = "claude", displayName = "Claude"))
+        val throttle = ApiThrottle(now = AppClock::now)
+        val catalog = CatalogRepository(session, cache, throttlePausedUntil = throttle::pausedUntil)
+
+        throttle.pause(4_000)
+        val started = testScheduler.currentTime
+        assertThat(catalog.loadModels(force = true).getOrThrow()).hasSize(1)
+        assertThat(testScheduler.currentTime - started).isAtLeast(4_000L)
+        assertThat(api.modelsCalls).isEqualTo(1)
+    }
+
+    @Test
+    fun `a catalog that keeps failing is asked less and less often, never every pass`() = runTest {
+        session.signIn("key_test").getOrThrow()
+        clockOnVirtualTime()
+        api.failModels = IOException("down")
+        api.repositoryUrls = listOf("https://github.com/acme/app")
+        val catalog = CatalogRepository(session, cache)
+
+        passes(catalog)
+        advanceTimeBy(CatalogRefresher.STALE_AFTER_MS - 1)
+        // At 0, 1, 3 and 7 minutes: the wait doubles after each failure, where a pass a minute would have asked ten times.
+        assertThat(api.modelsCalls).isEqualTo(4)
+        // The healthy one is not dragged along.
+        assertThat(api.repositoriesCalls).isEqualTo(1)
+
+        api.failModels = null
+        api.modelItems = listOf(ModelListItemDto(id = "claude", displayName = "Claude"))
+        advanceTimeBy(8 * 60 * 1000L)
+        assertThat(catalog.models.value.map { it.id }).containsExactly("claude")
+    }
+
+    @Test
+    fun `an account with nothing connected is not asked for its repositories every minute`() = runTest {
+        session.signIn("key_test").getOrThrow()
+        clockOnVirtualTime()
+        api.modelItems = listOf(ModelListItemDto(id = "claude", displayName = "Claude"))
+        api.repositoryUrls = emptyList()
+        val catalog = CatalogRepository(session, cache)
+
+        passes(catalog)
+        advanceTimeBy(CatalogRefresher.STALE_AFTER_MS - 1)
+        assertThat(api.repositoriesCalls).isEqualTo(1)
+        assertThat(catalog.loadRepositories().getOrThrow()).isEmpty()
+        assertThat(api.repositoriesCalls).isEqualTo(1)
     }
 
     @Test
