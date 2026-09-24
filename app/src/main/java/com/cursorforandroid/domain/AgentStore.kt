@@ -69,9 +69,11 @@ data class RecentContextFile(
     /** A URL the picture can be fetched from (presigned, or the demo's asset); null for a file that is not a picture, or one the account would not presign. */
     val thumbnailUrl: String? = null,
 ) {
-    val isImage: Boolean get() = entry.name.substringAfterLast('.', "").lowercase() in IMAGE_EXTENSIONS
+    val isImage: Boolean get() = isImageName(entry.name)
 
     companion object {
         val IMAGE_EXTENSIONS = setOf("png", "jpg", "jpeg", "gif", "webp", "bmp")
+
+        fun isImageName(name: String): Boolean = name.substringAfterLast('.', "").lowercase() in IMAGE_EXTENSIONS
     }
 }
