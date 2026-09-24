@@ -63,6 +63,7 @@ import com.cursorforandroid.ui.components.HairlineDivider
 import com.cursorforandroid.ui.components.RunStopCopy
 import com.cursorforandroid.ui.components.SheetHeader
 import com.cursorforandroid.ui.components.fadingVerticalScroll
+import com.cursorforandroid.ui.shortcuts.ShortcutsCopy
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.ui.theme.ThemeMode
 import com.cursorforandroid.util.TimeFormat
@@ -110,6 +111,7 @@ object SettingsTags {
     const val WHATS_NEW_ROW = "settings_whats_new"
     const val DEBUG_SHEET = "settings_debug_sheet"
     const val CONFIRM_STOP = "settings_confirm_stop"
+    const val KEYBOARD_SHORTCUTS_ROW = "settings_keyboard_shortcuts"
 }
 
 /**
@@ -132,6 +134,8 @@ fun SettingsScreen(
     onOpenWhatsNew: () -> Unit = {},
     /** The chats list the New Chat pane draws from, for the New chat page picker's miniatures of it. */
     newChatList: AgentListUiState = AgentListUiState(),
+    /** Opens the Keyboard shortcuts page. */
+    onOpenKeyboardShortcuts: () -> Unit = {},
 ) {
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
@@ -223,6 +227,14 @@ fun SettingsScreen(
                     HairlineDivider()
                     UnreadThisPhoneRow(graph)
                 }
+                HairlineDivider()
+                SettingsRow(
+                    title = ShortcutsCopy.TITLE,
+                    description = ShortcutsCopy.SETTINGS_DETAIL,
+                    modifier = Modifier.testTag(SettingsTags.KEYBOARD_SHORTCUTS_ROW),
+                    onClick = onOpenKeyboardShortcuts,
+                    trailing = { RowGlyph(CursorIcons.ChevronRight) },
+                )
             }
 
             Group(SettingsCopy.GROUP_NOTIFICATIONS)

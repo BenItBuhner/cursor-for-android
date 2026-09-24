@@ -23,7 +23,7 @@ object ShortcutsCopy {
             listOf(
                 Line(listOf(ctrl("F"), ctrl("K")), "Search chats and Projects", "Titles, repositories and the transcripts kept on this device"),
                 Line(listOf(ctrl("Tab")), "Switch between recent chats", "Hold Ctrl and press Tab to step back; Shift+Tab steps forward; let go of Ctrl to open"),
-                Line(listOf(ctrl("1"), ctrl("0")), "Open a sidebar row", "Ctrl+1 to Ctrl+9, and Ctrl+0 for the tenth; hold Ctrl to see the numbers"),
+                Line(listOf(ctrl("1 … 9"), ctrl("0")), "Open one of the first ten sidebar rows", "Ctrl+0 is the tenth; hold Ctrl to see the numbers"),
                 Line(listOf(ctrl("N")), "New chat"),
                 Line(listOf(ctrl("Shift", "N")), "New Project", "With Extended mode"),
                 Line(listOf(ctrl(",")), "Settings"),
@@ -41,7 +41,7 @@ object ShortcutsCopy {
         Group(
             "In a chat",
             listOf(
-                Line(listOf(ctrl("R")), "Check for new messages", "Fetches only what is new; says \"Up to date\" or how many are new"),
+                Line(listOf(ctrl("R")), "Check for new messages", "Then says \"Up to date\", or how many are new"),
                 Line(listOf(ctrl("Shift", "R")), "Reload transcript", "Reads the whole chat again, as the menu's Reload transcript does"),
             ),
         ),

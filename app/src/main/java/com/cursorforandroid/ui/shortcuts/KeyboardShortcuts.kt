@@ -73,8 +73,10 @@ class KeyboardShortcuts(private val scope: CoroutineScope, private val holdMilli
             }
             return false
         }
-        // Ctrl came up somewhere this activity did not hear it (a dialog's window had the focus).
+        // Ctrl came up somewhere this activity did not hear it (a dialog's window had the focus)…
         if (ctrlHeld && !event.isCtrlPressed) release(commit = true)
+        // …or went down there: held all the same, so that letting go of it is heard, though it was never a hold.
+        if (!ctrlHeld && event.isCtrlPressed) ctrlHeld = true
         if (event.isCtrlPressed && !isModifier(code) && !showNumbers) holdJob?.cancel()
 
         if (code == KeyEvent.KEYCODE_ESCAPE && !event.isCtrlPressed && !event.isAltPressed && !event.isMetaPressed) {
