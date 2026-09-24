@@ -21,6 +21,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.cursorforandroid.AppGraph
 import com.cursorforandroid.domain.AgentListOrganizer
 import com.cursorforandroid.domain.CursorUser
+import com.cursorforandroid.ui.agents.SidebarTags
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.ui.theme.ThemeMode
 import com.google.common.truth.Truth.assertThat
@@ -169,7 +170,7 @@ class SidebarShortListResetTest {
         openDrawer()
         listInFull()
 
-        compose.onNodeWithContentDescription("Account").performClick()
+        compose.onNodeWithTag(SidebarTags.ACCOUNT).performClick()
         compose.waitUntil(20_000) { exists(hasText("Appearance")) }
         compose.waitForIdle()
         assertCutBack()
