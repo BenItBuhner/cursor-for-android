@@ -88,8 +88,8 @@ object CursorDimens {
      * so a 17dp box shows a ~11dp "+": a little under half the disc, like the web's.
      */
     val roundButtonGlyph = 17.dp
-    /** Composer box, and the conversation column with it: 768px max as a Project chat on cursor.com has it (763 measured), 12px padding. */
-    val composerMaxWidth = 768.dp
+    /** Composer box: 640px max, 12px padding. */
+    val composerMaxWidth = 640.dp
     val composerPadding = 12.dp
     /**
      * Air around the follow-up composer where it docks at the bottom of a chat: this much between the box and each
