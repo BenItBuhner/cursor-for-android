@@ -61,7 +61,7 @@ fun ImeEnterFallback(onEnter: (() -> Unit)?, composing: () -> Boolean, content: 
  * The field's connection with newlines [enterFor] claims taken out. [enterFor] is asked about a newline committed on
  * its own ([alone]) or on the end of other text, and answers with what to do instead of it, or null to let it in.
  */
-private class EnterFallbackConnection(
+internal class EnterFallbackConnection(
     target: InputConnection,
     private val enterFor: (alone: Boolean) -> (() -> Unit)?,
 ) : InputConnectionWrapper(target, false) {
@@ -72,6 +72,8 @@ private class EnterFallbackConnection(
     override fun commitText(text: CharSequence?, newCursorPosition: Int): Boolean =
         commit(text) { super.commitText(it, newCursorPosition) }
 
+    // The platform's wrapper hands this straight to the target. Compose's own wrapper around this connection turns it
+    // into the call above today, but nothing holds it to that.
     @RequiresApi(Build.VERSION_CODES.TIRAMISU)
     override fun commitText(text: CharSequence, newCursorPosition: Int, textAttribute: TextAttribute?): Boolean =
         commit(text) { super.commitText(it ?: "", newCursorPosition, textAttribute) }
