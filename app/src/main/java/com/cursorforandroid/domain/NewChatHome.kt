@@ -8,10 +8,12 @@ package com.cursorforandroid.domain
  *  - [PROJECTS]: the account's Projects as shortcuts — each in its own icon and colour, saying when it is working —
  *    that open the Project. Projects are Extended mode's (the demo has one of its own); without them the pane says so
  *    and lists the recent chats under the note, so it is never left empty.
+ *  - [COMPOSER]: nothing; the composer alone, in the middle of the pane. The chats are the sidebar's.
  */
 enum class NewChatHome {
     RECENT,
     PROJECTS,
+    COMPOSER,
     ;
 
     /** How the preference spells it. */

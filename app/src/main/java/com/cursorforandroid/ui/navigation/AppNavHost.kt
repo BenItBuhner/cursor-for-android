@@ -409,6 +409,7 @@ internal fun AppShell(
                         projectsAvailable = pane.projectsAvailable,
                         onNewProject = pane.onNewProject,
                         onOpenSettings = ::openSettings,
+                        onReorderProjects = pane.onReorderProjects,
                     )
                     Screen.Settings -> SettingsScreen(
                         graph = graph,
@@ -445,6 +446,7 @@ internal fun AppShell(
         newChatHome = newChatHome,
         projectsAvailable = isDemo || extendedMode,
         onNewProject = if (isDemo || extendedMode) ({ projectEditor = ProjectEditorTarget.Create }) else null,
+        onReorderProjects = { ids -> agentsViewModel.setProjectOrder(ids) },
     )
 
     // The media viewer is a layer over the whole shell — sidebar, chat and panel alike, in either layout — so a
@@ -524,4 +526,6 @@ private class DetailPane(
     /** Projects exist to pin: Extended mode is on, or this is the demo. */
     val projectsAvailable: Boolean,
     val onNewProject: (() -> Unit)?,
+    /** The Projects as arranged on the New Chat page, first to last. */
+    val onReorderProjects: (List<String>) -> Unit,
 )
