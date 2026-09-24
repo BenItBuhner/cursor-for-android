@@ -76,9 +76,8 @@ class BlobDiskStore(private val cache: JsonDiskCache, private val maxBytes: Long
             if (!tmp.renameTo(file)) throw java.io.IOException("rename failed")
         }.onFailure { tmp.delete() }.isSuccess
         if (written) {
-            val total = counted() + value.size
-            bytes.set(total)
-            if (total > maxBytes) trim()
+            counted()
+            if (bytes.addAndGet(value.size.toLong()) > maxBytes) trim()
         }
     }
 
@@ -121,22 +120,30 @@ class BlobDiskStore(private val cache: JsonDiskCache, private val maxBytes: Long
     /**
      * Evicts the least recently used blobs, whichever chat they belong to, until the store is at three quarters of
      * [maxBytes]. One pass at a time: the writes that find the store over while a pass runs leave it to that pass
-     * rather than each walking every file of every chat again.
+     * rather than each walking every file of every chat again, and the pass looks again once done, for what they
+     * wrote after its walk. It takes off the count only what it freed, so their bytes stay counted.
      */
     private fun trim() {
-        if (!trimming.compareAndSet(false, true)) return
-        try {
-            val files = DiskSweep.byModified(dir.walkTopDown().filter { it.isFile })
-            var total = files.sumOf { it.length() }
-            val target = maxBytes * 3 / 4
-            for (file in files) {
-                if (total <= target) break
-                val size = file.length()
-                if (file.delete()) total -= size
+        while (bytes.get() > maxBytes) {
+            if (!trimming.compareAndSet(false, true)) return
+            try {
+                val files = DiskSweep.byModified(dir.walkTopDown().filter { it.isFile })
+                val walked = files.sumOf { it.length() }
+                var total = walked
+                val target = maxBytes * 3 / 4
+                for (file in files) {
+                    if (total <= target) break
+                    val size = file.length()
+                    if (file.delete()) total -= size
+                }
+                if (total == walked) {
+                    bytes.set(walked)
+                    return
+                }
+                bytes.addAndGet(total - walked)
+            } finally {
+                trimming.set(false)
             }
-            bytes.set(total)
-        } finally {
-            trimming.set(false)
         }
     }
 
