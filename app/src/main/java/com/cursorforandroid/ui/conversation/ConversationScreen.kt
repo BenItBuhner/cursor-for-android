@@ -266,6 +266,7 @@ fun ConversationScreen(
     // status only by the indicator: a frame of the pull recomposes nothing, an answer the indicator alone.
     val density = LocalDensity.current
     val catchUpPull = remember(agentId, density) { with(density) { CatchUpPull(CatchUpPullThreshold.toPx()) } }
+    val readerScroll = rememberReaderScroll(transcriptScroll, pull = catchUpPull, canCatchUp = viewModel::canCatchUp, onCatchUp = viewModel::catchUp)
     var menuOpen by rememberSaveable { mutableStateOf(false) }
     var modelSheet by rememberSaveable { mutableStateOf(false) }
     var renameOpen by rememberSaveable { mutableStateOf(false) }
@@ -480,6 +481,7 @@ fun ConversationScreen(
         )
 
         Box(Modifier.weight(1f).fillMaxWidth()) {
+            Box(Modifier.matchParentSize().readerBackdrop(readerScroll))
             val paneWidth = Modifier.widthIn(max = CursorDimens.composerMaxWidth).fillMaxWidth()
             // The column the rows are laid out in, measured whether or not there are any rows yet.
             Box(Modifier.align(Alignment.TopCenter).padding(horizontal = TranscriptGutter).then(paneWidth).then(headerClearance.transcriptColumn))
@@ -552,7 +554,7 @@ fun ConversationScreen(
                         .fillMaxWidth()
                         .align(Alignment.TopCenter)
                         .scrollEdgeFade(listState, reverseLayout = listReversed, surface = colors.canvas)
-                        .readerScrolling(transcriptScroll, pull = catchUpPull, canCatchUp = viewModel::canCatchUp, onCatchUp = viewModel::catchUp)
+                        .readerScrolling(readerScroll)
                         .testTag("transcript"),
                     contentPadding = PaddingValues(start = TranscriptGutter, end = TranscriptGutter, top = 6.dp, bottom = 12.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp),

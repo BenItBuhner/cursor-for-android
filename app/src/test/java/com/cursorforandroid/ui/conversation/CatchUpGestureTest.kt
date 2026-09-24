@@ -26,9 +26,10 @@ import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
 
 /**
- * The pull to catch up through the transcript's own scroll ([readerScrolling]) with a real drag: a chat that
- * overflows the screen, followed at its newest row, and one short enough to fit — whose list cannot scroll at all,
- * which the platform's scrollable would otherwise never hand to the overscroll.
+ * The pull to catch up through the transcript's own scroll ([readerScrolling], [readerBackdrop]) with a real drag: a
+ * chat that overflows the screen, followed at its newest row, and one short enough to fit — whose list cannot scroll
+ * at all, which the platform's scrollable would otherwise never hand to the overscroll, and which is sized to its
+ * rows, so the finger can as well be on the empty space below them.
  */
 @RunWith(AndroidJUnit4::class)
 @Config(sdk = [35])
@@ -46,13 +47,14 @@ class CatchUpGestureTest {
             pull = androidx.compose.runtime.remember { with(density) { CatchUpPull(CatchUpPullThreshold.toPx()) } }
             val list = rememberLazyListState()
             val scroll = rememberTranscriptScroll(list, key = "chat")
-            Box(Modifier.fillMaxSize()) {
+            val reader = rememberReaderScroll(scroll, pull = pull, canCatchUp = { true }, onCatchUp = { pulls++ })
+            Box(Modifier.fillMaxSize().testTag("area")) {
+                Box(Modifier.matchParentSize().readerBackdrop(reader))
                 LazyColumn(
                     state = list,
                     reverseLayout = true,
                     userScrollEnabled = false,
-                    modifier = Modifier.fillMaxWidth().align(Alignment.TopCenter).testTag("transcript")
-                        .readerScrolling(scroll, pull = pull, canCatchUp = { true }, onCatchUp = { pulls++ }),
+                    modifier = Modifier.fillMaxWidth().align(Alignment.TopCenter).testTag("transcript").readerScrolling(reader),
                     verticalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
                     items(rows, key = { it }) { Text("Row $it", Modifier.fillMaxWidth().height(56.dp)) }
@@ -77,6 +79,18 @@ class CatchUpGestureTest {
     fun `a chat short enough to fit the screen is caught up by the same pull`() {
         transcript(rows = 4)
         pullUp()
+        compose.waitForIdle()
+        assertThat(pulls).isEqualTo(1)
+    }
+
+    @Test
+    fun `a chat short enough to fit the screen is pulled from the space below its newest row too`() {
+        transcript(rows = 4)
+        val rows = compose.onNodeWithTag("transcript").fetchSemanticsNode().boundsInRoot
+        compose.onNodeWithTag("area").performTouchInput {
+            assertThat(bottom).isGreaterThan(rows.bottom + CatchUpPullThreshold.toPx() * 2)
+            swipeUp(startY = bottom - 4f, endY = rows.bottom + 4f, durationMillis = 900)
+        }
         compose.waitForIdle()
         assertThat(pulls).isEqualTo(1)
     }

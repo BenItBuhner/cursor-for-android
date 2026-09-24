@@ -75,13 +75,13 @@ class CatchUpHapticsTest {
                 pull = remember { with(density) { CatchUpPull(CatchUpPullThreshold.toPx()) } }
                 val list = rememberLazyListState()
                 val scroll = rememberTranscriptScroll(list, key = "chat")
+                val reader = rememberReaderScroll(scroll, pull = pull, canCatchUp = { true }, onCatchUp = { status.value = CatchUpStatus.Checking })
                 Box(Modifier.fillMaxSize()) {
                     LazyColumn(
                         state = list,
                         reverseLayout = true,
                         userScrollEnabled = false,
-                        modifier = Modifier.fillMaxWidth().align(Alignment.TopCenter).testTag("transcript")
-                            .readerScrolling(scroll, pull = pull, canCatchUp = { true }, onCatchUp = { status.value = CatchUpStatus.Checking }),
+                        modifier = Modifier.fillMaxWidth().align(Alignment.TopCenter).testTag("transcript").readerScrolling(reader),
                         verticalArrangement = Arrangement.spacedBy(10.dp),
                     ) {
                         items(60, key = { it }) { Text("Row $it", Modifier.fillMaxWidth().height(56.dp)) }
