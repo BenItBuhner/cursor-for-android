@@ -21,6 +21,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.cursorforandroid.AppGraph
+import com.cursorforandroid.domain.Capabilities
 import com.cursorforandroid.domain.TranscriptEngine
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.ui.theme.ThemeMode
@@ -36,9 +37,9 @@ import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 
 /**
- * The transcript engine is one switch beside Extended mode — on is Beta, off is Stable, the default — stored under
- * the preference it always was. With the mode off it does nothing, so it is dimmed with the reason and takes no tap,
- * while still showing what is stored.
+ * The transcript engine is one switch beside Extended mode — on is Beta, the default, off is Stable — stored under
+ * the preference it always was. With the mode off it does nothing, so it is dimmed with the reason, reads off and
+ * takes no tap, as default mode's row always has; the stored choice shows again with the mode on.
  */
 @RunWith(AndroidJUnit4::class)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
@@ -83,8 +84,13 @@ class TranscriptEngineSettingsTest {
         compose.waitUntil(10_000) { compose.onAllNodes(hasTestTag(ExtendedModeTags.TOGGLE) and isOn()).fetchSemanticsNodes().isNotEmpty() }
     }
 
+    private fun modeSwitch(on: Boolean) {
+        compose.onNodeWithTag(ExtendedModeTags.TOGGLE).performClick()
+        compose.waitUntil(10_000) { runBlocking { graph.extendedMode.isEnabled() } == on }
+    }
+
     @Test
-    fun `with the mode off the switch is dimmed with the reason, and a tap changes nothing`() {
+    fun `with the mode off the switch is dimmed and off with the reason, as before the default changed, and a tap changes nothing`() {
         compose.onNodeWithText(ExtendedModeCopy.ENGINE_TITLE).assertIsDisplayed()
         compose.onNodeWithText(ExtendedModeCopy.NEEDS_MODE).assertIsDisplayed()
         compose.onNodeWithText(ExtendedModeCopy.ENGINE_DETAIL).assertDoesNotExist()
@@ -93,39 +99,53 @@ class TranscriptEngineSettingsTest {
 
         compose.onNodeWithText(ExtendedModeCopy.ENGINE_TITLE).performClick()
         compose.waitForIdle()
-        assertThat(engine()).isEqualTo(TranscriptEngine.STABLE)
-        assertThat(runBlocking { graph.extendedMode.capabilities() }.accountTranscript).isFalse()
+        engineSwitch.assertIsOff()
+        // Never chosen, so the default, which nothing but the switch in Extended mode can change.
+        assertThat(engine()).isEqualTo(TranscriptEngine.BETA)
+        assertThat(runBlocking { graph.extendedMode.capabilities() }).isEqualTo(Capabilities.DOCUMENTED)
     }
 
     @Test
-    fun `with the mode on the switch is Beta when on and Stable when off, Stable to begin with`() {
+    fun `with the mode on the switch is Beta when on and Stable when off, Beta to begin with`() {
         turnModeOn()
-        compose.waitUntil(10_000) { engineReads(on = false, enabled = true) }
+        compose.waitUntil(10_000) { engineReads(on = true, enabled = true) }
         compose.onNodeWithText(ExtendedModeCopy.ENGINE_DETAIL).assertIsDisplayed()
         compose.onNodeWithTag(ExtendedModeTags.ENGINE_ROW).assertIsEnabled()
-        assertThat(engine()).isEqualTo(TranscriptEngine.STABLE)
-
-        compose.onNodeWithText(ExtendedModeCopy.ENGINE_TITLE).performClick()
-        compose.waitUntil(10_000) { engine() == TranscriptEngine.BETA }
-        compose.waitUntil(10_000) { engineReads(on = true, enabled = true) }
+        assertThat(engine()).isEqualTo(TranscriptEngine.BETA)
         assertThat(runBlocking { graph.extendedMode.capabilities() }.accountTranscript).isTrue()
 
-        engineSwitch.performClick()
+        compose.onNodeWithText(ExtendedModeCopy.ENGINE_TITLE).performClick()
         compose.waitUntil(10_000) { engine() == TranscriptEngine.STABLE }
         compose.waitUntil(10_000) { engineReads(on = false, enabled = true) }
+        assertThat(runBlocking { graph.extendedMode.capabilities() }.accountTranscript).isFalse()
+
+        engineSwitch.performClick()
+        compose.waitUntil(10_000) { engine() == TranscriptEngine.BETA }
+        compose.waitUntil(10_000) { engineReads(on = true, enabled = true) }
     }
 
     @Test
-    fun `Beta chosen and the mode turned off, the switch still shows Beta, dimmed, and nothing reads the record`() {
+    fun `the mode off shows the switch off whatever is stored, and the mode back on shows the choice, the default or an explicit Stable`() {
         turnModeOn()
-        compose.onNodeWithText(ExtendedModeCopy.ENGINE_TITLE).performClick()
-        compose.waitUntil(10_000) { engine() == TranscriptEngine.BETA }
+        compose.waitUntil(10_000) { engineReads(on = true, enabled = true) }
 
-        compose.onNodeWithTag(ExtendedModeTags.TOGGLE).performClick()
-        compose.waitUntil(10_000) { !runBlocking { graph.extendedMode.isEnabled() } }
-        compose.waitUntil(10_000) { engineReads(on = true, enabled = false) }
+        // Never chosen: off and dimmed while the mode is off, on again with it.
+        modeSwitch(on = false)
+        compose.waitUntil(10_000) { engineReads(on = false, enabled = false) }
         compose.onNodeWithText(ExtendedModeCopy.NEEDS_MODE).assertIsDisplayed()
         assertThat(engine()).isEqualTo(TranscriptEngine.BETA)
         assertThat(runBlocking { graph.extendedMode.capabilities() }.accountTranscript).isFalse()
+        modeSwitch(on = true)
+        compose.waitUntil(10_000) { engineReads(on = true, enabled = true) }
+
+        // Turned off: the explicit opt-out outlives the mode going off and on.
+        engineSwitch.performClick()
+        compose.waitUntil(10_000) { engine() == TranscriptEngine.STABLE }
+        modeSwitch(on = false)
+        compose.waitUntil(10_000) { engineReads(on = false, enabled = false) }
+        modeSwitch(on = true)
+        compose.waitUntil(10_000) { engineReads(on = false, enabled = true) }
+        assertThat(engine()).isEqualTo(TranscriptEngine.STABLE)
+        assertThat(runBlocking { graph.extendedMode.capabilities() }).isEqualTo(Capabilities.EXTENDED_STABLE)
     }
 }

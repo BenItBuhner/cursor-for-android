@@ -21,6 +21,7 @@ import com.cursorforandroid.data.repo.CursorBackend
 import com.cursorforandroid.domain.PendingFollowup
 import com.cursorforandroid.domain.PromptFile
 import com.cursorforandroid.domain.PromptImage
+import com.cursorforandroid.domain.TranscriptEngine
 import com.cursorforandroid.domain.UserMessage
 import com.cursorforandroid.ui.components.PendingAttachment
 import com.cursorforandroid.ui.components.PendingFile
@@ -91,6 +92,9 @@ class OutgoingSendTest {
         graph.session.signIn("key_abc").getOrThrow()
         graph.extendedMode.acknowledge()
         check(graph.extendedMode.enable()) { "Extended mode could not be turned on." }
+        // The composer's chat load under Beta would read the account's record over the graph's own api2 client,
+        // which no fake here stands in for; the sends under test do not depend on the engine.
+        check(graph.extendedMode.setEngine(TranscriptEngine.STABLE)) { "The transcript engine could not be set." }
         api.addIdleAgent(AGENT, "Green screen", "run-0")
         graph.agents.refresh()
         uploads = graph.attachmentUploads
