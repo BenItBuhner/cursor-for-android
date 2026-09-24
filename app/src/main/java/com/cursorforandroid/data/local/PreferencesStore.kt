@@ -163,6 +163,8 @@ class PreferencesStore(
         val collapsedSidebarSections = stringSetPreferencesKey("sidebar_collapsed_sections")
         /** Settings › Appearance › Shorten long Projects list; absent reads as on (see [shortenSidebarLists]). */
         val shortenSidebarLists = booleanPreferencesKey("sidebar_shorten_long_lists")
+        /** Settings › Experimental › Voice input; absent reads as off (see [voiceInput]). */
+        val voiceInput = booleanPreferencesKey("voice_input")
         /** Settings › New chat page: what the New Chat pane lists under its composer (`recent` / `projects`); absent is Recent. */
         val newChatHome = stringPreferencesKey("new_chat_home")
         /** The transcript notices closed over each chat's composer: `agentId -> identities` (see `LoadNotice.identity`). */
@@ -407,6 +409,15 @@ class PreferencesStore(
     val shortenSidebarLists: Flow<Boolean> = data.map { it[Keys.shortenSidebarLists] ?: true }
 
     suspend fun setShortenSidebarLists(enabled: Boolean) = edit { it[Keys.shortenSidebarLists] = enabled }
+
+    /**
+     * Settings › Experimental › Voice input: the composer's microphone, which dictates through the account's
+     * transcription (`AiService/TranscribeAudio`) and so does anything only while Extended mode is on as well. Off by
+     * default; a device preference, kept across sign-outs.
+     */
+    val voiceInput: Flow<Boolean> = data.map { it[Keys.voiceInput] ?: false }
+
+    suspend fun setVoiceInput(enabled: Boolean) = edit { it[Keys.voiceInput] = enabled }
 
     /**
      * Settings › New chat page: the recent chats under the New Chat composer, the Projects, or the composer alone (see
