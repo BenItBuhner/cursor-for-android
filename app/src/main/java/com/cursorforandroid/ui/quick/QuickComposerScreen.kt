@@ -52,6 +52,7 @@ import com.cursorforandroid.ui.components.SelectorChip
 import com.cursorforandroid.ui.components.SelectorRow
 import com.cursorforandroid.ui.components.SpinnerRing
 import com.cursorforandroid.ui.components.keyboardInsetPadding
+import com.cursorforandroid.ui.components.VoiceInput
 import com.cursorforandroid.ui.components.pressable
 import com.cursorforandroid.ui.components.rememberFilePicker
 import com.cursorforandroid.ui.components.rememberMediaPicker
@@ -59,6 +60,7 @@ import com.cursorforandroid.ui.compose.LaunchRefusedHaptic
 import com.cursorforandroid.ui.compose.NewAgentUiState
 import com.cursorforandroid.ui.compose.NewAgentViewModel
 import com.cursorforandroid.ui.compose.rememberComposerMenuActions
+import com.cursorforandroid.ui.compose.rememberComposerVoice
 import com.cursorforandroid.ui.home.BranchSheet
 import com.cursorforandroid.ui.home.ComposerErrorLine
 import com.cursorforandroid.ui.home.DeviceSheet
@@ -141,6 +143,7 @@ private fun QuickComposer(
     )
     val pickFiles = rememberFilePicker(counts = counts, onPickedFiles = viewModel::addFiles, onError = viewModel::reportError)
     val plusMenu = rememberComposerMenuActions(graph, onPickMedia = pickMedia, onPickFiles = if (state.canAttachFiles) pickFiles else null)
+    val voice = rememberComposerVoice(graph)
     // A share left for the New Chat pane is as much this composer's: it is the same draft.
     val share by graph.share.offer.collectAsStateWithLifecycle()
     LaunchedEffect(share?.generation, share?.target) {
@@ -172,6 +175,7 @@ private fun QuickComposer(
         onBranch = { branchSheet = true },
         onDevice = { deviceSheet = true },
         onModel = { modelSheet = true },
+        voice = voice,
     )
 
     if (repoSheet) {
@@ -253,6 +257,7 @@ fun QuickComposerSheet(
     onBranch: () -> Unit = {},
     onDevice: () -> Unit = {},
     onModel: () -> Unit = {},
+    voice: VoiceInput? = null,
 ) {
     SheetFrame(onDismiss) {
         SheetTitle(onCancel = onCancel)
@@ -295,6 +300,7 @@ fun QuickComposerSheet(
             modePill = if (state.planMode) ModePills.Pill.Plan else null,
             onModePill = onModePill,
             focusOnOpen = true,
+            voice = voice,
         )
         state.error?.let { ComposerErrorLine(it, state.errorAsked, onDismissError) }
     }

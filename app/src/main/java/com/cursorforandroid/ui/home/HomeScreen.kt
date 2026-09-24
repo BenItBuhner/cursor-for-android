@@ -90,6 +90,7 @@ import com.cursorforandroid.ui.compose.LaunchRefusedHaptic
 import com.cursorforandroid.ui.compose.NewAgentUiState
 import com.cursorforandroid.ui.compose.NewAgentViewModel
 import com.cursorforandroid.ui.compose.rememberComposerMenuActions
+import com.cursorforandroid.ui.compose.rememberComposerVoice
 import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.util.AppClock
@@ -167,6 +168,7 @@ fun HomeScreen(
     )
     val pickFiles = rememberFilePicker(counts = counts, onPickedFiles = viewModel::addFiles, onError = viewModel::reportError)
     val plusMenu = rememberComposerMenuActions(graph, onPickMedia = pickMedia, onPickFiles = if (state.canAttachFiles) pickFiles else null)
+    val voice = rememberComposerVoice(graph)
     val share by graph.share.offer.collectAsStateWithLifecycle()
     LaunchedEffect(share?.generation, share?.target) {
         val draft = share ?: return@LaunchedEffect
@@ -234,6 +236,7 @@ fun HomeScreen(
                         modePill = if (state.planMode) ModePills.Pill.Plan else null,
                         onModePill = { pill -> viewModel.setPlanMode(pill == ModePills.Pill.Plan) },
                         focusRequests = composerFocusRequests,
+                        voice = voice,
                     )
                     state.error?.let { ComposerErrorLine(it, state.errorAsked, onDismiss = viewModel::dismissError) }
                 }
