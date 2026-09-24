@@ -13,6 +13,7 @@ import com.cursorforandroid.fixtures.CoordinatorFixtures
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.OkHttpClient
 import okhttp3.mockwebserver.MockResponse
@@ -110,6 +111,28 @@ class StoreFileRepositoryTest {
         // Sign-out drops the files kept.
         files.resetAll()
         assertThat(File(folder.root, "blobs").listFiles().orEmpty()).isEmpty()
+    }
+
+    /**
+     * Bennett's Tab S8, which had never resolved the Project's store: a figure whose URL key hashed to the same lock
+     * as its owner's id waited on the lock it held, for good, and every other figure of the store behind it — until
+     * the figure scrolled away and its read was cancelled, which is when "the images loaded on their own".
+     */
+    @Test
+    fun `a figure whose key shares a lock with its owner's store is read on a cold device, not held forever`() = runBlocking<Unit> {
+        api.serve = true
+        val colliding = MediaRef.Store(store, "media/transcript-store-images.png")
+        val stripe = { key: String -> (key.hashCode() and Int.MAX_VALUE) % StoreFileRepository.STRIPES }
+        assertThat(stripe(colliding.cacheKey)).isEqualTo(stripe(store))
+        val bytes = png()
+        server.enqueue(MockResponse().setBody(Buffer().write(bytes)))
+        val steps = mutableListOf<StoreFileRepository.Step>()
+
+        val read = withTimeoutOrNull(5_000) { repository(cache = null).readBytes(colliding) { steps += it } }
+
+        assertThat(read).isEqualTo(bytes)
+        assertThat(api.calls).containsExactly("store:$store", "presign:media/transcript-store-images.png").inOrder()
+        assertThat(steps).containsExactly(StoreFileRepository.Step.STORE, StoreFileRepository.Step.LINK, StoreFileRepository.Step.DOWNLOAD).inOrder()
     }
 
     @Test

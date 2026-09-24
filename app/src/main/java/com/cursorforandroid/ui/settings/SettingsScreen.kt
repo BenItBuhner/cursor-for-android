@@ -62,6 +62,7 @@ import com.cursorforandroid.ui.components.FlatIconButton
 import com.cursorforandroid.ui.components.HairlineDivider
 import com.cursorforandroid.ui.components.RunStopCopy
 import com.cursorforandroid.ui.components.SheetHeader
+import com.cursorforandroid.ui.components.contentColumn
 import com.cursorforandroid.ui.components.fadingVerticalScroll
 import com.cursorforandroid.ui.shortcuts.ShortcutsCopy
 import com.cursorforandroid.ui.theme.CursorTheme
@@ -175,7 +176,7 @@ fun SettingsScreen(
                 }
             },
         )
-        Column(Modifier.fillMaxSize().navigationBarsPadding().fadingVerticalScroll(surface = colors.canvas).padding(horizontal = 16.dp).padding(bottom = 24.dp)) {
+        Column(Modifier.fillMaxSize().navigationBarsPadding().fadingVerticalScroll(surface = colors.canvas).contentColumn().padding(bottom = 24.dp)) {
             Group(SettingsCopy.GROUP_ACCOUNT)
             SettingsCard {
                 // The demo has no key to describe; a real account's row opens onto its key and where to manage it.

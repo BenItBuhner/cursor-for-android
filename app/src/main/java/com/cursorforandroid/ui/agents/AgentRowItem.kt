@@ -112,8 +112,6 @@ fun AgentRowItem(
     val type = CursorTheme.typography
     val shape = CursorTheme.shapes.base
     var menuOpen by rememberSaveable { mutableStateOf(false) }
-    var renameOpen by rememberSaveable { mutableStateOf(false) }
-    var snoozeOpen by rememberSaveable { mutableStateOf(false) }
     val interaction = remember { MutableInteractionSource() }
     val agent = row.agent
 
@@ -163,27 +161,38 @@ fun AgentRowItem(
                 ChildrenToggle(row, expanded = childrenExpanded, onToggle = onToggleChildren)
             }
         }
-        ChatOverflowMenu(
-            row = row,
-            expanded = menuOpen,
-            onDismiss = { menuOpen = false },
-            onRename = { menuOpen = false; renameOpen = true },
-            onSnooze = { menuOpen = false; snoozeOpen = true },
-            actions = actions,
+        ChatRowMenu(row = row, expanded = menuOpen, onDismiss = { menuOpen = false }, actions = actions)
+    }
+}
+
+/**
+ * [ChatOverflowMenu] with the rename and snooze dialogs two of its items open: the long-press menu of a sidebar row,
+ * a recent chat's card and a Project's shortcut on the New Chat page alike. Anchored to the layout it is placed in.
+ */
+@Composable
+fun ChatRowMenu(row: AgentRow, expanded: Boolean, onDismiss: () -> Unit, actions: AgentRowActions) {
+    var renameOpen by rememberSaveable { mutableStateOf(false) }
+    var snoozeOpen by rememberSaveable { mutableStateOf(false) }
+    ChatOverflowMenu(
+        row = row,
+        expanded = expanded,
+        onDismiss = onDismiss,
+        onRename = { onDismiss(); renameOpen = true },
+        onSnooze = { onDismiss(); snoozeOpen = true },
+        actions = actions,
+    )
+    if (renameOpen) {
+        RenameChatDialog(
+            initialName = row.agent.name,
+            onConfirm = { name -> renameOpen = false; actions.onRename?.invoke(row, name) },
+            onDismiss = { renameOpen = false },
         )
-        if (renameOpen) {
-            RenameChatDialog(
-                initialName = agent.name,
-                onConfirm = { name -> renameOpen = false; actions.onRename?.invoke(row, name) },
-                onDismiss = { renameOpen = false },
-            )
-        }
-        if (snoozeOpen) {
-            SnoozeChatDialog(
-                onPick = { until -> snoozeOpen = false; actions.onSnooze(row, until) },
-                onDismiss = { snoozeOpen = false },
-            )
-        }
+    }
+    if (snoozeOpen) {
+        SnoozeChatDialog(
+            onPick = { until -> snoozeOpen = false; actions.onSnooze(row, until) },
+            onDismiss = { snoozeOpen = false },
+        )
     }
 }
 

@@ -9,7 +9,6 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
@@ -45,6 +44,7 @@ import com.cursorforandroid.ui.components.CursorHeader
 import com.cursorforandroid.ui.components.CursorIcons
 import com.cursorforandroid.ui.components.FlatIconButton
 import com.cursorforandroid.ui.components.GroupLabel
+import com.cursorforandroid.ui.components.contentColumn
 import com.cursorforandroid.ui.components.hitTestBoundary
 import com.cursorforandroid.ui.components.pressable
 import com.cursorforandroid.ui.components.scrollEdgeFade
@@ -110,7 +110,7 @@ fun ShareDestinationScreen(
                 }
                 if (!listState.hasLoaded && sections.isEmpty()) {
                     item("loading") {
-                        Text("Loading chats…", style = type.small, color = colors.textQuaternary, modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp))
+                        Text("Loading chats…", style = type.small, color = colors.textQuaternary, modifier = Modifier.contentColumn(gutter = 0.dp).padding(horizontal = 16.dp, vertical = 12.dp))
                     }
                 }
                 if (listState.hasLoaded && sections.isEmpty()) {
@@ -119,18 +119,18 @@ fun ShareDestinationScreen(
                             if (query.isNotBlank()) "No chats match \"$query\"" else "No chats yet",
                             style = type.small,
                             color = colors.textQuaternary,
-                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+                            modifier = Modifier.contentColumn(gutter = 0.dp).padding(horizontal = 16.dp, vertical = 12.dp),
                         )
                     }
                 }
                 listState.error?.let { err ->
                     item("error") {
-                        Text(err, style = type.small, color = colors.red, modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
+                        Text(err, style = type.small, color = colors.red, modifier = Modifier.contentColumn(gutter = 0.dp).padding(horizontal = 16.dp, vertical = 8.dp))
                     }
                 }
                 sections.forEach { section ->
                     item("hdr-${section.key}") {
-                        GroupLabel(section.title, Modifier.padding(start = 16.dp, end = 16.dp).height(CursorDimens.sidebarRow + CursorDimens.sidebarRowGap))
+                        GroupLabel(section.title, Modifier.contentColumn(gutter = 0.dp).padding(start = 16.dp, end = 16.dp).height(CursorDimens.sidebarRow + CursorDimens.sidebarRowGap))
                     }
                     // A Project still loading has nothing to share into yet.
                     items(section.rows.filterNot { it.isPlaceholder }, key = { "${section.key}:${it.agent.id}" }) { row ->
@@ -140,7 +140,7 @@ fun ShareDestinationScreen(
                             prefs = listState.prefs,
                             actions = pickActions,
                             showMenu = false,
-                            modifier = Modifier.padding(vertical = CursorDimens.sidebarRowGap / 2),
+                            modifier = Modifier.contentColumn(gutter = 0.dp).padding(vertical = CursorDimens.sidebarRowGap / 2),
                             nowMillis = listState.nowMillis,
                         )
                     }
@@ -157,7 +157,7 @@ private fun NewChatRow(onClick: () -> Unit) {
     val shape = CursorTheme.shapes.base
     Row(
         Modifier
-            .fillMaxWidth()
+            .contentColumn(gutter = 0.dp)
             .padding(horizontal = CursorDimens.selectionInset)
             .clip(shape)
             .pressable(onClick, shape)
@@ -178,7 +178,7 @@ private fun SearchField(value: String, onValueChange: (String) -> Unit, onClear:
     val shape = CursorTheme.shapes.base
     Row(
         Modifier
-            .fillMaxWidth()
+            .contentColumn(gutter = 0.dp)
             .padding(horizontal = CursorDimens.selectionInset, vertical = 4.dp)
             .stylusWriting()
             .background(colors.fillFaint, shape)

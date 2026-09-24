@@ -440,6 +440,7 @@ internal fun AppShell(
                         projectsAvailable = pane.projectsAvailable,
                         onNewProject = pane.onNewProject,
                         onOpenSettings = ::openSettings,
+                        onReorderProjects = pane.onReorderProjects,
                         focusComposer = pane.focusComposer,
                         onComposerFocused = pane.onComposerFocused,
                     )
@@ -480,6 +481,7 @@ internal fun AppShell(
         newChatHome = newChatHome,
         projectsAvailable = isDemo || extendedMode,
         onNewProject = if (isDemo || extendedMode) ({ projectEditor = ProjectEditorTarget.Create }) else null,
+        onReorderProjects = { ids -> agentsViewModel.setProjectOrder(ids) },
         focusComposer = shortcuts.focusComposer,
         onComposerFocused = { shortcuts.focusComposer = false },
     )
@@ -663,6 +665,8 @@ private class DetailPane(
     /** Projects exist to pin: Extended mode is on, or this is the demo. */
     val projectsAvailable: Boolean,
     val onNewProject: (() -> Unit)?,
+    /** The Projects as arranged on the New Chat page, first to last. */
+    val onReorderProjects: (List<String>) -> Unit,
     /** Ctrl+N: the New Chat composer is to take the caret; [onComposerFocused] once it has. */
     val focusComposer: Boolean,
     val onComposerFocused: () -> Unit,

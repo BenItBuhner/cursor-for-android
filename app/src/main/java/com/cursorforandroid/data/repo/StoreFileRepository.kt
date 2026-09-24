@@ -3,6 +3,7 @@ package com.cursorforandroid.data.repo
 import com.cursorforandroid.data.api.AgentStoreApi
 import com.cursorforandroid.data.api.StoreReadTarget
 import com.cursorforandroid.data.api.await
+import com.cursorforandroid.data.api.readCancellably
 import com.cursorforandroid.data.local.JsonDiskCache
 import com.cursorforandroid.domain.Capabilities
 import com.cursorforandroid.domain.MediaRef
@@ -54,8 +55,14 @@ class StoreFileRepository(
     private val urls = object : LinkedHashMap<String, SignedUrl>(16, 0.75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, SignedUrl>) = size > MAX_URLS
     }
-    private val locks = List(STRIPES) { Mutex() }
+    // Two pools, and never one lock held while another is waited for: a Mutex is not reentrant, and a figure's key
+    // shares a stripe with its owner's id one time in [STRIPES].
+    private val storeLocks = List(STRIPES) { Mutex() }
+    private val urlLocks = List(STRIPES) { Mutex() }
     private val blobLock = Mutex()
+
+    /** Where a read of a picture's bytes is, for the row that waits on it and the diagnostics. */
+    enum class Step { STORE, LINK, DOWNLOAD }
 
     @Serializable
     private data class CachedStoreId(val storeId: String?)
@@ -78,7 +85,7 @@ class StoreFileRepository(
                 return entry.value.storeId
             }
         }
-        return locks[stripe(ownerId)].withLock {
+        return storeLocks[stripe(ownerId)].withLock {
             synchronized(stores) { stores[ownerId] }?.takeIf { now() - it.atMillis < STORE_TTL_MS }?.let { return@withLock it.storeId }
             val storeId = store.storeFor(ownerId)
             synchronized(stores) { stores[ownerId] = Resolved(storeId, now()) }
@@ -92,14 +99,17 @@ class StoreFileRepository(
      * store by its id; only when the account lists no store for the owner, or cannot be asked, does it fall back to
      * the legacy path and name the owner instead — never both, which the service refuses.
      */
-    suspend fun downloadUrl(ref: MediaRef.Store): String {
+    suspend fun downloadUrl(ref: MediaRef.Store, onStep: (Step) -> Unit = {}): String {
         if (!available()) throw IOException(NOT_AVAILABLE)
         val key = ref.cacheKey
         cachedUrl(key)?.let { return it }
-        return locks[stripe(key)].withLock {
+        onStep(Step.STORE)
+        val target = readTarget(ref)
+        return urlLocks[stripe(key)].withLock {
             cachedUrl(key)?.let { return@withLock it }
             val store = api() ?: throw IOException(NOT_AVAILABLE)
-            val signed = store.presignRead(readTarget(ref), ref.relativePath) ?: throw IOException(NO_FILE)
+            onStep(Step.LINK)
+            val signed = store.presignRead(target, ref.relativePath) ?: throw IOException(NO_FILE)
             val expiresAt = signed.expiresAtMillis?.takeIf { it > now() } ?: (now() + DEFAULT_TTL_MS)
             synchronized(urls) { urls[key] = SignedUrl(signed.url, expiresAt) }
             signed.url
@@ -128,13 +138,13 @@ class StoreFileRepository(
      * asked for afresh once when the one in hand turns out dead — and kept, within [maxBlobBytes] across all files,
      * the oldest going first.
      */
-    suspend fun readBytes(ref: MediaRef.Store): ByteArray {
+    suspend fun readBytes(ref: MediaRef.Store, onStep: (Step) -> Unit = {}): ByteArray {
         val file = blobs?.let { File(it, blobName(ref)) }
         if (file != null) withContext(Dispatchers.IO) { file.takeIf { it.isFile }?.let { it.setLastModified(now()); it.readBytes() } }?.let { return it }
-        var bytes = fetch(downloadUrl(ref))
+        var bytes = downloadUrl(ref, onStep).let { onStep(Step.DOWNLOAD); fetch(it) }
         if (bytes == null) {
             invalidate(ref)
-            bytes = fetch(downloadUrl(ref)) ?: throw IOException(NO_FILE)
+            bytes = downloadUrl(ref, onStep).let { onStep(Step.DOWNLOAD); fetch(it) } ?: throw IOException(NO_FILE)
         }
         if (file != null) keep(file, bytes)
         return bytes
@@ -210,14 +220,15 @@ class StoreFileRepository(
         blobs?.let { dir -> withContext(Dispatchers.IO) { dir.listFiles()?.forEach { it.delete() } } }
     }
 
-    /** The bytes behind [url], or null when the URL is dead (rejected, expired or gone) rather than the network. */
-    private suspend fun fetch(url: String): ByteArray? = withContext(Dispatchers.IO) {
-        http.newCall(Request.Builder().url(url).build()).execute().use { response ->
-            when {
-                response.isSuccessful -> response.body?.bytes() ?: ByteArray(0)
-                response.code in STALE_URL_CODES -> null
-                else -> throw IOException("The store answered ${response.code} for this file.")
-            }
+    /**
+     * The bytes behind [url], or null when the URL is dead (rejected, expired or gone) rather than the network.
+     * Cancellable to the last byte: a figure scrolled away or given up on by its deadline lets go of the socket.
+     */
+    private suspend fun fetch(url: String): ByteArray? = http.newCall(Request.Builder().url(url).build()).readCancellably { response ->
+        when {
+            response.isSuccessful -> response.body?.bytes() ?: ByteArray(0)
+            response.code in STALE_URL_CODES -> null
+            else -> throw IOException("The store answered ${response.code} for this file.")
         }
     }
 
@@ -275,7 +286,7 @@ class StoreFileRepository(
         private const val DEFAULT_TTL_MS = 15 * 60_000L
         private const val MIN_REMAINING_MS = 60_000L
         private const val MAX_URLS = 256
-        private const val STRIPES = 8
+        internal const val STRIPES = 8
         /** A few dozen screenshots of a Project's context; the oldest go when more arrive. */
         const val MAX_BLOB_BYTES = 64L * 1024 * 1024
         /** The context documents read, least recently read going first: every document of every Project's store opened. */

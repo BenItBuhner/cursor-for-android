@@ -92,6 +92,13 @@ class NewChatHomeBlocksTest {
     }
 
     @Test
+    fun `Composer only lists nothing, whatever the list holds or however it was read`() {
+        for (list in listOf(loaded, AgentListUiState(), AgentListUiState(hasLoaded = true, error = "Offline"))) {
+            for (available in listOf(true, false)) assertThat(homeBlocks(NewChatHome.COMPOSER, list, projectsAvailable = available)).isEmpty()
+        }
+    }
+
+    @Test
     fun `nothing is listed until the setting has been read`() {
         assertThat(homeBlocks(null, loaded, projectsAvailable = true)).isEmpty()
     }

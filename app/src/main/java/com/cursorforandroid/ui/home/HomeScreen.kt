@@ -59,9 +59,7 @@ import com.cursorforandroid.domain.NewChatHome
 import com.cursorforandroid.domain.Repository
 import com.cursorforandroid.ui.agents.AgentListUiState
 import com.cursorforandroid.ui.agents.AgentRowActions
-import com.cursorforandroid.ui.agents.ChatOverflowMenu
-import com.cursorforandroid.ui.agents.RenameChatDialog
-import com.cursorforandroid.ui.agents.SnoozeChatDialog
+import com.cursorforandroid.ui.agents.ChatRowMenu
 import com.cursorforandroid.ui.components.ComposerBox
 import com.cursorforandroid.ui.components.CursorCard
 import com.cursorforandroid.ui.components.CursorHeader
@@ -96,8 +94,9 @@ import com.cursorforandroid.util.TimeFormat
 
 /**
  * The "New Chat" pane — the home of the official app: context selectors, the composer, then — as Settings › New chat
- * page chooses ([home]) — the recent chats list with preview cards (cursor.com/agents), or the Projects as shortcuts
- * (see [homeBlocks]). On phones a 44dp header carries the sidebar toggle.
+ * page chooses ([home]) — the recent chats list with preview cards (cursor.com/agents), the Projects as shortcuts, or
+ * nothing (see [homeBlocks]); what does not fill the pane sits in its middle. On phones a 44dp header carries the
+ * sidebar toggle.
  *
  * Sending opens the new chat through [onLaunchOpen] right away, before the server has answered, and leaves the
  * composer empty behind it: the launch is on its own from there (see [NewAgentViewModel.launch]), so this pane is
@@ -121,6 +120,8 @@ fun HomeScreen(
     onNewProject: (() -> Unit)? = null,
     /** The Projects page's way to Extended mode, while it is off. */
     onOpenSettings: (() -> Unit)? = null,
+    /** The Projects as arranged on the Projects page, first to last; null leaves them in the order they come in. */
+    onReorderProjects: ((List<String>) -> Unit)? = null,
     /** Ctrl+N asked for the composer: it is scrolled to and focused, and [onComposerFocused] says the ask was taken. */
     focusComposer: Boolean = false,
     onComposerFocused: () -> Unit = {},
@@ -142,7 +143,15 @@ fun HomeScreen(
     // The Chats filters chosen in the sidebar's menu apply here just the same (the sidebar search does not), so the two
     // lists never disagree about which chats are visible; the cards are newest first.
     val blocks = remember(home, listState, projectsAvailable) { homeBlocks(home, listState, projectsAvailable) }
-    val blockActions = HomeBlockActions(onOpenAgent = onOpenAgent, rowActions = rowActions, onNewProject = onNewProject, onOpenSettings = onOpenSettings)
+    val projectGrid = remember { ProjectGridState() }
+    val blockActions = HomeBlockActions(
+        onOpenAgent = onOpenAgent,
+        rowActions = rowActions,
+        onNewProject = onNewProject,
+        onOpenSettings = onOpenSettings,
+        projectGrid = projectGrid,
+        onReorderProjects = onReorderProjects,
+    )
     // The "+" menu's two pickers: the gallery — images alone in the default mode, images and videos as real files in
     // Extended mode — and, in Extended mode, the document picker for files of any type.
     val counts = AttachmentCounts.of(state.attachments, state.files)
@@ -163,7 +172,7 @@ fun HomeScreen(
         graph.share.consume(draft.generation)
     }
 
-    Column(modifier.fillMaxSize().background(colors.canvas)) {
+    Column(modifier.fillMaxSize().background(colors.canvas).endsArrangingOnTap(projectGrid)) {
         if (onOpenSidebar != null) {
             CursorHeader(leading = { FlatIconButton(CursorIcons.Sidebar, "Open sidebar", onClick = onOpenSidebar) })
         }
@@ -173,6 +182,8 @@ fun HomeScreen(
         // the canvas colour, since a list resized on every frame of the keyboard's animation cannot afford an
         // offscreen layer per frame.
         val recentState = rememberLazyListState()
+        val centring = remember { PageCentring() }
+        LaunchedEffect(recentState) { centring.follow(recentState) }
         var composerFocusRequests by remember { mutableIntStateOf(0) }
         LaunchedEffect(focusComposer) {
             if (focusComposer) {
@@ -184,11 +195,13 @@ fun HomeScreen(
         LazyColumn(
             Modifier.fillMaxSize().imePadding().scrollEdgeFade(recentState, surface = colors.canvas),
             state = recentState,
-            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = if (onOpenSidebar != null) 8.dp else 48.dp, bottom = 32.dp + navigationBar),
+            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = pageTopPadding(withHeader = onOpenSidebar != null), bottom = PageBottomPadding + navigationBar),
+            verticalArrangement = centring.arrangement,
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            item("composer") {
-                Column(Modifier.widthIn(max = CursorDimens.composerMaxWidth).fillMaxWidth()) {
+            item(PageCentring.LEAD_KEY) { centring.Lead() }
+            item(PageCentring.COMPOSER_KEY) {
+                Column(Modifier.widthIn(max = CursorDimens.composerMaxWidth).fillMaxWidth().testTag(NewChatHomeTags.COMPOSER)) {
                     NewChatSelectors(state, onRepo = { repoSheet = true }, onBranch = { branchSheet = true }, onDevice = { deviceSheet = true })
                     ComposerBox(
                         value = state.prompt,
@@ -221,7 +234,7 @@ fun HomeScreen(
                     state.error?.let { ComposerErrorLine(it, state.errorAsked, onDismiss = viewModel::dismissError) }
                 }
             }
-            item("gap") { Spacer(Modifier.height(ComposerGap)) }
+            if (blocks.isNotEmpty()) item("gap") { Spacer(Modifier.height(ComposerGap)) }
             items(blocks, key = { it.key }) { block -> HomeBlockView(block, nowMillis = listState.nowMillis, actions = blockActions) }
         }
     }
@@ -300,8 +313,6 @@ fun RecentChatRow(
     val agent = row.agent
     val shape = CursorTheme.shapes.xl
     var menuOpen by remember { mutableStateOf(false) }
-    var renameOpen by remember { mutableStateOf(false) }
-    var snoozeOpen by remember { mutableStateOf(false) }
     val interaction = remember { MutableInteractionSource() }
     Box(modifier) {
     Row(
@@ -321,7 +332,7 @@ fun RecentChatRow(
                     Modifier.pressable(onClick, shape)
                 },
             )
-            .padding(horizontal = 6.dp, vertical = CursorDimens.recentRowGap / 2),
+            .padding(horizontal = CursorDimens.recentRowInset, vertical = CursorDimens.recentRowGap / 2),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         PreviewCard(row)
@@ -355,29 +366,7 @@ fun RecentChatRow(
             }
         }
     }
-        if (actions != null) {
-            ChatOverflowMenu(
-                row = row,
-                expanded = menuOpen,
-                onDismiss = { menuOpen = false },
-                onRename = { menuOpen = false; renameOpen = true },
-                onSnooze = { menuOpen = false; snoozeOpen = true },
-                actions = actions,
-            )
-            if (renameOpen) {
-                RenameChatDialog(
-                    initialName = agent.name,
-                    onConfirm = { name -> renameOpen = false; actions.onRename?.invoke(row, name) },
-                    onDismiss = { renameOpen = false },
-                )
-            }
-            if (snoozeOpen) {
-                SnoozeChatDialog(
-                    onPick = { until -> snoozeOpen = false; actions.onSnooze(row, until) },
-                    onDismiss = { snoozeOpen = false },
-                )
-            }
-        }
+        if (actions != null) ChatRowMenu(row = row, expanded = menuOpen, onDismiss = { menuOpen = false }, actions = actions)
     }
 }
 

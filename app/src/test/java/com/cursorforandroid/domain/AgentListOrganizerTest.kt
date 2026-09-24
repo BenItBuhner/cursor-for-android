@@ -848,6 +848,39 @@ class AgentListOrganizerTest {
     }
 
     @Test
+    fun `the Projects follow the order arranged on the new chat page, in the sidebar and the shortcuts alike`() {
+        val agents = listOf(
+            agent("newest", updatedAgo = 0, isProject = true),
+            agent("middle", updatedAgo = hour, isProject = true),
+            agent("oldest", updatedAgo = 2 * hour, isProject = true),
+            agent("plain", updatedAgo = 3 * hour),
+        )
+        val roots = listOf(KnownRoot("named-root", "Shipyard", ProjectAppearance("logo-github", "blue"), signal = LineageSignal.ACCOUNT_RECORD, lastSeenMillis = now - day))
+        fun organized(order: List<String>) =
+            AgentListOrganizer.organize(agents, ListPreferences(), LocalAgentState(projectOrder = order), nowMillis = now, zone = zone, knownRoots = roots)
+
+        // Never arranged: the loaded Projects by activity, the registry's stand-in after them.
+        assertThat(organized(emptyList()).ids(AgentListOrganizer.PROJECTS_KEY)).containsExactly("newest", "middle", "oldest", "named-root").inOrder()
+
+        val arranged = organized(listOf("oldest", "named-root", "newest", "middle"))
+        assertThat(arranged.ids(AgentListOrganizer.PROJECTS_KEY)).containsExactly("oldest", "named-root", "newest", "middle").inOrder()
+        assertThat(AgentListOrganizer.projectRows(arranged).map { it.agent.id }).containsExactly("oldest", "named-root", "newest", "middle").inOrder()
+        assertThat(arranged.ids("date:Today")).containsExactly("plain")
+
+        // A Project the order does not name (made since) leads, a named one that is gone leaves no gap, and a stand-in
+        // the order does not name stays last.
+        assertThat(organized(listOf("gone", "oldest", "middle")).ids(AgentListOrganizer.PROJECTS_KEY)).containsExactly("newest", "oldest", "middle", "named-root").inOrder()
+    }
+
+    @Test
+    fun `an arrangement naming a Project twice places it where it is first named`() {
+        val agents = listOf(agent("a", updatedAgo = 0, isProject = true), agent("b", updatedAgo = hour, isProject = true), agent("c", updatedAgo = 2 * hour, isProject = true))
+        val rows = AgentListOrganizer.organize(agents, ListPreferences(), LocalAgentState(), nowMillis = now, zone = zone).first { it.key == AgentListOrganizer.PROJECTS_KEY }.rows
+        assertThat(AgentListOrganizer.arranged(rows, emptyList())).isSameInstanceAs(rows)
+        assertThat(AgentListOrganizer.arranged(rows, listOf("c", "a", "c")).map { it.agent.id }).containsExactly("b", "c", "a").inOrder()
+    }
+
+    @Test
     fun `sorting by name and by created`() {
         val agents = listOf(agent("b", name = "Beta", updatedAgo = 0), agent("a", name = "alpha", updatedAgo = hour))
         val byName = AgentListOrganizer.organize(agents, ListPreferences(groupBy = GroupBy.None, sortOrder = SortOrder.Name), LocalAgentState(), nowMillis = now, zone = zone)

@@ -92,6 +92,23 @@ object CursorDimens {
     val composerMaxWidth = 640.dp
     val composerPadding = 12.dp
     /**
+     * The widest a screen's content column gets in a pane wider than a phone — Settings and its pages, What's new, a
+     * widget's settings, the share picker — centred, [pageGutter] clear of the pane's sides (`Modifier.contentColumn`).
+     * 640dp: about 80 characters of 14sp text, a row's switch within a glance of its title, the column a chat's
+     * composer has today and the width of the sheets opened over it ([sheetMaxWidth]). A pane under 672dp, every
+     * phone held upright, is narrower than the column plus its gutters, so there it is the pane less the gutters.
+     */
+    val contentMaxWidth = 640.dp
+    /** Between a screen's content and the pane's sides: the whole margin on a phone, the least one beside the column. */
+    val pageGutter = 16.dp
+    /** A single-purpose form's column — sign-in, the mode choice — centred both ways in the window. */
+    val formMaxWidth = 380.dp
+    /**
+     * A modal bottom sheet's widest, centred in the window over a tablet or an unfolded foldable: the content column's
+     * width, which is also Material's own cap for a sheet. Dialogs keep Material's 280–560dp.
+     */
+    val sheetMaxWidth = contentMaxWidth
+    /**
      * Air around the follow-up composer where it docks at the bottom of a chat: this much between the box and each
      * side of the window (the cards stacked above it — queue, goal, load notices — stand a further
      * `composerRadius - their radius` in, so their corners are concentric with the box's; see `Modifier.dockedCard`)…
@@ -157,6 +174,11 @@ object CursorDimens {
     val previewCardWidth = 124.dp
     val previewCardHeight = 80.dp
     val recentRowGap = 18.dp
+    /**
+     * How far the New Chat page's lists sit inside the composer's edges: a recent chat's card and a Project's
+     * shortcut alike, so the page reads as one column under the composer whichever it lists.
+     */
+    val recentRowInset = 6.dp
     /** Card → title gap. */
     val previewToTitle = 16.dp
     /** Recent-row dot. */

@@ -808,6 +808,8 @@ class ConversationRepository(
         var loadJob: Job? = null
         /** A forced revalidation asked for while [loadJob] was in flight: the chat is read again once it lands (see [revalidateNow]). */
         var rereadAfterLoad = false
+        /** That reread is owed the documented transcript beside the run list (see [revalidateNow]'s `fresh`). */
+        var freshAfterLoad = false
         /** Cuts the window back a while after the last screen left (see [trimWindow]); cancelled by a screen coming back. */
         var trimJob: Job? = null
         /**
@@ -2229,7 +2231,12 @@ class ConversationRepository(
      */
     fun revalidate(agentId: String, force: Boolean = false) = offload(agentId) { e -> revalidateNow(e, force) }
 
-    private fun revalidateNow(e: Entry, force: Boolean = false) {
+    /**
+     * [fresh]: the caller knows the chat has changed on the server — a turn it has not read, the watch's word — so the
+     * documented transcript is read beside the run list rather than after it, and read even when the list, already
+     * merged with the new run, would call it unchanged (see [load]).
+     */
+    private fun revalidateNow(e: Entry, force: Boolean = false, fresh: Boolean = false) {
         synchronized(e) {
             // A chat still being launched has nothing on the server to fetch; the launch settles it when the server answers.
             if (e.attached == 0 || e.launching) return
@@ -2237,11 +2244,12 @@ class ConversationRepository(
             if (inFlight != null) {
                 // The load under way read its run page before whatever prompted this; what it publishes is that
                 // page's word. A forced revalidation is owed a read that postdates the cause: once, when the load lands.
+                if (fresh) e.freshAfterLoad = true
                 if (force && !e.rereadAfterLoad) {
                     e.rereadAfterLoad = true
                     inFlight.invokeOnCompletion {
-                        synchronized(e) { e.rereadAfterLoad = false }
-                        revalidateNow(e, force = true)
+                        val owedFresh = synchronized(e) { e.rereadAfterLoad = false; e.freshAfterLoad.also { e.freshAfterLoad = false } }
+                        revalidateNow(e, force = true, fresh = owedFresh)
                     }
                 }
                 return
@@ -2249,7 +2257,7 @@ class ConversationRepository(
             if (!force && AppClock.now() - e.fetchedAt < REVALIDATE_MIN_INTERVAL_MS) return
             // Beta: confirmed current by the account's word since (see [Entry.currentAt]) — nothing to read.
             if (!force && e.recordAllowedAtLoad == true && e.isCurrent(AppClock.now())) return
-            e.loadJob = e.scope.launch { load(e, e.agentId) }
+            e.loadJob = e.scope.launch { load(e, e.agentId, force = fresh) }
         }
     }
 
@@ -3162,9 +3170,9 @@ class ConversationRepository(
 
     /**
      * Keeps the chat followed while the account calls it running and no stream is open on a run of it. Every few
-     * seconds, with the pause growing to [KEEP_FOLLOWING_MAX_MS]: the agent's record is read for its latest run
-     * (`GET /v1/agents/{id}`, then the run by id), and a run other than [endedRunId] that is active is merged into
-     * the list and followed — the steer's next run, the coordinator's next turn. Until there is one, and in Extended
+     * seconds, with the pause growing to [KEEP_FOLLOWING_MAX_MS] while the account says so: the agent's record is read
+     * for its latest run (`GET /v1/agents/{id}`, then the run by id), and a run other than [endedRunId] that is active
+     * is merged into the list and followed — the steer's next run, the coordinator's next turn. Until there is one, and in Extended
      * mode for as long as no stream says anything, the account's record is read for what the turn has added
      * (`FetchBackgroundComposer` at the known end, the tail re-read when it grew), so the steps arrive from the one
      * source there is: a machine agent whose run list and stream never answer still streams from its record. Ends
@@ -3191,7 +3199,8 @@ class ConversationRepository(
                     // A stream open and speaking is the source; this loop stands down for it.
                     val streamSpeaking = synchronized(e) { e.streamJob?.isActive == true && (e.live?.items?.isNotEmpty() == true || (e.state.value.isStreaming && !e.state.value.isReconnecting && e.live == null)) }
                     if (followed || streamSpeaking) return@launch
-                    if (!accountSaysRunning(e)) {
+                    val idle = !accountSaysRunning(e)
+                    if (idle) {
                         // The account agrees the chat is idle — after a few looks, for a run that ended a moment ago:
                         // the next run of a steer, of a coordinator's next turn, takes a beat to be named. Then the
                         // records' word stands (see [Entry.chatStatus]).
@@ -3205,7 +3214,10 @@ class ConversationRepository(
                         e.publish(transform = { if (runStatus?.isActive != true) copy(runStatus = RunStatus.RUNNING) else this })
                     }
                     delay(wait)
-                    wait = (wait * 2).coerceAtMost(KEEP_FOLLOWING_MAX_MS)
+                    // The looks past a run that ended keep an even pace: the open chat's watch waits for them to end,
+                    // so a turn started elsewhere between two of them is a look away, not a doubled pause (a turn four
+                    // seconds after the last one ended was on screen five and a half seconds later).
+                    if (!idle) wait = (wait * 2).coerceAtMost(KEEP_FOLLOWING_MAX_MS)
                 }
             }
         }
@@ -3237,6 +3249,9 @@ class ConversationRepository(
         // own reading of the record, like every run record that reaches a row (see `AgentRepository.recordRun`).
         agents.recordRun(agentId, run, adopt = true)
         if (follow) startStreaming(e, agentId, run)
+        // A run this device did not send — a turn started elsewhere, a worker's report to its coordinator — has a
+        // prompt its stream never carries: the chat is read for it now, not once the turn is over.
+        if (follow && synchronized(e) { e.local.none { it.run.id == run.id } }) revalidateNow(e, force = true, fresh = true)
         // A new run is where a message the account queued from here lands (see [expectDelivery]).
         requestAdoption(e)
         return true
@@ -3273,6 +3288,10 @@ class ConversationRepository(
         var heardAt = 0L
         var failures = 0
         var silentLive = 0
+        // The live stream refused as a method the server no longer has: the list entry stands in for the rest of the watch.
+        var liveRemoved = false
+        // When a live stream handed over to the list (see [WATCH_LIVE_FAILURES]) is asked for again.
+        var liveAgainAt = 0L
         // The list entry's last word: running, and when it was last active; null until its first answer since the chat came to rest.
         var listed: Pair<Boolean, Long?>? = null
         var movedAt = 0L
@@ -3309,16 +3328,19 @@ class ConversationRepository(
                 continue
             }
             rereads = 0
-            val live = record?.takeIf { caps.accountTranscript && silentLive < WATCH_LIVE_FAILURES && e.state.value.recordFallback.let { it == null || it.serverError } }
+            val liveWanted = !liveRemoved && (silentLive < WATCH_LIVE_FAILURES || System.nanoTime() >= liveAgainAt)
+            val live = record?.takeIf { caps.accountTranscript && liveWanted && e.state.value.recordFallback.let { it == null || it.serverError } }
             if (live != null) {
                 val start = since ?: restingPoint(e)
                 val resume = start.offsetKey != null && (since == null || System.nanoTime() - heardAt < WATCH_REHYDRATE_MS * 1_000_000)
                 val startedAt = System.nanoTime()
+                var failure: Throwable? = null
                 val outcome = try {
                     e.whileAtRest { live.watch(agentId, start, resume) }
                 } catch (c: CancellationException) {
                     throw c
-                } catch (_: Throwable) {
+                } catch (t: Throwable) {
+                    failure = t
                     null
                 }
                 // The chat left rest under the stream: the run's own stream has it, and the watch waits for the end.
@@ -3326,12 +3348,31 @@ class ConversationRepository(
                 // Held open, as the server holds the desktop's: a heartbeat, a change, or a while of quiet. A stream
                 // that ends on its first word is not being held, and a few of those in a row hand over to the list.
                 val held = outcome != null && (outcome.moved || outcome.heartbeats > 0 || System.nanoTime() - startedAt >= WATCH_HELD_MS * 1_000_000)
-                if (held) {
-                    failures = 0
-                    silentLive = 0
-                    heardAt = System.nanoTime()
-                } else {
-                    silentLive++
+                when {
+                    held -> {
+                        failures = 0
+                        silentLive = 0
+                        heardAt = System.nanoTime()
+                    }
+                    // The phone has no network: nothing the stream did. It is asked again from where it left off the
+                    // moment there is one — not after a wait grown while there was none, which left the chat up to a
+                    // minute behind a network that was back.
+                    failure != null && DeviceNetwork.isOnline() == false -> {
+                        while (DeviceNetwork.isOnline() == false) delay(WATCH_NETWORK_LOOK_MS)
+                        failures = 0
+                        continue
+                    }
+                    else -> {
+                        silentLive++
+                        // Handed over to the list, but only a removed method for good: a stream that would not hold
+                        // across a network handoff is asked again at the desktop's reconnect pace, the list entry
+                        // standing in meanwhile (it used to stand in for as long as the chat stayed open, a turn
+                        // started elsewhere then a poll away rather than a heartbeat).
+                        if (silentLive >= WATCH_LIVE_FAILURES) {
+                            if (failure.isRecordRemoved()) liveRemoved = true
+                            else liveAgainAt = System.nanoTime() + watchRetryDelay(silentLive) * 1_000_000
+                        }
+                    }
                 }
                 since = outcome?.point ?: since
                 if (outcome?.moved != true) {
@@ -3353,7 +3394,15 @@ class ConversationRepository(
                 }
                 val before = listed
                 if (word != null) listed = word
-                if (word == null || before == null || before == word) {
+                // The first word since the chat came to rest is the one later words are compared with — unless it
+                // already calls the chat running: the reader's copy is at rest, so that is a turn it has not read, one
+                // that started in the moment before the first look (which left it unseen until the turn's end).
+                val moved = when {
+                    word == null -> false
+                    before == null -> word.first
+                    else -> before != word
+                }
+                if (!moved) {
                     delay(watchPollMs)
                     continue
                 }
@@ -3361,7 +3410,7 @@ class ConversationRepository(
             val gap = WATCH_MIN_GAP_MS - (System.nanoTime() - movedAt) / 1_000_000
             if (gap > 0) delay(gap)
             movedAt = System.nanoTime()
-            revalidateNow(e, force = true)
+            revalidateNow(e, force = true, fresh = true)
         }
     }
 
@@ -5394,8 +5443,8 @@ class ConversationRepository(
         /** The pauses between looks for the next run and reads of the record's growth while the account runs on (see [keepFollowing]). */
         const val KEEP_FOLLOWING_BASE_MS = 2_000L
         const val KEEP_FOLLOWING_MAX_MS = 15_000L
-        /** How many looks find the account idle after a run ended before the records' word is taken (see [keepFollowing]). */
-        const val KEEP_FOLLOWING_IDLE_LOOKS = 3
+        /** How many looks, [KEEP_FOLLOWING_BASE_MS] apart, find the account idle after a run ended before the records' word is taken (see [keepFollowing]). */
+        const val KEEP_FOLLOWING_IDLE_LOOKS = 4
         /** How many of the newest runs a chat opens on, and by how many the window widens each time the reader scrolls up to its end. */
         const val WINDOW_RUNS = 10
         /** The widest window the disk copy reopens on: the runs whose traces are read before the first frame. */
@@ -5433,8 +5482,14 @@ class ConversationRepository(
         const val WATCH_MIN_GAP_MS = 2_000L
         /** A live stream quiet this long is asked for the chat afresh rather than resumed from its offset (the desktop's `rehydrateAfterMs`). */
         const val WATCH_REHYDRATE_MS = 120_000L
-        /** Live streams in a row the server did not hold open (see [WATCH_HELD_MS]), after which the chat's list entry stands in (see [watchWhileOpen]). */
+        /**
+         * Live streams in a row the server did not hold open (see [WATCH_HELD_MS]), after which the chat's list entry
+         * stands in (see [watchWhileOpen]) — until the stream is asked again, at the desktop's reconnect pace, or for
+         * good when the server has removed it.
+         */
         const val WATCH_LIVE_FAILURES = 3
+        /** How often a watch whose stream failed for want of a network looks for one again. */
+        const val WATCH_NETWORK_LOOK_MS = 1_000L
         /** A live stream open this long, with nothing to say, was being held: quiet, not refused. */
         const val WATCH_HELD_MS = 10_000L
         /** How long a chat that has just come to rest is left before it is watched (see [watchWhileOpen]). */
