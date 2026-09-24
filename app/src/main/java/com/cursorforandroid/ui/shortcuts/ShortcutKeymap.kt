@@ -67,6 +67,13 @@ object ShortcutKeymap {
     /** Held down, the switcher keeps stepping as the key repeats; every other chord acts once however long it is held. */
     fun repeats(action: ShortcutAction): Boolean = action == ShortcutAction.SwitchNext || action == ShortcutAction.SwitchPrevious
 
+    /**
+     * The chords of the app's that an open popover answers itself (`Modifier.popoverKeys`: Ctrl+N down and Ctrl+K up,
+     * as in the desktop's menus), left to it while it is open along with Esc. Ctrl+Tab stays the app's: the popover
+     * picks on Tab, but a held Ctrl is the switcher's.
+     */
+    fun yieldsToPopover(keyCode: Int): Boolean = keyCode == KeyEvent.KEYCODE_N || keyCode == KeyEvent.KEYCODE_K
+
     private fun digit(keyCode: Int): Int? = when (keyCode) {
         in KeyEvent.KEYCODE_0..KeyEvent.KEYCODE_9 -> keyCode - KeyEvent.KEYCODE_0
         in KeyEvent.KEYCODE_NUMPAD_0..KeyEvent.KEYCODE_NUMPAD_9 -> keyCode - KeyEvent.KEYCODE_NUMPAD_0

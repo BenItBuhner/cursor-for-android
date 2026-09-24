@@ -36,6 +36,7 @@ import androidx.compose.foundation.text.input.setTextAndPlaceCursorAtEnd
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.SideEffect
@@ -75,6 +76,7 @@ import com.cursorforandroid.data.media.MediaLoader
 import com.cursorforandroid.domain.SlashCatalog
 import com.cursorforandroid.domain.SlashCommand
 import com.cursorforandroid.domain.SlashCommands
+import com.cursorforandroid.ui.shortcuts.LocalKeyboardShortcuts
 import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.util.ioThenMain
@@ -254,6 +256,15 @@ fun ComposerBox(
     val popoverToken = slashToken?.takeIf { it != dismissedToken }
     val slash = rememberSlashSuggestions(popoverToken, commands, recentSkills)
     val slashOpen = slashPopoverOpen(popoverToken, slash, commands)
+    // The app's shortcuts are read before this field sees a key; while the popover is up, Esc, Ctrl+N and Ctrl+K are
+    // its (see `popoverKeys`) and not the shell's.
+    val keyboardShortcuts = LocalKeyboardShortcuts.current
+    if (slashOpen && keyboardShortcuts != null) {
+        DisposableEffect(keyboardShortcuts) {
+            val release = keyboardShortcuts.popoverOpened()
+            onDispose { release() }
+        }
+    }
     // Whether a physical keyboard has typed here. Until one has, the popover shows no highlight: the rows are for
     // tapping, and an Enter that picks is only ever a physical keyboard's.
     var physicalKeys by remember { mutableStateOf(false) }

@@ -32,6 +32,9 @@ interface ShortcutHandler {
  * chords [ShortcutKeymap] lists are taken — a text field's own Ctrl+A, C, V, X and Z never reach here as the app's.
  * The on-screen keyboard's keys are not read at all.
  *
+ * While a popover in the focused field is open ([popoverOpened]) the keys it answers are left to it: Esc closes it,
+ * and Ctrl+N and Ctrl+K move its highlight ([ShortcutKeymap.yieldsToPopover]).
+ *
  * Also keeps whether Ctrl is being held on its own: after [holdMillis] of that, [showNumbers] turns on and the sidebar
  * numbers its first ten rows for Ctrl+1 … Ctrl+0; letting go puts them away. A chord pressed before then was never a
  * hold, and shows nothing.
@@ -50,6 +53,22 @@ class KeyboardShortcuts(private val scope: CoroutineScope, private val holdMilli
     private var ctrlHeld = false
     private var holdJob: Job? = null
     private val taken = HashSet<Int>()
+    private var popovers = 0
+
+    /**
+     * A popover in the focused field opened that answers Esc, Ctrl+N and Ctrl+K itself (the composer's `/` popover,
+     * `Modifier.popoverKeys`): they are left to it until the returned release is called, when it shuts.
+     */
+    fun popoverOpened(): () -> Unit {
+        popovers++
+        var open = true
+        return {
+            if (open) {
+                open = false
+                popovers--
+            }
+        }
+    }
 
     fun onKeyEvent(event: KeyEvent): Boolean {
         if (!event.isFromHardwareKeyboard) return false
@@ -79,7 +98,9 @@ class KeyboardShortcuts(private val scope: CoroutineScope, private val holdMilli
         if (!ctrlHeld && event.isCtrlPressed) ctrlHeld = true
         if (event.isCtrlPressed && !isModifier(code) && !showNumbers) holdJob?.cancel()
 
-        if (code == KeyEvent.KEYCODE_ESCAPE && !event.isCtrlPressed && !event.isAltPressed && !event.isMetaPressed) {
+        val escape = code == KeyEvent.KEYCODE_ESCAPE && !event.isCtrlPressed && !event.isAltPressed && !event.isMetaPressed
+        if (popovers > 0 && (escape || ShortcutKeymap.yieldsToPopover(code))) return false
+        if (escape) {
             if (event.repeatCount > 0) return code in taken
             return take(code, handler?.onEscape() == true)
         }

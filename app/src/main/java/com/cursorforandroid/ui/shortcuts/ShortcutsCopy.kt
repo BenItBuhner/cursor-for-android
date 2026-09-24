@@ -22,7 +22,7 @@ object ShortcutsCopy {
             "Go to",
             listOf(
                 Line(listOf(ctrl("F"), ctrl("K")), "Search chats and Projects", "Titles, repositories and the transcripts kept on this device"),
-                Line(listOf(ctrl("Tab")), "Switch between recent chats", "Hold Ctrl and press Tab to step back; Shift+Tab steps forward; let go of Ctrl to open"),
+                Line(listOf(ctrl("Tab")), "Switch between recent chats", "Hold Ctrl: Tab steps to older chats, Shift+Tab to newer; let go of Ctrl to open"),
                 Line(listOf(ctrl("1 … 9"), ctrl("0")), "Open one of the first ten sidebar rows", "Ctrl+0 is the tenth; hold Ctrl to see the numbers"),
                 Line(listOf(ctrl("N")), "New chat"),
                 Line(listOf(ctrl("Shift", "N")), "New Project", "With Extended mode"),
