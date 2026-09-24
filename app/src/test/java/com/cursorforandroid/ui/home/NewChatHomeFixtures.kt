@@ -15,7 +15,7 @@ import com.cursorforandroid.ui.agents.AgentListUiState
 import java.time.ZoneOffset
 
 /**
- * An account for the New Chat pane's two layouts, organized as [com.cursorforandroid.ui.agents.AgentsViewModel]
+ * An account for the New Chat pane's layouts, organized as [com.cursorforandroid.ui.agents.AgentsViewModel]
  * organizes the list: five Projects — two at work, two with chats and one without — and the account's own chats.
  */
 internal object NewChatHomeFixtures {
@@ -83,9 +83,6 @@ internal object NewChatHomeFixtures {
         agent("bc-deps", "Weekly dependency bump", 7 * 60, repo = "bennett/cursor-for-android", pr = 1),
         agent("bc-strategy", "Cesium Revenue Strategy", 26 * 60, running = true),
     )
-
-    /** The account's Projects as the organizer lists them, first to last, before they have been arranged. */
-    val PROJECT_ORDER = listOf("bc-shipyard", BILLING, "bc-design", "bc-android", "bc-pipeline")
 
     fun list(agents: List<Agent> = this.agents, local: LocalAgentState = LocalAgentState()): AgentListUiState {
         val prefs = ListPreferences()

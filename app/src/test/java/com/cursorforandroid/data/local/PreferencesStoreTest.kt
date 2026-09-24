@@ -267,13 +267,17 @@ class PreferencesStoreTest {
     }
 
     @Test
-    fun `the new chat page lists recent chats until Projects is chosen, and the choice is the device's`() = runBlocking<Unit> {
+    fun `the new chat page lists recent chats until another layout is chosen, and the choice is the device's`() = runBlocking<Unit> {
         val prefs = PreferencesStore(ApplicationProvider.getApplicationContext())
         assertThat(prefs.newChatHome.first()).isEqualTo(NewChatHome.RECENT)
         prefs.setNewChatHome(NewChatHome.PROJECTS)
         assertThat(prefs.newChatHome.first()).isEqualTo(NewChatHome.PROJECTS)
         prefs.clearSession()
         assertThat(prefs.newChatHome.first()).isEqualTo(NewChatHome.PROJECTS)
+        prefs.setNewChatHome(NewChatHome.COMPOSER)
+        assertThat(prefs.newChatHome.first()).isEqualTo(NewChatHome.COMPOSER)
+        prefs.clearSession()
+        assertThat(prefs.newChatHome.first()).isEqualTo(NewChatHome.COMPOSER)
         prefs.setNewChatHome(NewChatHome.RECENT)
         assertThat(prefs.newChatHome.first()).isEqualTo(NewChatHome.RECENT)
     }
@@ -283,6 +287,7 @@ class PreferencesStoreTest {
         assertThat(NewChatHome.parse("pinned")).isEqualTo(NewChatHome.RECENT)
         assertThat(NewChatHome.parse(null)).isEqualTo(NewChatHome.RECENT)
         assertThat(NewChatHome.parse(NewChatHome.PROJECTS.key)).isEqualTo(NewChatHome.PROJECTS)
+        assertThat(NewChatHome.parse("composer")).isEqualTo(NewChatHome.COMPOSER)
     }
 
     @Test

@@ -405,7 +405,8 @@ class PreferencesStore(
     suspend fun setShortenSidebarLists(enabled: Boolean) = edit { it[Keys.shortenSidebarLists] = enabled }
 
     /**
-     * Settings › New chat page: the recent chats under the New Chat composer, or the Projects (see [NewChatHome]).
+     * Settings › New chat page: the recent chats under the New Chat composer, the Projects, or the composer alone (see
+     * [NewChatHome]).
      * Recent until changed; a device preference, kept across sign-outs like the sidebar's folds.
      */
     val newChatHome: Flow<NewChatHome> = data.map { NewChatHome.parse(it[Keys.newChatHome]) }.distinctUntilChanged()

@@ -126,8 +126,9 @@ internal sealed interface HomeBlock {
 /**
  * The pane under its composer for [home]. Recent: the recent chats, or the empty line once the list has loaded.
  * Projects: the Project shortcuts; with none to show — Extended mode off, or none created — a note saying so over the
- * recent chats, so the page is never left bare; a failed first read is the error line, as the recents show it. Null
- * [home] (the preference not read yet) lists nothing, rather than one layout and then the other.
+ * recent chats, so the page is never left bare; a failed first read is the error line, as the recents show it.
+ * Composer only: nothing. Null [home] (the preference not read yet) lists nothing, rather than one layout and then the
+ * other.
  */
 internal fun homeBlocks(home: NewChatHome?, list: AgentListUiState, projectsAvailable: Boolean): List<HomeBlock> {
     fun recent(): List<HomeBlock> = when {
@@ -136,7 +137,7 @@ internal fun homeBlocks(home: NewChatHome?, list: AgentListUiState, projectsAvai
         else -> emptyList()
     }
     return when {
-        home == null -> emptyList()
+        home == null || home == NewChatHome.COMPOSER -> emptyList()
         home == NewChatHome.RECENT -> recent()
         !projectsAvailable -> listOf(HomeBlock.Note(ProjectsNote.NeedsExtendedMode)) + recent()
         list.projectRows.isNotEmpty() -> listOf(HomeBlock.Projects(list.projectRows))
