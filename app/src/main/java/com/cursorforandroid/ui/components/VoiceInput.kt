@@ -11,26 +11,41 @@ import android.os.SystemClock
 import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.ContentTransform
+import androidx.compose.animation.SizeTransform
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.indication
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
+import androidx.compose.material3.ripple
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.SideEffect
@@ -47,17 +62,20 @@ import androidx.compose.runtime.snapshots.SnapshotStateList
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
-import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
@@ -360,88 +378,173 @@ private tailrec fun Context.findActivity(): Activity? = when (this) {
     else -> null
 }
 
+/** What the voice description of a mic says in each [VoiceState]. */
+internal fun micDescription(state: VoiceState): String = when (state) {
+    is VoiceState.Recording -> "Stop recording"
+    VoiceState.Transcribing -> "Transcribing"
+    else -> "Voice input"
+}
+
 /**
- * The microphone in the send slot or beside it: the composer's round button with the mic glyph ([prominent] as the
- * white main disc, the 8 % fill beside Send or Stop). Recording, it is a red disc whose halo swells with the voice;
- * transcribing, a spinner in the same disc.
+ * The microphone beside Send or Stop: a bare glyph in the toolbar's muted icon colour, no disc, like the footer's
+ * other icons. It lays out [CursorDimens.roundButtonTouch] wide — its whole touch area, so it takes the room between
+ * the chip and the main disc and neither of those reaches into it — with the glyph [glyphStart] from its left edge.
+ * Pressed, the glyph dips and a soft round highlight shows; recording, it turns red inside a thin red ring that swells
+ * with the voice; transcribing, it becomes a small spinner. [enabled] is off while it is leaving.
  */
 @Composable
-internal fun VoiceMicButton(voice: VoiceInput, prominent: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier) {
+internal fun VoiceMicBeside(voice: VoiceInput, glyphStart: Dp, onClick: () -> Unit, modifier: Modifier = Modifier, enabled: Boolean = true) {
     val colors = CursorTheme.colors
-    when (voice.state) {
-        is VoiceState.Recording -> {
-            val level by animateFloatAsState(voice.levels.lastOrNull() ?: 0f, tween(90), label = "micLevel")
-            val halo = colors.red
-            TouchTarget(size = CursorDimens.roundButton, touchSize = CursorDimens.roundButtonTouch, shape = CircleShape, onClick = onClick, modifier = modifier.testTag("voice-mic")) {
-                Box(
-                    Modifier
-                        .size(CursorDimens.roundButton)
-                        .drawBehind {
-                            val radius = size.minDimension / 2
-                            drawCircle(halo.copy(alpha = 0.28f), radius = radius + 1.dp.toPx() + level * 5.dp.toPx())
-                        }
-                        .background(colors.red, CircleShape),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Icon(CursorIcons.Mic, "Stop recording", tint = Color.White, modifier = Modifier.size(CursorDimens.roundButtonGlyph))
-                }
-            }
-        }
-        VoiceState.Transcribing -> Box(
-            modifier
+    val state = voice.state
+    val recording = state is VoiceState.Recording
+    val interaction = remember { MutableInteractionSource() }
+    val pressed by interaction.collectIsPressedAsState()
+    val press by animateFloatAsState(if (pressed) 0.86f else 1f, tween(120, easing = FastOutSlowInEasing), label = "micPress")
+    val tint by animateColorAsState(if (recording) colors.red else colors.iconSecondary, tween(MicMotionMillis, easing = FastOutSlowInEasing), label = "micTint")
+    val ring by animateFloatAsState(if (recording) 1f else 0f, tween(MicMotionMillis, easing = FastOutSlowInEasing), label = "micRing")
+    val red = colors.red
+    Box(modifier.width(CursorDimens.roundButtonTouch).height(CursorDimens.roundButton), contentAlignment = Alignment.CenterStart) {
+        Box(
+            Modifier
+                .requiredSize(CursorDimens.roundButtonTouch)
                 .testTag("voice-mic")
-                .size(CursorDimens.roundButton)
-                .background(if (prominent) colors.textPrimary else colors.fill, CircleShape)
-                .semantics { contentDescription = "Transcribing" },
+                .semantics { contentDescription = micDescription(state) }
+                .clickable(interactionSource = interaction, indication = null, enabled = enabled, role = Role.Button, onClick = onClick),
+        )
+        Box(
+            Modifier
+                .padding(start = glyphStart)
+                .size(CursorDimens.roundButtonGlyph)
+                .indication(interaction, ripple(color = colors.base, bounded = false, radius = MicPressRadius))
+                .graphicsLayer {
+                    scaleX = press
+                    scaleY = press
+                },
             contentAlignment = Alignment.Center,
         ) {
-            SpinnerRing(color = if (prominent) colors.canvas else colors.iconSecondary, size = CursorDimens.roundButtonGlyph, strokeWidth = 1.5.dp)
+            if (ring > 0f) MicLevelRing(voice, red, ring)
+            AnimatedContent(
+                targetState = state is VoiceState.Transcribing,
+                transitionSpec = { glyphSwap() },
+                contentAlignment = Alignment.Center,
+                label = "micGlyph",
+            ) { transcribing ->
+                if (transcribing) SpinnerRing(color = colors.iconSecondary, size = 12.dp, strokeWidth = 1.5.dp)
+                else Icon(CursorIcons.Mic, null, tint = tint, modifier = Modifier.size(CursorDimens.roundButtonGlyph))
+            }
         }
-        else -> ComposerRoundButton(CursorIcons.Mic, "Voice input", onClick = onClick, prominent = prominent, modifier = modifier.testTag("voice-mic"))
+    }
+}
+
+/** The bare mic's recording ring: a hairline of red around the glyph, wider as the voice gets louder. */
+@Composable
+private fun MicLevelRing(voice: VoiceInput, color: Color, shown: Float) {
+    val level by animateFloatAsState(voice.levels.lastOrNull() ?: 0f, tween(90), label = "micRingLevel")
+    Canvas(Modifier.requiredSize(CursorDimens.roundButtonTouch)) {
+        val base = CursorDimens.roundButtonGlyph.toPx() / 2 + 1.5.dp.toPx()
+        drawCircle(
+            color.copy(alpha = 0.55f * shown),
+            radius = base * (0.7f + 0.3f * shown) + level.coerceIn(0f, 1f) * 4.dp.toPx(),
+            style = Stroke(width = 1.25.dp.toPx()),
+        )
     }
 }
 
 /**
- * The footer's middle while a dictation is under way, in place of the pills and the model chip: a pulsing red dot,
- * the time, and the voice's level as bars while recording; "Transcribing…" after; the problem when one came up. The
- * cross at the end cancels ([VoiceInput.cancel]).
+ * The main disc's glow while it records: a soft red halo that swells with the voice, and a ring that keeps breathing
+ * out from the disc so a silent room still reads as listening. Drawn around the disc, unclipped; [shown] fades it.
  */
 @Composable
-internal fun RowScope.VoiceStatus(voice: VoiceInput, onTap: () -> Unit) {
+internal fun RecordingHalo(voice: VoiceInput, shown: Float) {
+    val color = CursorTheme.colors.red
+    val level by animateFloatAsState(voice.levels.lastOrNull() ?: 0f, tween(90), label = "haloLevel")
+    val breath = rememberInfiniteTransition(label = "haloBreath")
+    val pulse by breath.animateFloat(0f, 1f, infiniteRepeatable(tween(1_200, easing = FastOutSlowInEasing)), label = "haloPulse")
+    Canvas(Modifier.requiredSize(CursorDimens.roundButton + 20.dp)) {
+        val disc = CursorDimens.roundButton.toPx() / 2
+        drawCircle(color.copy(alpha = 0.28f * shown), radius = disc + (1.5.dp.toPx() + level.coerceIn(0f, 1f) * 5.dp.toPx()) * shown)
+        drawCircle(
+            color.copy(alpha = 0.45f * (1f - pulse) * shown),
+            radius = disc + pulse * 9.dp.toPx(),
+            style = Stroke(width = 1.5.dp.toPx()),
+        )
+    }
+}
+
+/** The swap of one glyph for another in a composer button: the new one fades and grows in as the old one shrinks away. */
+internal fun glyphSwap(): ContentTransform = ContentTransform(
+    targetContentEnter = fadeIn(tween(MicMotionMillis, easing = FastOutSlowInEasing)) + scaleIn(tween(MicMotionMillis, easing = FastOutSlowInEasing), initialScale = 0.6f),
+    initialContentExit = fadeOut(tween(MicMotionMillis * 2 / 3, easing = FastOutSlowInEasing)) + scaleOut(tween(MicMotionMillis * 2 / 3, easing = FastOutSlowInEasing), targetScale = 0.6f),
+    sizeTransform = SizeTransform(clip = false),
+)
+
+/** The composer buttons' motion: fast enough not to hold anyone up, slow enough to follow. */
+internal const val MicMotionMillis = 200
+
+/** The footer making room for the mic, or closing up after it: a longer travel than a glyph swap, so a longer tween. */
+internal const val MicSlideMillis = 250
+
+private val MicPressRadius = 16.dp
+
+/**
+ * The footer's middle while a dictation is under way, in place of the pills and the model chip: a pulsing red dot,
+ * the time, and the voice's level as bars while recording; "Transcribing…" after; the problem when one came up; each
+ * cross-fading into the next. The cross at the end cancels ([VoiceInput.cancel]); [cancelTouchShift] moves its hit
+ * layer left of centre when the bare mic's touch area starts right after its disc.
+ */
+@Composable
+internal fun VoiceStatus(voice: VoiceInput, onTap: () -> Unit, cancelTouchShift: Dp, modifier: Modifier = Modifier) {
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
-    val state = voice.state
-    Row(Modifier.weight(1f).testTag("voice-status"), verticalAlignment = Alignment.CenterVertically) {
-        when (state) {
-            is VoiceState.Recording -> {
-                val pulse = rememberInfiniteTransition(label = "recDot")
-                val dotAlpha by pulse.animateFloat(1f, 0.35f, infiniteRepeatable(tween(700), RepeatMode.Reverse), label = "recDotAlpha")
-                Box(Modifier.size(7.dp).alpha(dotAlpha).background(colors.red, CircleShape))
-                Spacer(Modifier.width(7.dp))
-                Text(formatElapsed(voice.elapsedMillis), style = type.small, color = colors.textSecondary, maxLines = 1)
-                Spacer(Modifier.width(10.dp))
-                VoiceLevelBars(voice.levels, colors.textSecondary, Modifier.weight(1f).height(16.dp))
+    val current = voice.state
+    Row(modifier.testTag("voice-status"), verticalAlignment = Alignment.CenterVertically) {
+        AnimatedContent(
+            targetState = current,
+            contentKey = { it::class },
+            transitionSpec = { fadeIn(tween(MicMotionMillis, easing = FastOutSlowInEasing)) togetherWith fadeOut(tween(MicMotionMillis * 2 / 3)) using SizeTransform(clip = false) },
+            contentAlignment = Alignment.CenterStart,
+            modifier = Modifier.weight(1f),
+            label = "voiceStatus",
+        ) { state ->
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                when (state) {
+                    is VoiceState.Recording -> {
+                        val pulse = rememberInfiniteTransition(label = "recDot")
+                        val dotAlpha by pulse.animateFloat(1f, 0.35f, infiniteRepeatable(tween(700), RepeatMode.Reverse), label = "recDotAlpha")
+                        Box(Modifier.size(7.dp).alpha(dotAlpha).background(colors.red, CircleShape))
+                        Spacer(Modifier.width(7.dp))
+                        Text(formatElapsed(voice.elapsedMillis), style = type.small, color = colors.textSecondary, maxLines = 1)
+                        Spacer(Modifier.width(10.dp))
+                        VoiceLevelBars(voice.levels, colors.textSecondary, Modifier.weight(1f).height(16.dp))
+                    }
+                    VoiceState.Transcribing -> {
+                        SpinnerRing(size = 11.dp)
+                        Spacer(Modifier.width(7.dp))
+                        Text("Transcribing…", style = type.small, color = colors.textSecondary, maxLines = 1, modifier = Modifier.weight(1f))
+                    }
+                    is VoiceState.Failed -> Text(
+                        state.message,
+                        style = type.small,
+                        color = colors.red,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier
+                            .weight(1f)
+                            .then(if (state.opensSettings) Modifier.clickable(onClick = onTap) else Modifier)
+                            .testTag("voice-error"),
+                    )
+                    VoiceState.Idle -> Spacer(Modifier.weight(1f))
+                }
             }
-            VoiceState.Transcribing -> {
-                SpinnerRing(size = 11.dp)
-                Spacer(Modifier.width(7.dp))
-                Text("Transcribing…", style = type.small, color = colors.textSecondary, maxLines = 1, modifier = Modifier.weight(1f))
-            }
-            is VoiceState.Failed -> Text(
-                state.message,
-                style = type.small,
-                color = colors.red,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier
-                    .weight(1f)
-                    .then(if (state.opensSettings) Modifier.clickable(onClick = onTap) else Modifier)
-                    .testTag("voice-error"),
-            )
-            VoiceState.Idle -> Spacer(Modifier.weight(1f))
         }
         Spacer(Modifier.width(6.dp))
-        ComposerRoundButton(CursorIcons.Close, if (state is VoiceState.Failed) "Dismiss" else "Cancel voice input", onClick = { voice.cancel() }, modifier = Modifier.testTag("voice-cancel"))
+        ComposerRoundButton(
+            CursorIcons.Close,
+            if (current is VoiceState.Failed) "Dismiss" else "Cancel voice input",
+            onClick = { voice.cancel() },
+            touchShift = cancelTouchShift,
+            modifier = Modifier.testTag("voice-cancel"),
+        )
     }
 }
 

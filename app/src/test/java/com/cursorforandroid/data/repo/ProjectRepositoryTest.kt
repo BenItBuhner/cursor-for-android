@@ -6,6 +6,10 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.cursorforandroid.data.FakeCursorApi
 import com.cursorforandroid.data.FakeRunStreamer
 import com.cursorforandroid.data.api.AgentStoreApi
+import com.cursorforandroid.data.api.BackgroundComposerApi
+import com.cursorforandroid.data.api.ConnectJsonClient
+import com.cursorforandroid.data.api.ProjectApi
+import com.cursorforandroid.data.auth.SessionTokenProvider
 import com.cursorforandroid.data.api.PresignedStoreRead
 import com.cursorforandroid.data.api.StoreReadTarget
 import com.cursorforandroid.data.api.ComposerSnapshot
@@ -37,6 +41,15 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import okhttp3.OkHttpClient
+import okhttp3.mockwebserver.Dispatcher
+import okhttp3.mockwebserver.MockResponse
+import okhttp3.mockwebserver.MockWebServer
+import okhttp3.mockwebserver.RecordedRequest
 import org.junit.After
 import org.junit.Before
 import org.junit.Test
@@ -429,6 +442,59 @@ class ProjectRepositoryTest {
         lineage.calls.clear()
         assertThat(projects.refreshChildren("bc-x")).isEqualTo(VmRead.NotAvailable(ProjectRepository.NEEDS_EXTENDED_MODE))
         assertThat(lineage.calls).isEmpty()
+    }
+
+    /**
+     * The whole creation, from the panel's call down to the wire, against an api2 that holds the account's rule: a
+     * side chat whose `creationSource` is not an interactive client surface is refused in the account's words (what
+     * v0.3.94 sent, `API`, and so what Bennett saw); the desktop's `GLASS` is accepted, and the new chat lands under
+     * the chat it branched from.
+     */
+    @Test
+    fun `a side chat started from here goes out from an interactive surface and lands under its parent`() = runBlocking<Unit> {
+        extended = true
+        api.addIdleAgent("bc-x", "Android Linux application platform", "run-x")
+        api.addIdleAgent("bc-side", "New Side Chat", "run-side")
+        val interactive = setOf("EDITOR", "GLASS", "WEBSITE", "IOS_APP").map { AgentSource.WIRE_PREFIX + it }
+        val sent = CopyOnWriteArrayList<JsonObject>()
+        val server = MockWebServer()
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse = when (request.path) {
+                "/auth/exchange_user_api_key" -> MockResponse().setBody("""{"accessToken":"s","refreshToken":"rt"}""")
+                "/${BackgroundComposerApi.SERVICE}/StartSideChatBackgroundComposer" -> {
+                    val body = Json.parseToJsonElement(request.body.readUtf8()).jsonObject.also { sent += it }
+                    if (body["creationSource"]?.jsonPrimitive?.content !in interactive) {
+                        MockResponse().setResponseCode(400).setBody("""{"code":"failed_precondition","message":"Side chats can only be created from an interactive client surface"}""")
+                    } else {
+                        MockResponse().setBody("""{"composer":{"bcId":"bc-side","name":"New Side Chat","sideChatInfo":{"parentBcId":"${body["parentBcId"]!!.jsonPrimitive.content}"},"source":"BACKGROUND_COMPOSER_SOURCE_AS_SIDE_CHAT_FROM_CLOUD"}}""")
+                    }
+                }
+                else -> MockResponse().setResponseCode(404)
+            }
+        }
+        server.start()
+        try {
+            val client = OkHttpClient()
+            val base = server.url("/").toString()
+            val wire = ProjectApi(ConnectJsonClient(client, base), SessionTokenProvider(client, apiKeyProvider = { "key_abc" }, apiUrl = base, now = { 0L }))
+            val agents = agents()
+            agents.refresh()
+            val projects = ProjectRepository(session, agents, lineage, actions = wire, store = lineage, scope = scope, pollIntervalMs = 60_000, capabilities = capabilities)
+
+            val started = projects.startSideChat("bc-x", null)
+
+            assertThat(started.exceptionOrNull()).isNull()
+            assertThat(started.getOrNull()).isEqualTo("bc-side")
+            val request = sent.single()
+            assertThat(request.keys).containsExactly("parentBcId", "creationSource", "creationId")
+            assertThat(request["parentBcId"]?.jsonPrimitive?.content).isEqualTo("bc-x")
+            assertThat(request["creationSource"]?.jsonPrimitive?.content).isEqualTo(AgentSource.GLASS.wireName)
+            assertThat(agents.agent("bc-side")?.parent).isEqualTo(AgentParent("bc-x", AgentParentKind.SIDE_CHAT))
+            assertThat(agents.agent("bc-side")?.scope).isEqualTo(AgentScope.PROJECT_CHILD)
+            assertThat(agents.agent("bc-x")?.scope).isEqualTo(AgentScope.PRIMARY)
+        } finally {
+            server.shutdown()
+        }
     }
 
     @Test

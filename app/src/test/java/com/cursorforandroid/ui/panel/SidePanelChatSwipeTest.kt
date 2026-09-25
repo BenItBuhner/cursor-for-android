@@ -34,10 +34,12 @@ import androidx.compose.ui.test.hasAnyAncestor
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
+import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.swipeUp
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.cursorforandroid.data.repo.ContextState
@@ -82,7 +84,7 @@ import kotlin.math.roundToInt
  * picture, a code block, a table, a row of attachments, the queue's card above the composer and the composer itself
  * — and with the chat changing under the finger: a turn streaming in, new turns landing, a Project's primaries
  * refreshed. It opens from anywhere on any of it and closes from the scrim beside any of it; the scrollers scroll
- * first and hand over at their ends.
+ * first and hand over at their ends. Beside a pinned panel the same drag moves nothing, and is still no message's menu.
  *
  * A heavy panel — a Project coordinator's, hundreds of primaries — makes the sheet's first frame slow to come, and
  * the samples the finger made meanwhile arrive in one move's history ([stalledMove]): the flick still reads as a
@@ -105,7 +107,24 @@ class SidePanelChatSwipeTest {
     private var refreshes by mutableIntStateOf(0)
     private var composerText by mutableStateOf("")
 
-    private class Scene(val panel: SidePanelState, val drawer: CursorDrawerState, val panelContent: @Composable (generation: Int) -> Unit)
+    private class Scene(
+        val panel: SidePanelState,
+        val drawer: CursorDrawerState,
+        val pinned: PinnedPanel?,
+        val panelContent: @Composable (generation: Int) -> Unit,
+    )
+
+    /** The shell's side of a panel pinned beside the chat, standing [open] or shut at [PanelWidth]. */
+    private class Pinned(open: Boolean) : PinnedPanel {
+        override var open: Boolean? by mutableStateOf(open)
+            private set
+        override val width: Dp = PanelWidth
+        override fun setOpen(open: Boolean) {
+            this.open = open
+        }
+        override fun resize(width: Dp) = Unit
+        override fun resizeDone() = Unit
+    }
 
     private var scene by mutableStateOf<Scene?>(null)
 
@@ -113,10 +132,11 @@ class SidePanelChatSwipeTest {
     private fun show(
         panel: SidePanelState,
         drawer: CursorDrawerState = CursorDrawerState(DrawerValue.Closed),
+        pinned: PinnedPanel? = null,
         panelContent: @Composable (generation: Int) -> Unit = { PlainPanel(it) },
     ) {
         val first = scene == null
-        scene = Scene(panel, drawer, panelContent)
+        scene = Scene(panel, drawer, pinned, panelContent)
         peak = 0f
         if (first) compose.setContent { scene?.let { key(it) { Screen(it) } } }
         compose.waitForIdle()
@@ -127,11 +147,17 @@ class SidePanelChatSwipeTest {
         val panel = scene.panel
         LaunchedEffect(panel) { snapshotFlow { panel.fraction }.collect { peak = maxOf(peak, it) } }
         CursorTheme(mode = ThemeMode.Dark) {
-            CursorDrawer(state = scene.drawer, drawerWidth = 300.dp, drawerContent = { Box(Modifier.fillMaxSize().testTag("drawer-body")) }) {
+            // Where the panel pins, the drawer is the wide shell's rail flyout, which is never dragged out.
+            CursorDrawer(
+                state = scene.drawer,
+                drawerWidth = 300.dp,
+                gesturesEnabled = scene.pinned == null,
+                drawerContent = { Box(Modifier.fillMaxSize().testTag("drawer-body")) },
+            ) {
                 // Read here, at the top: a refresh recomposes the whole screen around the panel, and hands the
                 // host a new panel and a new chat, as a chat screen's live state does.
                 val generation = refreshes
-                SidePanelHost(state = panel, panelWidth = PanelWidth, panelContent = { scene.panelContent(generation) }) {
+                SidePanelHost(state = panel, panelWidth = PanelWidth, pinned = scene.pinned, panelContent = { scene.panelContent(generation) }) {
                     Chat(generation)
                 }
             }
@@ -317,6 +343,36 @@ class SidePanelChatSwipeTest {
         }
     }
 
+    private fun menuShown() = compose.onAllNodesWithText(CopyMessage).fetchSemanticsNodes().isNotEmpty()
+
+    @Test
+    @Config(qualifiers = "w841dp-h701dp-land-night-420dpi")
+    fun `beside a pinned panel a slow drag toward the start across a message moves nothing and is not its menu, and a hold still is`() {
+        for (open in listOf(true, false)) {
+            for (content in listOf(Content.Reply, Content.Message)) {
+                val value = if (open) SidePanelValue.Open else SidePanelValue.Closed
+                val panel = SidePanelState(value)
+                show(panel, pinned = Pinned(open))
+                // Slower than the long-press timeout to cover, but across the touch slop well inside it.
+                compose.onNodeWithTag(content.tag).performTouchInput { drag(start, dx = -width * 0.4f, pxPerSecond = 300f) }
+                assertWithMessage(content) {
+                    assertRestsAt(panel, value)
+                    assertThat(menuShown()).isFalse()
+                }
+                compose.onNodeWithTag(content.tag).performTouchInput {
+                    down(start)
+                    advanceEventTime(700)
+                    repeat(20) { moveBy(Offset(-width * 0.03f, 0f), delayMillis = FrameMillis) }
+                    up()
+                }
+                assertWithMessage(content) {
+                    assertRestsAt(panel, value)
+                    assertThat(menuShown()).isTrue()
+                }
+            }
+        }
+    }
+
     @Test
     fun `a left-to-right drag on any of it is still the sidebar drawer's`() {
         for (content in listOf(Content.Reply, Content.Picture, Content.Queue)) {
@@ -474,7 +530,10 @@ class SidePanelChatSwipeTest {
         onNewWorker = {}, onAdopt = {}, onEditAppearance = {}, onLoadContext = {}, onContextUp = {}, onOpenContextFile = {}, onRefresh = {},
     )
 
-    /** The panel itself, as a coordinator's chat has it: the Overview, then the Project with [workers] primaries, then the rest. */
+    /**
+     * The panel itself, as a coordinator's chat has it left on its Details tab (the view model keeps the tab while the
+     * panel is shut): the Overview, then the Project with [workers] primaries, then the rest.
+     */
     @Composable
     private fun CoordinatorPanel(workers: Int, generation: Int) {
         val project = DefaultPanelSections.project
@@ -489,7 +548,7 @@ class SidePanelChatSwipeTest {
                 items = { _, _ -> { projectSection(projectPanel(workers, generation), LocalAgentState(), busy = false, actions = projectActions, nowMillis = Now) } },
             ),
         )
-        ConversationPanel(PanelFixtures.projectRoot(), PanelActions.None, onClose = {}, registry = registry)
+        ConversationPanel(PanelFixtures.projectRoot().copy(tabs = PanelTabsState(selectedKey = PanelTab.Details.key)), PanelActions.None, onClose = {}, registry = registry)
     }
 
     private fun composedPrimaries(): Int = compose.onAllNodesWithTag("project-primary").fetchSemanticsNodes().size
@@ -572,6 +631,7 @@ class SidePanelChatSwipeTest {
 
     private companion object {
         const val FrameMillis = 16L
+        const val CopyMessage = "Copy message"
         /** A touchscreen's report rate: 120 Hz, give or take. */
         const val SampleMillis = 8L
         const val Now = 1_800_000_000_000L

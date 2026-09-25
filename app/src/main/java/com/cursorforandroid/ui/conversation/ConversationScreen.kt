@@ -115,9 +115,11 @@ import com.cursorforandroid.ui.panel.ConversationPanel
 import com.cursorforandroid.ui.panel.DesktopDialog
 import com.cursorforandroid.ui.panel.DesktopState
 import com.cursorforandroid.ui.panel.LocalPanelGraph
+import com.cursorforandroid.ui.panel.LocalPinnedPanel
 import com.cursorforandroid.ui.panel.PanelViewModel
 import com.cursorforandroid.ui.panel.SidePanel
 import com.cursorforandroid.ui.panel.rememberPanelActions
+import com.cursorforandroid.ui.panel.rememberPanelTabStates
 import com.cursorforandroid.ui.panel.rememberSidePanelState
 import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
@@ -385,6 +387,8 @@ fun ConversationScreen(
     // toward the start edge across the chat; it is per chat, like the view model behind it.
     val panelViewModel: PanelViewModel = viewModel(key = "panel-$agentId", factory = PanelViewModel.Factory(graph, agentId))
     val panelState = rememberSidePanelState()
+    val pinnedPanel = LocalPinnedPanel.current
+    val panelTabs = rememberPanelTabStates()
     val panel by panelViewModel.state.collectAsStateWithLifecycle()
     val panelActions = rememberPanelActions(panelViewModel, onToast = viewModel::showMessage, onOpenAgent = onOpenAgent, onAskToCopyFile = if (isDemo) null else viewModel::askToCopyFileIntoWorkspace)
     ChatKeyboardShortcuts(agentId, viewModel, panelState)
@@ -441,7 +445,7 @@ fun ConversationScreen(
             // The panel's figures — generated images, recordings, artifacts — resolve through the same media context and
             // open into the same viewer as the transcript's, among the same pages.
             CompositionLocalProvider(LocalMarkdownMedia provides markdownMedia, LocalPanelGraph provides graph, LocalRunStopConfirmation provides stopConfirmation) {
-                ConversationPanel(panel, panelActions, onClose = { scope.launch { panelState.close() } })
+                ConversationPanel(panel, panelActions, onClose = { scope.launch { panelState.close() } }, tabStates = panelTabs)
             }
         },
     ) {
@@ -466,8 +470,17 @@ fun ConversationScreen(
                 agent?.prUrl?.let { prUrl ->
                     FlatIconButton(CursorIcons.GitPullRequest, "Open pull request", tint = colors.gitAdded, onClick = { uriHandler.openUri(prUrl) }, touchHeight = touchHeight)
                 }
-                // The panel's button: the sidebar glyph mirrored, for the sheet that comes in from the other side.
-                FlatIconButton(CursorIcons.Sidebar, "Open panel", onClick = { scope.launch { panelState.open() } }, modifier = Modifier.scale(scaleX = -1f, scaleY = 1f), touchHeight = touchHeight)
+                // The panel's button: the sidebar glyph mirrored, for the sheet that comes in from the other side. Beside
+                // a pinned panel it stays in reach, and puts the panel away as the rail's button does the rail; it says
+                // so from the frame a fold, an unfold or a turn stands the panel there, as the shell has it.
+                val hidesPanel = pinnedPanel != null && (pinnedPanel.open ?: panelState.isOpen)
+                FlatIconButton(
+                    CursorIcons.Sidebar,
+                    if (hidesPanel) "Hide panel" else "Open panel",
+                    onClick = { scope.launch { if (hidesPanel) panelState.close() else panelState.open() } },
+                    modifier = Modifier.scale(scaleX = -1f, scaleY = 1f),
+                    touchHeight = touchHeight,
+                )
                 Box {
                     FlatIconButton(CursorIcons.More, "More", onClick = { menuOpen = true }, touchHeight = touchHeight)
                     CursorMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {

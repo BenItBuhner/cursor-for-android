@@ -74,9 +74,13 @@ import com.cursorforandroid.domain.PullRequestState
 import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
 
-/** Fill + hairline stroke sharing one shape so the edge stays crisp. */
-fun Modifier.cursorSurface(fill: Color, border: Color, shape: Shape): Modifier =
-    this.clip(shape).background(fill, shape).then(if (border.alpha > 0f) Modifier.border(CursorDimens.hairline, border, shape) else Modifier)
+/**
+ * Fill + hairline stroke sharing one shape so the edge stays crisp. [clip] also clips the content to the shape — and
+ * with it the touches, which Compose drops outside a clipped layer; off for a surface whose controls take touches past
+ * its edge.
+ */
+fun Modifier.cursorSurface(fill: Color, border: Color, shape: Shape, clip: Boolean = true): Modifier =
+    this.then(if (clip) Modifier.clip(shape) else Modifier).background(fill, shape).then(if (border.alpha > 0f) Modifier.border(CursorDimens.hairline, border, shape) else Modifier)
 
 /**
  * A pointer node that takes nothing and answers nothing. For a surface drawn over the shell rather than in place
@@ -137,7 +141,8 @@ fun FlatIconButton(
  * A control that occupies [size] in the layout but accepts touches over [touchSize] ([touchHeight] tall): the larger
  * hit layer uses `requiredSize`, so it overflows the visual box symmetrically without changing measured bounds. The
  * press ripple stays on the visual box. [contentDescription] names the control itself (the hit layer), so it stays a
- * node of its own wherever it sits.
+ * node of its own wherever it sits. [touchShift] moves the hit layer sideways off centre, for a neighbour that needs
+ * the room on one side.
  */
 @Composable
 fun TouchTarget(
@@ -150,12 +155,14 @@ fun TouchTarget(
     role: Role? = Role.Button,
     contentDescription: String? = null,
     touchHeight: Dp = touchSize,
+    touchShift: Dp = 0.dp,
     content: @Composable () -> Unit,
 ) {
     val interaction = remember { MutableInteractionSource() }
     Box(modifier.size(size), contentAlignment = Alignment.Center) {
         Box(
             Modifier
+                .offset(x = touchShift)
                 .requiredSize(width = maxOf(size, touchSize), height = maxOf(size, touchHeight))
                 .then(if (contentDescription != null) Modifier.semantics { this.contentDescription = contentDescription } else Modifier)
                 .clickable(interactionSource = interaction, indication = null, enabled = enabled, role = role, onClick = onClick),
@@ -183,6 +190,7 @@ fun ComposerRoundButton(
     prominent: Boolean = false,
     enabled: Boolean = true,
     size: Dp = CursorDimens.roundButton,
+    touchShift: Dp = 0.dp,
 ) {
     val colors = CursorTheme.colors
     val targetFill = when {
@@ -197,7 +205,7 @@ fun ComposerRoundButton(
     }
     val fill by animateColorAsState(targetFill, tween(160), label = "fill")
     val tint by animateColorAsState(targetTint, tween(160), label = "tint")
-    TouchTarget(size = size, touchSize = CursorDimens.roundButtonTouch, shape = CircleShape, onClick = onClick, enabled = enabled, modifier = modifier) {
+    TouchTarget(size = size, touchSize = CursorDimens.roundButtonTouch, shape = CircleShape, onClick = onClick, enabled = enabled, modifier = modifier, touchShift = touchShift) {
         Box(Modifier.size(size).background(fill, CircleShape), contentAlignment = Alignment.Center) {
             // The name is on the glyph rather than the hit layer (the composer's insets line up with the glyph), so
             // the glyph says when the button takes no tap too: a "Send" that cannot send yet must not read as ready.

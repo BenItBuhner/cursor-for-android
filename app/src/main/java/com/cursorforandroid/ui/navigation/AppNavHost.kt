@@ -5,10 +5,7 @@ import android.content.Context
 import android.content.ContextWrapper
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.width
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.windowsizeclass.ExperimentalMaterial3WindowSizeClassApi
 import androidx.compose.material3.windowsizeclass.WindowWidthSizeClass
@@ -18,6 +15,7 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.movableContentOf
 import androidx.compose.runtime.mutableIntStateOf
@@ -29,6 +27,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.unit.dp
@@ -153,8 +152,8 @@ internal fun AppShell(
     var projectEditor by rememberSaveable { mutableStateOf<ProjectEditorTarget?>(null) }
     // Wide layout: the sidebar collapses like on the web, and the toggle moves into the detail pane header.
     var sidebarCollapsed by rememberSaveable { mutableStateOf(false) }
-    // Whether the rail's last change slides: a tap's does, Ctrl+B's is in place in the frame the key lands.
-    var railSlides by remember { mutableStateOf(true) }
+    // Where a key or the window last left the rail, beside the chat or away (see byKey), until anything else moves it.
+    var railKeyed by remember { mutableStateOf<Boolean?>(null) }
     // The long groups the reader listed in full, for this visit to the sidebar: not saved, cut back on leaving.
     val shortLists = remember { SidebarShortLists() }
     val colors = CursorTheme.colors
@@ -165,29 +164,59 @@ internal fun AppShell(
     LaunchedEffect(selectedAgentId) { selectedAgentId?.let(shortcuts::visit) }
     val mediaViewer = rememberMediaViewerState()
     val focusManager = LocalFocusManager.current
+    // How the wide window shares its width between the rail, the chat and a panel pinned beside it (see ShellPanes).
+    val panes = remember { ShellPanes(graph.prefs, scope, railExpanded = { !sidebarCollapsed }, chatOnTop = { stack.top.screen is Screen.Agent }) }
+    // A fold, an unfold or a turn lays the whole window out again in one frame, so the rail is where the new window has
+    // it in that frame, as a key leaves it: a rail still sliding once the window has changed would drag the chat and a
+    // pinned panel through widths of their own after it. That includes making way for the chat's sheet, pinned open
+    // as the window widens into room for it.
+    val sheetOpen = { (stack.top.screen as? Screen.Agent)?.let { shortcuts.chats.target(it.id) }?.sheetOpen == true }
+    if (panes.configure(LocalConfiguration.current.screenWidthDp.dp, sheetOpen)) railKeyed = panes.widths.railShown
+    LaunchedEffect(panes) { panes.load() }
+    // Read coarse, so a drag at either edge resizes the panes without recomposing the shell.
+    val railShown by remember(panes) { derivedStateOf { panes.widths.railShown } }
+    val pinnable by remember(panes) { derivedStateOf { panes.widths.pinnable } }
+    // The drawer on a wide window: the rail over the chat, where the window has no room for it beside the chat.
+    val flyoutOpen by remember(drawerState) { derivedStateOf { drawerState.isOpen || drawerState.fraction > 0f } }
 
     fun closeDrawer() {
         if (!drawerState.isOpen) return
         if (shortcuts.keyed) drawerState.jumpTo(DrawerValue.Closed, scope) else scope.launch { drawerState.close() }
     }
 
-    fun setSidebarCollapsed(collapsed: Boolean) {
-        railSlides = !shortcuts.keyed
-        sidebarCollapsed = collapsed
-    }
-
     /**
      * A key's action, taken as the keyboard takes it everywhere on desktop: the screen it opens, the rail and the
-     * drawer are where it puts them in the frame the key lands, with no slide (see [NavStack.instantly]).
+     * drawer are where it puts them in the frame the key lands, with no slide (see [NavStack.instantly]). The rail
+     * lands with whatever the key moved it by: Ctrl+B, or a panel pinned open or shut, or a screen opened, that takes
+     * or gives back its room.
      */
-    fun <T> byKey(action: () -> T): T = shortcuts.fromKeyboard { stack.instantly(action) }
+    fun <T> byKey(action: () -> T): T = shortcuts.fromKeyboard {
+        val railBefore = panes.widths.railShown
+        stack.instantly(action).also { if (panes.widths.railShown != railBefore) railKeyed = panes.widths.railShown }
+    }
+    // Anything else that moves the rail after it, a tap or a drag, slides it again.
+    val railSlides = railKeyed != railShown
+    SideEffect { if (railKeyed != null && railKeyed != railShown) railKeyed = null }
 
     /**
      * The reader left the sidebar — a chat or a Project opened, another destination: its long groups go back to five
      * rows. A drawer still on screen is cut back once it is off it (below), so its rows do not jump while it slides.
      */
     fun leaveSidebar() {
-        if (wide || (!drawerState.isOpen && drawerState.fraction == 0f)) shortLists.reset()
+        if (!drawerState.isOpen && drawerState.fraction == 0f) shortLists.reset()
+    }
+
+    /**
+     * The wide window's sidebar asked for: the rail beside the chat where the window has room for it, and otherwise —
+     * a panel pinned open where the rail and the chat would not both fit beside it — over the chat, as the phone's
+     * drawer comes, until it is put away or there is room for it again.
+     */
+    fun revealSidebar() {
+        when {
+            panes.widths.railFits -> sidebarCollapsed = false
+            shortcuts.keyed -> drawerState.jumpTo(DrawerValue.Open, scope)
+            else -> scope.launch { drawerState.open() }
+        }
     }
     LaunchedEffect(drawerState) {
         snapshotFlow { !drawerState.isOpen && drawerState.fraction == 0f }.collect { shut -> if (shut) shortLists.reset() }
@@ -206,10 +235,15 @@ internal fun AppShell(
     LaunchedEffect(wide) {
         if (wide && drawerState.targetValue == DrawerValue.Open) {
             sidebarCollapsed = false
-            drawerState.snapTo(DrawerValue.Closed)
+            // Where a panel pinned open leaves the rail no room, the drawer stays open over the chat as the rail would come.
+            if (panes.widths.railFits) drawerState.snapTo(DrawerValue.Closed)
         }
         // Folding back puts the rail away behind a shut drawer.
         if (!wide) shortLists.reset()
+    }
+    // Room for the rail again — the panel put away, the window widened: the rail takes over from the drawer over the chat.
+    LaunchedEffect(wide, railShown) {
+        if (wide && railShown && drawerState.targetValue == DrawerValue.Open) drawerState.snapTo(DrawerValue.Closed)
     }
 
     // The navigation callbacks below read the stack when they run, never `topScreen` / `selectedAgentId` as they were
@@ -323,7 +357,7 @@ internal fun AppShell(
     LaunchedEffect(searchRequested) {
         if (searchRequested) {
             navigateTop(Screen.Home)
-            if (!wide) drawerState.open() else setSidebarCollapsed(false)
+            if (!wide) drawerState.open() else revealSidebar()
             searchRequests++
             onSearchConsumed()
         }
@@ -341,7 +375,7 @@ internal fun AppShell(
     val listOnScreen = topScreen == Screen.Home ||
         drawerState.isOpen ||
         drawerState.fraction > 0f ||
-        (wide && !sidebarCollapsed)
+        (wide && railShown)
     LifecycleStartEffect(listOnScreen) {
         val polling = if (listOnScreen) agentsViewModel.pollWhileVisible() else null
         onStopOrDispose { polling?.cancel() }
@@ -415,7 +449,7 @@ internal fun AppShell(
                 onSettings = ::openSettings,
                 onWhatsNew = ::openWhatsNew,
                 onCustomize = { customizeOpen = true },
-                onToggleSidebar = if (inDrawer) ({ closeDrawer() }) else ({ setSidebarCollapsed(true); shortLists.reset() }),
+                onToggleSidebar = if (inDrawer) ({ closeDrawer() }) else ({ sidebarCollapsed = true; shortLists.reset() }),
                 onRefresh = agentsViewModel::refresh,
                 rowActions = rowActions,
                 onLoadMore = { agentsViewModel.loadMore() },
@@ -434,8 +468,8 @@ internal fun AppShell(
 
     val openSidebar: (() -> Unit)? = when {
         !wide -> ({ scope.launch { drawerState.open() } })
-        sidebarCollapsed -> ({ setSidebarCollapsed(false) })
-        else -> null
+        railShown -> null
+        else -> ::revealSidebar
     }
     val onBack: (() -> Unit)? = if (wide) null else ({ stack.pop() })
 
@@ -526,11 +560,12 @@ internal fun AppShell(
     fun toggleSidebar() {
         when {
             !wide -> drawerState.jumpTo(if (drawerState.targetValue == DrawerValue.Open) DrawerValue.Closed else DrawerValue.Open, scope)
-            sidebarCollapsed -> setSidebarCollapsed(false)
-            else -> {
-                setSidebarCollapsed(true)
+            drawerState.targetValue == DrawerValue.Open -> closeDrawer()
+            railShown -> {
+                sidebarCollapsed = true
                 shortLists.reset()
             }
+            else -> revealSidebar()
         }
     }
 
@@ -546,7 +581,7 @@ internal fun AppShell(
             ShortcutAction.TogglePanel -> return chatOnTop()?.togglePanel() == true
             is ShortcutAction.OpenRailItem -> {
                 // A collapsed rail is not composed, so has told nothing: its rows are what it would show on opening.
-                val rows = if (wide && sidebarCollapsed) {
+                val rows = if (wide && !railShown && !flyoutOpen) {
                     val current = (stack.top.screen as? Screen.Agent)?.id
                     SidebarGroup.numbered(sidebarGroups(listState, listState.query, emptyList(), current, shortLists))
                 } else {
@@ -588,7 +623,7 @@ internal fun AppShell(
         when {
             shortcuts.palette.isOpen -> shortcuts.palette.close()
             mediaViewer.isOpen -> mediaViewer.closeNow()
-            !wide && drawerState.isOpen -> closeDrawer()
+            drawerState.isOpen -> closeDrawer()
             chatOnTop()?.escape() == true -> Unit
             else -> focusManager.clearFocus()
         }
@@ -626,11 +661,25 @@ internal fun AppShell(
             // a figure opens over all of it, and the open viewer rides out the swap between the layouts like the pane.
             MediaViewerHost(state = mediaViewer, loader = graph.media, saves = graph.mediaSaves) {
                 if (wide) {
-                    Row(Modifier.fillMaxSize().background(colors.canvas)) {
-                        SidebarRail(expanded = !sidebarCollapsed, animate = railSlides) {
-                            sidebar(inDrawer = false, modifier = Modifier.fillMaxSize())
-                        }
-                        detailHost(Modifier.weight(1f).fillMaxHeight(), pane)
+                    // The drawer here is the rail come over the chat, where a panel pinned open leaves it no room
+                    // beside the chat: asked for by its button or Ctrl+B, never dragged out, and composed only while
+                    // it shows.
+                    CursorDrawer(
+                        state = drawerState,
+                        drawerWidth = if (flyoutOpen) panes.flyoutWidth else CursorDimens.sidebarWidth,
+                        gesturesEnabled = flyoutOpen,
+                        containerColor = colors.sidebar,
+                        contentColor = colors.textPrimary,
+                        drawerContent = { if (flyoutOpen) sidebar(inDrawer = true, modifier = Modifier.fillMaxSize()) },
+                    ) {
+                        WidePanes(
+                            panes = panes,
+                            railShown = railShown,
+                            railSlides = railSlides,
+                            pinnable = pinnable,
+                            rail = { sidebar(inDrawer = false, modifier = Modifier.fillMaxSize()) },
+                            detail = { modifier -> detailHost(modifier, pane) },
+                        )
                     }
                 } else {
                     CursorDrawer(

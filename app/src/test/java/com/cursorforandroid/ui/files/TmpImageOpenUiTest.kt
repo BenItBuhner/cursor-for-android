@@ -4,8 +4,13 @@ import android.content.Context
 import androidx.activity.ComponentActivity
 import androidx.compose.foundation.layout.Column
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.test.click
+import androidx.compose.ui.test.hasAnyAncestor
+import androidx.compose.ui.test.hasContentDescription
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
@@ -48,6 +53,8 @@ import com.cursorforandroid.ui.panel.ConversationPanel
 import com.cursorforandroid.ui.panel.PanelActions
 import com.cursorforandroid.ui.panel.PanelFixtures
 import com.cursorforandroid.ui.panel.PanelSectionId
+import com.cursorforandroid.ui.panel.PanelTab
+import com.cursorforandroid.ui.panel.PanelTabsState
 import com.google.common.truth.Truth.assertThat
 import okhttp3.OkHttpClient
 import org.junit.Rule
@@ -63,7 +70,8 @@ import java.net.URI
  * A picture the agent read outside its repository, tapped in a chat (Bennett's 2026-09-22 frames of
  * `/tmp/reel_frames_s.jpg` and `/tmp/v02_mid.png`, then a full screen of "Cursor changed a private endpoint…"): it
  * opens in the media viewer — from the row's name, from the path in the row's open card, from the panel's Files
- * list — on the picture the read carried when it did, else on the file the agent's machine holds at that path; and
+ * list through the picture's own tab — on the picture the read carried when it did, else on the file the agent's
+ * machine holds at that path; and
  * what stops it is said in the app's compact notice, with the request that was refused and a way on.
  */
 @RunWith(AndroidJUnit4::class)
@@ -227,14 +235,20 @@ class TmpImageOpenUiTest {
     }
 
     @Test
-    fun `the panel's Files row for a tmp picture opens the media viewer on the read's picture, not the text viewer`() {
+    fun `the panel's Files row for a tmp picture opens it as a tab on the read's picture, which opens the media viewer, not the text viewer`() {
         val machine = Machine(awake = true, files = emptyMap())
         val touchedPaths = mutableListOf<String>()
-        val state = PanelFixtures.loaded().copy(
-            content = TranscriptContent(listOf(TranscriptContent.TouchedFile("/tmp/v02_mid.png", setOf(TranscriptContent.Touch.Read), carried = picture)), emptyList(), emptyList(), emptyList(), pendingQuestion = null),
+        var state by mutableStateOf(
+            PanelFixtures.loaded().copy(
+                content = TranscriptContent(listOf(TranscriptContent.TouchedFile("/tmp/v02_mid.png", setOf(TranscriptContent.Touch.Read), carried = picture)), emptyList(), emptyList(), emptyList(), pendingQuestion = null),
+            ),
         )
         val actions = object : PanelActions by PanelActions.None {
             override fun openTouched(path: String) { touchedPaths += path }
+            override fun openMedia(src: String, name: String, isVideo: Boolean) {
+                val tab = PanelTab.Media(src, name, isVideo)
+                state = state.copy(tabs = PanelTabsState(open = listOf(tab), selectedKey = tab.key))
+            }
         }
         compose.setContent {
             ViewerScene(viewer, loader(machine), entries = emptyList()) { ConversationPanel(state, actions, onClose = {}) }
@@ -244,6 +258,9 @@ class TmpImageOpenUiTest {
         settle { exists("touched-file") }
         compose.onNodeWithTag("panel-sections").performScrollToNode(hasTestTag("touched-file"))
         compose.onNodeWithTag("touched-file").performClick()
+        val figure = hasContentDescription("v02_mid.png") and hasAnyAncestor(hasTestTag("media-tab"))
+        settle { compose.onAllNodes(figure).fetchSemanticsNodes().isNotEmpty() }
+        compose.onNode(figure).performClick()
         settle { viewer.phase == MediaViewerState.Phase.Open && exists("viewer-image-0") }
         assertThat(viewer.session!!.entries.single().src).isEqualTo(picture)
         assertThat(touchedPaths).isEmpty()

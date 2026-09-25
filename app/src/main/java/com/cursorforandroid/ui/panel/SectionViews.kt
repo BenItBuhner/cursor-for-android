@@ -4,6 +4,7 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
@@ -30,6 +31,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.cursorforandroid.data.api.CursorEndpoints
@@ -175,7 +179,7 @@ internal fun RunControlsRow(state: PanelState, actions: PanelActions, modifier: 
     val running = state.isRunning
     val confirmation = LocalRunStopConfirmation.current
     Row(
-        modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp).testTag("run-controls"),
+        modifier.fillMaxWidth().padding(horizontal = PanelGutter, vertical = 6.dp).testTag("run-controls"),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -210,7 +214,7 @@ internal fun PendingQuestionSection(state: PanelState, actions: PanelActions) {
         QuestionCard(
             question,
             pending = true,
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+            modifier = Modifier.padding(horizontal = PanelGutter, vertical = 4.dp),
             onOpenInBrowser = { actions.openUrl(CursorEndpoints.webUrl(state.agentId)) },
             onAnswer = if (canAnswer) ({ answers -> actions.answerQuestion(callId!!, answers) }) else null,
             answered = callId != null && callId in state.controls.answeredCallIds,
@@ -242,7 +246,7 @@ internal fun ChangesSection(state: PanelState, actions: PanelActions) {
                 PanelCaption(listOfNotNull("From the branch", against, "${branchFiles.size} ${if (branchFiles.size == 1) "file" else "files"}").joinToString(" · "))
                 BranchDiffFiles(branchFiles, actions)
                 if (state.hasPullRequest && pr is RemoteLoad.Loading) LoadingRow("Reading the pull request's files…")
-                Row(Modifier.padding(horizontal = 12.dp, vertical = 6.dp)) {
+                Row(Modifier.padding(horizontal = PanelGutter, vertical = 6.dp)) {
                     CursorButton("Refresh", { actions.loadDiff(force = true) }, icon = CursorIcons.Refresh, height = 28.dp)
                 }
             }
@@ -305,7 +309,7 @@ private fun ChangedFileRow(file: ChangedFile) {
             modifier = Modifier.testTag("changed-file"),
         )
         AnimatedVisibility(visible = expanded && file.patch != null) {
-            DiffBlock(ToolPayload.FileDiff(file.path, file.patch.orEmpty(), file.additions, file.deletions), Modifier.padding(horizontal = 12.dp, vertical = 4.dp), showHeader = false)
+            DiffBlock(ToolPayload.FileDiff(file.path, file.patch.orEmpty(), file.additions, file.deletions), Modifier.padding(horizontal = PanelGutter, vertical = 4.dp), showHeader = false)
         }
         if (file.patch == null) PanelNote("${file.status.label}; ${if (file.status == ChangedFileStatus.Removed) "nothing to show" else "binary or too large to show inline"}.")
     }
@@ -365,7 +369,7 @@ private fun PullRequestBody(view: PullRequestView, actions: PanelActions) {
     val type = CursorTheme.typography
     val details = view.details
     Column(Modifier.fillMaxWidth().testTag("pull-request")) {
-        Column(Modifier.padding(horizontal = 12.dp, vertical = 4.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Column(Modifier.padding(horizontal = PanelGutter, vertical = 4.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Text(details.title, style = type.title, color = colors.textPrimary)
             Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 PullRequestPill(details.state)
@@ -423,7 +427,7 @@ private fun PullRequestBody(view: PullRequestView, actions: PanelActions) {
         if (view.threads.isNotEmpty()) {
             PanelCaption("Review threads · ${view.threads.size}")
             view.threads.forEach { thread ->
-                Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp).cursorSurface(colors.fillFaint, Color.Transparent, CursorTheme.shapes.lg).padding(horizontal = 10.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Column(Modifier.fillMaxWidth().padding(horizontal = PanelGutter, vertical = 4.dp).cursorSurface(colors.fillFaint, Color.Transparent, CursorTheme.shapes.lg).padding(horizontal = 10.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     val where = listOfNotNull(thread.name, thread.line?.let { "L$it" }).joinToString(":")
                     if (where.isNotEmpty()) Text(where, style = type.code, color = colors.textTertiary, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     thread.comments.forEach { comment ->
@@ -436,7 +440,7 @@ private fun PullRequestBody(view: PullRequestView, actions: PanelActions) {
             }
         }
         if (view.missing.isNotEmpty()) PanelNote("Could not read the ${view.missing.sorted().joinToString(", ")} from ${details.host.label}.")
-        Row(Modifier.padding(horizontal = 12.dp, vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(Modifier.padding(horizontal = PanelGutter, vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             CursorButton("Open in browser", { actions.openUrl(details.url) }, icon = CursorIcons.ExternalLink, height = 30.dp)
             CursorButton("Refresh", { actions.loadPullRequest(force = true) }, icon = CursorIcons.Refresh, height = 30.dp)
         }
@@ -457,7 +461,7 @@ private fun CreatePullRequestRow(state: PanelState, actions: PanelActions) {
         return
     }
     when (val creation = state.pullRequestCreation) {
-        RemoteLoad.Idle -> Row(Modifier.padding(horizontal = 12.dp, vertical = 6.dp)) {
+        RemoteLoad.Idle -> Row(Modifier.padding(horizontal = PanelGutter, vertical = 6.dp)) {
             CursorButton("Create pull request", actions::createPullRequest, icon = CursorIcons.GitPullRequest, height = 30.dp, modifier = Modifier.testTag("create-pull-request"))
         }
         RemoteLoad.Loading -> LoadingRow("Asking Cursor to open the pull request…")
@@ -479,7 +483,7 @@ private fun PullRequestDescription(body: String) {
     val lines = remember(body) { body.lines() }
     var showAll by rememberSaveable(body.length) { mutableStateOf(lines.size <= DESCRIPTION_FOLD_LINES) }
     val shown = if (showAll) body else lines.take(DESCRIPTION_FOLD_LINES).joinToString("\n")
-    Column(Modifier.padding(horizontal = 12.dp, vertical = 4.dp)) {
+    Column(Modifier.padding(horizontal = PanelGutter, vertical = 4.dp)) {
         MarkdownText(shown, style = type.base, color = colors.textSecondary, modifier = Modifier.testTag("pr-body"))
         if (!showAll) {
             Text(
@@ -538,7 +542,7 @@ internal fun FilesSection(state: PanelState, actions: PanelActions) {
     val tab = chosen?.takeIf { it in tabs } ?: tabs.first()
     Column(Modifier.fillMaxWidth().padding(bottom = 6.dp)) {
         if (tabs.size > 1) {
-            Row(Modifier.padding(horizontal = 12.dp, vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            Row(Modifier.padding(horizontal = PanelGutter, vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 tabs.forEach { t -> TabChip(t.label, selected = tab == t, onClick = { chosen = t }) }
             }
         }
@@ -576,10 +580,12 @@ private fun TouchedFiles(state: PanelState, actions: PanelActions) {
     val colors = CursorTheme.colors
     touched.forEach { file ->
         key(file.path) {
-            // A picture, a recording or a sound opens the media viewer — the read's own picture first, else the file
-            // read off the agent's machine — never the text viewer (Bennett's 2026-09-22 frames of /tmp/*.jpg).
-            val media = FileFormat.ofName(file.path)?.isMedia == true
-            val opener = if (media) rememberFileOpener(file.path, carried = file.carried) else null
+            // A picture or a recording opens as a tab of its own — the read's own picture first, else the file read
+            // off the agent's machine — never the text viewer (Bennett's 2026-09-22 frames of /tmp/*.jpg).
+            val format = FileFormat.ofName(file.path)
+            val media = format?.isMedia == true
+            val visual = format != null && (format.isImage || format.isVideo)
+            val opener = if (media && !visual) rememberFileOpener(file.path, carried = file.carried) else null
             PanelRow(
                 title = file.name,
                 icon = if (media) CursorIcons.Image else CursorIcons.File,
@@ -592,7 +598,10 @@ private fun TouchedFiles(state: PanelState, actions: PanelActions) {
                         color = colors.textQuaternary,
                     )
                 },
-                onClick = opener?.open ?: { actions.openTouched(file.path) },
+                onClick = when {
+                    visual -> ({ actions.openMedia(file.carried ?: file.path, file.name, isVideo = format?.isVideo == true) })
+                    else -> opener?.open ?: { actions.openTouched(file.path) }
+                },
                 modifier = Modifier.testTag("touched-file").then(opener?.slot?.let { Modifier.thumbnailSlot(it) } ?: Modifier),
             )
         }
@@ -617,7 +626,7 @@ private fun RepositoryBrowser(state: PanelState, actions: PanelActions) {
     LaunchedEffect(browser.repoUrl, browser.ref) { if (browser.listing is RemoteLoad.Idle) actions.browse("") }
     // Breadcrumb: the repository's name, then each directory on the way down; the current one is not a link.
     val segments = browser.path.split('/').filter { it.isNotEmpty() }
-    Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+    Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = PanelGutter, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
         Text(agent.repoShortName ?: "repository", style = type.small, color = if (segments.isEmpty()) colors.textSecondary else colors.link, modifier = Modifier.pressable({ actions.browse("") }, CursorTheme.shapes.sm, enabled = segments.isNotEmpty()).padding(2.dp))
         segments.forEachIndexed { index, segment ->
             Text(" / ", style = type.small, color = colors.textQuaternary)
@@ -720,14 +729,24 @@ internal fun ArtifactsSection(state: PanelState, actions: PanelActions) {
     val type = CursorTheme.typography
     Column(Modifier.fillMaxWidth().padding(bottom = 6.dp)) {
         if (tiles.isNotEmpty()) {
-            BoxWithConstraints(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp)) {
+            BoxWithConstraints(Modifier.fillMaxWidth().padding(horizontal = PanelGutter, vertical = 4.dp)) {
                 val tileWidth = (maxWidth - 8.dp) / 2
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.testTag("media-grid")) {
                     tiles.forEach { tile ->
                         Column(Modifier.width(tileWidth)) {
                             when (tile) {
-                                is MediaTile.Image -> ImageBlock(tile.src, alt = tile.caption, heightCap = MediaTileHeight)
-                                is MediaTile.Video -> VideoBlock(tile.src, poster = null, heightCap = MediaTileHeight)
+                                // A picture or a recording opens as a tab of its own, where its Retry and the viewer are.
+                                is MediaTile.Image, is MediaTile.Video -> Box {
+                                    if (tile is MediaTile.Image) ImageBlock(tile.src, alt = tile.caption, heightCap = MediaTileHeight)
+                                    else VideoBlock(tile.src, poster = null, heightCap = MediaTileHeight)
+                                    Box(
+                                        Modifier
+                                            .matchParentSize()
+                                            .pressable({ actions.openMedia(tile.src, tile.caption, isVideo = tile is MediaTile.Video) }, CursorTheme.shapes.lg, role = Role.Image)
+                                            .semantics { contentDescription = "Open ${tile.caption}" }
+                                            .testTag("media-tile"),
+                                    )
+                                }
                                 is MediaTile.Audio -> AudioChip(tile.src, tile.caption, subtitle = null, modifier = Modifier.fillMaxWidth())
                             }
                             Text(tile.caption, style = type.small, color = colors.textSecondary, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 4.dp))
@@ -747,7 +766,7 @@ internal fun ArtifactsSection(state: PanelState, actions: PanelActions) {
                     files.forEach { artifact -> ArtifactRow(artifact, onOpen = { actions.openArtifact(artifact) }) }
                 }
                 if (tiles.isEmpty() && files.isEmpty()) EmptyRow("Nothing published yet", "Files the agent saves under /opt/cursor/artifacts appear here.")
-                Row(Modifier.padding(horizontal = 12.dp, vertical = 6.dp)) {
+                Row(Modifier.padding(horizontal = PanelGutter, vertical = 6.dp)) {
                     CursorButton("Refresh", { actions.loadArtifacts(force = true) }, icon = CursorIcons.Refresh, height = 28.dp)
                 }
             }

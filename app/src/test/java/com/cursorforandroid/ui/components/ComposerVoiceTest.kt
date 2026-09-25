@@ -143,9 +143,10 @@ class ComposerVoiceTest {
         val mic = bounds("Voice input")
         val send = bounds("Send")
         assertThat(mic.right).isAtMost(send.left)
-        // The descriptions sit on the 17dp glyphs: the gap between the discs plus each disc's 3.5dp inset.
+        // The bare mic's name is on its 40dp touch box, which ends at Send's disc; Send's is on its 17dp glyph, 3.5dp in.
+        assertThat(CursorDimens.roundButtonTouch.value * 2.625f - mic.width).isWithin(2f).of(0f)
         val inset = (CursorDimens.roundButton.value - CursorDimens.roundButtonGlyph.value) / 2
-        assertThat(send.left - mic.right).isWithin(2f).of((CursorDimens.roundButtonGap.value + 2 * inset) * 2.625f)
+        assertThat(send.left - mic.right).isWithin(2f).of(inset * 2.625f)
         assertThat(mic.center.y).isWithin(1f).of(send.center.y)
     }
 

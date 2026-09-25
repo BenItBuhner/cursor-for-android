@@ -26,6 +26,7 @@ import com.cursorforandroid.domain.ProjectNotificationPrefs
 import com.cursorforandroid.domain.LocalAgentState
 import com.cursorforandroid.domain.SignInMethod
 import com.cursorforandroid.domain.TranscriptEngine
+import com.cursorforandroid.ui.panel.PaneWidthClass
 import com.cursorforandroid.ui.theme.ThemeMode
 import com.cursorforandroid.util.AppClock
 import kotlinx.coroutines.CoroutineScope
@@ -163,8 +164,6 @@ class PreferencesStore(
         val collapsedSidebarSections = stringSetPreferencesKey("sidebar_collapsed_sections")
         /** Settings › Appearance › Shorten long Projects list; absent reads as on (see [shortenSidebarLists]). */
         val shortenSidebarLists = booleanPreferencesKey("sidebar_shorten_long_lists")
-        /** Settings › Experimental › Voice input; absent reads as off (see [voiceInput]). */
-        val voiceInput = booleanPreferencesKey("voice_input")
         /** Settings › New chat page: what the New Chat pane lists under its composer (`recent` / `projects`); absent is Recent. */
         val newChatHome = stringPreferencesKey("new_chat_home")
         /** The transcript notices closed over each chat's composer: `agentId -> identities` (see `LoadNotice.identity`). */
@@ -173,9 +172,19 @@ class PreferencesStore(
         val confirmStop = booleanPreferencesKey("confirm_stop")
         /** The widget kinds whose picker previews the system holds, each with the build and boot it was published on (see `WidgetPreviews`). */
         val widgetPreviewsPublished = stringSetPreferencesKey("widget_previews_published")
+        /** The conversation panel's width beside the chat on a wide window, in dp, as last dragged; absent until it has been. */
+        val panelWidthDp = intPreferencesKey("panel_width_dp")
+        /** The sidebar rail's width on a wide window, in dp, as last dragged; absent until it has been. */
+        val railWidthDp = intPreferencesKey("rail_width_dp")
+        /** Whether the conversation panel stands open beside the chat on a window of [widthClass]; absent is shut. */
+        fun panelOpen(widthClass: PaneWidthClass) = booleanPreferencesKey("panel_open_${widthClass.key}")
 
         /** Settings that no longer exist; nothing reads them, and [forgetRetiredSettings] deletes them. */
-        val retired: List<Preferences.Key<*>> = listOf(booleanPreferencesKey("update_include_pre_releases"), booleanPreferencesKey("haptic_feedback"))
+        val retired: List<Preferences.Key<*>> = listOf(
+            booleanPreferencesKey("update_include_pre_releases"),
+            booleanPreferencesKey("haptic_feedback"),
+            booleanPreferencesKey("voice_input"),
+        )
     }
 
     /** What [clearSession] removes: everything here belongs to the account rather than to the device. */
@@ -411,15 +420,6 @@ class PreferencesStore(
     suspend fun setShortenSidebarLists(enabled: Boolean) = edit { it[Keys.shortenSidebarLists] = enabled }
 
     /**
-     * Settings › Experimental › Voice input: the composer's microphone, which dictates through the account's
-     * transcription (`AiService/TranscribeAudio`) and so does anything only while Extended mode is on as well. Off by
-     * default; a device preference, kept across sign-outs.
-     */
-    val voiceInput: Flow<Boolean> = data.map { it[Keys.voiceInput] ?: false }
-
-    suspend fun setVoiceInput(enabled: Boolean) = edit { it[Keys.voiceInput] = enabled }
-
-    /**
      * Settings › New chat page: the recent chats under the New Chat composer, the Projects, or the composer alone (see
      * [NewChatHome]).
      * Recent until changed; a device preference, kept across sign-outs like the sidebar's folds.
@@ -427,6 +427,28 @@ class PreferencesStore(
     val newChatHome: Flow<NewChatHome> = data.map { NewChatHome.parse(it[Keys.newChatHome]) }.distinctUntilChanged()
 
     suspend fun setNewChatHome(home: NewChatHome) = edit { it[Keys.newChatHome] = home.key }
+
+    /**
+     * The width the conversation panel stands at beside the chat on a wide window, in dp, as last dragged; null until
+     * it has been. A device preference like the theme: how much of this screen the panel gets is not the account's.
+     */
+    val panelWidthDp: Flow<Int?> = data.map { it[Keys.panelWidthDp] }.distinctUntilChanged()
+
+    suspend fun setPanelWidthDp(width: Int) = edit { it[Keys.panelWidthDp] = width }
+
+    /** The sidebar rail's width on a wide window, in dp, as last dragged; null until it has been. The device's, like [panelWidthDp]. */
+    val railWidthDp: Flow<Int?> = data.map { it[Keys.railWidthDp] }.distinctUntilChanged()
+
+    suspend fun setRailWidthDp(width: Int) = edit { it[Keys.railWidthDp] = width }
+
+    /**
+     * Whether the conversation panel stands open beside the chat on a window of [widthClass], for every chat and across
+     * restarts; shut until it is opened there. Each class keeps its own, so a tablet turned upright comes back to how it
+     * was last left upright. A phone's panel is a sheet over its one chat and keeps nothing here.
+     */
+    fun panelOpen(widthClass: PaneWidthClass): Flow<Boolean> = data.map { it[Keys.panelOpen(widthClass)] ?: false }.distinctUntilChanged()
+
+    suspend fun setPanelOpen(widthClass: PaneWidthClass, open: Boolean) = edit { it[Keys.panelOpen(widthClass)] = open }
 
     /**
      * The notices about a transcript's load the reader has closed, by chat (`agentId -> identities`, see

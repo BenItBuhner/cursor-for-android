@@ -21,8 +21,8 @@ class CursorMenuPlacementTest {
     private var area = IntRect(12, 12, 388, 788)
     private var placed: MenuPlacement? = null
 
-    private fun place(anchor: IntRect, surface: IntSize, offset: DpOffset = DpOffset.Zero, direction: LayoutDirection = LayoutDirection.Ltr): IntOffset {
-        val provider = MenuPositionProvider(Density(1f), offset, area = { area }, onPlaced = { placed = it })
+    private fun place(anchor: IntRect, surface: IntSize, offset: DpOffset = DpOffset.Zero, direction: LayoutDirection = LayoutDirection.Ltr, pointer: IntOffset? = null): IntOffset {
+        val provider = MenuPositionProvider(Density(1f), offset, area = { area }, onPlaced = { placed = it }, at = pointer)
         return provider.calculatePosition(anchor, window, direction, IntSize(surface.width + 24, surface.height + 24))
     }
 
@@ -31,6 +31,23 @@ class CursorMenuPlacementTest {
         val at = place(IntRect(20, 100, 60, 140), IntSize(200, 150))
         assertThat(at).isEqualTo(IntOffset(20 - 12, 144 - 12))
         assertThat(placed!!.below).isTrue()
+    }
+
+    @Test
+    fun `opened by a right-click it hangs from the pointer, not from its anchor`() {
+        val row = IntRect(0, 100, 400, 140)
+        val at = place(row, IntSize(200, 150), pointer = IntOffset(90, 120))
+        assertThat(at).isEqualTo(IntOffset(90 - 12, 124 - 12))
+        assertThat(placed!!.below).isTrue()
+        // It grows from the pointer's corner.
+        assertThat(placed!!.origin.pivotFractionX).isEqualTo(12f / 224f)
+    }
+
+    @Test
+    fun `a right-click near the window's corner opens it up and to the left of the pointer`() {
+        val at = place(IntRect(0, 700, 400, 780), IntSize(200, 150), pointer = IntOffset(350, 760))
+        assertThat(at).isEqualTo(IntOffset(350 - 200 - 12, 760 - 4 - 150 - 12))
+        assertThat(placed!!.below).isFalse()
     }
 
     @Test

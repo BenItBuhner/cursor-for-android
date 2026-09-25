@@ -242,10 +242,11 @@ class SettingsScreenshotTest {
         scrollToBottom()
         compose.onNode(hasTestTag(ExtendedModeTags.TOGGLE) and isOff()).assertIsDisplayed()
         // The engine beside the switch, dimmed and off, saying why it does nothing yet: default mode's row as it always
-        // was; and Experimental's voice input below, dimmed with the same reason.
-        compose.onAllNodesWithText(ExtendedModeCopy.NEEDS_MODE).assertCountEquals(2)
+        // was. Voice input is no switch of its own, so nothing else waits on the mode here.
+        compose.onAllNodesWithText(ExtendedModeCopy.NEEDS_MODE).assertCountEquals(1)
         compose.onNodeWithTag(ExtendedModeTags.ENGINE_TOGGLE).assertIsNotEnabled().assertIsOff()
-        compose.onNodeWithTag(SettingsTags.VOICE_INPUT_TOGGLE).assertIsNotEnabled().assertIsOff()
+        compose.onAllNodesWithText("Experimental").assertCountEquals(0)
+        compose.onAllNodesWithText("Voice input").assertCountEquals(0)
         capture("66_settings_extended_off")
     }
 
@@ -260,6 +261,9 @@ class SettingsScreenshotTest {
         compose.onNodeWithText(ExtendedModeCopy.ENGINE_DETAIL).assertIsDisplayed()
         compose.onNodeWithTag(ExtendedModeTags.ENGINE_TOGGLE).assertIsEnabled()
         assertThat(runBlocking { graph.extendedMode.engine() }).isEqualTo(TranscriptEngine.BETA)
+        // Voice input comes with the mode, in the composers; there is no Experimental switch for it.
+        compose.onAllNodesWithText("Experimental").assertCountEquals(0)
+        compose.onAllNodesWithText("Voice input").assertCountEquals(0)
         capture("67_settings_extended_on")
     }
 
@@ -288,30 +292,6 @@ class SettingsScreenshotTest {
         compose.onNodeWithTag(ExtendedModeTags.ENGINE_TOGGLE).assertIsNotEnabled().assertIsOff()
         assertThat(runBlocking { graph.extendedMode.engine() }).isEqualTo(TranscriptEngine.BETA)
         assertThat(runBlocking { graph.extendedMode.capabilities() }.accountTranscript).isFalse()
-    }
-
-    /** Experimental › Voice input, turned on in Extended mode: the composers' microphone. */
-    @Test
-    fun voiceInputOn() {
-        turnExtendedModeOn()
-        runBlocking { graph.prefs.setVoiceInput(true) }
-        composeSettings()
-        compose.waitUntil(30_000) { modeReadsOn() }
-        scrollToBottom()
-        compose.waitUntil(10_000) { compose.onAllNodes(isOn() and hasTestTag(SettingsTags.VOICE_INPUT_TOGGLE)).fetchSemanticsNodes().isNotEmpty() }
-        compose.onNodeWithText(SettingsCopy.GROUP_EXPERIMENTAL).assertIsDisplayed()
-        compose.onNodeWithText(SettingsCopy.VOICE_INPUT_DETAIL).assertIsDisplayed()
-        capture("578_settings_voice_input_on")
-    }
-
-    /** Without Extended mode, voice input is dimmed and off with the reason, like the transcript engine above it. */
-    @Test
-    fun voiceInputNeedsExtendedMode() {
-        runBlocking { graph.prefs.setVoiceInput(true) }
-        composeSettings()
-        scrollToBottom()
-        compose.onNodeWithTag(SettingsTags.VOICE_INPUT_TOGGLE).assertIsNotEnabled().assertIsOff()
-        capture("579_settings_voice_input_needs_extended")
     }
 
     /** The account row's sheet: how the key is kept and the pages where it and the agents are managed. */
