@@ -106,14 +106,21 @@ class OutgoingMessages(
          * minted here and kept across retries (the account files nothing twice under it); the card's row and the
          * transcript's copy are known by it. [afterAccepted] runs once the account has the message and the transcript
          * has settled — where the queue is read again, so the card never shows the message while its bubble is up.
+         * [queued]: sent while the chat shows a turn under way, so the message goes on the card at the tap instead of
+         * into a bubble (see [ConversationRepository.queueAhead]); a refusal brings it into a bubble with its Retry.
          */
-        class Account(val followupId: String, val rpc: suspend (uploaded: List<UploadedFile>) -> String?, val afterAccepted: suspend () -> Unit = {}) : Route
+        class Account(
+            val followupId: String,
+            val rpc: suspend (uploaded: List<UploadedFile>) -> String?,
+            val afterAccepted: suspend () -> Unit = {},
+            val queued: Boolean = false,
+        ) : Route
 
         /** The documented run request (`POST /v1/agents/{id}/followup`), with the MCP servers enabled when it goes out. */
         class Documented(val mcpServers: suspend () -> List<McpServer>) : Route
     }
 
-    /** One message on its way: the draft it was, its route, and the bubble ([staged]) that stands for it. */
+    /** One message on its way: the draft it was, its route, and the bubble ([staged]) — or, queued, the card row — that stands for it. */
     class Outgoing internal constructor(val id: String, val draft: Draft, val route: Route, internal val staged: StagedFollowUp)
 
     /** What the composer open on the chat hears of its messages. */
@@ -157,7 +164,13 @@ class OutgoingMessages(
         _statuses.update { it + (provisional to OutgoingStatus.Sending) }
         return scope.launch {
             val staged = try {
-                conversations.stageFollowUp(agentId, draft.text, draft.images.map { it.image }, draft.files.map { it.file })
+                val images = draft.images.map { it.image }
+                val files = draft.files.map { it.file }
+                if (route is Route.Account && route.queued) {
+                    conversations.queueAhead(agentId, draft.text, images, files, route.followupId)
+                } else {
+                    conversations.stageFollowUp(agentId, draft.text, images, files)
+                }
             } catch (e: CancellationException) {
                 _statuses.update { it - provisional }
                 ticket.done.complete(Unit)
@@ -210,8 +223,21 @@ class OutgoingMessages(
         try {
             setStatus(id, if (fileIds.isEmpty()) OutgoingStatus.Sending else uploadingStatus(fileIds))
             ticket.previous?.join()
-            val result = when (val route = message.route) {
-                is Route.Account -> conversations.sendStagedVia(
+            val route = message.route
+            val result = when {
+                route is Route.Account && !message.staged.shown -> conversations.sendQueuedVia(
+                    agentId,
+                    message.staged,
+                    route.followupId,
+                    message.draft.override?.model?.id,
+                    message.draft.override?.params.orEmpty(),
+                    message.draft.override?.label,
+                ) {
+                    val uploaded = awaitUploads(message)
+                    setStatus(id, OutgoingStatus.Sending)
+                    route.rpc(uploaded)
+                }.onSuccess { route.afterAccepted() }
+                route is Route.Account -> conversations.sendStagedVia(
                     agentId,
                     message.staged,
                     message.draft.override?.model?.id,
@@ -224,7 +250,7 @@ class OutgoingMessages(
                     setStatus(id, OutgoingStatus.Sending)
                     route.rpc(uploaded)
                 }.onSuccess { route.afterAccepted() }
-                is Route.Documented -> conversations.sendStaged(
+                route is Route.Documented -> conversations.sendStaged(
                     agentId,
                     message.staged,
                     message.draft.images.map { it.image },
@@ -234,6 +260,7 @@ class OutgoingMessages(
                     modelParams = message.draft.override?.params.orEmpty(),
                     modelDisplayName = message.draft.override?.label,
                 ).map { }
+                else -> error("Unknown route $route")
             }
             result.fold(
                 onSuccess = {
@@ -251,6 +278,12 @@ class OutgoingMessages(
                         conversations.discardStaged(agentId, message.staged)
                         onBusy(message.draft)
                     } else {
+                        if (route is Route.Account && !message.staged.shown) {
+                            // Off the card, which would go on promising a message the account never took, and into a
+                            // bubble whose Retry and Edit keep it. A retry sends it from the bubble.
+                            val shown = conversations.unqueue(agentId, message.staged, route.followupId)
+                            synchronized(lock) { if (id in outgoing) outgoing[id] = Outgoing(id, message.draft, route, shown) }
+                        }
                         setStatus(id, OutgoingStatus.Failed(t.userMessage()))
                     }
                 },
@@ -341,10 +374,11 @@ class OutgoingSends(
      * by their uploads, under an id of this device's minting. The queue is read again only once the transcript has
      * settled the message — its bubble filed under its run, or down for the card — never while the bubble is still up.
      */
-    fun accountRoute(agentId: String, draft: OutgoingMessages.Draft): OutgoingMessages.Route.Account {
+    fun accountRoute(agentId: String, draft: OutgoingMessages.Draft, queued: Boolean = false): OutgoingMessages.Route.Account {
         val followupId = AccountFollowup.newId()
         return OutgoingMessages.Route.Account(
             followupId = followupId,
+            queued = queued,
             rpc = { uploaded ->
                 val followup = AccountFollowup(
                     text = draft.text,
@@ -373,7 +407,7 @@ class OutgoingSends(
     private fun refusedAsBusy(agentId: String, draft: OutgoingMessages.Draft) {
         scope.launch {
             if (capabilities().accountQueue && !isDemo()) {
-                forAgent(agentId).send(draft, accountRoute(agentId, draft))
+                forAgent(agentId).send(draft, accountRoute(agentId, draft, queued = true))
             } else {
                 followUps.enqueue(
                     agentId,
