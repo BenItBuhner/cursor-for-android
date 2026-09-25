@@ -558,7 +558,7 @@ class TraceCache(
             val overBytes = total > target
             if (!overBytes && agents <= maxAgents) break
             if (!overBytes && !holding.isAgent) continue
-            if (holding.file.deleteRecursively()) {
+            if (DiskSweep.deleteTree(holding.file)) {
                 total -= holding.bytes
                 if (holding.isAgent) agents--
             }

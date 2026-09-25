@@ -3,6 +3,7 @@ package com.cursorforandroid.data.update
 import android.content.Intent
 import android.content.pm.PackageInstaller
 import com.cursorforandroid.data.api.userMessage
+import com.cursorforandroid.data.local.DiskSweep
 import com.cursorforandroid.data.local.JsonDiskCache
 import com.cursorforandroid.data.local.PreferencesStore
 import com.cursorforandroid.domain.AppRelease
@@ -712,7 +713,7 @@ class UpdateManager(
         val keep = marker?.takeIf { it.versionCode > platform.installedVersionCode }?.let { m ->
             apkFile(m.versionCode).takeIf { it.isFile && it.length() == m.sizeBytes }
         }
-        withContext(Dispatchers.IO) { downloadDir.listFiles()?.forEach { if (it != keep) it.deleteRecursively() } }
+        withContext(Dispatchers.IO) { downloadDir.listFiles()?.forEach { if (it != keep) DiskSweep.deleteTree(it) } }
         if (marker != null && keep == null) cache.clearVerified()
     }
 
