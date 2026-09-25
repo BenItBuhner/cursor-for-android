@@ -285,6 +285,8 @@ fun MediaChip(
     modifier: Modifier = Modifier,
     /** A finger down on the picture, before it is known to be a tap: the viewer's decode can start now (see [ComposerMediaOpener.warm]). */
     onPress: (() -> Unit)? = null,
+    /** For the picture itself, without the room its badge overhangs into. */
+    tileModifier: Modifier = Modifier,
 ) {
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
@@ -307,6 +309,7 @@ fun MediaChip(
         Box(
             Modifier
                 .align(Alignment.BottomStart)
+                .then(tileModifier)
                 .thumbnailSlot(slot)
                 .size(MediaTile)
                 .cursorSurface(colors.fill, colors.stroke, shape)

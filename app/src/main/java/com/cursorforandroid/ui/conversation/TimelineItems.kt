@@ -88,6 +88,7 @@ import com.cursorforandroid.ui.components.HairlineDivider
 import com.cursorforandroid.ui.components.LocalMarkdownMedia
 import com.cursorforandroid.ui.components.LocalSendMotion
 import com.cursorforandroid.ui.components.SendTargetPart
+import com.cursorforandroid.ui.components.sendAttachmentTarget
 import com.cursorforandroid.ui.components.sendTarget
 import com.cursorforandroid.ui.components.MarkdownText
 import com.cursorforandroid.ui.components.ProgressRing
@@ -143,7 +144,12 @@ private fun HumanMessage(item: UserMessage, modifier: Modifier) {
         ) {
             Column(Modifier.padding(horizontal = 10.dp, vertical = 8.dp)) {
                 if (item.attachments.isNotEmpty()) {
-                    MessageAttachments(item.attachments, Modifier.padding(bottom = if (hasText) 8.dp else 0.dp), alpha = alpha)
+                    MessageAttachments(
+                        item.attachments,
+                        Modifier.padding(bottom = if (hasText) 8.dp else 0.dp),
+                        alpha = alpha,
+                        target = { ordinal -> Modifier.sendAttachmentTarget(sendMotion, item.id, item.text, ordinal) },
+                    )
                 }
                 if (hasText || item.attachments.isEmpty()) {
                     MarkdownText(

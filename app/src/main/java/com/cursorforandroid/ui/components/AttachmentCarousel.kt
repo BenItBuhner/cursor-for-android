@@ -82,7 +82,17 @@ fun ComposerAttachments(
     agentId: String? = null,
     /** Reads a restored recording's poster and length off its copy; null leaves such a tile with its play glyph. */
     media: MediaLoader? = null,
+    /** The composer's, for a send to lift the chips off along with the text (see [SendMotion]). */
+    anchor: ComposerAnchor? = null,
 ) {
+    val sendMotion = LocalSendMotion.current
+    // Each chip's place in the prompt's attachments — images, then files — which is the order the bubble lists them in.
+    val ordinals = remember(images, files) {
+        HashMap<String, Int>().apply {
+            images.forEachIndexed { index, image -> put(image.id, index) }
+            files.forEachIndexed { index, file -> put(file.id, images.size + index) }
+        }
+    }
     val context = LocalContext.current
     val previews = remember(context) { ComposerMediaPreviews(File(context.cacheDir, ComposerMediaPreviews.DIR)) }
     // Callers drop the row once nothing is attached, so this is the send, the discard, or the chat left.
@@ -116,6 +126,10 @@ fun ComposerAttachments(
                 onRetry = if (file != null && onRetryFile != null) ({ onRetryFile(file) }) else null,
                 src = previews.src(item.id, item.mimeType),
                 onPress = { opener.warm(shown) },
+                tileModifier = Modifier.sendAttachmentSource(
+                    sendMotion, anchor, "media:${item.id}",
+                    SendAttachment(ordinals[item.id] ?: -1, shown.thumbnail, media = true, video = shown.isVideo),
+                ),
             )
         }
         items(files.filterNot { it.isMedia }, key = { "file:${it.id}" }) { file ->
@@ -127,6 +141,10 @@ fun ComposerAttachments(
                 onRetry = onRetryFile?.let { retry -> { retry(file) } },
                 onOpen = sound?.let { item -> { slot -> opener.open(item, slot) } },
                 openSrc = sound?.let { previews.src(it.id, it.mimeType) },
+                modifier = Modifier.sendAttachmentSource(
+                    sendMotion, anchor, "file:${file.id}",
+                    SendAttachment(ordinals[file.id] ?: -1, file.thumbnail, media = false, name = file.file.name, kind = file.file.kind, sizeBytes = file.file.sizeBytes.toLong()),
+                ),
             )
         }
     }

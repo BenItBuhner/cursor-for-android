@@ -609,9 +609,9 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
      * and the API refuses anything more; a send the server refuses as busy all the same (the row was a poll behind)
      * is queued too. A follow-up in Ask or Debug mode travels on the account's follow-up, which alone can carry it.
      *
-     * Returns what the message's bubble says when it goes out now, into a bubble at the foot of the transcript — the
-     * text the composer's may travel into — and null when nothing typed went there: refused, queued, or sent with
-     * attachments alone.
+     * Returns what was typed when the message goes out now, into a bubble at the foot of the transcript — the text
+     * and the attachments the composer's may travel into; empty for attachments sent alone — and null when nothing
+     * went there: refused or queued.
      */
     fun send(): String? {
         val text = draft.value.trim()
@@ -673,7 +673,7 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
             accountMode || withFiles -> dispatch(message, graph.outgoing.accountRoute(agentId, message))
             else -> dispatch(message, graph.outgoing.documentedRoute())
         }
-        return text.ifEmpty { null }
+        return text
     }
 
     /**

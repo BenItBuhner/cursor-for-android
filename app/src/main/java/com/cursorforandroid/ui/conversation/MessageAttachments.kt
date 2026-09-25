@@ -80,7 +80,15 @@ import java.io.File
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-fun MessageAttachments(attachments: List<MessageAttachment>, modifier: Modifier = Modifier, alpha: Float = 1f) {
+fun MessageAttachments(
+    attachments: List<MessageAttachment>,
+    modifier: Modifier = Modifier,
+    alpha: Float = 1f,
+    /** For each attachment, by its place in [attachments]: where a send's flight lands it (see `sendAttachmentTarget`). */
+    target: (Int) -> Modifier = { Modifier },
+) {
+    val ordinals = remember(attachments) { attachments.withIndex().associate { (index, attachment) -> attachment.path to index } }
+    val targetOf = { attachment: MessageAttachment -> ordinals[attachment.path]?.let(target) ?: Modifier }
     val media = attachments.filter { !it.isFile || it.kind == PromptFileKind.Video }
     val files = attachments.filter { it.isFile && it.kind != PromptFileKind.Video }
     if (attachments.size > CAROUSEL_FROM) {
@@ -88,28 +96,28 @@ fun MessageAttachments(attachments: List<MessageAttachment>, modifier: Modifier 
         // The fade dissolves offscreen: the bubble's fill is translucent, so there is no flat colour to paint it in.
         val withMedia = media.isNotEmpty()
         AttachmentCarousel(if (withMedia) modifier.height(THUMB_HEIGHT) else modifier, verticalAlignment = Alignment.CenterVertically, spacing = 6.dp) {
-            items(media, key = { it.path }) { attachment -> AttachmentMedia(attachment, alpha = alpha) }
-            items(files, key = { it.path }) { attachment -> AttachmentFileCard(attachment, alpha = alpha, modifier = if (withMedia) Modifier.fillMaxHeight() else Modifier) }
+            items(media, key = { it.path }) { attachment -> AttachmentMedia(attachment, alpha = alpha, modifier = targetOf(attachment)) }
+            items(files, key = { it.path }) { attachment -> AttachmentFileCard(attachment, alpha = alpha, modifier = targetOf(attachment).then(if (withMedia) Modifier.fillMaxHeight() else Modifier)) }
         }
         return
     }
     Column(modifier, verticalArrangement = Arrangement.spacedBy(6.dp)) {
         if (media.isNotEmpty()) {
             FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                media.forEach { attachment -> AttachmentMedia(attachment, alpha = alpha) }
+                media.forEach { attachment -> AttachmentMedia(attachment, alpha = alpha, modifier = targetOf(attachment)) }
             }
         }
         // Files of any type but a picture or a recording, one card each — the desktop's `context-pill` for a document,
         // with its size and a real open: a picture the API took as a document into the media viewer, anything else to
         // whatever app handles its type.
-        files.forEach { attachment -> AttachmentFileCard(attachment, alpha = alpha) }
+        files.forEach { attachment -> AttachmentFileCard(attachment, alpha = alpha, modifier = targetOf(attachment)) }
     }
 }
 
 /** A picture as its thumbnail, a recording as its poster tile. */
 @Composable
-private fun AttachmentMedia(attachment: MessageAttachment, alpha: Float) {
-    if (attachment.kind == PromptFileKind.Video && attachment.isFile) AttachmentVideoThumbnail(attachment, alpha) else AttachmentThumbnail(attachment, alpha)
+private fun AttachmentMedia(attachment: MessageAttachment, alpha: Float, modifier: Modifier = Modifier) {
+    if (attachment.kind == PromptFileKind.Video && attachment.isFile) AttachmentVideoThumbnail(attachment, alpha, modifier) else AttachmentThumbnail(attachment, alpha, modifier)
 }
 
 /** The `file://` reference the transcript's media list knows the attachment by (see [com.cursorforandroid.ui.media.ConversationMedia]). */
@@ -213,7 +221,7 @@ internal fun openAttachedFile(context: Context, attachment: MessageAttachment): 
 
 /** One picture of the prompt, cropped into its strip; a tap opens the viewer, which grows the whole picture out of the crop. */
 @Composable
-private fun AttachmentThumbnail(attachment: MessageAttachment, alpha: Float) {
+private fun AttachmentThumbnail(attachment: MessageAttachment, alpha: Float, modifier: Modifier = Modifier) {
     val colors = CursorTheme.colors
     val shape = CursorTheme.shapes.lg
     val width = (THUMB_HEIGHT * attachment.aspectRatio).coerceIn(THUMB_MIN_WIDTH, THUMB_MAX_WIDTH)
@@ -223,7 +231,7 @@ private fun AttachmentThumbnail(attachment: MessageAttachment, alpha: Float) {
     val slot = rememberThumbnailSlot(attachment.src, shape, crop = true)
     val open = rememberOpenInViewer(attachment, slot) { (image as? LoadedImage.Ready)?.bitmap }
     Box(
-        Modifier
+        modifier
             .thumbnailSlot(slot)
             .size(width, THUMB_HEIGHT)
             .cursorSurface(colors.fill.faded(alpha), colors.stroke.faded(alpha), shape)
@@ -244,7 +252,7 @@ private fun AttachmentThumbnail(attachment: MessageAttachment, alpha: Float) {
  * tap opens the viewer on it, playing, grown out of this tile; a copy that is gone says so when the viewer opens.
  */
 @Composable
-private fun AttachmentVideoThumbnail(attachment: MessageAttachment, alpha: Float) {
+private fun AttachmentVideoThumbnail(attachment: MessageAttachment, alpha: Float, modifier: Modifier = Modifier) {
     val colors = CursorTheme.colors
     val shape = CursorTheme.shapes.lg
     val loader = LocalMarkdownMedia.current?.loader
@@ -262,7 +270,7 @@ private fun AttachmentVideoThumbnail(attachment: MessageAttachment, alpha: Float
     val open = rememberOpenInViewer(attachment, slot) { frame }
     val name = attachment.name ?: "Recording"
     Box(
-        Modifier
+        modifier
             .thumbnailSlot(slot)
             .size(width, THUMB_HEIGHT)
             .cursorSurface(Color.Black.faded(alpha), colors.stroke.faded(alpha), shape)

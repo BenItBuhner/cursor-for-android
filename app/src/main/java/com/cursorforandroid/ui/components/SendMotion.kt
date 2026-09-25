@@ -7,20 +7,36 @@ import androidx.compose.animation.core.Easing
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material3.Icon
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.staticCompositionLocalOf
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
@@ -32,20 +48,29 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.lerp
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.LayoutCoordinates
+import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.layout.onPlaced
 import androidx.compose.ui.layout.positionInWindow
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.TextMeasurer
 import androidx.compose.ui.text.drawText
 import androidx.compose.ui.text.rememberTextMeasurer
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.util.lerp
+import com.cursorforandroid.domain.PromptFile
+import com.cursorforandroid.domain.PromptFileKind
 import com.cursorforandroid.ui.theme.CursorTheme
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlin.math.roundToInt
 
 /**
  * The sent text's way from the composer into its bubble, as one motion rather than a composer that empties and a
@@ -79,7 +104,7 @@ class SendMotion(
      * composer with no text on it, or with animations off.
      */
     fun depart(takeoff: Takeoff?, text: String, excluded: Set<String> = emptySet(), holdMillis: Long = HoldMillis): SendFlight? {
-        if (takeoff == null || text.isBlank() || !animatorsEnabled()) return null
+        if (takeoff == null || (text.isBlank() && takeoff.attachments.isEmpty()) || !animatorsEnabled()) return null
         return SendFlight(takeoff, text.trim(), excluded, holdMillis).also { flight = it }
     }
 
@@ -108,7 +133,8 @@ class SendMotion(
 
     /** The placeholder of the composer at [anchor], held back while the text it held is still over it. */
     fun placeholderAlpha(anchor: ComposerAnchor): Float {
-        val f = flight?.takeIf { it.takeoff.anchor === anchor } ?: return 1f
+        // Attachments sent alone left the placeholder where it was: there was no text over it.
+        val f = flight?.takeIf { it.takeoff.anchor === anchor && it.text.isNotEmpty() } ?: return 1f
         return when (f.phase) {
             SendFlight.Phase.Holding -> 0f
             SendFlight.Phase.Fading -> 1f - f.fade.value
@@ -126,6 +152,15 @@ class SendMotion(
         return if (shown.trim() == f.takeoff.layout.layoutInput.text.text.trim()) 0f else 1f
     }
 
+    /**
+     * The attachment [key] of the composer at [anchor], undrawn while its copy is on its way to the bubble: a composer
+     * emptied a frame late would show it twice, and a queued or refused send brings it back with the flight gone.
+     */
+    fun attachmentAlpha(anchor: ComposerAnchor, key: String): Float {
+        val f = flight?.takeIf { it.takeoff.anchor === anchor } ?: return 1f
+        return if (f.takeoff.attachments.any { it.key == key }) 0f else 1f
+    }
+
     /** The bubble for [id] saying [text] has been placed: [surface] is its box, [textBox] its text's. */
     internal fun place(id: String, text: String, part: SendTargetPart, coordinates: LayoutCoordinates, fade: Float) {
         val f = flight ?: return
@@ -135,7 +170,13 @@ class SendMotion(
             SendTargetPart.Text -> f.textBox = coordinates
         }
         f.targetFade = fade
-        if (f.surface != null && f.textBox != null) f.targetPlaced = true
+        if (f.surface != null && (f.textBox != null || f.text.isEmpty())) f.targetPlaced = true
+    }
+
+    /** The bubble for [id] saying [text] has laid out its attachment [ordinal] (its place in the prompt's attachments) at [coordinates]. */
+    internal fun placeAttachment(id: String, text: String, ordinal: Int, coordinates: LayoutCoordinates) {
+        val f = flight ?: return
+        if (f.matches(id, text)) f.attachmentTargets[ordinal] = coordinates
     }
 
     companion object {
@@ -188,10 +229,42 @@ class SendFlight internal constructor(
     internal var surface: LayoutCoordinates? = null
     internal var textBox: LayoutCoordinates? = null
 
+    /** The bubble's attachments by their place in the prompt's, as laid out; the ones a scrolling row has not reached are not here. */
+    internal val attachmentTargets = HashMap<Int, LayoutCoordinates>()
+
     /** The bubble's own fade (a message not yet filed is drawn faded); the copy arrives at it. */
     internal var targetFade = 1f
 
-    fun matches(id: String, text: String): Boolean = id !in excluded && text.trim() == this.text
+    /**
+     * Whether the bubble for [id] saying [text] is this flight's. Attachments sent alone are said in the bubble in
+     * words the composer never held ("See the attached image."), so for them any new bubble is.
+     */
+    fun matches(id: String, text: String): Boolean = id !in excluded && (this.text.isEmpty() || text.trim() == this.text)
+
+    /** The flying copies' opacity: whole until the hand-over, then fading off the bubble drawn under them. */
+    internal fun copyAlpha(): Float {
+        val t = progress.value
+        return if (t < SendMotion.HandOff) 1f else 1f - (t - SendMotion.HandOff) / (1f - SendMotion.HandOff)
+    }
+
+    /** Where [attachment] is laid out in the bubble (window coordinates), once it is. */
+    internal fun targetOf(attachment: AttachmentTakeoff): Rect? =
+        attachmentTargets[attachment.look.ordinal]?.takeIf { it.isAttached }?.windowRect()
+
+    /** Where [attachment]'s copy is drawn now (window coordinates): where it stood until it flies, then on its way to the bubble. */
+    internal fun boxOf(attachment: AttachmentTakeoff): Rect {
+        if (phase != Phase.Flying) return attachment.rect
+        val target = targetOf(attachment) ?: return attachment.rect
+        return lerpRect(attachment.rect, target, SendMotion.Emphasized.transform(progress.value))
+    }
+
+    /** [attachment]'s copy's opacity now: arriving at the bubble's own fade, or fading where it stood with nowhere to go. */
+    internal fun alphaOf(attachment: AttachmentTakeoff): Float {
+        if (phase != Phase.Flying) return 1f - fade.value
+        val e = SendMotion.Emphasized.transform(progress.value)
+        if (targetOf(attachment) == null) return 1f - e
+        return copyAlpha() * lerp(1f, targetFade, e)
+    }
 }
 
 /** The text on a composer at the tap, and where it stood (window coordinates). */
@@ -204,7 +277,29 @@ class Takeoff internal constructor(
     internal val viewport: Rect,
     /** The composer's box. */
     val composer: Rect,
+    /** What was attached and in view in the composer's row, left to right. */
+    val attachments: List<AttachmentTakeoff> = emptyList(),
 )
+
+/**
+ * One attachment as the flight draws it, from what the composer knew of it: a picture's or a recording's tile, or a
+ * file's card with its name, kind and size. [ordinal] is its place in the prompt's attachments — the images first,
+ * then the files, each in the order attached — which is the order the message's bubble lists them in.
+ */
+@Immutable
+class SendAttachment(
+    val ordinal: Int,
+    val thumbnail: ImageBitmap?,
+    /** A tile (a picture, a recording) rather than a file's card. */
+    val media: Boolean,
+    val video: Boolean = false,
+    val name: String? = null,
+    val kind: PromptFileKind = PromptFileKind.Image,
+    val sizeBytes: Long = 0L,
+)
+
+/** An attachment lifted off the composer: what it is, which chip it was ([key]) and where that stood (window coordinates). */
+class AttachmentTakeoff internal constructor(val key: String, val look: SendAttachment, val rect: Rect)
 
 /**
  * Where a composer's text stands: the field and the box, as last placed, and the field's text layout. Plain fields,
@@ -216,13 +311,20 @@ class ComposerAnchor {
     internal var surface: LayoutCoordinates? = null
     internal var layout: (() -> TextLayoutResult?)? = null
     internal var scroll: () -> Int = { 0 }
+    /** The chips of the attachment row, by key: what each is and where it was last placed. */
+    internal val attachments = HashMap<String, Pair<SendAttachment, LayoutCoordinates?>>()
 
-    /** The text as it stands now, lifted off for a flight; null when there is none to lift. */
+    /** The text and the attachments as they stand now, lifted off for a flight; null when there is nothing to lift. */
     fun takeoff(): Takeoff? {
         val field = field?.takeIf { it.isAttached } ?: return null
         val surface = surface?.takeIf { it.isAttached } ?: return null
         val layout = layout?.invoke() ?: return null
-        if (layout.layoutInput.text.isBlank()) return null
+        // A chip scrolled out of the row's view has nothing to lift off; one cut by its edge flies whole.
+        val attached = attachments.mapNotNull { (key, entry) ->
+            val coordinates = entry.second?.takeIf { it.isAttached && !it.boundsInWindow().isEmpty } ?: return@mapNotNull null
+            AttachmentTakeoff(key, entry.first, coordinates.windowRect())
+        }.sortedBy { it.rect.left }
+        if (layout.layoutInput.text.isBlank() && attached.isEmpty()) return null
         val corner = field.positionInWindow()
         return Takeoff(
             anchor = this,
@@ -230,9 +332,27 @@ class ComposerAnchor {
             origin = corner - Offset(0f, scroll().toFloat()),
             viewport = Rect(corner, Size(field.size.width.toFloat(), field.size.height.toFloat())),
             composer = surface.windowRect(),
+            attachments = attached,
         )
     }
 }
+
+/**
+ * The composer's attachment chip [key], showing [look], as something a send lifts off: where it is placed is noted for
+ * the tap, and while its copy is on its way to the bubble the chip itself is undrawn ([SendMotion.attachmentAlpha]).
+ */
+@Composable
+internal fun Modifier.sendAttachmentSource(motion: SendMotion?, anchor: ComposerAnchor?, key: String, look: SendAttachment): Modifier {
+    if (motion == null || anchor == null) return this
+    SideEffect { anchor.attachments[key] = look to anchor.attachments[key]?.second }
+    DisposableEffect(anchor, key) { onDispose { anchor.attachments.remove(key) } }
+    return onPlaced { anchor.attachments[key] = (anchor.attachments[key]?.first ?: look) to it }
+        .graphicsLayer { alpha = motion.attachmentAlpha(anchor, key) }
+}
+
+/** A bubble's attachment [ordinal] as a send's target: it says where it is laid out to a flight bound for the bubble. */
+internal fun Modifier.sendAttachmentTarget(motion: SendMotion?, id: String, text: String, ordinal: Int): Modifier =
+    if (motion == null) this else onPlaced { motion.placeAttachment(id, text, ordinal, it) }
 
 /** The composition's [SendMotion]; null outside the shell (a screen drawn alone, as the screenshot tests draw them). */
 val LocalSendMotion = staticCompositionLocalOf<SendMotion?> { null }
@@ -295,9 +415,82 @@ private fun FlightHost(motion: SendMotion, content: @Composable () -> Unit) {
             // Always there, reading the flight as it draws: composed only with a flight, it would first draw a frame
             // after the composer had let the text go.
             FlightOverlay(motion)
+            // Composed with the flight, in the frame of the tap: the chips it lifts off are undrawn from that frame's draw.
+            AttachmentFlights(motion)
         }
     }
 }
+
+/**
+ * The attachments on their way: each chip lifted off the composer is drawn where it stood, then travels — growing or
+ * shrinking, re-laid out at every size, a picture re-cropped rather than stretched — to its thumbnail or card in the
+ * bubble, and fades off it from the hand-over on, as the text does. One whose place in the bubble is out of view (a
+ * scrolling row past its end) fades where it stood. Only placement and drawing read the flight's frames.
+ */
+@Composable
+private fun AttachmentFlights(motion: SendMotion) {
+    val flight = motion.flight ?: return
+    if (flight.takeoff.attachments.isEmpty()) return
+    val host = remember { arrayOfNulls<LayoutCoordinates>(1) }
+    Box(Modifier.fillMaxSize().onPlaced { host[0] = it }) {
+        for (attachment in flight.takeoff.attachments) {
+            key(attachment.key) {
+                Box(
+                    Modifier
+                        .layout { measurable, _ ->
+                            val box = flight.boxOf(attachment)
+                            val origin = host[0]?.takeIf { it.isAttached }?.positionInWindow() ?: Offset.Zero
+                            val width = box.width.roundToInt().coerceAtLeast(1)
+                            val height = box.height.roundToInt().coerceAtLeast(1)
+                            val placeable = measurable.measure(Constraints.fixed(width, height))
+                            layout(width, height) { placeable.place((box.left - origin.x).roundToInt(), (box.top - origin.y).roundToInt()) }
+                        }
+                        .testTag(FlyingAttachmentTag),
+                ) {
+                    Box(Modifier.fillMaxSize().graphicsLayer { alpha = flight.alphaOf(attachment) }) { AttachmentFace(attachment.look) }
+                }
+            }
+        }
+    }
+}
+
+/** An attachment as it flies: the bubble's thumbnail for a picture or a recording, its card for any other file. */
+@Composable
+private fun AttachmentFace(look: SendAttachment) {
+    val colors = CursorTheme.colors
+    val type = CursorTheme.typography
+    val shape = CursorTheme.shapes.lg
+    if (look.media) {
+        Box(Modifier.fillMaxSize().cursorSurface(if (look.video) Color.Black else colors.fill, colors.stroke, shape), contentAlignment = Alignment.Center) {
+            if (look.thumbnail != null) {
+                Image(look.thumbnail, contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
+            } else if (!look.video) {
+                Icon(CursorIcons.Image, null, tint = colors.iconTertiary, modifier = Modifier.size(16.dp))
+            }
+            if (look.video) {
+                Box(Modifier.size(28.dp).background(Color.White.copy(alpha = 0.92f), CircleShape), contentAlignment = Alignment.Center) {
+                    Icon(CursorIcons.Play, null, tint = Color(0xFF141414), modifier = Modifier.size(15.dp).padding(start = 1.dp))
+                }
+            }
+        }
+    } else {
+        Row(Modifier.fillMaxSize().cursorSurface(colors.fill, colors.stroke, shape).padding(horizontal = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+            if (look.thumbnail != null) {
+                Image(look.thumbnail, contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.size(28.dp).clip(CursorTheme.shapes.sm))
+            } else {
+                Icon(look.kind.icon(), null, tint = colors.iconSecondary, modifier = Modifier.size(18.dp))
+            }
+            Spacer(Modifier.width(10.dp))
+            Column(Modifier.weight(1f, fill = false)) {
+                Text(look.name ?: "Document", style = type.base, color = colors.textPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text("${look.kind.label} · ${PromptFile.formatSize(look.sizeBytes)}", style = type.small, color = colors.textTertiary, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+        }
+    }
+}
+
+/** The test tag of an attachment's flying copy. */
+const val FlyingAttachmentTag = "flying-attachment"
 
 @Composable
 private fun FlightOverlay(motion: SendMotion) {
@@ -334,15 +527,19 @@ private fun DrawScope.drawFlight(
 ) {
     val takeoff = flight.takeoff
     val surface = flight.surface?.takeIf { it.isAttached }?.windowRect() ?: return
-    val textBox = flight.textBox?.takeIf { it.isAttached }?.windowRect() ?: return
+    val textBox = flight.textBox?.takeIf { it.isAttached }?.windowRect()
+    if (textBox == null && flight.text.isNotEmpty()) return
     val t = flight.progress.value
     val e = SendMotion.Emphasized.transform(t)
-    // Past the hand-over the bubble itself is drawn under the copy, which fades off it.
-    val alpha = if (t < SendMotion.HandOff) 1f else 1f - (t - SendMotion.HandOff) / (1f - SendMotion.HandOff)
+    val alpha = flight.copyAlpha()
     val fade = flight.targetFade
     val padH = BubblePadH.toPx()
     val padV = BubblePadV.toPx()
-    val from = takeoff.viewport.let { Rect(it.left - padH, it.top - padV, it.right + padH, it.top + takeoff.layout.size.height.coerceAtMost(it.height.toInt()) + padV) }
+    // The surface grows from around what was lifted off: the text's lines, and the attachments' chips above them.
+    val lifted = takeoff.attachments.map { it.rect } +
+        listOfNotNull(takeoff.viewport.takeIf { flight.text.isNotEmpty() }?.let { Rect(it.left, it.top, it.right, it.top + takeoff.layout.size.height.coerceAtMost(it.height.toInt())) })
+    val from = lifted.reduce { a, b -> Rect(minOf(a.left, b.left), minOf(a.top, b.top), maxOf(a.right, b.right), maxOf(a.bottom, b.bottom)) }
+        .let { Rect(it.left - padH, it.top - padV, it.right + padH, it.bottom + padV) }
     val box = lerpRect(from, surface, e).translate(shift)
     val radius = CornerRadius(BubbleRadius.toPx())
     val grown = (e / SurfaceGrow).coerceIn(0f, 1f)
@@ -359,6 +556,7 @@ private fun DrawScope.drawFlight(
         style = Stroke(hairline),
         alpha = alpha,
     )
+    if (textBox == null || flight.text.isEmpty()) return
     val origin = lerpOffset(takeoff.origin, textBox.topLeft, e) + shift
     val color = lerp(textColor, textColor.copy(alpha = textColor.alpha * fade), e)
     val source = takeoff.layout
