@@ -20,6 +20,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import java.io.File
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * Device-local copy of what the follow-up composer holds for each chat and has not sent yet: the draft as typed — with
@@ -37,10 +38,26 @@ import java.util.concurrent.ConcurrentHashMap
 class FollowUpStore(context: Context) {
 
     private val root = File(context.applicationContext.filesDir, ROOT)
-    /** One writer per chat at a time: a save that outlives the one scheduled after it must not undo its files. */
-    private val locks = ConcurrentHashMap<String, Mutex>()
 
-    private fun lock(agentId: String): Mutex = locks.getOrPut(agentId) { Mutex() }
+    /**
+     * What every store over the same directory shares — one per process, whichever instance holds it — so that a
+     * clear through one instance still waits for a write through another.
+     */
+    private class Guard {
+        /** One writer per chat directory at a time: a save that outlives the one scheduled after it must not undo its files. */
+        val locks = ConcurrentHashMap<String, Mutex>()
+        /**
+         * Bumped by [clear] and [whileStopped] before they take the locks: a write asked for before then is an account's
+         * that is being signed out, and is dropped rather than recreating its directory behind them.
+         */
+        val generation = AtomicInteger()
+    }
+
+    private val guard = guards.getOrPut(root.absolutePath) { Guard() }
+
+    private fun lock(name: String): Mutex = guard.locks.getOrPut(name) { Mutex() }
+
+    private suspend fun <T> locked(agentId: String, block: suspend () -> T): T = lock(safeName(agentId)).withLock { block() }
 
     @Serializable
     private data class StoredImage(val id: String, val file: String, val mimeType: String)
@@ -103,7 +120,7 @@ class FollowUpStore(context: Context) {
      * What the disk holds for [agentId]; null when nothing is filed. Images whose file has gone are left out. A file
      * that cannot be read is set aside, so the next save starts a new one instead of writing over it.
      */
-    suspend fun read(agentId: String): FollowUpComposerState? = lock(agentId).withLock { withContext(Dispatchers.IO) {
+    suspend fun read(agentId: String): FollowUpComposerState? = locked(agentId) { withContext(Dispatchers.IO) {
         val dir = agentDir(agentId)
         val file = File(dir, STATE_FILE)
         // Absent is nothing filed; there but unreadable — twice, or as JSON — is kept aside rather than written over.
@@ -141,14 +158,22 @@ class FollowUpStore(context: Context) {
         )
     } }
 
-    /** Files [draft] and [queue] for [agentId], or removes the chat's directory when both are empty. */
-    suspend fun write(agentId: String, draft: FollowUpDraft, queue: List<QueuedFollowUp>) = lock(agentId).withLock { withContext(Dispatchers.IO) {
+    /**
+     * Files [draft] and [queue] for [agentId], or removes the chat's directory when both are empty. Nothing is written
+     * when [clear] or [whileStopped] started after this was asked for.
+     */
+    suspend fun write(agentId: String, draft: FollowUpDraft, queue: List<QueuedFollowUp>) {
+        val startedIn = guard.generation.get()
+        locked(agentId) { withContext(Dispatchers.IO) { if (guard.generation.get() == startedIn) writeLocked(agentId, draft, queue) } }
+    }
+
+    private fun writeLocked(agentId: String, draft: FollowUpDraft, queue: List<QueuedFollowUp>) {
         val dir = agentDir(agentId)
         if (draft.isEmpty && queue.isEmpty()) {
-            dir.deleteRecursively()
-            return@withContext
+            DiskSweep.deleteTree(dir)
+            return
         }
-        if (!dir.mkdirs() && !dir.isDirectory) return@withContext
+        if (!dir.mkdirs() && !dir.isDirectory) return
         val referenced = HashSet<String>()
         fun store(image: DraftImage): StoredImage {
             val name = fileNameFor(image)
@@ -193,7 +218,7 @@ class FollowUpStore(context: Context) {
         DraftFiles.write(File(dir, STATE_FILE), CursorJson.encodeToString(Stored.serializer(), stored))
         // The state file's own companions (a write that never finished) are the atomic write's to settle, not refuse.
         dir.listFiles()?.forEach { if (!it.name.startsWith(STATE_FILE) && it.name !in referenced) it.delete() }
-    } }
+    }
 
     /** [file]'s text, read a second time when the first read fails; null when there is no file (any more). */
     private fun readState(file: File): String? {
@@ -210,14 +235,47 @@ class FollowUpStore(context: Context) {
         else -> stored
     }
 
-    suspend fun remove(agentId: String) = lock(agentId).withLock { withContext(Dispatchers.IO) {
-        agentDir(agentId).deleteRecursively()
+    suspend fun remove(agentId: String) = locked(agentId) { withContext(Dispatchers.IO) {
+        DiskSweep.deleteTree(agentDir(agentId))
         Unit
     } }
 
-    suspend fun clear() = withContext(Dispatchers.IO) {
-        root.deleteRecursively()
-        Unit
+    /**
+     * Removes every chat's follow-ups that were on disk when it started, each once the write under way for it is done;
+     * a write asked for before it lands nowhere (see [write]).
+     */
+    suspend fun clear() {
+        stopped { held ->
+            withContext(Dispatchers.IO) {
+                // Only what is locked: a directory made since is a write asked for after this, and is kept.
+                held.forEach { DiskSweep.deleteTree(File(root, it)) }
+                root.delete()
+            }
+        }
+    }
+
+    /**
+     * Runs [block] — the sign-out moving these directories to the account's parking place — holding every chat's
+     * lock, so no write is half-way through any of them, and drops every write asked for before it (see [write]).
+     */
+    suspend fun <T> whileStopped(block: suspend () -> T): T = stopped { block() }
+
+    /** [block] with the lock of every entry the store has or has had, which it is handed the names of. */
+    private suspend fun <T> stopped(block: suspend (held: Set<String>) -> T): T {
+        guard.generation.incrementAndGet()
+        // Sorted, so two of these at once take the locks in the same order; read and write each hold only one.
+        val names = (guard.locks.keys + root.list().orEmpty()).toSortedSet()
+        val held = ArrayList<Mutex>(names.size)
+        try {
+            for (name in names) {
+                val mutex = lock(name)
+                mutex.lock()
+                held += mutex
+            }
+            return block(names)
+        } finally {
+            held.asReversed().forEach { it.unlock() }
+        }
     }
 
     private fun StoredImage.load(dir: File): DraftImage? {
@@ -261,6 +319,9 @@ class FollowUpStore(context: Context) {
         const val LEGACY_SCHEMA = 1
         private const val STATE_FILE = "state.json"
         private const val READ_ATTEMPTS = 2
+
+        /** By the store's directory: every instance over one directory shares its locks and generation. */
+        private val guards = ConcurrentHashMap<String, Guard>()
 
         /** Unsafe characters are replaced and a leading dot prefixed, so no id can escape [root] or hide as a dotfile. */
         private fun safeName(id: String): String {

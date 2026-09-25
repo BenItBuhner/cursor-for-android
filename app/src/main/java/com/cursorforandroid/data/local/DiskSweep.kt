@@ -1,6 +1,7 @@
 package com.cursorforandroid.data.local
 
 import java.io.File
+import java.nio.file.Files
 
 /**
  * Bounds for directories of throwaway copies nothing else evicts. The unit is a file directly in the directory and
@@ -51,6 +52,28 @@ object DiskSweep {
     }
 
     fun byModified(files: Array<File>, newestFirst: Boolean = false): List<File> = byModified(files.asSequence(), newestFirst)
+
+    /**
+     * Deletes [file] and everything under it; answers whether it is gone. [File.deleteRecursively] asserts that a
+     * directory its walk has just seen is still one, which a writer deleting it at that instant breaks (fatal wherever
+     * assertions are on, the JVM tests' included); here an entry that vanishes mid-way counts as deleted. A symbolic
+     * link is removed, never followed.
+     */
+    fun deleteTree(file: File): Boolean {
+        if (!Files.isSymbolicLink(file.toPath())) file.listFiles()?.forEach(::deleteTree)
+        return file.delete() || !file.exists()
+    }
+
+    /** Every file under [dir], at any depth: [File.walkTopDown] without its assertion (see [deleteTree]) for a directory deleted mid-walk. */
+    fun filesUnder(dir: File): List<File> {
+        val found = ArrayList<File>()
+        fun visit(file: File) {
+            val entries = file.listFiles() ?: return
+            for (entry in entries) if (entry.isFile) found += entry else if (!Files.isSymbolicLink(entry.toPath())) visit(entry)
+        }
+        visit(dir)
+        return found
+    }
 
     private class Sized(val file: File, val bytes: Long, val modifiedAt: Long)
 }

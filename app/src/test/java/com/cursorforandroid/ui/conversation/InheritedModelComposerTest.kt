@@ -91,8 +91,12 @@ class InheritedModelComposerTest {
         )
     }
 
+    /** The screens opened here are still saving their drafts: no new save is scheduled, and the clear waits for the one under way. */
     @After
-    fun tearDown() = runBlocking { FollowUpStore(context).clear() }
+    fun tearDown() = runBlocking {
+        graph.followUps.resetAll()
+        FollowUpStore(context).clear()
+    }
 
     private fun open(agentId: String): ConversationViewModel {
         val vm = ConversationViewModel(graph, agentId)

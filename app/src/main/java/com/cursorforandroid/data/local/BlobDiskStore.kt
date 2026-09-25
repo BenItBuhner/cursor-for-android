@@ -112,7 +112,7 @@ class BlobDiskStore(private val cache: JsonDiskCache, private val maxBytes: Long
     private fun counted(): Long {
         val known = bytes.get()
         if (known >= 0) return known
-        val total = dir.walkTopDown().filter { it.isFile }.sumOf { it.length() }
+        val total = DiskSweep.filesUnder(dir).sumOf { it.length() }
         bytes.compareAndSet(-1L, total)
         return bytes.get()
     }
@@ -127,7 +127,7 @@ class BlobDiskStore(private val cache: JsonDiskCache, private val maxBytes: Long
         while (bytes.get() > maxBytes) {
             if (!trimming.compareAndSet(false, true)) return
             try {
-                val files = DiskSweep.byModified(dir.walkTopDown().filter { it.isFile })
+                val files = DiskSweep.byModified(DiskSweep.filesUnder(dir).asSequence())
                 val walked = files.sumOf { it.length() }
                 var total = walked
                 val target = maxBytes * 3 / 4

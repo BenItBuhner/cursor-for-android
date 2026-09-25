@@ -1014,7 +1014,7 @@ class AppGraph(
                 drafts.clear()
                 followUpStore.clear()
             } else {
-                drafts.whileStopped { withContext(Dispatchers.IO) { DraftFiles.park(app.filesDir, owner, draftRoots) } }
+                drafts.whileStopped { followUpStore.whileStopped { withContext(Dispatchers.IO) { DraftFiles.park(app.filesDir, owner, draftRoots) } } }
             }
             caches.clear()
         }

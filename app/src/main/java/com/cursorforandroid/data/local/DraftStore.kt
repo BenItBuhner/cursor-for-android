@@ -16,6 +16,7 @@ import kotlinx.serialization.Serializable
 import java.io.File
 import java.security.MessageDigest
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
@@ -37,14 +38,21 @@ class DraftStore(context: Context) {
     private val root = File(filesDir, ROOT)
     private val legacyDir = File(filesDir, LEGACY_ROOT)
 
-    /** One writer at a time, so [clear] never runs half-way through a save and leaves its files behind. */
-    private val mutex = Mutex()
-    /**
-     * Bumped by [clear] and [whileStopped] before they take the lock. A save that was debounced when the user signed
-     * out is not cancelled by the sign-out — the composer's own serialization is a different lock — so what stops it
-     * recreating the draft is having started under a generation that is gone.
-     */
-    private val generation = AtomicInteger()
+    /** Shared by every store over the same directory, so a clear through one instance still waits for a save through another. */
+    private class Guard {
+        /** One writer at a time, so [clear] never runs half-way through a save and leaves its files behind. */
+        val mutex = Mutex()
+        /**
+         * Bumped by [clear] and [whileStopped] before they take the lock. A save that was debounced when the user signed
+         * out is not cancelled by the sign-out — the composer's own serialization is a different lock — so what stops it
+         * recreating the draft is having started under a generation that is gone.
+         */
+        val generation = AtomicInteger()
+    }
+
+    private val guard = guards.getOrPut(root.absolutePath) { Guard() }
+    private val mutex get() = guard.mutex
+    private val generation get() = guard.generation
 
     /**
      * One draft: what the composer held and the choices around it — the repository and branch, the device, the model
@@ -203,7 +211,7 @@ class DraftStore(context: Context) {
 
     /** Removes draft [id] and everything filed with it. */
     suspend fun delete(id: String) = withContext(Dispatchers.IO) {
-        mutex.withLock { dir(id).deleteRecursively() }
+        mutex.withLock { DiskSweep.deleteTree(dir(id)) }
         Unit
     }
 
@@ -212,8 +220,8 @@ class DraftStore(context: Context) {
         generation.incrementAndGet()
         return withContext(Dispatchers.IO) {
             mutex.withLock {
-                root.deleteRecursively()
-                legacyDir.deleteRecursively()
+                DiskSweep.deleteTree(root)
+                DiskSweep.deleteTree(legacyDir)
                 val cleared = !root.exists() && !legacyDir.exists()
                 if (!cleared) Log.w(TAG, "Draft directories still hold files after being cleared")
                 cleared
@@ -289,7 +297,7 @@ class DraftStore(context: Context) {
             nonce = legacy.nonce,
         )
         val written = runCatching { DraftFiles.write(File(target, RECORD_FILE), CursorJson.encodeToString(Record.serializer(), record)) }
-        if (written.isSuccess) legacyDir.deleteRecursively() else Log.w(TAG, "0.3.61 draft could not be brought in; left where it is", written.exceptionOrNull())
+        if (written.isSuccess) DiskSweep.deleteTree(legacyDir) else Log.w(TAG, "0.3.61 draft could not be brought in; left where it is", written.exceptionOrNull())
     }
 
     private fun digest(text: String): String =
@@ -309,6 +317,9 @@ class DraftStore(context: Context) {
         private const val LEGACY_FILE = "composer.json"
         private const val LEGACY_ID_PREFIX = "legacy-"
         private const val TAG = "DraftStore"
+
+        /** By the store's directory: every instance over one directory shares its lock and generation. */
+        private val guards = ConcurrentHashMap<String, Guard>()
 
         /** Unsafe characters are replaced and a leading dot prefixed, so no id can escape the root or hide as a dotfile. */
         private fun safeName(id: String): String {
