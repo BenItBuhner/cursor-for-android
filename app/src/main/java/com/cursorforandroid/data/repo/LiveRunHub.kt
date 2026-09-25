@@ -1,5 +1,6 @@
 package com.cursorforandroid.data.repo
 
+import com.cursorforandroid.crash.Breadcrumbs
 import com.cursorforandroid.data.api.RunStreamEvent
 import com.cursorforandroid.data.api.dto.RunDto
 import com.cursorforandroid.domain.AgentLifecycle
@@ -308,8 +309,11 @@ class LiveRunHub(
             }
         } catch (t: CancellationException) {
             throw t
-        } catch (_: Throwable) {
+        } catch (t: Throwable) {
             // The record could not be read and the loop gave up on this pass; a later subscriber starts a fresh one.
+            // Memory running out here is survived as well, but the process may die at the next allocation anywhere:
+            // the crash report names this stream (see Breadcrumbs).
+            if (t is OutOfMemoryError) Breadcrumbs.add("out of memory following run ${Breadcrumbs.tail(entry.runId)} of ${Breadcrumbs.tail(entry.agentId)}")
         }
         // Whether the run finished or the loop ended, a later subscriber may start a fresh connection.
         synchronized(entries) { if (entry.job === self) entry.job = null }
@@ -352,6 +356,7 @@ class LiveRunHub(
             throw t
         } catch (t: Throwable) {
             // A streamer that blew up mid-pass is a dropped connection whose position is unknown.
+            if (t is OutOfMemoryError) Breadcrumbs.add("out of memory reading run ${Breadcrumbs.tail(entry.runId)} of ${Breadcrumbs.tail(entry.agentId)}")
             pass.error = pass.error ?: RunStreamEvent.Error("stream_failed", t.message ?: "The run's stream failed.", resumeFrom = null)
         }
         return pass

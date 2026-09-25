@@ -1,5 +1,6 @@
 package com.cursorforandroid.data.api
 
+import com.cursorforandroid.crash.Breadcrumbs
 import com.cursorforandroid.data.api.dto.ApiErrorBodyDto
 import com.cursorforandroid.data.api.dto.RunGitDto
 import com.cursorforandroid.data.api.dto.SseErrorDto
@@ -308,6 +309,7 @@ object SseParser {
                 else -> return Parsed.Ignored // unknown events are intentionally ignored
             }
         }
+        decoded.exceptionOrNull()?.let { if (it is OutOfMemoryError) Breadcrumbs.add("out of memory decoding a ${frame.event} frame of ${frame.data.length shr 10} KB") }
         return decoded.getOrNull()?.let { Parsed.Delivered(it) } ?: Parsed.Undecodable
     }
 
