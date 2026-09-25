@@ -50,6 +50,7 @@ import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 import java.io.ByteArrayOutputStream
 import java.io.File
+import java.nio.ByteBuffer
 
 /**
  * The send, through the whole app on the demo, on a phone and on a wide window with the sidebar beside the pane: a
@@ -76,6 +77,10 @@ class SendAnimationFlowTest {
 
     @Before
     fun setUp() {
+        // Native graphics look java.nio's buffer classes up once, on whichever thread first needs them. Left to the
+        // pictures' decodes off the main thread, that lookup failed on CI and aborted the test JVM
+        // ("JniConstants: Class not found: java/nio/FloatBuffer"), so it is made here, first.
+        Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888).copyPixelsToBuffer(ByteBuffer.allocate(4))
         graph = AppGraph(ApplicationProvider.getApplicationContext())
         runBlocking {
             graph.session.enterDemo()
