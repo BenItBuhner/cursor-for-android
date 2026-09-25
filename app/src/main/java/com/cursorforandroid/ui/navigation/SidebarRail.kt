@@ -19,6 +19,7 @@ import androidx.compose.ui.layout.layout
 import androidx.compose.ui.unit.Dp
 import com.cursorforandroid.ui.components.rememberSheetFocus
 import com.cursorforandroid.ui.components.sheetFocus
+import com.cursorforandroid.ui.panel.panelSlide
 import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
 import kotlin.math.abs
@@ -46,6 +47,10 @@ import kotlin.math.roundToInt
  * read as if it had opened on its own. So does a change with [animate] false, a key's (Ctrl+B, or a panel pinned by
  * Ctrl+Shift+B that takes the rail's room): the rail is where the key put it in the frame the key lands, with a slide
  * in flight dropped where it was. Hidden, the content leaves the composition, as it did when the rail was a plain `if`.
+ *
+ * With [yieldsToPanel], the rail is going for want of room beside a pinned panel, or coming back as the panel gives
+ * the room up, and it slides as the panel does ([panelSlide]): the chat between the two narrows or widens without
+ * turning back, where the drawer's slide, slower off the mark, would have it squeezed and then let out again.
  */
 @Composable
 fun SidebarRail(
@@ -53,6 +58,7 @@ fun SidebarRail(
     modifier: Modifier = Modifier,
     width: () -> Dp = { CursorDimens.sidebarWidth },
     animate: Boolean = true,
+    yieldsToPanel: Boolean = false,
     content: @Composable () -> Unit,
 ) {
     val colors = CursorTheme.colors
@@ -62,11 +68,14 @@ fun SidebarRail(
     val shown = remember { Animatable(target) }
     val onScreen by remember { derivedStateOf { shown.value > 0f } }
     LaunchedEffect(expanded, animate) {
-        if (!animate) {
-            shown.snapTo(target)
-        } else {
-            val millis = (SidebarRailMillis * abs(target - shown.value)).roundToInt().coerceAtLeast(MinRailMillis)
-            shown.animateTo(target, tween(millis, easing = FastOutSlowInEasing))
+        val distance = abs(target - shown.value)
+        when {
+            !animate -> shown.snapTo(target)
+            yieldsToPanel -> shown.animateTo(target, panelSlide(distance))
+            else -> {
+                val millis = (SidebarRailMillis * distance).roundToInt().coerceAtLeast(MinRailMillis)
+                shown.animateTo(target, tween(millis, easing = FastOutSlowInEasing))
+            }
         }
     }
     // Around the slide rather than on it: hidden, the slide composes nothing, so nothing on it would stay to hear a

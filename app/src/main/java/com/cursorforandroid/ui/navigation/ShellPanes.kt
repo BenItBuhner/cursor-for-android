@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.offset
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
@@ -76,6 +77,12 @@ internal class ShellPanes(
             panelWidth = panelWant ?: PinnedPanelDefaultWidth,
         )
     }
+
+    /** The rail is away for want of room beside a pinned panel, not put away by the reader. */
+    val railYields: Boolean get() = railExpanded() && !widths.railShown
+
+    /** [railYields] as the shell's row was last composed: a plain field, which [WidePanes] writes once a composition is applied. */
+    var railYielded: Boolean = false
 
     /** The rail over the chat, where the window has no room for it beside the chat: as wide as it was dragged to. */
     val flyoutWidth: Dp get() = (railWant ?: CursorDimens.sidebarWidth).coerceIn(RailMinWidth, RailMaxWidth)
@@ -167,7 +174,8 @@ internal class ShellPanes(
  * The wide window's row: the rail, while it stands beside the chat, at the width it was dragged to, its edge draggable
  * to resize it; then the detail pane, which a chat shares with its panel wherever the window has room to pin it
  * ([LocalPinnedPanel]). The rail slides as it goes and comes unless [railSlides] is false, where a key or the window
- * moved it.
+ * moved it; going for want of room beside the panel, or coming back as the panel gives the room up, it slides as the
+ * panel does.
  */
 @Composable
 internal fun WidePanes(
@@ -181,6 +189,8 @@ internal fun WidePanes(
     val edges = rememberBackGestureEdges()
     // The rail's edge as it is drawn, sliding in and out included, for the resize strip to ride.
     var railEdge by remember { mutableIntStateOf(0) }
+    val railYields by remember(panes) { derivedStateOf { panes.railYields } }
+    SideEffect { panes.railYielded = railYields }
     Box(
         Modifier
             .fillMaxSize()
@@ -200,6 +210,7 @@ internal fun WidePanes(
                 expanded = railShown,
                 width = { panes.railColumn() },
                 animate = railSlides,
+                yieldsToPanel = railYields || panes.railYielded,
                 modifier = Modifier.onSizeChanged { railEdge = it.width },
                 content = rail,
             )

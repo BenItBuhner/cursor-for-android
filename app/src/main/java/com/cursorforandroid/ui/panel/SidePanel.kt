@@ -4,6 +4,7 @@ import androidx.activity.compose.PredictiveBackHandler
 import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.animation.core.Easing
 import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.TweenSpec
 import androidx.compose.animation.core.animate
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.spring
@@ -47,6 +48,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.snapshots.Snapshot
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -431,10 +433,13 @@ class SidePanelState(initialValue: SidePanelValue) {
             // felt on its commit.
             val felt = isPinned
             if (felt) landing.released(wasOpen = wasOpen, open = value == SidePanelValue.Open)
-            val millis = (SlideMillis * distance).roundToInt().coerceIn(MinSlideMillis, SlideMillis)
             val jump = jumps
             runAnimation {
-                animate(fraction, target, animationSpec = tween(millis, easing = SlideEasing)) { v, _ ->
+                // Pinned, it sets off a frame on: a rail making way for it, or coming back as it goes, hears of it as the
+                // shell is next composed and starts from the frame after, so the two keep step and the chat between them
+                // never turns back.
+                if (isPinned) withFrameNanos { }
+                animate(fraction, target, animationSpec = panelSlide(distance)) { v, _ ->
                     if (jumps != jump) return@animate
                     fraction = v
                     if (felt) landing.at(v)?.let { haptics?.perform(it) }
@@ -699,5 +704,13 @@ private val ExpandGain = 120.dp
 private const val SlideMillis = 300
 private const val MinSlideMillis = 100
 private val SlideEasing: Easing = CubicBezierEasing(0.2f, 0f, 0f, 1f)
+
+/**
+ * The panel's slide over [distance] of its way, 0 to 1 — and the wide window's rail's as it makes way for a panel
+ * pinned open or comes back as it shuts, so the chat between the two narrows or widens without turning back.
+ */
+internal fun <T> panelSlide(distance: Float): TweenSpec<T> =
+    tween((SlideMillis * distance).roundToInt().coerceIn(MinSlideMillis, SlideMillis), easing = SlideEasing)
+
 private val FlingThreshold = 400.dp
 private val FlingSpec = spring<Float>(dampingRatio = Spring.DampingRatioNoBouncy, stiffness = 1000f, visibilityThreshold = 0.0005f)

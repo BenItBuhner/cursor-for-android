@@ -47,6 +47,7 @@ import com.cursorforandroid.ui.shortcuts.LocalKeyboardShortcuts
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.ui.theme.ThemeMode
 import com.google.common.truth.Truth.assertThat
+import kotlin.math.abs
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import org.junit.Rule
@@ -119,6 +120,18 @@ class PinnedPanelFlowTest {
 
     /** The chat's column, as its transcript spans it. */
     private fun chatBounds() = bounds(hasTestTag("transcript"))
+
+    /** The chat's column at each of the next [frames] frames: longer than a slide takes, so the last is where it settles. */
+    private fun chatFrameByFrame(frames: Int = 30): List<Rect> = List(frames) {
+        compose.mainClock.advanceTimeByFrame()
+        chatBounds()
+    }
+
+    private fun moved(bounds: Rect, from: Rect) = abs(bounds.left - from.left) > 0.5f || abs(bounds.right - from.right) > 0.5f
+
+    /** The most [widths] go back the other way, in pixels, while [narrowing] or widening. */
+    private fun turnBack(widths: List<Float>, narrowing: Boolean): Float =
+        widths.zipWithNext { a, b -> if (narrowing) b - a else a - b }.max().coerceAtLeast(0f)
 
     /** How wide the rail's chat list is laid out, in pixels (a dp here), past the clip its slide draws it through. */
     private fun railListWidth(): Int = compose.onAllNodes(hasScrollToNodeAction()).onFirst().fetchSemanticsNode().size.width
@@ -474,6 +487,38 @@ class PinnedPanelFlowTest {
         compose.waitUntil(10_000) { !railShown() && described(OPEN_SIDEBAR) }
         compose.waitForIdle()
         assertThat(chatBounds().left).isWithin(0.5f).of(0f)
+    }
+
+    @Test
+    @Config(qualifiers = "w840dp-h700dp-night-mdpi")
+    fun `on a foldable the rail sets off with the pinned panel that takes its room and comes back with it, so the chat between them never turns back`() {
+        showShell()
+        openChat(CLI)
+        compose.waitForIdle()
+        compose.mainClock.autoAdvance = false
+
+        // Set off in the same frame, on the same curve: a frame behind, or on the drawer's slower start, the rail would have
+        // the chat squeezed past where it ends up and let out again. Each edge is rounded to the pixel on its own, so the
+        // chat may turn back by the one pixel the two round apart.
+        val shut = chatBounds()
+        compose.onNodeWithContentDescription(OPEN_PANEL).performClick()
+        val opening = chatFrameByFrame()
+        val setOff = opening.first { moved(it, from = shut) }
+        assertThat(setOff.left).isLessThan(shut.left - 0.5f)
+        assertThat(setOff.right).isLessThan(shut.right - 0.5f)
+        assertThat(turnBack(opening.map { it.width }, narrowing = true)).isAtMost(1f)
+        assertThat(opening.last().left).isWithin(0.5f).of(0f)
+        assertThat(opening.last().right).isWithin(0.5f).of(440f)
+
+        val open = opening.last()
+        compose.onNodeWithContentDescription(HIDE_PANEL).performClick()
+        val closing = chatFrameByFrame()
+        val comingBack = closing.first { moved(it, from = open) }
+        assertThat(comingBack.left).isGreaterThan(open.left + 0.5f)
+        assertThat(comingBack.right).isGreaterThan(open.right + 0.5f)
+        assertThat(turnBack(closing.map { it.width }, narrowing = false)).isAtMost(1f)
+        assertThat(closing.last().left).isWithin(0.5f).of(278f)
+        assertThat(closing.last().right).isWithin(0.5f).of(840f)
     }
 
     @Test
