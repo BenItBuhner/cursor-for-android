@@ -80,11 +80,9 @@ fun CursorRoot(
                 }
             }
         }
-        val extended by graph.extendedMode.enabled.collectAsStateWithLifecycle(initialValue = false)
         // Over whatever screen the app opened on, under the status bar: the one place it is seen whichever that is.
         CrashReportCard(
             graph = graph,
-            canSend = extended && (session as? SessionState.SignedIn)?.isDemo == false,
             modifier = Modifier.align(Alignment.TopCenter).windowInsetsPadding(WindowInsets.safeDrawing).padding(horizontal = 12.dp, vertical = 8.dp),
         )
     }
