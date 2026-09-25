@@ -60,7 +60,10 @@ import com.cursorforandroid.domain.Repository
 import com.cursorforandroid.ui.agents.AgentListUiState
 import com.cursorforandroid.ui.agents.AgentRowActions
 import com.cursorforandroid.ui.agents.ChatRowMenu
+import com.cursorforandroid.ui.components.ComposerAnchor
 import com.cursorforandroid.ui.components.ComposerBox
+import com.cursorforandroid.ui.components.LocalSendMotion
+import com.cursorforandroid.ui.components.SendMotion
 import com.cursorforandroid.ui.components.CursorCard
 import com.cursorforandroid.ui.components.CursorHeader
 import com.cursorforandroid.ui.components.FadingLazyColumn
@@ -192,6 +195,8 @@ fun HomeScreen(
         val centring = remember { PageCentring() }
         LaunchedEffect(recentState) { centring.follow(recentState) }
         var composerFocusRequests by remember { mutableIntStateOf(0) }
+        val sendMotion = LocalSendMotion.current
+        val composerAnchor = remember { ComposerAnchor() }
         LaunchedEffect(focusComposer) {
             if (focusComposer) {
                 recentState.scrollToItem(0)
@@ -215,7 +220,16 @@ fun HomeScreen(
                         value = state.prompt,
                         onValueChange = viewModel::setPrompt,
                         placeholder = NewChatHomeCopy.PLACEHOLDER,
-                        onSend = { viewModel.launch(onOpen = onLaunchOpen) },
+                        // The prompt is lifted off here and lands in the new chat's first bubble (see SendMotion).
+                        onSend = {
+                            val flight = sendMotion?.depart(composerAnchor.takeoff(), state.prompt, holdMillis = SendMotion.LaunchHoldMillis)
+                            val went = viewModel.launch(onOpen = { agentId ->
+                                sendMotion?.bind(flight, agentId)
+                                onLaunchOpen(agentId)
+                            })
+                            if (!went) sendMotion?.cancel(flight)
+                        },
+                        anchor = composerAnchor,
                         canSend = state.canLaunch,
                         isSending = state.isLaunching,
                         minLines = 3,

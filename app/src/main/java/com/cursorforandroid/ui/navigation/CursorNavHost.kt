@@ -31,6 +31,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.GraphicsLayerScope
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -62,7 +63,8 @@ import kotlinx.coroutines.launch
  * share one vocabulary. Because the gesture's [BackEventCompat] is read here, the direction follows the edge the
  * swipe came from and the card trails the finger vertically — the two things a transition inside a navigation
  * library cannot know. A change made [NavStack.instantly] (the keyboard's) has no transition: its top is on screen,
- * alone and at rest, from the first frame.
+ * alone and at rest, from the first frame. A push made [NavStack.gliding] fades its screen in where it stands as the
+ * screen it covers fades out, neither moving.
  *
  * Each entry gets its own `rememberSaveable` scope and [ViewModelStoreOwner]; both are released once the entry has
  * left the stack and finished animating out.
@@ -129,8 +131,10 @@ fun CursorNavHost(
         // way: one naming an entry the stack has since moved past is stale.
         if (instant) scene.jumpTo(desired)
         stack.instantTop = null
+        val glide = stack.glideTop == desired.id && !instant
+        stack.glideTop = null
         try {
-            if (instant) scene.rest() else scene.moveTo(desired, stack)
+            if (instant) scene.rest() else scene.moveTo(desired, stack, glide)
         } catch (_: CancellationException) {
             // Superseded: a gesture took over the animation, or the stack changed again.
         }
@@ -211,11 +215,7 @@ fun CursorNavHost(
         }
         for (entry in panes) {
             key(entry.id) {
-                val paneModifier = when {
-                    instant -> Modifier
-                    entry.id == scene.top.id -> Modifier.topPane(scene, cornerPx, colors.strokeStrong)
-                    else -> Modifier.underPane(scene)
-                }
+                val paneModifier = if (instant) Modifier else Modifier.pane(scene, entry.id, cornerPx, colors.strokeStrong)
                 EntryHost(entry, stack, stores, stateHolder, paneModifier) { content(entry.screen) }
             }
         }
@@ -293,6 +293,9 @@ private class NavScene(initialTop: NavEntry) {
 
     var edge by mutableIntStateOf(BackEventCompat.EDGE_LEFT)
 
+    /** The push under way fades its screen in where it stands instead of sliding it in ([NavStack.gliding]). */
+    var crossfade by mutableStateOf(false)
+
     /** Which way the top pane leaves: +1 (right) for a left-edge gesture and every programmatic pop, -1 for a right-edge one. */
     val direction: Float get() = if (edge == BackEventCompat.EDGE_RIGHT) -1f else 1f
 
@@ -315,6 +318,7 @@ private class NavScene(initialTop: NavEntry) {
      * toward the same pair hands over its progress (and is interrupted, so it cannot finish underneath the finger).
      */
     suspend fun beginGesture(revealed: NavEntry) {
+        crossfade = false
         if (under?.id != revealed.id) {
             under = revealed
             progress.snapTo(0f)
@@ -344,6 +348,7 @@ private class NavScene(initialTop: NavEntry) {
     fun jumpTo(desired: NavEntry) {
         top = desired
         under = null
+        crossfade = false
     }
 
     suspend fun rest() {
@@ -351,17 +356,21 @@ private class NavScene(initialTop: NavEntry) {
         dragY.snapTo(0f)
     }
 
-    /** Brings the scene in line with the stack's new [desired] top. */
-    suspend fun moveTo(desired: NavEntry, stack: NavStack) {
+    /** Brings the scene in line with the stack's new [desired] top; a push fades in where it stands with [glide]. */
+    suspend fun moveTo(desired: NavEntry, stack: NavStack, glide: Boolean = false) {
         if (gestureActive) return
         when {
             under == null && desired.id == top.id -> return
             desired.id == top.id -> settle(reveal = false)
-            desired.id == under?.id -> settle(reveal = true)
+            desired.id == under?.id -> {
+                crossfade = false
+                settle(reveal = true)
+            }
             stack.contains(top) -> {
                 // Push: the resident screen drops underneath and the new one arrives, playing the pop backwards.
                 under = top
                 top = desired
+                crossfade = glide
                 edge = BackEventCompat.EDGE_LEFT
                 progress.snapTo(1f)
                 dragY.snapTo(0f)
@@ -370,6 +379,7 @@ private class NavScene(initialTop: NavEntry) {
             else -> {
                 // Pop to something that was not directly beneath (pop to root, or a second back mid-animation):
                 // whatever is leaving keeps leaving, and the new destination is what it uncovers.
+                crossfade = false
                 under = desired
                 settle(reveal = true)
             }
@@ -389,33 +399,24 @@ private class NavScene(initialTop: NavEntry) {
         }
         if (reveal) under?.let { top = it }
         under = null
+        crossfade = false
         progress.snapTo(0f)
         dragY.snapTo(0f)
     }
 }
 
 /**
- * The pane on top. Rounds its corners within the first quarter of the gesture and slides out of view with the swipe
- * (right for a left-edge gesture and for every programmatic pop, left for a right-edge gesture), trailing the finger
- * vertically, until at full progress it is entirely off screen. It keeps its size and stays opaque the whole way: the
- * screen being left is simply carried away.
+ * One pane of the scene, drawn as [NavScene.top] or as the pane underneath by whichever it is when drawn rather than
+ * when composed: the scene changes in an effect, which can run before the recomposition that follows it, and a pane
+ * still composed as the top would be drawn as one at the pushed screen's progress — gone for a frame.
  */
-private fun Modifier.topPane(scene: NavScene, cornerPx: Float, outline: Color): Modifier = this
-    .graphicsLayer {
-        val p = if (scene.under == null) 0f else scene.progress.value
-        if (p <= 0f) {
-            translationX = 0f; translationY = 0f; clip = false
-            return@graphicsLayer
-        }
-        translationX = scene.direction * p * size.width
-        translationY = scene.dragY.value
-        shape = RoundedCornerShape(cornerPx * (p / CornerRampEnd).coerceAtMost(1f))
-        clip = true
-    }
+private fun Modifier.pane(scene: NavScene, id: String, cornerPx: Float, outline: Color): Modifier = this
+    .graphicsLayer { if (scene.top.id == id) topLayer(scene, cornerPx) else underLayer(scene) }
     .drawWithContent {
         drawContent()
+        if (scene.top.id != id) return@drawWithContent
         val p = if (scene.under == null) 0f else scene.progress.value
-        if (p > 0f) {
+        if (p > 0f && !scene.crossfade) {
             // A hairline keeps the card's edge legible against a same-coloured screen beneath.
             val radius = cornerPx * (p / CornerRampEnd).coerceAtMost(1f)
             val half = 0.5f
@@ -430,15 +431,42 @@ private fun Modifier.topPane(scene: NavScene, cornerPx: Float, outline: Color): 
     }
 
 /**
+ * The pane on top. Rounds its corners within the first quarter of the gesture and slides out of view with the swipe
+ * (right for a left-edge gesture and for every programmatic pop, left for a right-edge gesture), trailing the finger
+ * vertically, until at full progress it is entirely off screen. It keeps its size and stays opaque the whole way: the
+ * screen being left is simply carried away.
+ */
+private fun GraphicsLayerScope.topLayer(scene: NavScene, cornerPx: Float) {
+    val p = if (scene.under == null) 0f else scene.progress.value
+    if (p <= 0f || scene.crossfade) {
+        translationX = 0f; translationY = 0f; clip = false
+        alpha = 1f - p
+        return
+    }
+    alpha = 1f
+    translationX = scene.direction * p * size.width
+    translationY = scene.dragY.value
+    shape = RoundedCornerShape(cornerPx * (p / CornerRampEnd).coerceAtMost(1f))
+    clip = true
+}
+
+/**
  * The pane underneath: fades in over the whole transition and drifts into place from a short way off in the
  * direction the top pane is leaving, so the two move as one sheet. Full size throughout, and nothing drawn over it.
  */
-private fun Modifier.underPane(scene: NavScene): Modifier = this
-    .graphicsLayer {
-        val p = scene.progress.value
-        alpha = revealFraction(p)
-        translationX = -scene.direction * (1f - p) * size.width * UnderParallax
+private fun GraphicsLayerScope.underLayer(scene: NavScene) {
+    translationY = 0f; clip = false
+    if (scene.crossfade) {
+        // What a gliding push covers stays where it is and is gone early in the fade, so the two screens are
+        // never both legible, one through the other.
+        alpha = ((scene.progress.value - CoverFadeEnd) / (1f - CoverFadeEnd)).coerceIn(0f, 1f)
+        translationX = 0f
+        return
     }
+    val p = scene.progress.value
+    alpha = revealFraction(p)
+    translationX = -scene.direction * (1f - p) * size.width * UnderParallax
+}
 
 /** A smooth ramp from 0 to 1 over the whole transition: slow to start, so what is revealed comes in gradually. */
 private fun revealFraction(p: Float): Float {
@@ -447,6 +475,8 @@ private fun revealFraction(p: Float): Float {
 }
 
 private const val UnderParallax = 0.25f
+/** Where in a gliding push (progress running 1 to 0) the screen it covers has faded out entirely. */
+private const val CoverFadeEnd = 0.5f
 private const val CornerRampEnd = 0.25f
 private const val DragFollow = 0.08f
 private val CardCorner = 24.dp

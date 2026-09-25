@@ -78,6 +78,7 @@ import androidx.compose.ui.graphics.drawscope.clipPath
 import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.onPlaced
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
@@ -205,9 +206,12 @@ fun ComposerBox(
      * always was. Given, a microphone joins it — see [composerButtons] — and the words go in at the caret, unsent.
      */
     voice: VoiceInput? = null,
+    /** Where the text stands, for a send that lifts it off into its bubble (see [SendMotion]); null for a composer that never does. */
+    anchor: ComposerAnchor? = null,
 ) {
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
+    val sendMotion = LocalSendMotion.current
     val shape = remember { RoundedCornerShape(CursorDimens.composerRadius) }
     // The owner's text split into what the field shows and the Multitask pill; the field never holds the token.
     val presented = remember(value) { ModePills.present(value) }
@@ -375,6 +379,7 @@ fun ComposerBox(
             // Unclipped: beside the bare mic, the main button's 40dp touch area runs past the box's rounded edge
             // (see FooterSpacing), and a clip would drop those touches. What scrolls inside clips itself.
             .cursorSurface(colors.elevated, border, shape, clip = false)
+            .then(if (anchor != null) Modifier.onPlaced { anchor.surface = it } else Modifier)
             .padding(start = pad, end = pad, top = pad, bottom = pad - 2.dp),
     ) {
         // Everything attached, in one row that scrolls sideways past the composer's width; nothing at all when nothing is.
@@ -401,6 +406,12 @@ fun ComposerBox(
         Box(Modifier.stylusWriting().keepsFocusWhenMoved().padding(CursorDimens.composerTextInset)) {
             // The field's layout, handed over as it is measured and read back as the command highlight draws.
             val textLayout = remember { TextLayoutHandle() }
+            if (anchor != null) {
+                SideEffect {
+                    anchor.layout = { textLayout.get?.invoke() }
+                    anchor.scroll = { textScroll.value }
+                }
+            }
             // What the key handlers below make of a physical Enter, for the newline an IME may type in its place.
             val physicalEnter: (() -> Unit)? = when {
                 slashOpen -> { { slash.highlightedItem?.let { complete(it) } } }
@@ -445,8 +456,15 @@ fun ComposerBox(
                         Box {
                             // The field's own text, not the owner's: a placeholder that follows a lagging owner blinks
                             // back over the first character typed.
-                            if (field.text.isEmpty()) Text(placeholder, style = type.input, color = colors.textTertiary, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                            Box(Modifier.slashCommandHighlight(layout = { textLayout.get?.invoke() }, scroll = textScroll, color = commandTint)) {
+                            if (field.text.isEmpty()) {
+                                Text(placeholder, style = type.input, color = colors.textTertiary, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.sendPlaceholder(sendMotion, anchor))
+                            }
+                            Box(
+                                Modifier
+                                    .then(if (anchor != null) Modifier.onPlaced { anchor.field = it } else Modifier)
+                                    .sendSource(sendMotion, anchor)
+                                    .slashCommandHighlight(layout = { textLayout.get?.invoke() }, scroll = textScroll, color = commandTint),
+                            ) {
                                 inner()
                             }
                         }
