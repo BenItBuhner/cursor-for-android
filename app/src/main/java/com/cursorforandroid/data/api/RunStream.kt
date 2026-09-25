@@ -352,7 +352,7 @@ class SseRunStreamer(
                 }
             }
         }
-    }.flowOn(Dispatchers.IO)
+    }.flowOn(STREAM_IO)
 
     private sealed interface Outcome {
         /** The run's `result` (and `done`) came through. */
@@ -470,5 +470,13 @@ class SseRunStreamer(
 
         /** A `Retry-After` beyond this is honoured only this far; the caller decides what to do about the rest. */
         const val MAX_RETRY_AFTER_MS = 60_000L
+
+        /**
+         * A stream holds its thread for as long as the run goes on (`execute()` blocks on the socket). Streams get
+         * threads of their own, beside the shared IO pool's 64: background live sync holds one per running chat, and
+         * thirty of them in the shared pool left the rest of the app's reads queueing for a thread.
+         */
+        @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+        val STREAM_IO = Dispatchers.IO.limitedParallelism(64)
     }
 }

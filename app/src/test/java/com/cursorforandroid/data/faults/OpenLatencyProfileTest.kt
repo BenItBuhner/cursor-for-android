@@ -257,6 +257,88 @@ class OpenLatencyProfileTest {
         assertThat(rig.hub.current(worker, runId)!!.items.count { it.toString().contains("Checked module 5 (r).") }).isEqualTo(1)
     }
 
+    /** What a chat held by live sync (see `LiveSync`) costs the reader to open: the delta is read before they ask. */
+    private suspend fun FaultRig.openHeld(id: String, label: String, newest: (ConversationState) -> Boolean) {
+        val from = server.seen.size
+        val t0 = server.nowMillis()
+        val started = System.nanoTime()
+        conversations.attach(id)
+        awaitUntil(60_000) { newest(state(id)) }
+        val newestMs = (System.nanoTime() - started) / 1_000_000
+        // What opening it still asks for, once the screen has settled: none of it stands between the reader and the turn.
+        delay(1_500)
+        report(label, from, t0, newestMs)
+        assertThat(newestMs).isLessThan(250L)
+    }
+
+    @Test
+    fun `live sync - reopen after two minutes away, a turn taken elsewhere, the chat held`() = runBlocking<Unit> {
+        val rig = rig(folder.newFolder("disk"))
+        rig.agents.refresh()
+        rig.conversations.attach(worker)
+        rig.settle(worker)
+        rig.conversations.detach(worker)
+        rig.conversations.hold(worker)
+        delay(1_000)
+        rig.now += 120_000L
+        val prompt = startElsewhere(worker)
+        // The sidebar's refresh is the held chat's word; the read it sets off is behind the reader's back.
+        rig.agents.refresh()
+        rig.awaitUntil(60_000) { rig.state(worker).shows(prompt) }
+
+        rig.openHeld(worker, "held-reopen") { it.shows(prompt) }
+    }
+
+    @Test
+    fun `live sync - reopen the Project coordinator after five reports, held`() = runBlocking<Unit> {
+        val rig = rig(folder.newFolder("disk"))
+        rig.agents.refresh()
+        rig.conversations.attach(coordinator)
+        rig.settle(coordinator)
+        rig.conversations.detach(coordinator)
+        rig.conversations.hold(coordinator)
+        delay(1_000)
+        rig.now += 120_000L
+        var last = ""
+        repeat(5) {
+            last = startElsewhere(coordinator)
+            rig.agents.refresh()
+            server.endTurn(coordinator, durationMs = 5_000L)
+        }
+        rig.agents.refresh()
+        rig.awaitUntil(60_000) { rig.state(coordinator).shows(last) }
+
+        rig.openHeld(coordinator, "held-project-reopen") { it.shows(last) }
+    }
+
+    @Test
+    fun `live sync - after the process died, a held chat's turn was already on the disk`() = runBlocking<Unit> {
+        val disk = folder.newFolder("disk")
+        val prompt = rig(disk).let { first ->
+            first.agents.refresh()
+            first.conversations.hold(worker)
+            first.conversations.settled(worker)
+            first.now += 120_000L
+            val prompt = startElsewhere(worker)
+            first.agents.refresh()
+            first.awaitUntil(60_000) { first.state(worker).shows(prompt) }
+            delay(1_500)
+            prompt
+        }
+        rigs.forEach { it.close() }
+        rigs.clear()
+
+        val second = rig(disk)
+        second.now += 180_000L
+        val started = System.nanoTime()
+        second.conversations.attach(worker)
+        second.awaitUntil(60_000) { second.state(worker).items.isNotEmpty() }
+        val paintMs = (System.nanoTime() - started) / 1_000_000
+        val firstPaint = second.state(worker)
+        println("PROFILE held-cold: cached paint after $paintMs ms, the turn taken elsewhere in it: ${firstPaint.shows(prompt)}")
+        assertThat(firstPaint.shows(prompt)).isTrue()
+    }
+
     private companion object {
         const val FILLERS = 28
     }

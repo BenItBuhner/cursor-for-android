@@ -94,6 +94,7 @@ import com.cursorforandroid.data.repo.CapabilityGatedPullRequestSource
 import com.cursorforandroid.data.repo.CatalogRepository
 import com.cursorforandroid.data.repo.ChatLauncher
 import com.cursorforandroid.data.repo.ConversationRepository
+import com.cursorforandroid.data.repo.LiveSync
 import com.cursorforandroid.data.repo.CursorBackend
 import com.cursorforandroid.data.repo.CursorPullRequestSource
 import com.cursorforandroid.data.repo.ExtendedMode
@@ -702,7 +703,10 @@ class AppGraph(
             cache = caches.conversations,
             traceCache = caches.traces,
             isForeground = { runCatching { ProcessLifecycleOwner.get().lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED) }.getOrDefault(true) },
-            onOpened = { agentId -> LiveNotifications.cancelFinished(app, agentId) },
+            onOpened = { agentId ->
+                LiveNotifications.cancelFinished(app, agentId)
+                if (lazyLiveSync.isInitialized()) lazyLiveSync.value.opened(agentId)
+            },
             record = accountTranscript,
             capabilities = capabilities,
             images = GeneratedImageStore { agentId, callId, bytes, mimeType -> generatedMedia.save(agentId, callId, bytes, mimeType) },
@@ -723,6 +727,21 @@ class AppGraph(
         override val readsTurns: Boolean get() = true
     }
     val conversations: ConversationRepository get() = lazyConversations.value
+
+    /** Background live sync (Settings › Experimental › Keep chats live): started by [LiveSyncBinding]. */
+    private val lazyLiveSync = lazy {
+        LiveSync(
+            target = object : LiveSync.Target {
+                override fun hold(agentId: String) = conversations.hold(agentId)
+                override fun release(agentId: String) = conversations.release(agentId)
+                override suspend fun settled(agentId: String) = conversations.settled(agentId)
+            },
+            scope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
+        )
+    }
+    val liveSync: LiveSync get() = lazyLiveSync.value
+    /** Whether background live sync runs: the switch, outside the demo (which has no account to stream from). */
+    val liveSyncEnabled: Flow<Boolean> get() = combine(prefs.liveSync, prefs.demoMode) { on, demo -> on && !demo }
 
     /** The search palette's reading of the transcripts kept on this device (Ctrl+F, see [TranscriptSearchIndex]). */
     private val lazyTranscriptSearch = lazy { TranscriptSearchIndex(caches.conversations, caches.traces) }

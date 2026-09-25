@@ -832,7 +832,14 @@ class ConversationRepository(
         /** The request creating this chat, from the moment its prompt is shown until the server has answered (see [launch]). */
         var launch: Deferred<Result<Launched>>? = null
         @Volatile var launching = false
+        /** Screens attached, plus one while [held]: what keeps the chat loaded and its live turn followed. */
         var attached = 0
+        /** Screens attached: what the watch, the trace replays and the older pages are for (see [hold]). */
+        var screens = 0
+        /** Kept current with no screen on it (see [hold]). */
+        var held = false
+        /** The list row's `updatedAt` a held chat last answered (see [syncHeld]). */
+        var heldRowAt = 0L
         /**
          * Nothing can see the chat although a screen is still attached (see [pause]). A load that was already in
          * flight when this went up finishes — its inputs are worth having — but must not open a stream or replay a
@@ -1686,6 +1693,14 @@ class ConversationRepository(
                 .distinctUntilChanged()
                 .collect { schedulePrefetch(it) }
         }
+        // The held chats at rest watch nothing of their own: the list's refresh is their word (see [hold]).
+        scope.launch {
+            agents.state
+                .filter { it.hasLoaded && !it.isRefreshing }
+                .map { it.agents }
+                .distinctUntilChanged()
+                .collect { syncHeld(it) }
+        }
         // A run that finishes while no screen is streaming it — the notification monitor holds the stream, or the
         // screen left mid-run — still reaches the transcript and the disk, so the chat is whole when it is opened.
         scope.launch {
@@ -1719,7 +1734,10 @@ class ConversationRepository(
     val lastOpenedAgentId: StateFlow<String?> = lastOpened.asStateFlow()
 
     /** True while at least one conversation screen shows this agent. */
-    fun isAttached(agentId: String): Boolean = synchronized(entries) { (entries[agentId]?.attached ?: 0) > 0 }
+    fun isAttached(agentId: String): Boolean = synchronized(entries) { (entries[agentId]?.screens ?: 0) > 0 }
+
+    /** Whether [hold] keeps the chat current in the background. */
+    fun isHeld(agentId: String): Boolean = synchronized(entries) { entries[agentId]?.held == true }
 
     /**
      * Why the chat, or its newest run, reads as failed — for the diagnostics' `status:` line. The newest run's
@@ -1939,35 +1957,109 @@ class ConversationRepository(
         val e = entry(agentId)
         lastOpened.value = agentId
         val firstScreen = synchronized(e) {
-            if (e.attached == 0) TranscriptPerf.opened(agentId)
+            if (e.screens == 0) TranscriptPerf.opened(agentId)
+            e.screens++
             e.attached++
             // A screen attaching can see the chat, whatever the last one that left had done.
             e.paused = false
             e.trimJob?.cancel()
             e.trimJob = null
             if (e.attached == 1 && !e.launching) {
-                e.loadJob?.cancel()
+                startLoad(e, agentId, read = true, reread = false)
+            } else if (e.screens == 1 && !e.launching) {
+                // Held until now (see [hold]): the chat is as current as the account has said, and the screen adds
+                // what a hold leaves out — the finished turns' traces, the blob work — once the hold's load is done.
+                val holding = e.loadJob
                 e.loadJob = e.scope.launch {
+                    holding?.join()
                     agents.agent(agentId)?.let { prefs.markRead(agentId, it.listedAtMillis) }
-                    // A chat read from the network moments ago is shown as it stands — the transcript in memory, whole —
-                    // and only its live run is picked up again: nothing is fetched for a reader who stepped out and
-                    // straight back in. Any longer away, and the chat is read again for what changed since (see [load]).
-                    // A chat read under the other transcript engine (see [TranscriptEngine]) is read again whatever the
-                    // clock says: the engine takes effect on the next open, and this is it.
-                    val recordAllowed = record != null && !session.isDemo && capabilities().accountTranscript
-                    // Under the Beta engine, a window the account's word has confirmed current since (a live stream
-                    // held with nothing new, a sync behind the screen) is as fresh as one read a moment ago.
-                    val fresh = synchronized(e) {
-                        val now = AppClock.now()
-                        e.fetched && e.hasInputs && e.recordAllowedAtLoad == recordAllowed && (now - e.fetchedAt < REOPEN_FRESH_MS || (recordAllowed && e.isCurrent(now)))
-                    }
-                    if (fresh) reopen(e, agentId) else load(e, agentId)
+                    reopen(e, agentId)
                 }
             }
-            e.attached == 1
+            e.screens == 1
         }
         if (firstScreen) onOpened(agentId)
         watchWhileOpen(e)
+    }
+
+    private fun startLoad(e: Entry, agentId: String, read: Boolean, reread: Boolean) {
+        e.loadJob?.cancel()
+        e.loadJob = e.scope.launch {
+            if (read) agents.agent(agentId)?.let { prefs.markRead(agentId, it.listedAtMillis) }
+            // A chat read from the network moments ago is shown as it stands — the transcript in memory, whole —
+            // and only its live run is picked up again: nothing is fetched for a reader who stepped out and
+            // straight back in. Any longer away, and the chat is read again for what changed since (see [load]).
+            // A chat read under the other transcript engine (see [TranscriptEngine]) is read again whatever the
+            // clock says: the engine takes effect on the next open, and this is it.
+            val recordAllowed = record != null && !session.isDemo && capabilities().accountTranscript
+            // Under the Beta engine, a window the account's word has confirmed current since (a live stream
+            // held with nothing new, a sync behind the screen) is as fresh as one read a moment ago.
+            val fresh = synchronized(e) {
+                val now = AppClock.now()
+                !reread && e.fetched && e.hasInputs && e.recordAllowedAtLoad == recordAllowed && (now - e.fetchedAt < REOPEN_FRESH_MS || (recordAllowed && e.isCurrent(now)))
+            }
+            if (fresh) reopen(e, agentId) else load(e, agentId, force = reread)
+        }
+    }
+
+    /**
+     * The list's refresh, for the held chats nobody is looking at: one whose row moved while no stream carries it
+     * is read again — at once, and in full, when the row names a run the chat does not know (a turn started
+     * elsewhere, a worker's report reaching its coordinator); a row that only moved is read as a revalidation is.
+     */
+    private fun syncHeld(list: List<Agent>) {
+        val held = synchronized(entries) { entries.values.filter { it.held && it.screens == 0 } }
+        if (held.isEmpty()) return
+        val rows = list.associateBy { it.id }
+        for (e in held) {
+            val row = rows[e.agentId] ?: continue
+            val newRun = synchronized(e) {
+                val moved = row.updatedAtMillis > e.heldRowAt
+                e.heldRowAt = maxOf(e.heldRowAt, row.updatedAtMillis)
+                if (!moved || e.streamJob?.isActive == true) return@synchronized null
+                row.isRunning || row.latestRunId?.let { it.startsWith(LOCAL_RUN_PREFIX) || e.runById(it) != null } == false
+            } ?: continue
+            revalidateNow(e, force = newRun, fresh = newRun)
+        }
+    }
+
+    /**
+     * Keeps a chat current with no screen on it (background live sync, see [LiveSync]): loaded as an open chat is,
+     * its live turn followed on the run's stream and each finished turn written to the disk, so opening it paints
+     * the turn as it stands and reads nothing. Lighter than a screen: no watch of the account's record while the
+     * chat is at rest (those streams are the screens', two at most — the list's refresh wakes a hold instead), no
+     * replays of finished turns' traces and no older pages until a screen asks. Idempotent; undone by [release].
+     */
+    fun hold(agentId: String) {
+        val e = entry(agentId)
+        synchronized(e) {
+            if (e.held) return
+            e.held = true
+            e.attached++
+            e.trimJob?.cancel()
+            e.trimJob = null
+            val row = agents.agent(agentId)
+            e.heldRowAt = row?.updatedAtMillis ?: 0L
+            // Held because the list says it runs: a run this copy does not know is read, however fresh the copy.
+            val unknownRun = row?.latestRunId?.let { !it.startsWith(LOCAL_RUN_PREFIX) && e.runById(it) == null } == true
+            if (e.attached == 1 && !e.launching) startLoad(e, agentId, read = false, reread = e.fetched && unknownRun)
+        }
+    }
+
+    /** Returns once the load under way for [agentId] (a hold's first, a screen's) has finished. */
+    suspend fun settled(agentId: String) {
+        val e = synchronized(entries) { entries[agentId] } ?: return
+        synchronized(e) { e.loadJob }?.join()
+    }
+
+    /** Ends [hold]: a chat with no screen on it either stops as a detached chat does. */
+    fun release(agentId: String) {
+        val e = synchronized(entries) { entries[agentId] } ?: return
+        synchronized(e) {
+            if (!e.held) return
+            e.held = false
+            leave(e)
+        }
     }
 
     /**
@@ -1997,7 +2089,32 @@ class ConversationRepository(
     fun detach(agentId: String) {
         val e = entry(agentId)
         synchronized(e) {
+            if (e.screens == 0) return
+            e.screens--
+            leave(e)
+        }
+    }
+
+    /** One screen or the hold gone from [e] (under its monitor): the last one stops everything; a hold left alone goes headless. */
+    private fun leave(e: Entry) {
+        run {
             e.attached = (e.attached - 1).coerceAtLeast(0)
+            if (e.attached > 0 && e.screens == 0) {
+                // Only the hold is left: what the screens alone were for stops, and a pause no screen can lift goes.
+                e.traceQueue.clear()
+                e.traceInFlight.clear()
+                e.traceJob?.cancel()
+                e.traceJob = null
+                e.watchJob?.cancel()
+                e.watchJob = null
+                e.prefetchJob?.cancel()
+                e.prefetchJob = null
+                if (e.paused) {
+                    e.paused = false
+                    val run = if (e.streamJob != null || e.launching) null else e.latestRun()?.takeIf { it.statusEnum().isActive }
+                    e.scope.launch { if (run != null) startStreaming(e, e.agentId, run) else if (accountSaysRunning(e)) keepFollowing(e, endedRunId = null) }
+                }
+            }
             if (e.attached == 0) {
                 e.stops++
                 e.paused = false
@@ -3381,7 +3498,7 @@ class ConversationRepository(
     private fun watchWhileOpen(e: Entry) {
         if (record == null && composerStatus == null) return
         synchronized(e) {
-            if (e.attached == 0 || e.paused || e.watchJob?.isActive == true) return
+            if (e.screens == 0 || e.paused || e.watchJob?.isActive == true) return
             e.watchJob = e.scope.launch { watch(e) }
         }
     }
@@ -3702,7 +3819,7 @@ class ConversationRepository(
     private fun prefetchOlderRecord(e: Entry, window: RecordWindow) {
         val api = record ?: return
         synchronized(e) {
-            if (!window.hasOlder || e.attached == 0 || e.paused || e.prefetchJob?.isActive == true) return
+            if (!window.hasOlder || e.screens == 0 || e.paused || e.prefetchJob?.isActive == true) return
             if (e.prefetchedOlder?.isPageBefore(window) == true) return
             e.prefetchedOlder = null
             e.prefetchJob = e.scope.launch {
@@ -4263,6 +4380,8 @@ class ConversationRepository(
      */
     private fun loadTraces(e: Entry, agentId: String, finishedRuns: List<RunDto>) {
         synchronized(e) {
+            // A held chat's traces wait for a screen: the one that opens it asks for the window's (see [reopen]).
+            if (e.screens == 0) return
             finishedRuns
                 .filter { (it.id !in e.traces || it.id in e.staleTraces) && it.id !in e.traceQueue && it.id !in e.traceInFlight && it.id !in e.expiredRuns && parseIsoMillis(it.createdAt) >= e.expiredBefore }
                 .sortedByDescending { parseIsoMillis(it.createdAt) }
