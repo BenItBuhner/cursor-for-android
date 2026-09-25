@@ -43,10 +43,16 @@ internal class PageCentring {
         }
     }
 
+    /**
+     * How much of the lead the composer has taken, 0 to 1: an expanding composer grows into the room above it as well as
+     * below, so it reaches the top of the pane as it reaches its full height. Read as the lead lays out.
+     */
+    var squeeze: () -> Float = { 0f }
+
     /** The room above the composer; the list's first item, keyed [LEAD_KEY], ahead of the item keyed [COMPOSER_KEY]. */
     @Composable
     fun Lead() {
-        Layout(Modifier) { _, _ -> layout(0, lead?.value?.roundToInt() ?: 0) {} }
+        Layout(Modifier) { _, _ -> layout(0, ((lead?.value ?: 0f) * (1f - squeeze().coerceIn(0f, 1f))).roundToInt()) {} }
     }
 
     /** Keeps the lead to [list]'s layouts for as long as it is called. */

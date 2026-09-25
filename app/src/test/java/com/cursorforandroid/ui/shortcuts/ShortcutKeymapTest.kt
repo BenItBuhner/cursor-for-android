@@ -82,7 +82,7 @@ class ShortcutKeymapTest {
         val listed = ShortcutsCopy.groups.flatMap { it.lines }.flatMap { it.chords }.map { it.joinToString("+") }
         assertThat(listed).containsAtLeast(
             "Ctrl+F", "Ctrl+K", "Ctrl+Tab", "Ctrl+B", "Ctrl+Shift+B", "Ctrl+1 … 9", "Ctrl+0", "Ctrl+N", "Ctrl+Shift+N",
-            "Ctrl+,", "Ctrl+/", "Ctrl+Shift+?", "Esc", "Ctrl+R", "Ctrl+Shift+R",
+            "Ctrl+,", "Ctrl+/", "Ctrl+Shift+?", "Esc", "Ctrl+R", "Ctrl+Shift+R", "Ctrl+Shift+E",
         )
     }
 }

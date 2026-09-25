@@ -35,6 +35,7 @@ object ShortcutsCopy {
             listOf(
                 Line(listOf(ctrl("B")), "Show or hide the sidebar"),
                 Line(listOf(ctrl("Shift", "B")), "Show or hide the chat's panel"),
+                Line(listOf(ctrl("Shift", "E")), "Expand or collapse the composer", "Once a long prompt scrolls inside it"),
                 Line(listOf(listOf("Esc")), "Close", "The palette, a sheet, the viewer, the drawer or the panel; else leaves the text field"),
             ),
         ),

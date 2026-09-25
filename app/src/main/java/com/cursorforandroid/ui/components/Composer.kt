@@ -1,6 +1,7 @@
 package com.cursorforandroid.ui.components
 
 import android.net.Uri
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.SizeTransform
 import androidx.compose.animation.animateColorAsState
@@ -28,6 +29,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
@@ -55,6 +57,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -64,6 +67,7 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.Saver
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -78,8 +82,18 @@ import androidx.compose.ui.graphics.drawscope.clipPath
 import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.isAltPressed
+import androidx.compose.ui.input.key.isCtrlPressed
+import androidx.compose.ui.input.key.isShiftPressed
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.layout.onPlaced
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
@@ -101,6 +115,7 @@ import com.cursorforandroid.ui.shortcuts.LocalKeyboardShortcuts
 import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.util.ioThenMain
+import kotlin.math.roundToInt
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -141,6 +156,11 @@ import kotlinx.coroutines.launch
  * the on-screen keyboard's Enter, put in a newline ([sendOnHardwareEnter]). While the `/` popover is up the keyboard
  * drives it instead, as on the desktop: the arrows move its highlight, Enter or Tab picks the highlighted row, Esc
  * closes it ([popoverKeys]).
+ *
+ * Once the text runs past the ten lines the field shows and scrolls inside it, a button slides in right of "+" that
+ * grows the composer over nearly all the height it can have ([expansion]): the room its parent allows — in a chat, all
+ * of it above the keyboard or the navigation bar, the transcript giving way — or [expandRoom] where the owner measures it.
+ * The same button, Back, Ctrl+Shift+E or a send brings it back down; see [ComposerExpansion].
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -208,6 +228,10 @@ fun ComposerBox(
     voice: VoiceInput? = null,
     /** Where the text stands, for a send that lifts it off into its bubble (see [SendMotion]); null for a composer that never does. */
     anchor: ComposerAnchor? = null,
+    /** Whether the composer is grown over the window's height; hoisted by an owner that lays out around it. */
+    expansion: ComposerExpansion = rememberComposerExpansion(),
+    /** The height, in pixels, the composer grows to when expanded, read as it lays out; null takes what its parent allows. */
+    expandRoom: (() -> Int)? = null,
 ) {
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
@@ -272,6 +296,29 @@ fun ComposerBox(
         }
     }
     val textScroll = rememberScrollState()
+    // The field's layout, handed over as it is measured and read back as the command highlight draws.
+    val textLayout = remember { TextLayoutHandle() }
+    var lineCount by remember { mutableIntStateOf(0) }
+    // Stretched from the first frame of expanding to the last of collapsing: the field then fills what the composer's
+    // height leaves it instead of holding to its ten lines.
+    val stretched by remember(expansion) { derivedStateOf { expansion.progress.value > 0f } }
+    // Past ten lines — or squeezed by a short window into scrolling sooner — the field scrolls inside the composer.
+    // Stretched, it may not scroll at all, so its line count is what says the text would overflow again collapsed.
+    val overflowing by remember(expansion, textScroll) {
+        derivedStateOf { lineCount > CollapsedMaxLines || (expansion.progress.value == 0f && textScroll.maxValue > 0) }
+    }
+    val density = LocalDensity.current
+    val minGainPx = with(density) { ComposerExpansion.MinGain.roundToPx() }
+    val expandOffered by remember(expansion, minGainPx) { derivedStateOf { expansion.offered(overflowing, minGainPx) } }
+    val minFieldPx = with(density) { maxOf(22.dp.roundToPx(), (type.input.lineHeight.toPx() * minLines).roundToInt()) }
+    BackHandler(enabled = expansion.expanded) { expansion.collapse() }
+    // Collapsing, the field shrinks from the bottom; the caret is kept in sight as it does, so the line being written
+    // is still the one showing when the composer is back to its own height.
+    LaunchedEffect(expansion, textScroll) {
+        snapshotFlow { expansion.progress.value to textScroll.maxValue }.collect { (p, _) ->
+            if (!expansion.expanded && p < 1f) keepCaretInView(textLayout.get?.invoke(), field.selection, textScroll)
+        }
+    }
     val commandTint = slashCommandTint()
     val receiveImages = rememberImagePasteReceiver(
         enabled = onAddAttachments != null,
@@ -372,10 +419,16 @@ fun ComposerBox(
     }
 
     val micTap = if (voice != null) rememberMicTap(voice, haptics, onTranscript = { dictate(it) }) else null
+    // A send takes the composer back down with it: what is left is the next message, begun at the composer's own height.
+    val send: () -> Unit = {
+        expansion.collapse()
+        onSend()
+    }
 
     Column(
         modifier
             .fillMaxWidth()
+            .expandableHeight(expansion, expandRoom, collapsed = { collapsedEstimate(expansion, textLayout.get?.invoke()?.size?.height, minFieldPx) })
             // Unclipped: beside the bare mic, the main button's 40dp touch area runs past the box's rounded edge
             // (see FooterSpacing), and a clip would drop those touches. What scrolls inside clips itself.
             .cursorSurface(colors.elevated, border, shape, clip = false)
@@ -403,9 +456,7 @@ fun ComposerBox(
         // The extra inset is on the Box so the popover stays under the glyphs, not under the corner,
         // and the top/bottom air matches the left/right. It is also where a pen writes, out to the box's rounded edge,
         // and what gives the field its focus back after a fold, an unfold or a turn moves the chat to the other layout.
-        Box(Modifier.stylusWriting().keepsFocusWhenMoved().padding(CursorDimens.composerTextInset)) {
-            // The field's layout, handed over as it is measured and read back as the command highlight draws.
-            val textLayout = remember { TextLayoutHandle() }
+        Box(Modifier.then(if (stretched) Modifier.weight(1f) else Modifier).stylusWriting().keepsFocusWhenMoved().padding(CursorDimens.composerTextInset)) {
             if (anchor != null) {
                 SideEffect {
                     anchor.layout = { textLayout.get?.invoke() }
@@ -415,7 +466,7 @@ fun ComposerBox(
             // What the key handlers below make of a physical Enter, for the newline an IME may type in its place.
             val physicalEnter: (() -> Unit)? = when {
                 slashOpen -> { { slash.highlightedItem?.let { complete(it) } } }
-                sendsNow -> onSend
+                sendsNow -> send
                 else -> null
             }
             ImeEnterFallback(onEnter = physicalEnter, composing = { field.composition != null }) {
@@ -424,9 +475,12 @@ fun ComposerBox(
                     textStyle = type.input.copy(color = colors.textPrimary),
                     keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
                     cursorBrush = SolidColor(colors.textPrimary),
-                    lineLimits = TextFieldLineLimits.MultiLine(minHeightInLines = minLines, maxHeightInLines = 10),
+                    lineLimits = TextFieldLineLimits.MultiLine(minHeightInLines = minLines, maxHeightInLines = if (stretched) Int.MAX_VALUE else CollapsedMaxLines),
                     scrollState = textScroll,
-                    onTextLayout = { textLayout.get = it },
+                    onTextLayout = { provider ->
+                        textLayout.get = provider
+                        provider()?.lineCount?.let { if (it != lineCount) lineCount = it }
+                    },
                     inputTransformation = InputTransformation {
                         // A `/multitask `, `/plan ` (or, in Extended mode, `/ask ` or `/debug `) the reader has just closed
                         // with a space becomes its pill: the token leaves the text here, before the field ever shows it,
@@ -446,9 +500,16 @@ fun ComposerBox(
                         .fillMaxWidth()
                         // One line of `input` at the default font scale, so the box does not shrink under a small system font.
                         .heightIn(min = 22.dp)
+                        .then(if (stretched) Modifier.fillMaxHeight() else Modifier)
+                        .onSizeChanged { if (expansion.progress.value == 0f) expansion.fieldPx = it.height }
                         .onPhysicalKey { physicalKeys = true }
+                        .onPreviewKeyEvent { event ->
+                            val chord = event.type == KeyEventType.KeyDown && event.isCtrlPressed && event.isShiftPressed && !event.isAltPressed && event.key == Key.E
+                            if (chord && expandOffered) expansion.toggle()
+                            chord && expandOffered
+                        }
                         .popoverKeys(slashOpen, slash, composing = { field.composition != null }, onPick = { complete(it) }, onDismiss = { dismissedToken = slashToken })
-                        .sendOnHardwareEnter(field, onSend = onSend.takeIf { sendsNow }, onEdited = { publish(it) })
+                        .sendOnHardwareEnter(field, onSend = send.takeIf { sendsNow }, onEdited = { publish(it) })
                         .then(if (receiveImages != null) Modifier.contentReceiver(receiveImages) else Modifier)
                         .focusRequester(focus)
                         .onFocusChanged { focused = it.isFocused },
@@ -502,8 +563,9 @@ fun ComposerBox(
                         commands = commands,
                     )
                 }
-                Spacer(Modifier.width(10.dp))
             }
+            ExpandButton(expansion, offered = expandOffered, afterPlus = plusMenu != null)
+            if (plusMenu != null) Spacer(Modifier.width(10.dp))
             // Pills right of "+", the model chip next to send, and the leftover width between them. The children are
             // measured in order, so the pills take what their words need and the chip is left the rest: it ellipsises
             // before a pill would, and send is never pushed out. A dictation under way has the middle to itself.
@@ -598,7 +660,7 @@ fun ComposerBox(
                 SendSlot.Busy -> MainFace(MainGlyph.Spinner, "Sending", onClick = null)
                 SendSlot.Stop -> MainFace(MainGlyph.Stop, "Stop", onClick = { onStop?.invoke() })
                 // The tap is felt, not a hardware Enter: a physical keyboard's keys are their own feedback.
-                SendSlot.Send -> MainFace(MainGlyph.Send, "Send", onClick = { haptics.perform(Haptic.Confirm); onSend() }, prominent = canSend, enabled = sendsNow)
+                SendSlot.Send -> MainFace(MainGlyph.Send, "Send", onClick = { haptics.perform(Haptic.Confirm); send() }, prominent = canSend, enabled = sendsNow)
                 SendSlot.Mic -> when (voiceState) {
                     is VoiceState.Recording -> MainFace(MainGlyph.Mic, "Stop recording", onClick = micTap, recording = true)
                     VoiceState.Transcribing -> MainFace(MainGlyph.Spinner, "Transcribing", onClick = null)
@@ -691,6 +753,53 @@ private fun ComposerMainButton(face: MainFace, voice: VoiceInput?, touchShift: D
             }
         }
     }
+}
+
+/**
+ * The composer's expand button, right of "+" ([afterPlus]) or first in the footer without one. It slides in and out
+ * rather than popping, as the mic beside Send does: its slot widens from nothing while the glyph fades and scales up,
+ * and while it is out it stands [CursorDimens.roundButtonGap] from "+", so their 40dp touch squares meet without
+ * overlapping. The glyph is arrows out while collapsed and arrows in while expanded, named for what a tap does.
+ */
+@Composable
+private fun ExpandButton(expansion: ComposerExpansion, offered: Boolean, afterPlus: Boolean) {
+    val shown by animateFloatAsState(if (offered) 1f else 0f, tween(MicSlideMillis, easing = FastOutSlowInEasing), label = "expandShown")
+    if (shown <= 0f) return
+    val lead = if (afterPlus) CursorDimens.roundButtonGap else 0.dp
+    val trail = if (afterPlus) 0.dp else 10.dp
+    Row(
+        Modifier
+            .width((lead + CursorDimens.roundButton + trail) * shown)
+            .wrapContentWidth(Alignment.Start, unbounded = true)
+            .graphicsLayer {
+                alpha = shown
+                scaleX = 0.6f + 0.4f * shown
+                scaleY = 0.6f + 0.4f * shown
+            },
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Spacer(Modifier.width(lead))
+        ComposerRoundButton(
+            if (expansion.expanded) CursorIcons.Collapse else CursorIcons.Expand,
+            if (expansion.expanded) "Collapse composer" else "Expand composer",
+            onClick = { expansion.toggle() },
+            modifier = Modifier.testTag("composer-expand"),
+        )
+        Spacer(Modifier.width(trail))
+    }
+}
+
+/** Scrolls the field just far enough that the caret at [selection]'s end is inside its viewport. */
+private suspend fun keepCaretInView(layout: TextLayoutResult?, selection: TextRange, scroll: ScrollState) {
+    val viewport = scroll.viewportSize
+    if (layout == null || viewport <= 0) return
+    val caret = layout.getCursorRect(selection.end.coerceIn(0, layout.layoutInput.text.length))
+    val target = when {
+        caret.bottom > scroll.value + viewport -> caret.bottom - viewport
+        caret.top < scroll.value -> caret.top
+        else -> return
+    }
+    scroll.scrollTo(target.roundToInt())
 }
 
 /** How long a send has to be in flight before the busy ring becomes a cancel button. */

@@ -435,6 +435,9 @@ internal fun pageTopPadding(withHeader: Boolean): Dp = if (withHeader) 8.dp else
 /** Under the pane's last row, before the navigation bar. */
 internal val PageBottomPadding = 32.dp
 
+/** Under an expanded composer, before the pane's foot: the keyboard's edge while it is up, else the navigation bar's. */
+internal val ExpandedFootGap = 16.dp
+
 /** Between the composer and what the pane lists under it. */
 internal val ComposerGap = 26.dp
 private const val MiniatureBlocks = 12
