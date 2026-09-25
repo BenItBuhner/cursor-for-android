@@ -4,8 +4,15 @@ import androidx.activity.ComponentActivity
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.test.assertCountEquals
+import androidx.compose.ui.test.onAllNodesWithTag
+import androidx.compose.ui.test.onNodeWithTag
+import com.cursorforandroid.domain.PromptFileKind
 import androidx.compose.foundation.text.BasicText
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.SideEffect
@@ -40,10 +47,13 @@ class SendMotionTest {
     @get:Rule
     val compose = createAndroidComposeRule<ComponentActivity>()
 
-    private class Bubble(val id: String, val text: String)
+    /** A sent message: its text and how many attachments its bubble lays out (the rest scrolled out of its row). */
+    private class Bubble(val id: String, val text: String, val attachments: Int = 0)
 
     private val anchor = ComposerAnchor()
     private var composerText by mutableStateOf("Ship it")
+    /** The composer's chips, by key: a picture's tile, then a file's card. */
+    private val chips = mutableStateListOf<Pair<String, SendAttachment>>()
     private val bubbles = mutableStateListOf(Bubble("m-1", "Earlier"))
     private var bubbleCompositions = 0
 
@@ -53,7 +63,12 @@ class SendMotionTest {
             SendMotionHost(motion) {
                 Column(Modifier.fillMaxSize()) {
                     for (bubble in bubbles) BubbleView(motion, bubble)
-                    Box(Modifier.padding(16.dp).width(300.dp).onPlaced { anchor.surface = it }) {
+                    Column(Modifier.padding(16.dp).width(300.dp).onPlaced { anchor.surface = it }) {
+                        Row(Modifier.padding(12.dp)) {
+                            for ((key, look) in chips) {
+                                Box(Modifier.padding(end = 8.dp).size(if (look.media) 48.dp else 120.dp, 48.dp).sendAttachmentSource(motion, anchor, key, look).testTag("chip:$key"))
+                            }
+                        }
                         var layout: TextLayoutResult? = null
                         SideEffect { anchor.layout = { layout } }
                         BasicText(
@@ -70,8 +85,17 @@ class SendMotionTest {
     @Composable
     private fun BubbleView(motion: SendMotion, bubble: Bubble) {
         SideEffect { bubbleCompositions++ }
-        Box(Modifier.padding(8.dp).sendTarget(motion, bubble.id, bubble.text, SendTargetPart.Surface)) {
-            BasicText(bubble.text, Modifier.padding(10.dp).sendTarget(motion, bubble.id, bubble.text, SendTargetPart.Text))
+        Column(Modifier.padding(8.dp).sendTarget(motion, bubble.id, bubble.text, SendTargetPart.Surface)) {
+            if (bubble.attachments > 0) {
+                Row(Modifier.padding(10.dp)) {
+                    repeat(bubble.attachments) { ordinal ->
+                        Box(Modifier.padding(end = 6.dp).size(96.dp, 72.dp).sendAttachmentTarget(motion, bubble.id, bubble.text, ordinal).testTag("target:${bubble.id}:$ordinal"))
+                    }
+                }
+            }
+            if (bubble.text.isNotEmpty()) {
+                BasicText(bubble.text, Modifier.padding(10.dp).sendTarget(motion, bubble.id, bubble.text, SendTargetPart.Text))
+            }
         }
     }
 
@@ -92,17 +116,131 @@ class SendMotionTest {
     }
 
     /** The tap, as the screens make it: the text lifted off, the composer emptied, the bubble staged a frame on. */
-    private fun send(motion: SendMotion, text: String = "Ship it", id: String = "m-2"): SendFlight? {
+    private fun send(motion: SendMotion, text: String = "Ship it", id: String = "m-2", attachments: Int = 0, bubbleText: String = text): SendFlight? {
         val before = bubbles.mapTo(HashSet()) { it.id }
         var flight: SendFlight? = null
         compose.runOnUiThread {
             flight = motion.depart(anchor.takeoff(), text, before)
             composerText = ""
+            chips.clear()
         }
         frames(16)
-        compose.runOnUiThread { bubbles += Bubble(id, text) }
+        compose.runOnUiThread { bubbles += Bubble(id, bubbleText, attachments) }
         compose.waitForIdle()
         return flight
+    }
+
+    private fun attachChips() {
+        chips += "media:img-1" to SendAttachment(0, thumbnail = null, media = true)
+        chips += "file:f-1" to SendAttachment(1, thumbnail = null, media = false, name = "spec.pdf", kind = PromptFileKind.Pdf, sizeBytes = 2_048)
+    }
+
+    private fun boundsOf(tag: String) = compose.onNodeWithTag(tag, useUnmergedTree = true).fetchSemanticsNode().boundsInWindow
+
+    @Test
+    fun `the attachments lift off with the text, left to right, and each flies into its place in the bubble`() {
+        val motion = SendMotion(animatorsEnabled = { true })
+        attachChips()
+        show(motion)
+        val chipBounds = listOf(boundsOf("chip:media:img-1"), boundsOf("chip:file:f-1"))
+        val flight = checkNotNull(send(motion, attachments = 2))
+        assertThat(flight.takeoff.attachments.map { it.key }).containsExactly("media:img-1", "file:f-1").inOrder()
+        assertThat(flight.takeoff.attachments.map { it.look.ordinal }).containsExactly(0, 1).inOrder()
+        // Both copies are up from the frame the composer lets its chips go, where those stood.
+        frames(16)
+        val copies = compose.onAllNodesWithTag(FlyingAttachmentTag, useUnmergedTree = true)
+        copies.assertCountEquals(2)
+        for (i in 0..1) assertThat(copies[i].fetchSemanticsNode().boundsInWindow).isEqualTo(chipBounds[i])
+
+        frames(48)
+        assertThat(flight.phase).isEqualTo(SendFlight.Phase.Flying)
+        val targets = listOf(boundsOf("target:m-2:0"), boundsOf("target:m-2:1"))
+        frames(SendMotion.FlightMillis / 3L)
+        // Midway, each copy is between its chip and its place in the bubble, and neither end is drawn twice.
+        for (i in 0..1) {
+            val box = copies[i].fetchSemanticsNode().boundsInWindow
+            assertThat(box.top).isIn(com.google.common.collect.Range.open(minOf(chipBounds[i].top, targets[i].top), maxOf(chipBounds[i].top, targets[i].top)))
+            assertThat(box.width).isIn(com.google.common.collect.Range.open(minOf(chipBounds[i].width, targets[i].width), maxOf(chipBounds[i].width, targets[i].width)))
+            assertThat(flight.alphaOf(flight.takeoff.attachments[i])).isEqualTo(1f)
+        }
+        assertThat(motion.hides("m-2", "Ship it")).isTrue()
+
+        frames(SendMotion.FlightMillis.toLong() + 64)
+        assertThat(motion.flight).isNull()
+        compose.onAllNodesWithTag(FlyingAttachmentTag, useUnmergedTree = true).assertCountEquals(0)
+    }
+
+    @Test
+    fun `a chip is undrawn while its copy flies, so a composer that empties late does not show it twice`() {
+        val motion = SendMotion(animatorsEnabled = { true })
+        attachChips()
+        show(motion)
+        compose.runOnUiThread {
+            motion.depart(anchor.takeoff(), "Ship it")
+            assertThat(motion.attachmentAlpha(anchor, "media:img-1")).isEqualTo(0f)
+            assertThat(motion.attachmentAlpha(anchor, "file:f-1")).isEqualTo(0f)
+            // A chip attached after the tap was not lifted off.
+            assertThat(motion.attachmentAlpha(anchor, "media:img-2")).isEqualTo(1f)
+            assertThat(motion.attachmentAlpha(ComposerAnchor(), "media:img-1")).isEqualTo(1f)
+        }
+    }
+
+    @Test
+    fun `attachments sent alone fly into whatever the new bubble says, and leave the placeholder alone`() {
+        val motion = SendMotion(animatorsEnabled = { true })
+        composerText = ""
+        attachChips()
+        show(motion)
+        // The bubble says what the server makes of a prompt with no words, which the composer never held.
+        val flight = checkNotNull(send(motion, text = "", attachments = 2, bubbleText = ""))
+        assertThat(flight.text).isEmpty()
+        assertThat(motion.placeholderAlpha(anchor)).isEqualTo(1f)
+        assertThat(flight.matches("m-3", "See the attached image.")).isTrue()
+        assertThat(flight.matches("m-1", "Earlier")).isFalse()
+
+        frames(48)
+        assertThat(flight.targetPlaced).isTrue()
+        assertThat(flight.phase).isEqualTo(SendFlight.Phase.Flying)
+        frames(SendMotion.FlightMillis.toLong() + 64)
+        assertThat(motion.flight).isNull()
+    }
+
+    @Test
+    fun `a copy whose place in the bubble is out of view fades where it stood as the rest fly`() {
+        val motion = SendMotion(animatorsEnabled = { true })
+        attachChips()
+        show(motion)
+        val chip = boundsOf("chip:file:f-1")
+        // The bubble's row lays out only its first attachment.
+        val flight = checkNotNull(send(motion, attachments = 1))
+        frames(48 + SendMotion.FlightMillis / 2L)
+        val (flying, stranded) = flight.takeoff.attachments
+        assertThat(flight.targetOf(flying)).isNotNull()
+        assertThat(flight.targetOf(stranded)).isNull()
+        assertThat(flight.boxOf(stranded)).isEqualTo(flight.takeoff.attachments[1].rect)
+        assertThat(compose.onAllNodesWithTag(FlyingAttachmentTag, useUnmergedTree = true)[1].fetchSemanticsNode().boundsInWindow.top).isEqualTo(chip.top)
+        assertThat(flight.alphaOf(stranded)).isIn(com.google.common.collect.Range.open(0f, 1f))
+        assertThat(flight.alphaOf(flying)).isEqualTo(1f)
+    }
+
+    @Test
+    fun `attachments alone lift off, and a chip scrolled out of the row's view is left behind`() {
+        attachChips()
+        show(SendMotion(animatorsEnabled = { true }))
+        compose.runOnUiThread { composerText = "" }
+        frames(32)
+        compose.runOnUiThread {
+            val takeoff = checkNotNull(anchor.takeoff())
+            assertThat(takeoff.attachments).hasSize(2)
+            anchor.attachments["file:f-2"] = SendAttachment(2, null, media = false) to null
+            assertThat(checkNotNull(anchor.takeoff()).attachments.map { it.key }).doesNotContain("file:f-2")
+        }
+        compose.runOnUiThread { chips.clear() }
+        frames(32)
+        compose.runOnUiThread {
+            anchor.attachments.remove("file:f-2")
+            assertThat(anchor.takeoff()).isNull()
+        }
     }
 
     @Test

@@ -349,6 +349,16 @@ class ConversationViewModelTest {
         runBlocking { withTimeout(10_000) { idle.isSending.first { !it } } }
     }
 
+    /** A picture sent alone goes into its bubble with nothing typed: the send's flight carries the picture alone. */
+    @Test
+    fun `send says a picture sent alone goes into its bubble, with nothing typed`() {
+        val idle = open(IDLE)
+        idle.addAttachments(listOf(PendingAttachment("img-1", PromptImage(byteArrayOf(1, 2, 3), "image/png"), null)))
+        assertThat(idle.send()).isEmpty()
+        assertThat(idle.pendingAttachments.value).isEmpty()
+        runBlocking { withTimeout(10_000) { idle.isSending.first { !it } } }
+    }
+
     @Test
     fun `removing a queued follow-up takes it away`() {
         val vm = open(RUNNING)
