@@ -39,5 +39,18 @@ object DiskSweep {
         return total
     }
 
+    /**
+     * [files] by modification time, oldest first ([newestFirst]: newest first), each file's time read once. A sort
+     * that asked the file on every comparison saw a file touched, written or deleted mid-sort change its key, which
+     * TimSort refuses ("Comparison method violates its general contract!") — every reader of a blob touches it.
+     */
+    fun byModified(files: Sequence<File>, newestFirst: Boolean = false): List<File> {
+        val stamped = files.map { it to it.lastModified() }.toMutableList()
+        if (newestFirst) stamped.sortByDescending { it.second } else stamped.sortBy { it.second }
+        return stamped.map { it.first }
+    }
+
+    fun byModified(files: Array<File>, newestFirst: Boolean = false): List<File> = byModified(files.asSequence(), newestFirst)
+
     private class Sized(val file: File, val bytes: Long, val modifiedAt: Long)
 }

@@ -919,8 +919,13 @@ class ConversationRepository(
             if (!accountRunning) return recorded
             val recordAt = latest?.let { parseIsoMillis(it.updatedAt) } ?: 0L
             // Running, and with activity after the record was last written (or a run the record is not): the record
-            // is an older turn's, or stale. A record as new as the row is the turn that just ended.
-            val fresher = latest == null || row.latestRunId != latest.id || row.updatedAtMillis > recordAt + STALE_RUN_RECORD_SLACK_MS
+            // is an older turn's, or stale. A record as new as the row is the turn that just ended. The account's
+            // own word counts by when it was read: a Project's injected turns (a worker's report, a timer) run with
+            // no run in the list and leave the row where it was, so only the account, asked after the latest run
+            // was last written, says the chat went on.
+            val word = agents.runningScan.value.accountWord[agentId]
+            val fresher = latest == null || row.latestRunId != latest.id || row.updatedAtMillis > recordAt + STALE_RUN_RECORD_SLACK_MS ||
+                (word?.running == true && word.atMillis > recordAt + STALE_RUN_RECORD_SLACK_MS)
             return if (fresher) RunStatus.RUNNING else recorded
         }
 
@@ -1781,7 +1786,7 @@ class ConversationRepository(
                         run != null && run.statusEnum().isActive -> "live"
                         complete != null -> "shown(log)"
                         kept != null -> "shown(story)"
-                        turn.items.isEmpty() -> "pending"
+                        turn.items.isEmpty() -> if (turn.complete) "prompt-only" else "pending"
                         run == null -> "shown(unpaired)"
                         else -> "shown"
                     }

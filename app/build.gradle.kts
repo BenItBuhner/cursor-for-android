@@ -434,24 +434,17 @@ class TestShardFilter(private val shard: TestShard, private val slices: Map<Stri
 }
 
 /**
- * How long a test class takes alone in its JVM, in seconds, for the ones that take more than a few: the fault and
- * harness suites (built on real timeouts and paced retries: a dozen classes, half of the suite's time) and the larger
- * Compose and repository suites. Every other class counts as one second. The slices are filled with these: heaviest
- * class first, each onto the slice with the least in it so far, so no slice ends up with two of the biggest while
- * another has none. Only the balance depends on the numbers - a class missing here, or a stale one, costs seconds of
- * wall time, never correctness. Refresh them from the per-class `time` in the `unit-tests-results-*` artifacts every CI
- * run uploads (the TEST-*.xml files under app/build/test-results/testDebugUnitTest). The benchmarks are not here: they
- * have their own shard.
+ * How long a test class takes alone in its JVM, in seconds, for every class over two (app/test-class-seconds.properties,
+ * measured in CI); every other class counts as one second. The slices are filled with these: heaviest class first,
+ * each onto the slice with the least in it so far, so no slice ends up with two of the biggest while another has none.
+ * Only the balance depends on the numbers - a class missing there, or a stale one, costs seconds of wall time, never
+ * correctness. When a slice drifts (a new fault or latency suite lands), `scripts/refresh-test-balance.sh` rewrites the
+ * file from the newest green run's `unit-tests-results-*` artifacts.
  */
-val testClassSeconds = mapOf(
-    "SendFaultsTest" to 80, "LongProjectReopenTest" to 65, "TranscriptVerifyHarness" to 60, "TranscriptFaultsTest" to 45,
-    "RefreshFaultsTest" to 40, "LiveTurnDeliveryTest" to 40, "NewAgentViewModelTest" to 25, "LongProjectLoadTest" to 25,
-    "LiveFinishFaultsTest" to 25, "DemoBackendTest" to 20, "LiveNotificationServiceTest" to 15, "ConversationViewModelTest" to 15,
-    "PredictiveBackTest" to 10, "FollowUpRepositoryTest" to 10, "RegularChatTextTest" to 10, "LiveStatusTruthTest" to 10,
-    "WidgetSyncTest" to 10, "ConversationRepositoryTest" to 10, "MainActivityThemeTest" to 5, "SidebarCollapsePersistenceTest" to 5,
-    "AppGraphTest" to 5, "AppGraphExtendedModeTest" to 5, "LocalEchoOrderTest" to 5, "DeferredStartupTest" to 5,
-    "AttachmentStoreTest" to 5, "AccountSimulationTest" to 5, "WidgetRefreshTest" to 5, "SnoozeChatDialogTest" to 5,
-)
+val testClassSeconds: Map<String, Int> = providers.fileContents(layout.projectDirectory.file("test-class-seconds.properties"))
+    .asText.getOrElse("").lineSequence()
+    .map(String::trim).filter { it.isNotEmpty() && !it.startsWith("#") }
+    .associate { line -> line.substringBefore('=').trim() to line.substringAfter('=').trim().toInt() }
 
 /** Every ordinary test source file as the class path it compiles to, assigned to one of [count] slices: heaviest first, each onto the lightest slice so far. */
 fun testShardSlices(count: Int): Map<String, Int> {

@@ -144,11 +144,14 @@ internal fun catchUpTension(fraction: Float): Float {
 }
 
 /**
- * The platform's overscroll with the pull to catch up read off it: every delta goes to [platform] as it would
- * without this — so the transcript's stretch, its feel and its release are Android's own — and what the reader's
- * drag leaves over past the bottom edge (a scroll toward the newest row the list could not take) is the pull's too.
- * Only the finger's: a fling that reaches the bottom, the jump button's scroll, never arm it. [enabled] is asked at
- * the pull's first pixel: a chat still loading, or a pull already being answered, stretches without pulling.
+ * The platform's overscroll with the pull to catch up read off the reader's drag: every delta goes to [platform] as
+ * it would without this — so the transcript's stretch, its feel and its release are Android's own — and the drag
+ * toward the newest row past the bottom edge is the pull's too: all of it once the list is at its newest row
+ * ([atNewest]), else what the list leaves over. Not what the platform leaves over: Android's stretch, once drawn,
+ * takes the drag deepening it before the list is offered any — and catches one still springing back — so past its
+ * first pixel nothing would reach the pull. Only the finger's: a fling that reaches the bottom, the jump button's
+ * scroll, never arm it. [enabled] is asked at the pull's first pixel: a chat still loading, or a pull already being
+ * answered, stretches without pulling.
  *
  * Taken back, the pull is the finger's first, as the sidebar's is: the list scrolls only once it is home. The
  * platform's stretch goes back with it, but not every phone has one to take the drag — with animations off, Android
@@ -158,19 +161,22 @@ internal fun catchUpTension(fraction: Float): Float {
 internal class CatchUpOverscroll(
     private val platform: OverscrollEffect,
     private val pull: CatchUpPull,
+    private val atNewest: () -> Boolean,
     private val enabled: () -> Boolean,
     private val onPulled: () -> Unit,
 ) : OverscrollEffect {
     override fun applyToScroll(delta: Offset, source: NestedScrollSource, performScroll: (Offset) -> Offset): Offset {
         if (source != NestedScrollSource.UserInput) return platform.applyToScroll(delta, source, performScroll)
-        // Screen terms: the finger moving up is a negative delta, and at the bottom it is left over.
+        // Screen terms: the finger moving up is a negative delta.
         val out = if (delta.y > 0f) pull.distance else 0f
         if (delta.y > 0f) pull.relax(delta.y)
+        val pulled = delta.y < 0f && atNewest() && (pull.holding || enabled())
+        if (pulled) pull.stretch(-delta.y)
         return platform.applyToScroll(delta, source) { available ->
             val back = (out - (delta.y - available.y)).coerceIn(0f, available.y.coerceAtLeast(0f))
             val consumed = performScroll(available.copy(y = available.y - back))
             val left = available.y - back - consumed.y
-            if (left < 0f && (pull.holding || enabled())) pull.stretch(-left)
+            if (!pulled && left < 0f && (pull.holding || enabled())) pull.stretch(-left)
             consumed.copy(y = consumed.y + back)
         }
     }

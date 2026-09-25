@@ -121,12 +121,12 @@ class JsonDiskCache(
 
     /** Keys currently stored, most recently written first. */
     suspend fun keys(): List<String> = withContext(dispatcher) {
-        entryFiles().sortedByDescending { it.lastModified() }.map { it.name.removeSuffix(SUFFIX) }
+        DiskSweep.byModified(entryFiles().asSequence(), newestFirst = true).map { it.name.removeSuffix(SUFFIX) }
     }
 
     /** The names of the child caches that exist on disk (see [child]), most recently written first. */
     suspend fun childNames(): List<String> = withContext(dispatcher) {
-        childDirectories().sortedByDescending { it.lastModified() }.map { it.name }
+        DiskSweep.byModified(childDirectories().asSequence(), newestFirst = true).map { it.name }
     }
 
     /** Deletes this cache's directory — every entry and every child — without the generation bump of [clear]. */

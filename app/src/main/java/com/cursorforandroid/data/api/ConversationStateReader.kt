@@ -102,7 +102,17 @@ class BlobCache(
     /** A whole copy — the network's — into memory and onto the disk. */
     suspend fun keep(agentId: String, blobId: String, value: ByteArray) {
         put(agentId, blobId, value, partial = false)
-        disk?.write(agentId, blobId, value)
+        disk?.let { store -> onDisk { store.write(agentId, blobId, value) } }
+    }
+
+    /** The disk is a copy: a write it fails leaves the blob in memory and the read it came with standing. */
+    private suspend inline fun onDisk(write: () -> Unit) {
+        try {
+            write()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+        }
     }
 
     /**
@@ -128,7 +138,7 @@ class BlobCache(
     suspend fun confirm(agentId: String, blobId: String) {
         val held = held(agentId, blobId)?.takeIf { it.partial } ?: return
         synchronized(this) { blobs["$agentId/$blobId"] = Held(held.bytes, partial = false) }
-        disk?.write(agentId, blobId, held.bytes)
+        disk?.let { store -> onDisk { store.write(agentId, blobId, held.bytes) } }
     }
 
     /** The ids held for [agentId] in memory: what the server need not send again. */
@@ -172,7 +182,7 @@ class BlobCache(
         store.writeIndex(agentId, merged)
         // The prefetched copies onto the disk too, marked as such (see [BlobDiskStore.readPartial]): a turn built from
         // one is rebuilt from it after a restart, and the next state read names it as held.
-        for (id in ids) held(agentId, id)?.takeIf { it.partial }?.let { store.writePartial(agentId, id, it.bytes) }
+        for (id in ids) held(agentId, id)?.takeIf { it.partial }?.let { onDisk { store.writePartial(agentId, id, it.bytes) } }
     }
 
     companion object {

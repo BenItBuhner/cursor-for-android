@@ -161,6 +161,15 @@ object CursorIcons {
         }
     }
 
+    /** Lucide `mic`: voice input in the composer's send slot. */
+    val Mic: ImageVector by lazy {
+        icon("Mic") {
+            path("M12 19v3", 2f)
+            path("M19 10v2a7 7 0 0 1-14 0v-2", 2f)
+            rect(9f, 2f, 6f, 13f, 3f, 2f)
+        }
+    }
+
     val Plus: ImageVector by lazy {
         icon("Plus") {
             path("M5 12h14", 2f)

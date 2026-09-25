@@ -1,11 +1,14 @@
 package com.cursorforandroid.ui.media
 
+import androidx.compose.animation.Crossfade
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
@@ -15,8 +18,10 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -29,12 +34,19 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.cursorforandroid.ui.components.CursorIcons
 import com.cursorforandroid.ui.components.FlatIconButton
+import com.cursorforandroid.ui.components.ProgressRing
+import com.cursorforandroid.ui.components.SpinnerRing
+import com.cursorforandroid.ui.components.TouchTarget
 import com.cursorforandroid.ui.components.pressable
+import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.util.TimeFormat
 
@@ -50,7 +62,8 @@ internal fun ViewerTopBar(
     entry: MediaEntry,
     onClose: () -> Unit,
     onShare: () -> Unit,
-    onSave: (() -> Unit)?,
+    save: MediaSaves.State,
+    onSave: () -> Unit,
     onOpenWith: (() -> Unit)?,
     modifier: Modifier = Modifier,
 ) {
@@ -65,7 +78,7 @@ internal fun ViewerTopBar(
             FlatIconButton(CursorIcons.Close, "Close", onClick = onClose, tint = Color.White, modifier = Modifier.testTag("viewer-close"))
             Spacer(Modifier.weight(1f))
             FlatIconButton(CursorIcons.Share, "Share", onClick = onShare, tint = Color.White, modifier = Modifier.testTag("viewer-share"))
-            if (onSave != null) FlatIconButton(CursorIcons.Download, "Save", onClick = onSave, tint = Color.White, modifier = Modifier.testTag("viewer-save"))
+            SaveButton(save, onSave)
             if (onOpenWith != null) FlatIconButton(CursorIcons.ExternalLink, "Open with", onClick = onOpenWith, tint = Color.White, modifier = Modifier.testTag("viewer-open-with"))
         }
         if (count > 1) {
@@ -217,16 +230,90 @@ internal fun Scrubber(position: Long, duration: Long, buffered: Long, onScrub: (
     }
 }
 
-/** A word from the viewer to the reader — saved, couldn't share — as a pill over the bottom of the page. */
+/**
+ * Save, as the page's item stands: the download glyph; while saving a ring — filling, with the percentage in it, when
+ * the size is known, spinning when not; a green check once saved (a tap saves another copy); a red retry after a
+ * failure. Always enabled: a tap while saving is the save's to ignore, and a disabled button would let the tap fall
+ * through to the page, which toggles the chrome away.
+ */
 @Composable
-internal fun ViewerNotice(text: String, modifier: Modifier = Modifier) {
-    Text(
-        text,
-        style = CursorTheme.typography.small,
-        color = Color.White,
-        modifier = modifier
+internal fun SaveButton(state: MediaSaves.State, onClick: () -> Unit, modifier: Modifier = Modifier) {
+    val colors = CursorTheme.colors
+    val description = when (state) {
+        MediaSaves.State.Idle -> "Save"
+        is MediaSaves.State.Working -> state.fraction?.let { "Saving, ${percentOf(it)}%" } ?: "Saving"
+        is MediaSaves.State.Saved -> "Saved. Save again"
+        is MediaSaves.State.Failed -> "Couldn't save. Retry"
+    }
+    TouchTarget(
+        size = CursorDimens.iconButton,
+        touchSize = CursorDimens.touchTarget,
+        shape = CursorTheme.shapes.lg,
+        onClick = onClick,
+        contentDescription = description,
+        modifier = modifier.testTag("viewer-save"),
+    ) {
+        // Faded between phases only: a percent more is the same ring drawn further, not a new one crossfaded in.
+        val phase = when (state) {
+            MediaSaves.State.Idle -> SavePhase.Idle
+            is MediaSaves.State.Working -> SavePhase.Working
+            is MediaSaves.State.Saved -> SavePhase.Saved
+            is MediaSaves.State.Failed -> SavePhase.Failed
+        }
+        val fraction = (state as? MediaSaves.State.Working)?.fraction
+        Crossfade(targetState = phase, animationSpec = tween(160), label = "save") { shown ->
+            Box(Modifier.size(CursorDimens.iconButton), contentAlignment = Alignment.Center) {
+                when (shown) {
+                    SavePhase.Idle -> Icon(CursorIcons.Download, null, tint = Color.White, modifier = Modifier.size(CursorDimens.headerIcon))
+                    SavePhase.Working -> if (fraction == null) {
+                        SpinnerRing(color = Color.White, size = 24.dp, strokeWidth = 2.dp, modifier = Modifier.testTag("viewer-save-spinner"))
+                    } else {
+                        ProgressRing(fraction, color = Color.White, size = 28.dp, strokeWidth = 2.dp, modifier = Modifier.testTag("viewer-save-progress"))
+                        Text(
+                            "${percentOf(fraction)}%",
+                            style = TextStyle(fontSize = 8.sp, lineHeight = 8.sp, fontWeight = FontWeight.SemiBold, letterSpacing = (-0.2).sp),
+                            color = Color.White,
+                            maxLines = 1,
+                        )
+                    }
+                    SavePhase.Saved -> Icon(CursorIcons.Check, null, tint = colors.green, modifier = Modifier.size(CursorDimens.headerIcon).testTag("viewer-save-done"))
+                    SavePhase.Failed -> Icon(CursorIcons.Refresh, null, tint = colors.red, modifier = Modifier.size(CursorDimens.headerIcon).testTag("viewer-save-failed"))
+                }
+            }
+        }
+    }
+}
+
+private enum class SavePhase { Idle, Working, Saved, Failed }
+
+private fun percentOf(fraction: Float): Int = (fraction.coerceIn(0f, 1f) * 100).toInt()
+
+/**
+ * A word from the viewer to the reader — saved, couldn't share — as a pill over the bottom of the page, with an
+ * [action] (Retry) at its end when there is something to do about it.
+ */
+@Composable
+internal fun ViewerNotice(text: String, modifier: Modifier = Modifier, action: String? = null, onAction: () -> Unit = {}) {
+    Row(
+        modifier
             .background(Color.Black.copy(alpha = 0.7f), CursorTheme.shapes.full)
-            .padding(horizontal = 14.dp, vertical = 8.dp)
+            .padding(start = 14.dp, end = if (action != null) 4.dp else 14.dp)
+            .height(IntrinsicSize.Min)
             .testTag("viewer-notice"),
-    )
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(text, style = CursorTheme.typography.small, color = Color.White, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(vertical = 8.dp).weight(1f, fill = false))
+        if (action != null) {
+            Text(
+                action,
+                style = CursorTheme.typography.small.copy(fontWeight = FontWeight.Medium),
+                color = CursorTheme.colors.accent,
+                modifier = Modifier
+                    .padding(start = 6.dp)
+                    .pressable(onAction, CursorTheme.shapes.full)
+                    .padding(horizontal = 10.dp, vertical = 8.dp)
+                    .testTag("viewer-notice-action"),
+            )
+        }
+    }
 }

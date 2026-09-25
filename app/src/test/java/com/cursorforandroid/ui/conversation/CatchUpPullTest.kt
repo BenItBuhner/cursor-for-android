@@ -24,21 +24,28 @@ class CatchUpPullTest {
 
     /**
      * The platform's effect, noting what it was given. Without [stretches] it passes every delta through, as Android
-     * does with animations off; with it, it holds what the list left over as a stretch and takes a drag back out of
-     * that first, as Android's stretch does.
+     * does with animations off; with it, as Android's stretch does, it holds what the list left over as a [stretch],
+     * and while one is drawn — the finger's, or one still springing back — every delta goes to it before the list is
+     * offered the rest: all of a drag deepening it, a drag back as far as it goes.
      */
     private class Platform : OverscrollEffect {
         val scrolls = mutableListOf<Offset>()
         var flings = 0
         var stretches = false
-        private var stretch = 0f
+        var stretch = 0f
+            private set
         override fun applyToScroll(delta: Offset, source: NestedScrollSource, performScroll: (Offset) -> Offset): Offset {
             scrolls += delta
-            val relaxed = if (stretches && delta.y > 0f) minOf(stretch, delta.y) else 0f
-            stretch -= relaxed
-            val consumed = performScroll(delta.copy(y = delta.y - relaxed))
-            if (stretches && delta.y < 0f) stretch += consumed.y - delta.y
-            return consumed.copy(y = consumed.y + relaxed)
+            val taken = when {
+                !stretches || stretch == 0f -> 0f
+                delta.y < 0f -> delta.y
+                else -> minOf(stretch, delta.y)
+            }
+            stretch -= taken
+            val offered = delta.y - taken
+            val consumed = performScroll(delta.copy(y = offered))
+            if (stretches && offered < 0f) stretch += consumed.y - offered
+            return consumed.copy(y = consumed.y + taken)
         }
         override suspend fun applyToFling(velocity: Velocity, performFling: suspend (Velocity) -> Velocity) {
             flings++
@@ -52,13 +59,15 @@ class CatchUpPullTest {
     private val pull = CatchUpPull(thresholdPx = 100f)
     private var enabled = true
     private var pulls = 0
-    private val effect = CatchUpOverscroll(platform, pull, enabled = { enabled }, onPulled = { pulls++ })
+    private var atNewest = true
+    private val effect = CatchUpOverscroll(platform, pull, atNewest = { atNewest }, enabled = { enabled }, onPulled = { pulls++ })
 
     /** What the list scrolled, drag by drag. */
     private val listScrolls = mutableListOf<Float>()
 
     /** The list at its newest edge: a finger moving up (a negative delta, in screen terms) is left over whole. */
     private fun drag(dy: Float, source: NestedScrollSource = NestedScrollSource.UserInput, listTakes: Boolean = false) {
+        atNewest = !listTakes
         effect.applyToScroll(Offset(0f, dy), source) { available -> (if (listTakes || available.y > 0f) available else Offset.Zero).also { listScrolls += it.y } }
     }
 
@@ -119,6 +128,40 @@ class CatchUpPullTest {
         drag(60f)
         assertThat(pull.distance).isEqualTo(0f)
         assertThat(listScrolls).containsExactly(0f, 20f).inOrder()
+    }
+
+    @Test
+    fun `with the platform's stretch drawn, the drag deepening it is the pull's all the same, the stretch alongside`() {
+        platform.stretches = true
+        drag(-40f)
+        drag(-70f)
+        assertThat(platform.stretch).isEqualTo(110f)
+        assertThat(pull.distance).isEqualTo(110f)
+        assertThat(pull.armed).isTrue()
+        release()
+        assertThat(pulls).isEqualTo(1)
+    }
+
+    @Test
+    fun `pulled again while the last pull's stretch still springs back, the whole drag is the pull's`() {
+        platform.stretches = true
+        drag(-60f)
+        release()
+        assertThat(pulls).isEqualTo(0)
+        drag(-120f)
+        assertThat(pull.distance).isEqualTo(120f)
+        release()
+        assertThat(pulls).isEqualTo(1)
+    }
+
+    @Test
+    fun `a drag that reaches the newest row on its way is the pull's only past it`() {
+        var room = 30f
+        atNewest = false
+        effect.applyToScroll(Offset(0f, -50f), NestedScrollSource.UserInput) { available ->
+            available.copy(y = maxOf(available.y, -room)).also { room += it.y }
+        }
+        assertThat(pull.distance).isEqualTo(20f)
     }
 
     @Test

@@ -6,6 +6,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.ProcessLifecycleOwner
 import com.cursorforandroid.crash.CrashReporting
 import com.cursorforandroid.data.api.AccountApi
+import com.cursorforandroid.data.api.AccountTranscriptionApi
 import com.cursorforandroid.data.api.AccountFollowup
 import com.cursorforandroid.data.api.AccountList
 import com.cursorforandroid.data.api.AgentFilesApi
@@ -60,6 +61,7 @@ import com.cursorforandroid.data.api.SlashCommandApi
 import com.cursorforandroid.data.api.SseRunStreamer
 import com.cursorforandroid.data.api.SteeringApi
 import com.cursorforandroid.data.api.StoreReadTarget
+import com.cursorforandroid.data.api.TranscriptionApi
 import com.cursorforandroid.data.api.TurnPlan
 import com.cursorforandroid.data.api.WorkerLaunch
 import com.cursorforandroid.data.api.WorkspaceFilesApi
@@ -152,11 +154,18 @@ import com.cursorforandroid.share.ShareInbox
 import com.cursorforandroid.ui.components.ComposerMediaPreviews
 import com.cursorforandroid.ui.conversation.AttachmentImages
 import com.cursorforandroid.ui.conversation.OutgoingSends
+import com.cursorforandroid.ui.media.GallerySaver
+import com.cursorforandroid.ui.media.MediaSaves
 import com.cursorforandroid.ui.settings.DIAGNOSTICS_DIR
 import com.cursorforandroid.update.AndroidUpdatePlatform
 import com.cursorforandroid.update.allocatableBytes
 import com.cursorforandroid.util.AppClock
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -208,6 +217,8 @@ class AppGraph(
     agentStartApi: AgentStartApi? = null,
     /** Injectable for tests only: the account's branch lists, for the composer's branch picker against a scripted account. */
     repositoryBranchesApi: RepositoryBranchesApi? = null,
+    /** Injectable for tests only: the account's transcription, so the composer's voice input can be driven against a scripted account. */
+    transcriptionApi: TranscriptionApi? = null,
 ) {
     private val app = context.applicationContext
 
@@ -350,6 +361,24 @@ class AppGraph(
     /** The account records' blobs, shared by the transcript's record reader and the goal strip's state read (see BlobCache). */
     private val lazyBlobCache = lazy { BlobCache(BlobCache.MEMORY_BLOBS_WITH_DISK, BlobCache.MEMORY_BYTES_WITH_DISK, disk = caches.blobs) }
     private val lazySteeringApi = lazy { SteeringApi(lazyAccountRpc.value, lazySessionTokens.value, blobs = lazyBlobCache.value) }
+    /**
+     * The account's transcription of a dictated clip, with the desktop's sixty-second limit on the call rather than
+     * the account client's forty-five: a five-minute clip goes up whole and is transcribed before the answer starts.
+     */
+    private val lazyTranscription = lazy {
+        transcriptionApi ?: run {
+            val client = lazyAccountClient.value.newBuilder().callTimeout(TRANSCRIPTION_CALL_TIMEOUT_SECONDS, TimeUnit.SECONDS).build()
+            AccountTranscriptionApi(ConnectJsonClient(client, CursorLoginEndpoints.API_URL, throttle = lazyAccountRpc.value.throttle), lazySessionTokens.value)
+        }
+    }
+    val transcription: TranscriptionApi get() = lazyTranscription.value
+
+    /**
+     * Whether the composers offer the microphone: the Experimental "Voice input" switch, which transcribes through the
+     * account (`api2`) and so is dormant while Extended mode is off, and never in the demo, which has no account to ask.
+     */
+    val voiceInput: Flow<Boolean> = combine(prefs.voiceInput, extendedMode.enabled, prefs.demoMode) { voice, extended, demo -> voice && extended && !demo }
+        .distinctUntilChanged()
     /**
      * The account's own transcript of a chat (`FetchBackgroundComposer`), on the account client with the transcript's
      * call timeout: a page of a coordinator's record is hundreds of kilobytes to megabytes of payloads, and the
@@ -827,6 +856,10 @@ class AppGraph(
     private val lazyMedia = lazy { MediaLoader(app, lazyMediaClient.value, artifacts, stores = { storeFiles }, files = { agentFileReads }) }
     val media: MediaLoader get() = lazyMedia.value
 
+    /** The media viewer's saves to the gallery: the process's, so a save runs on past the viewer's close and shows when it opens again. */
+    private val lazyMediaSaves = lazy { MediaSaves(CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate), media, GallerySaver(app)) }
+    val mediaSaves: MediaSaves get() = lazyMediaSaves.value
+
     private val lazyRunMonitor = lazy {
         RunMonitor(
             agents = agents,
@@ -1192,3 +1225,4 @@ class AppGraph(
 
 /** How long one read of the account's record may take, headers to the last byte: the pages are large and the connection may be slow. */
 private const val RECORD_CALL_TIMEOUT_MINUTES = 5L
+private const val TRANSCRIPTION_CALL_TIMEOUT_SECONDS = 60L
