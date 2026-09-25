@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
@@ -62,6 +63,12 @@ import com.cursorforandroid.ui.agents.AgentRowActions
 import com.cursorforandroid.ui.agents.ChatRowMenu
 import com.cursorforandroid.ui.components.ComposerAnchor
 import com.cursorforandroid.ui.components.ComposerBox
+import com.cursorforandroid.ui.components.rememberComposerExpansion
+import androidx.compose.ui.layout.onPlaced
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.layout.positionInParent
+import androidx.compose.ui.platform.LocalDensity
+import kotlin.math.roundToInt
 import com.cursorforandroid.ui.components.LocalSendMotion
 import com.cursorforandroid.ui.components.SendMotion
 import com.cursorforandroid.ui.components.CursorCard
@@ -205,9 +212,23 @@ fun HomeScreen(
             }
         }
         LaunchRefusedHaptic(state)
+        // Expanded, the composer runs from under its selectors to just above the pane's foot — the keyboard's edge while
+        // it is up — with the lead above it given up as it grows and the page held still at the top.
+        val expansion = rememberComposerExpansion()
+        centring.squeeze = { expansion.fraction }
+        var pageHeight by remember { mutableIntStateOf(0) }
+        var composerTop by remember { mutableIntStateOf(0) }
+        val density = LocalDensity.current
+        val expandedMargins = with(density) { (pageTopPadding(withHeader = onOpenSidebar != null) + ExpandedFootGap).roundToPx() }
+        // The list stands clear of the keyboard, not of the navigation bar: with the keyboard down the bar is over its foot.
+        val imeInsets = WindowInsets.ime
+        val barInsets = WindowInsets.navigationBars
+        val footUnderBar = { (barInsets.getBottom(density) - imeInsets.getBottom(density)).coerceAtLeast(0) }
+        LaunchedEffect(expansion.expanded) { if (expansion.expanded) recentState.animateScrollToItem(0) }
         LazyColumn(
-            Modifier.fillMaxSize().imePadding().scrollEdgeFade(recentState, surface = colors.canvas),
+            Modifier.fillMaxSize().imePadding().onSizeChanged { pageHeight = it.height }.scrollEdgeFade(recentState, surface = colors.canvas),
             state = recentState,
+            userScrollEnabled = !expansion.expanded,
             contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = pageTopPadding(withHeader = onOpenSidebar != null), bottom = PageBottomPadding + navigationBar),
             verticalArrangement = centring.arrangement,
             horizontalAlignment = Alignment.CenterHorizontally,
@@ -253,6 +274,9 @@ fun HomeScreen(
                         onModePill = { pill -> viewModel.setPlanMode(pill == ModePills.Pill.Plan) },
                         focusRequests = composerFocusRequests,
                         voice = voice,
+                        expansion = expansion,
+                        expandRoom = { pageHeight - footUnderBar() - expandedMargins - composerTop },
+                        modifier = Modifier.onPlaced { composerTop = it.positionInParent().y.roundToInt() },
                     )
                     state.error?.let { ComposerErrorLine(it, state.errorAsked, onDismiss = viewModel::dismissError) }
                 }

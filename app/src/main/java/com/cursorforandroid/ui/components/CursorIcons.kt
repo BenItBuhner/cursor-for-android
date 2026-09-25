@@ -190,6 +190,26 @@ object CursorIcons {
         }
     }
 
+    /** Lucide `maximize-2`: the composer grown over the window's height, beside "+". */
+    val Expand: ImageVector by lazy {
+        icon("Expand") {
+            path("M15 3h6v6", 2f)
+            path("m21 3-7 7", 2f)
+            path("m3 21 7-7", 2f)
+            path("M9 21H3v-6", 2f)
+        }
+    }
+
+    /** Lucide `minimize-2`: the expanded composer back to its own height. */
+    val Collapse: ImageVector by lazy {
+        icon("Collapse") {
+            path("m14 10 7-7", 2f)
+            path("M20 10h-6V4", 2f)
+            path("m3 21 7-7", 2f)
+            path("M4 14h6v6", 2f)
+        }
+    }
+
     val Close: ImageVector by lazy {
         icon("Close") {
             path("M18 6 6 18", 2f)
