@@ -75,6 +75,16 @@ object CursorIcons {
         }
     }
 
+    /**
+     * An agent at rest, as the desktop marks a link to one (its `agent` glyph): the arrowhead inside [Cube], drawn in
+     * outline, its flat edge on top and the fold running from the top-left corner in to the middle and down to the
+     * point. The stroke is the arrow's, not [Weight]: the glyph is drawn at text size, where the outline must stay as
+     * heavy as the letters beside it.
+     */
+    val AgentPointer: ImageVector by lazy {
+        icon("AgentPointer") { path("M1.6 3.07H22.16L11.52 20.95L11.44 9.37Z", width = 1.84f) }
+    }
+
     /** Filled stop square for the composer's stop button. */
     val Stop: ImageVector by lazy {
         icon("Stop") { fill("M7.5 6A1.5 1.5 0 0 0 6 7.5v9A1.5 1.5 0 0 0 7.5 18h9a1.5 1.5 0 0 0 1.5-1.5v-9A1.5 1.5 0 0 0 16.5 6h-9z") }
