@@ -157,7 +157,7 @@ class TranscriptDiagnosticsTest {
                 TranscriptDiagnostics.Input("0.3.32", "2026-09-17T10:00:00Z", extendedMode = true, agentId = "bc-perf", agent = null, state = TranscriptDiagnostics.State(items), perf = session.snapshot()),
             )
             assertThat(report).contains("perf: open=2000ms firstContent=120ms newestPageWhole=340ms publications=2 (2.0/min, lastMinute=2) itemsRebuilt=13.0ms (max 9.0ms)")
-            assertThat(report).contains("  presenter: runs=2 total=2.9ms avg=1.5ms max=2.5ms rowsMaterialized=11 rowsReused=9 rowsComposed=2 turnsBuilt=1 (20.0ms) turnsReused=0 turnsRendered=1 turnRendersReused=1")
+            assertThat(report).contains("  presenter: runs=2 total=2.9ms avg=1.5ms max=2.5ms rowsMaterialized=11 rowsReused=9 rowsComposed=2 stepsComposed=0 turnsBuilt=1 (20.0ms) turnsReused=0 turnsRendered=1 turnRendersReused=1")
             assertThat(report).contains("  markdown: parses=1 cacheHits=2 parseTime=3.0ms")
             assertThat(report).contains("  disk: conversationReads=1 traceFileReads=39 (87.0ms)")
             assertThat(report).contains("  network: total=4 (4.0/min, lastMinute=4) record=2 runs=1 state=1")
