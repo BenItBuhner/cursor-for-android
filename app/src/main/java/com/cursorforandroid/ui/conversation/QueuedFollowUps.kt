@@ -61,6 +61,8 @@ import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.util.AppClock
 import com.cursorforandroid.util.TimeFormat
 import kotlinx.coroutines.delay
+import androidx.compose.ui.unit.IntOffset
+import com.cursorforandroid.ui.components.onContextClick
 
 /**
  * The follow-ups waiting for the agent's turn to end, stacked above the composer in the order they will go out. Each
@@ -281,12 +283,14 @@ private fun AccountQueueRow(
     val type = CursorTheme.typography
     var editing by rememberSaveable(item.id) { mutableStateOf(false) }
     var menuOpen by rememberSaveable(item.id) { mutableStateOf(false) }
+    var menuAt by remember { mutableStateOf<IntOffset?>(null) }
     // The caret starts at the end of the message, where a rewording most often continues.
     var text by rememberSaveable(item.id, stateSaver = TextFieldValue.Saver) { mutableStateOf(TextFieldValue(item.text, TextRange(item.text.length))) }
     Row(
         Modifier
             .fillMaxWidth()
             .dockedCard()
+            .onContextClick(enabled = onMove != null && !editing && !inFlight) { at -> menuAt = at; menuOpen = true }
             .testTag("account-queue-row")
             .heightIn(min = RowHeight)
             .padding(start = CursorDimens.composerPadding + CursorDimens.composerTextInset, end = CursorDimens.composerPadding - 6.dp)
@@ -354,8 +358,8 @@ private fun AccountQueueRow(
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
                     if (onMove != null) {
                         Box {
-                            GlyphButton(CursorIcons.More, "Reorder queued follow-up", colors.iconTertiary) { menuOpen = true }
-                            CursorMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                            GlyphButton(CursorIcons.More, "Reorder queued follow-up", colors.iconTertiary) { menuAt = null; menuOpen = true }
+                            CursorMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }, at = menuAt) {
                                 // Dimmed at the end of the queue it cannot move past.
                                 CursorMenuItem("Move up", CursorIcons.ArrowUp, enabled = position > 1) { menuOpen = false; onMove(true) }
                                 CursorMenuItem("Move down", CursorIcons.ArrowDown, enabled = position < count) { menuOpen = false; onMove(false) }

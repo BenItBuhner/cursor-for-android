@@ -75,7 +75,8 @@ import kotlin.math.min
  * It opens below what anchors it, or above when there is no room below, and lines up with the anchor's start where
  * it fits and its end where that does not. It never comes nearer than [CursorDimens.menuEdgeMargin] to the window's
  * edges, the system bars or the keyboard, and moves with the keyboard while it is open. It grows in from the side
- * that anchors it and shrinks back out.
+ * that anchors it and shrinks back out. Opened by a right-click ([onContextClick]), it takes the pointer for its
+ * anchor instead ([at]).
  */
 @Composable
 fun CursorMenu(
@@ -86,6 +87,8 @@ fun CursorMenu(
     offset: DpOffset = DpOffset.Zero,
     /** False for a popover that has to leave the keyboard up and the typing going (the `/` popover). */
     focusable: Boolean = true,
+    /** Where a right-click opened the menu, in window coordinates: the menu opens at that point, not beside its anchor. */
+    at: IntOffset? = null,
     content: @Composable ColumnScope.() -> Unit,
 ) {
     val state = remember { MutableTransitionState(false) }
@@ -97,8 +100,8 @@ fun CursorMenu(
     val view = LocalView.current
     val insets = WindowInsets.safeDrawing
     var placement by remember { mutableStateOf(MenuPlacement.Initial) }
-    val provider = remember(density, offset, view, insets) {
-        MenuPositionProvider(density, offset, area = { window -> safeArea(view, insets, density, window) }, onPlaced = { placement = it })
+    val provider = remember(density, offset, view, insets, at) {
+        MenuPositionProvider(density, offset, area = { window -> safeArea(view, insets, density, window) }, onPlaced = { placement = it }, at = at)
     }
     val maxHeight = with(density) {
         val height = view.rootView.height
@@ -276,15 +279,17 @@ private fun safeArea(view: View, insets: WindowInsets, density: Density, window:
  * with the anchor where that fits and end-aligned where only that does, else clamped into the [area]; when it fits
  * on neither side it goes to the roomier one. The popup is the surface plus [CursorDimens.menuShadowRoom] on every
  * side, so the offset returned is the surface's less that room. The insets behind [area] are state, read here, so
- * the menu is placed again when the keyboard moves.
+ * the menu is placed again when the keyboard moves. With [at] the anchor is that point rather than the layout's bounds.
  */
 internal class MenuPositionProvider(
     private val density: Density,
     private val offset: DpOffset,
     private val area: (IntSize) -> IntRect,
     private val onPlaced: (MenuPlacement) -> Unit,
+    private val at: IntOffset? = null,
 ) : PopupPositionProvider {
     override fun calculatePosition(anchorBounds: IntRect, windowSize: IntSize, layoutDirection: LayoutDirection, popupContentSize: IntSize): IntOffset {
+        val anchor = at?.let { IntRect(it, it) } ?: anchorBounds
         val room = with(density) { CursorDimens.menuShadowRoom.roundToPx() }
         val gap = with(density) { CursorDimens.menuGap.roundToPx() }
         val ltr = layoutDirection == LayoutDirection.Ltr
@@ -294,24 +299,24 @@ internal class MenuPositionProvider(
         val width = max(popupContentSize.width - 2 * room, 0)
         val height = max(popupContentSize.height - 2 * room, 0)
 
-        val start = if (ltr) anchorBounds.left + dx else anchorBounds.right - width + dx
-        val end = if (ltr) anchorBounds.right - width + dx else anchorBounds.left + dx
+        val start = if (ltr) anchor.left + dx else anchor.right - width + dx
+        val end = if (ltr) anchor.right - width + dx else anchor.left + dx
         val x = listOf(start, end).firstOrNull { it >= bounds.left && it + width <= bounds.right }
             ?: start.coerceIn(bounds.left, max(bounds.left, bounds.right - width))
 
-        val below = anchorBounds.bottom + gap + dy
-        val above = anchorBounds.top - gap - height + dy
+        val below = anchor.bottom + gap + dy
+        val above = anchor.top - gap - height + dy
         val placeBelow = when {
             below + height <= bounds.bottom -> true
             above >= bounds.top -> false
-            else -> bounds.bottom - anchorBounds.bottom >= anchorBounds.top - bounds.top
+            else -> bounds.bottom - anchor.bottom >= anchor.top - bounds.top
         }
         val y = (if (placeBelow) below else above).coerceIn(bounds.top, max(bounds.top, bounds.bottom - height))
 
         val pivotX = when {
-            x >= anchorBounds.right -> 0f
-            x + width <= anchorBounds.left -> width.toFloat()
-            else -> (max(anchorBounds.left, x) + min(anchorBounds.right, x + width)) / 2f - x
+            x >= anchor.right -> 0f
+            x + width <= anchor.left -> width.toFloat()
+            else -> (max(anchor.left, x) + min(anchor.right, x + width)) / 2f - x
         }
         val pivotY = if (placeBelow) 0f else height.toFloat()
         val origin = if (popupContentSize.width > 0 && popupContentSize.height > 0) {

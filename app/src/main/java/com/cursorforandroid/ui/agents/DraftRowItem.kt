@@ -44,6 +44,8 @@ import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.util.AppClock
 import com.cursorforandroid.util.TimeFormat
+import androidx.compose.ui.unit.IntOffset
+import com.cursorforandroid.ui.components.onContextClick
 
 /** A new chat written and not sent, as the sidebar lists it above its groups. */
 data class DraftRow(
@@ -109,6 +111,7 @@ fun DraftRowItem(
     val type = CursorTheme.typography
     val shape = CursorTheme.shapes.base
     var menuOpen by rememberSaveable { mutableStateOf(false) }
+    var menuAt by remember { mutableStateOf<IntOffset?>(null) }
     val interaction = remember { MutableInteractionSource() }
     val haptics = rememberHaptics()
     Box(modifier.fillMaxWidth().padding(horizontal = CursorDimens.selectionInset).testTag("draft-row")) {
@@ -117,11 +120,12 @@ fun DraftRowItem(
                 .fillMaxWidth()
                 .clip(shape)
                 .background(if (selected) colors.fillSoft else Color.Transparent, shape)
+                .onContextClick { at -> menuAt = at; menuOpen = true }
                 .combinedClickable(
                     interactionSource = interaction,
                     indication = ripple(color = colors.base),
                     onClick = { onOpen(row) },
-                    onLongClick = { haptics.perform(Haptic.LongPress); menuOpen = true },
+                    onLongClick = { haptics.perform(Haptic.LongPress); menuAt = null; menuOpen = true },
                 )
                 .height(CursorDimens.sidebarRow)
                 .padding(start = 8.dp, end = 10.dp),
@@ -139,7 +143,7 @@ fun DraftRowItem(
                 Text(trailing.joinToString(" · "), style = type.base, color = colors.textQuaternary, maxLines = 1)
             }
         }
-        CursorMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+        CursorMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }, at = menuAt) {
             CursorMenuItem("Delete draft", CursorIcons.Trash) { menuOpen = false; onDelete(row) }
         }
     }

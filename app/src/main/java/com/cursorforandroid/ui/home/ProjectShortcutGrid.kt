@@ -65,6 +65,8 @@ import com.cursorforandroid.ui.theme.CursorTheme
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.launch
+import com.cursorforandroid.ui.components.onContextClick
+import com.cursorforandroid.ui.components.isContextPress
 
 /** What the Project shortcuts' reordering says to accessibility services. */
 object ProjectShortcutCopy {
@@ -105,8 +107,13 @@ internal class ProjectGridState {
 
     private var beforeLift: List<String>? = null
 
-    internal fun openMenu(id: String) {
+    /** Where a right-click opened [menuFor]'s menu, in window coordinates; null for a long press, beside the shortcut. */
+    var menuAt by mutableStateOf<IntOffset?>(null)
+        private set
+
+    internal fun openMenu(id: String, at: IntOffset? = null) {
         menuFor = id
+        menuAt = at
     }
 
     internal fun closeMenu() {
@@ -219,6 +226,7 @@ internal fun ProjectShortcutGrid(
                                 }
                             }
                             .testTag(NewChatHomeTags.PROJECT_SHORTCUT)
+                            .onContextClick(enabled = withMenu && !grid.arranging) { at -> grid.openMenu(id, at) }
                             .semantics(mergeDescendants = true) {
                                 role = Role.Button
                                 if (grid.arranging) stateDescription = ProjectShortcutCopy.ARRANGING
@@ -241,7 +249,7 @@ internal fun ProjectShortcutGrid(
                             lifted = lifted,
                             modifier = Modifier.clip(shape).indication(sources.getOrPut(id) { MutableInteractionSource() }, ripple(color = colors.base)),
                         )
-                        if (actions != null) ChatRowMenu(row = row, expanded = grid.menuFor == id, onDismiss = grid::closeMenu, actions = actions)
+                        if (actions != null) ChatRowMenu(row = row, expanded = grid.menuFor == id, onDismiss = grid::closeMenu, actions = actions, at = grid.menuAt)
                     }
                 }
             }
@@ -457,6 +465,8 @@ private suspend fun PointerInputScope.shortcutGestures(
     val hold = viewConfiguration.longPressTimeoutMillis
     awaitEachGesture {
         val down = awaitFirstDown(requireUnconsumed = false)
+        // A right-click is the shortcut's own (its onContextClick): not a tap, a hold or a drag of the grid's.
+        if (isContextPress(currentEvent)) return@awaitEachGesture
         val order = input.value.order(grid.arrangement)
         val index = geometry.indexAt(down.position, order.size) ?: return@awaitEachGesture
         val id = order[index]

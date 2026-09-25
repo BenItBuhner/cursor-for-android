@@ -60,6 +60,9 @@ import com.cursorforandroid.ui.panel.sectionRows
 import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.util.TimeFormat
+import androidx.compose.ui.unit.IntOffset
+import com.cursorforandroid.ui.components.onContextClick
+import androidx.compose.runtime.remember
 
 /**
  * A Cursor Project as its coordinator chat's panel shows it — the Project's one surface: what it is doing at a
@@ -234,6 +237,7 @@ internal fun WorkerRow(
     val agent = worker.agent
     val row = AgentListOrganizer.toRow(agent, local, nowMillis)
     var menuOpen by rememberSaveable { mutableStateOf(false) }
+    var menuAt by remember { mutableStateOf<IntOffset?>(null) }
     // Pause and Stop ask first while Settings › Confirm before stopping is on; the question goes with the run.
     val confirmation = LocalRunStopConfirmation.current
     LaunchedEffect(agent.isRunning) { if (!agent.isRunning) confirmation?.dismissFor(agent.id) }
@@ -246,6 +250,8 @@ internal fun WorkerRow(
         Modifier
             .fillMaxWidth()
             .padding(horizontal = CursorDimens.selectionInset)
+            // The row has no long press; a right-click opens the menu its "…" button opens, at the pointer.
+            .onContextClick(enabled = !busy) { at -> menuAt = at; menuOpen = true }
             .pressable({ actions.onOpenAgent(agent) }, CursorTheme.shapes.base)
             .heightIn(min = CursorDimens.listRow)
             .padding(start = 12.dp, end = 4.dp, top = 6.dp, bottom = 6.dp)
@@ -265,8 +271,8 @@ internal fun WorkerRow(
             if (detail.isNotEmpty()) Text(detail, style = type.small, color = colors.textQuaternary, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
         Box {
-            FlatIconButton(CursorIcons.More, "Actions for ${agent.name}", onClick = { menuOpen = true }, enabled = !busy)
-            CursorMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+            FlatIconButton(CursorIcons.More, "Actions for ${agent.name}", onClick = { menuAt = null; menuOpen = true }, enabled = !busy)
+            CursorMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }, at = menuAt) {
                 CursorMenuItem("Open and message", CursorIcons.ChevronRight) { menuOpen = false; actions.onOpenAgent(agent) }
                 if (actionsAvailable) {
                     if (agent.isRunning) CursorMenuItem("Steer\u2026", CursorIcons.Target) { menuOpen = false; actions.onSteer(agent) }

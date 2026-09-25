@@ -69,6 +69,8 @@ import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.util.AppClock
 import com.cursorforandroid.util.TimeFormat
+import androidx.compose.ui.unit.IntOffset
+import com.cursorforandroid.ui.components.onContextClick
 
 data class AgentRowActions(
     val onOpen: (AgentRow) -> Unit,
@@ -115,23 +117,26 @@ fun AgentRowItem(
     val type = CursorTheme.typography
     val shape = CursorTheme.shapes.base
     var menuOpen by rememberSaveable { mutableStateOf(false) }
+    var menuAt by remember { mutableStateOf<IntOffset?>(null) }
     val interaction = remember { MutableInteractionSource() }
     val haptics = rememberHaptics()
     val agent = row.agent
 
     // A stand-in for a Project not loaded yet has nothing to act on: it opens (the chat loads by id) and nothing more.
     val placeholder = row.isPlaceholder
+    val hasMenu = showMenu && !placeholder && !row.isStandIn
     Box(modifier.fillMaxWidth().padding(start = CursorDimens.selectionInset + CursorDimens.sidebarIndent * depth.coerceIn(0, MAX_INDENT_DEPTH), end = CursorDimens.selectionInset)) {
         Row(
             Modifier
                 .fillMaxWidth()
                 .clip(shape)
                 .background(if (selected) colors.fillSoft else Color.Transparent, shape)
+                .onContextClick(enabled = hasMenu) { at -> menuAt = at; menuOpen = true }
                 .combinedClickable(
                     interactionSource = interaction,
                     indication = ripple(color = colors.base),
                     onClick = { actions.onOpen(row) },
-                    onLongClick = if (showMenu && !placeholder && !row.isStandIn) ({ haptics.perform(Haptic.LongPress); menuOpen = true }) else null,
+                    onLongClick = if (hasMenu) ({ haptics.perform(Haptic.LongPress); menuAt = null; menuOpen = true }) else null,
                 )
                 .height(CursorDimens.sidebarRow)
                 .padding(start = 8.dp, end = 10.dp),
@@ -165,16 +170,17 @@ fun AgentRowItem(
                 ChildrenToggle(row, expanded = childrenExpanded, onToggle = onToggleChildren)
             }
         }
-        ChatRowMenu(row = row, expanded = menuOpen, onDismiss = { menuOpen = false }, actions = actions)
+        ChatRowMenu(row = row, expanded = menuOpen, onDismiss = { menuOpen = false }, actions = actions, at = menuAt)
     }
 }
 
 /**
  * [ChatOverflowMenu] with the rename and snooze dialogs two of its items open: the long-press menu of a sidebar row,
- * a recent chat's card and a Project's shortcut on the New Chat page alike. Anchored to the layout it is placed in.
+ * a recent chat's card and a Project's shortcut on the New Chat page alike. Anchored to the layout it is placed in,
+ * or at the pointer ([at], window coordinates) when a right-click opened it.
  */
 @Composable
-fun ChatRowMenu(row: AgentRow, expanded: Boolean, onDismiss: () -> Unit, actions: AgentRowActions) {
+fun ChatRowMenu(row: AgentRow, expanded: Boolean, onDismiss: () -> Unit, actions: AgentRowActions, at: IntOffset? = null) {
     var renameOpen by rememberSaveable { mutableStateOf(false) }
     var snoozeOpen by rememberSaveable { mutableStateOf(false) }
     ChatOverflowMenu(
@@ -184,6 +190,7 @@ fun ChatRowMenu(row: AgentRow, expanded: Boolean, onDismiss: () -> Unit, actions
         onRename = { onDismiss(); renameOpen = true },
         onSnooze = { onDismiss(); snoozeOpen = true },
         actions = actions,
+        at = at,
     )
     if (renameOpen) {
         RenameChatDialog(
@@ -285,11 +292,12 @@ fun ChatOverflowMenu(
     onRename: () -> Unit,
     onSnooze: () -> Unit,
     actions: AgentRowActions,
+    at: IntOffset? = null,
 ) {
     val clipboard = LocalClipboardManager.current
     val uriHandler = LocalUriHandler.current
     val agent = row.agent
-    CursorMenu(expanded = expanded, onDismissRequest = onDismiss) {
+    CursorMenu(expanded = expanded, onDismissRequest = onDismiss, at = at) {
         if (AgentListOrganizer.canPin(agent)) CursorMenuItem(if (row.isPinned) "Unpin" else "Pin", CursorIcons.Pin) { onDismiss(); actions.onTogglePin(row) }
         val editProject = actions.onEditProject?.takeIf { agent.isProjectRoot }
         if (editProject != null) CursorMenuItem("Edit Project", CursorIcons.Pencil) { onDismiss(); editProject(row) }
