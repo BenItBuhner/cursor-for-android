@@ -1,10 +1,12 @@
 package com.cursorforandroid.ui.home
 
 import com.cursorforandroid.domain.Agent
+import com.cursorforandroid.domain.AgentIndicator
 import com.cursorforandroid.domain.AgentLifecycle
 import com.cursorforandroid.domain.AgentListOrganizer
 import com.cursorforandroid.domain.AgentParent
 import com.cursorforandroid.domain.AgentParentKind
+import com.cursorforandroid.domain.AgentRow
 import com.cursorforandroid.domain.EnvType
 import com.cursorforandroid.domain.GitBranch
 import com.cursorforandroid.domain.ListPreferences
@@ -101,4 +103,35 @@ internal object NewChatHomeFixtures {
 
     /** The same account before its first Project: the chats of its own alone. */
     fun withoutProjects(): AgentListUiState = list(agents.filter { !it.isProject && it.parent == null })
+
+    const val ONE_WORKING = "Stripe migration"
+    const val TWO_WORKING = "Polymarket Bot Scaling & Research"
+    const val TWELVE_WORKING = "Revenue Scaling Pipeline"
+    const val UNREAD = "Noetic"
+    const val FAILED = "Murmur"
+    const val IDLE = "Codex Meter"
+
+    /**
+     * A Project shortcut in each state its corner can show: one, two and twelve chats working, unread, failed, and
+     * read with chats but nothing working — the working ones from the coordinator and its workers alike.
+     */
+    fun shortcutStates(): List<AgentRow> {
+        fun project(id: String, name: String, icon: String, color: String, coordinatorRunning: Boolean, workers: Int, running: Int, indicator: AgentIndicator? = null): AgentRow {
+            val coordinator = agent(id, name, 30, running = coordinatorRunning, appearance = ProjectAppearance(icon, color))
+            val children = (1..workers).map { n ->
+                val worker = agent("$id-$n", "$name worker $n", 30L + n, running = n <= running, parent = worker(id))
+                AgentRow(worker, if (worker.isRunning) AgentIndicator.Running else AgentIndicator.Read, isPinned = false, isUnread = false, launchedFromThisDevice = false)
+            }
+            val shown = indicator ?: if (coordinatorRunning) AgentIndicator.Running else AgentIndicator.Read
+            return AgentRow(coordinator, shown, isPinned = false, isUnread = shown == AgentIndicator.Unread, launchedFromThisDevice = false, children = children)
+        }
+        return listOf(
+            project("bc-stripe-p", ONE_WORKING, "rocket", "purple", coordinatorRunning = false, workers = 3, running = 1),
+            project("bc-poly", TWO_WORKING, "robot", "blue", coordinatorRunning = true, workers = 4, running = 1),
+            project("bc-revenue-p", TWELVE_WORKING, "currency-dollar", "green", coordinatorRunning = true, workers = 14, running = 11),
+            project("bc-noetic", UNREAD, "logo-notion", "gray", coordinatorRunning = false, workers = 5, running = 0, indicator = AgentIndicator.Unread),
+            project("bc-murmur", FAILED, "target", "magenta", coordinatorRunning = false, workers = 2, running = 0, indicator = AgentIndicator.Error),
+            project("bc-meter", IDLE, "briefcase", "yellow", coordinatorRunning = false, workers = 6, running = 0),
+        )
+    }
 }

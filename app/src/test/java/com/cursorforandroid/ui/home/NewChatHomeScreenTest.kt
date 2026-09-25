@@ -6,6 +6,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.test.assertCountEquals
+import androidx.compose.ui.test.hasContentDescription
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
@@ -97,7 +98,9 @@ class NewChatHomeScreenTest {
         compose.waitUntil(10_000) { shortcuts() == 5 }
         listOf(NewChatHomeFixtures.BILLING_NAME, NewChatHomeFixtures.SHIPYARD_NAME, "Design system", "Cursor for Android", NewChatHomeFixtures.PIPELINE_NAME)
             .forEach { compose.onNodeWithText(it).assertExists() }
-        listOf("1 working", "2 working", "2 chats", "3 chats", "Idle").forEach { compose.onNodeWithText(it).assertExists() }
+        compose.onNode(hasText(NewChatHomeFixtures.BILLING_NAME) and hasContentDescription("1 agent working")).assertExists()
+        compose.onNode(hasText(NewChatHomeFixtures.SHIPYARD_NAME) and hasContentDescription("2 agents working")).assertExists()
+        listOf("working", "chats", "Idle").forEach { compose.onAllNodes(hasText(it, substring = true)).assertCountEquals(0) }
         // The account's own chats are the other layout's.
         compose.onAllNodes(hasText(NewChatHomeFixtures.NEWEST_CHAT)).assertCountEquals(0)
 
