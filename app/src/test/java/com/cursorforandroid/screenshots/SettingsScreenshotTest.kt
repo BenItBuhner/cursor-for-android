@@ -163,13 +163,13 @@ class SettingsScreenshotTest {
 
     /** The whole list at once, on a canvas tall enough to hold it: the account first and the disclaimer last. */
     @Test
-    @Config(sdk = [35], qualifiers = "w411dp-h1900dp-night-420dpi")
+    @Config(sdk = [35], qualifiers = "w411dp-h2050dp-night-420dpi")
     fun settingsEssentials() {
         essentials(ThemeMode.Dark, "65_settings_essentials")
     }
 
     @Test
-    @Config(sdk = [35], qualifiers = "w411dp-h1900dp-notnight-420dpi")
+    @Config(sdk = [35], qualifiers = "w411dp-h2050dp-notnight-420dpi")
     fun settingsEssentialsLight() {
         essentials(ThemeMode.Light, "160_settings_essentials_light")
     }

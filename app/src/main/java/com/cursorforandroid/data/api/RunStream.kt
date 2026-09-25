@@ -314,11 +314,11 @@ class SseRunStreamer(
                         parsed.event.takeUnless { it is RunStreamEvent.Error }?.let {
                             delivered = true
                             emit(it)
-                            frame.id?.let { id -> emit(RunStreamEvent.Position(id)) }
+                            frame.id?.takeIf { it.isNotBlank() && !frame.resetId }?.let { id -> emit(RunStreamEvent.Position(id)) }
                         }
                     }
                     // Skipped on purpose, either way: resuming past them is right, since asking again brings the same frame.
-                    SseParser.Parsed.Ignored, SseParser.Parsed.Oversized -> frame.id?.let { lastId = it; emit(RunStreamEvent.Position(it)) }
+                    SseParser.Parsed.Ignored, SseParser.Parsed.Oversized -> frame.id?.let { lastId = it; if (it.isNotBlank() && !frame.resetId) emit(RunStreamEvent.Position(it)) }
                     SseParser.Parsed.Undecodable -> Unit
                 }
                 parsed
