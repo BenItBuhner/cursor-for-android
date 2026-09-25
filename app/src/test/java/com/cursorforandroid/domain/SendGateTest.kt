@@ -43,6 +43,7 @@ class SendGateTest {
                 SendGate.Source.Account -> assertThat(i.accountScanned).isTrue()
                 SendGate.Source.Row -> assertThat(i.rowLoaded).isTrue()
                 SendGate.Source.Record -> assertThat(i.chatRunStatus).isNotNull()
+                SendGate.Source.Screen -> throw AssertionError("the dispatcher's reading never goes by the screen: $i")
                 SendGate.Source.None -> assertThat(i.rowLoaded || i.accountScanned || i.chatRunStatus != null).isFalse()
             }
         }
@@ -93,5 +94,28 @@ class SendGateTest {
         assertThat(SendGate.decide(inputs(chat = RunStatus.RUNNING)).let { it.busy to it.source }).isEqualTo(true to SendGate.Source.Record)
         assertThat(SendGate.decide(inputs(chat = RunStatus.FINISHED)).let { it.busy to it.source }).isEqualTo(false to SendGate.Source.Record)
         assertThat(SendGate.decide(inputs()).let { it.busy to it.source }).isEqualTo(false to SendGate.Source.None)
+    }
+
+    @Test
+    fun `at the tap, a chat showing a turn under way is busy though the account and the row still say idle`() {
+        // A Project's coordinator woken by a worker's report: the chat follows the new turn (RUNNING, its stream
+        // reconnecting across the hand-over) while the account's word and the row, a poll behind, say idle.
+        val stale = inputs(rowLoaded = true, rowRunning = false, rowUpdatedAt = 100_000, chat = RunStatus.RUNNING, streaming = true, reconnecting = true, accountScanned = true, accountRunning = false, accountAt = 100_000)
+        assertThat(SendGate.decide(stale).busy).isFalse()
+        val atSend = SendGate.decideAtSend(stale)
+        assertThat(atSend.busy).isTrue()
+        assertThat(atSend.source).isEqualTo(SendGate.Source.Screen)
+        // A run record the chat still has as active, with no stream at all: the Stop button shows, so does the queue.
+        assertThat(SendGate.decideAtSend(inputs(rowLoaded = true, rowRunning = false, chat = RunStatus.CREATING)).busy).isTrue()
+    }
+
+    @Test
+    fun `at the tap, a busy reading stands as it is, and a chat showing no turn sends now`() {
+        val streaming = inputs(rowLoaded = true, rowRunning = false, chat = RunStatus.RUNNING, streaming = true)
+        assertThat(SendGate.decideAtSend(streaming).source).isEqualTo(SendGate.Source.Stream)
+        val idle = SendGate.decideAtSend(inputs(rowLoaded = true, rowRunning = false, chat = RunStatus.FINISHED, accountScanned = true, accountRunning = false))
+        assertThat(idle.busy).isFalse()
+        assertThat(idle.source).isEqualTo(SendGate.Source.Account)
+        assertThat(SendGate.decideAtSend(inputs()).busy).isFalse()
     }
 }

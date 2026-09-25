@@ -149,11 +149,11 @@ class FollowUpRepository(
     }
 
     /**
-     * The decision between sending now and queueing, for the composer's send (see [SendGate]): the same reading the
-     * dispatcher makes, so the two never disagree, recorded for the diagnostics.
+     * The decision between sending now and queueing, for the composer's send (see [SendGate.decideAtSend]): the
+     * dispatcher's reading, and busy too while the chat shows a turn under way; recorded for the diagnostics.
      */
     fun decide(agentId: String): SendGate.Decision {
-        val decision = gate(agents.agent(agentId), conversations.state(agentId).value, agents.runningScan.value)
+        val decision = SendGate.decideAtSend(inputs(agents.agent(agentId), conversations.state(agentId).value, agents.runningScan.value))
         val e = entry(agentId)
         e.lastDecision = decision
         e.lastDecisionAt = AppClock.now()
@@ -728,7 +728,9 @@ class FollowUpRepository(
     }
 
     /** One reading of every source the decision has (see [SendGate]). */
-    private fun gate(row: Agent?, chat: ConversationState, scan: RunningScan): SendGate.Decision = SendGate.decide(
+    private fun gate(row: Agent?, chat: ConversationState, scan: RunningScan): SendGate.Decision = SendGate.decide(inputs(row, chat, scan))
+
+    private fun inputs(row: Agent?, chat: ConversationState, scan: RunningScan): SendGate.Inputs =
         SendGate.Inputs(
             rowLoaded = row != null,
             rowRunning = row?.isRunning == true,
@@ -739,8 +741,7 @@ class FollowUpRepository(
             accountScanned = row != null && scan.accountWord[row.id] != null,
             accountRunning = row != null && scan.accountWord[row.id]?.running == true,
             accountAtMillis = row?.let { scan.accountWord[it.id]?.atMillis } ?: 0L,
-        ),
-    )
+        )
 
     /** The run to follow while something is queued: the row's, while it is running. Never a prompt's local placeholder. */
     private fun runToFollow(agentId: String): Flow<String?> = agents.state

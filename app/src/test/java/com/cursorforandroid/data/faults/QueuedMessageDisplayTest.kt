@@ -282,6 +282,62 @@ class QueuedMessageDisplayTest {
         assertOnePlace(followupId, setOf(MESSAGE), sentAt)
     }
 
+    // -- queued at the tap: the card from the first frame, never a bubble first ----------------------------------------
+
+    @Test
+    fun `Stable - a message to a Project's busy coordinator is on the card from the tap, never a bubble first, though the account's list says idle`() = runBlocking<Unit> {
+        queuedAtTheTap(TranscriptEngine.STABLE)
+    }
+
+    @Test
+    fun `Beta - a message to a Project's busy coordinator is on the card from the tap, never a bubble first, though the account's list says idle`() = runBlocking<Unit> {
+        queuedAtTheTap(TranscriptEngine.BETA)
+    }
+
+    /**
+     * What the composer does now, mid-turn in Extended mode (`ConversationViewModel.send` → `OutgoingMessages` with a
+     * queued route): the decision taken at the tap from what the chat shows, and the message on the card before any
+     * request — Bennett, 0.4.1: a message to his running coordinator played the send into a bubble, then popped onto
+     * the card a round trip later. Here the account's list, a poll behind the coordinator, says the composer is idle.
+     */
+    private suspend fun queuedAtTheTap(engine: TranscriptEngine) {
+        server.namesQueuedRuns = true
+        val rig = rig(engine)
+        rig.open(project = true)
+        server.composers[agentId] = server.composers.getValue(agentId).copy(running = false)
+        rig.agents.refresh()
+        rig.awaitUntilOr(20_000, "the account's stale word") { rig.agents.runningScan.value.accountWord[agentId]?.running == false }
+        val decision = rig.followUps.decide(agentId)
+        assertWithMessage("decided at the tap: $decision").that(decision.busy).isTrue()
+
+        val sentAt = System.nanoTime()
+        val followupId = AccountFollowup.newId()
+        val staged = rig.conversations.queueAhead(agentId, MESSAGE, followupId = followupId)
+        // The frame the tap published: on the card, in flight, and nowhere in the transcript.
+        assertThat(card().map { it.id }).contains(followupId)
+        assertThat(controls.placed(state.queuePlacement).inFlightQueueIds).contains(followupId)
+        assertThat(state.items.none { it is UserMessage && it.text == MESSAGE }).isTrue()
+        rig.conversations.sendQueuedVia(agentId, staged, followupId) {
+            rig.steering.sendFollowup(agentId, AccountFollowup(text = MESSAGE, followupId = followupId), refresh = false).getOrThrow()
+        }.getOrThrow()
+        rig.steering.refreshQueue(agentId)
+        // Queued: the account holds it, the row takes its actions.
+        assertThat(controls.placed(state.queuePlacement).inFlightQueueIds).doesNotContain(followupId)
+        rig.awaitUntilOr(10_000, "the list to name it") { controls.queue.any { it.id == followupId } }
+        assertCardRowAsAChat(followupId, MESSAGE)
+        assertThat(state.activeRunId).isEqualTo(live.runId)
+
+        val next = endTurnAndDeliver()
+        rig.awaitUntilOr(45_000, "the message filed under its run") { state.items.any { it is UserMessage && it.text == MESSAGE } && state.activeRunId == next.id }
+        rig.awaitUntilOr(20_000, "the list to let it go") { controls.queue.none { it.id == followupId } }
+        delay(1_000)
+        assertThat(state.items.count { it is UserMessage && it.text == MESSAGE }).isEqualTo(1)
+        assertThat(card()).isEmpty()
+        val bubbled = frames.filter { it.atNanos >= sentAt }.firstOrNull { f -> f.state.items.any { it is UserMessage && it.text == MESSAGE && it.isPending } }
+        assertWithMessage("a pending bubble before the card: ${bubbled?.state?.items?.filterIsInstance<UserMessage>()?.map { it.id }}").that(bubbled).isNull()
+        assertOnePlace(followupId, setOf(MESSAGE), sentAt)
+    }
+
     // -- every card action in a Project ----------------------------------------------------------------------------------
 
     @Test

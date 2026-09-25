@@ -619,8 +619,8 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
         val attached = files.value
         if (text.isEmpty() && images.isEmpty() && attached.isEmpty()) return null
         val options = picker.value
-        // One reading, one source at a time — the freshest that has spoken — shared with the queue's dispatcher, so
-        // what the composer decides and what the queue does never disagree (see SendGate; the `send:` diagnostics).
+        // Decided here and now, with nothing asked of the server: the queue dispatcher's reading, and busy too while
+        // the chat shows a turn under way — what the Stop button and the placeholder say (see SendGate.decideAtSend).
         val busy = graph.followUps.decide(agentId).busy
         val caps = capabilities.value
         val accountMode = options.mode?.needsAccountService == true
@@ -653,10 +653,10 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
             override = options.override,
         )
         when {
-            // Mid-turn in Extended mode: into the account's queue, behind the turn under way. The account answers with
-            // no run, the bubble comes down and the card above the composer shows the message until it is delivered.
+            // Mid-turn in Extended mode: into the account's queue, behind the turn under way — on the card above the
+            // composer from the tap, never a bubble first, until it is delivered (see ConversationRepository.queueAhead).
             busy && accountQueue -> {
-                dispatch(message, graph.outgoing.accountRoute(agentId, message))
+                dispatch(message, graph.outgoing.accountRoute(agentId, message, queued = true))
                 return null
             }
             // This device's queue sends the documented run request, which cannot carry Ask or Debug: a message in
