@@ -104,7 +104,17 @@ data class AgentListState(
      * failed is not made again behind a spinner (see `AgentsViewModel.SidebarTail.Failed`).
      */
     val loadMoreError: String? = null,
-)
+    /**
+     * Rows held but not drawn yet: agents new to the list whose account record has not said where they go, so a
+     * Project's just-created worker is never shown loose at the top level, nor an old chat a sweep bumped under
+     * Today, before the record places and dates it (see `AgentRepository.holdUntilPlaced`). Released when the
+     * record lands, a stamp places the row, the account says it has no record, or after a bound.
+     */
+    val awaitingPlacement: Set<String> = emptySet(),
+) {
+    /** The rows the lists draw: [agents] less the ones [awaitingPlacement] holds back. */
+    val shownAgents: List<Agent> by lazy { if (awaitingPlacement.isEmpty()) agents else agents.filterNot { it.id in awaitingPlacement } }
+}
 
 /**
  * How much of the list a refresh fetches. [Quick] reads the newest page of each endpoint, which is where agents
@@ -454,14 +464,42 @@ class AgentRepository(
     private val recordMutex = Mutex()
 
     /**
+     * Agents a refresh brought that the list did not hold, whose account record has not been read, by id, with when
+     * the hold began: not drawn until the record (or a stamp) places them, the account says it has none, or
+     * [PLACEMENT_HOLD_MS] passes (see [AgentListState.awaitingPlacement]). Extended mode only — default mode never
+     * reads records.
+     */
+    private val holdUntilPlaced = ConcurrentHashMap<String, Long>()
+
+    /**
+     * Rows a listing left out that the server, asked by id, still had — the answer that omitted them was partial —
+     * with when it said so; not asked again for [ALIVE_CONFIRMED_MS] (see [confirmGone]).
+     */
+    private val aliveConfirmedAt = ConcurrentHashMap<String, Long>()
+
+    /**
+     * Stamps an authoritative answer left out where the omission may be missing data (an empty answer, a worker just
+     * created by its coordinator), by chat id, with the first such answer's time and how many answers in a row have:
+     * the stamp goes only once the omission has stood across [RETRACT_CONFIRM_ANSWERS] answers over
+     * [RETRACT_CONFIRM_MS] (see [applyLineage]).
+     */
+    private val retractMisses = ConcurrentHashMap<String, Pair<Long, Int>>()
+
+    /**
      * The account's records of chats the list does not hold yet, by id — the account list and the public list are
      * windowed differently, and the record read now dresses the row a later page brings (see [Agent.placed]), so
-     * the row is published placed, as the desktop publishes every row with its record. Bounded, oldest first out;
-     * kept on disk with the list. Guarded by [publishLock].
+     * the row is published placed and dated, as the desktop publishes every row with its record. Bounded, oldest
+     * first out; kept on disk with the list. Guarded by [publishLock].
      */
-    private val pendingRecords = object : LinkedHashMap<String, RecordFields>(256, 0.75f, false) {
-        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, RecordFields>?): Boolean = size > MAX_PENDING_RECORDS
+    private val pendingRecords = object : LinkedHashMap<String, PendingRecord>(256, 0.75f, false) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, PendingRecord>?): Boolean = size > MAX_PENDING_RECORDS
     }
+
+    /**
+     * A record read ahead of its row: the fields that place it and the activity time that dates it — a row dressed
+     * with the fields alone would read as having its record and be dated by the public `updatedAt` for good.
+     */
+    private data class PendingRecord(val fields: RecordFields, val activityAtMillis: Long?)
 
     /** Epoch millis of the last completed fetch for the current backend; zero before the first one and after a [reset]. */
     @Volatile var lastRefreshedAt: Long = 0L
@@ -544,6 +582,9 @@ class AgentRepository(
         _state.value = AgentListState()
         placements.clear()
         recordUnresolved.clear()
+        holdUntilPlaced.clear()
+        aliveConfirmedAt.clear()
+        retractMisses.clear()
         pendingRecords.clear()
         rootRecords.clear()
         _knownRoots.value = emptyList()
@@ -805,13 +846,37 @@ class AgentRepository(
      * publication of the same rows stays the same value.
      */
     private fun AgentListState.classified(): AgentListState {
-        if (agents.isEmpty()) return this
+        if (agents.isEmpty()) return if (awaitingPlacement.isEmpty()) this else copy(awaitingPlacement = emptySet())
         var changed = false
         val next = agents.map { agent ->
             val placed = agent.placed().settled()
             if (placed == agent) agent else placed.also { changed = true }
         }
-        return if (changed) copy(agents = next) else this
+        val held = awaitingPlacement(next)
+        return if (changed || held != awaitingPlacement) copy(agents = if (changed) next else agents, awaitingPlacement = held) else this
+    }
+
+    /**
+     * The rows [holdUntilPlaced] still holds back: a row is let go once its record has been read, a stamp or the
+     * record's link has placed it, it is a Project, or it has waited [PLACEMENT_HOLD_MS]; a hold whose row is gone goes.
+     */
+    private fun awaitingPlacement(rows: List<Agent>): Set<String> {
+        if (holdUntilPlaced.isEmpty()) return emptySet()
+        val now = AppClock.now()
+        val byId = rows.associateBy { it.id }
+        val held = HashSet<String>()
+        holdUntilPlaced.entries.removeAll { (id, since) ->
+            val row = byId[id] ?: return@removeAll true
+            val settled = row.record != null || row.parent != null || row.isProject || now - since >= PLACEMENT_HOLD_MS
+            if (!settled) held += id
+            settled
+        }
+        return held
+    }
+
+    /** Lets a hold go (the account has no record for the row) and republishes, so the row is drawn. */
+    private fun releaseHold(id: String, startedIn: Int) {
+        if (holdUntilPlaced.remove(id) != null) publish(null, startedIn) { it }
     }
 
     /**
@@ -828,8 +893,10 @@ class AgentRepository(
     }
 
     private fun Agent.placed(): Agent {
-        // The record: read with the row, or read before the row arrived (see [pendingRecords]).
-        val record = record ?: synchronized(publishLock) { pendingRecords.remove(id) }
+        // The record: read with the row, or read before the row arrived (see [pendingRecords]) — with its time.
+        val early = if (record == null) synchronized(publishLock) { pendingRecords.remove(id) } else null
+        val record = record ?: early?.fields
+        val activity = activityAtMillis ?: early?.activityAtMillis
         val stamp = placements[id]?.takeIf { it.signal.isPlacing && it.parent.id != id }
             // A coordinator's transcript is default mode's word for a record it cannot read; a record read says all there is.
             ?.takeUnless { it.signal == LineageSignal.COORDINATOR_CREATED && record != null }
@@ -853,8 +920,8 @@ class AgentRepository(
         }
         val nextAppearance = projectAppearance ?: root?.appearance?.takeIf { nextProject }
         val signal = nextSignal ?: if (nextProject) (root?.signal ?: scopeSignal?.takeIf { it == LineageSignal.ACCOUNT_RECORD } ?: LineageSignal.ACCOUNT_RECORD) else null
-        return if (nextParent == parent && nextProject == isProject && signal == scopeSignal && nextAppearance == projectAppearance && record == this.record) this
-        else copy(parent = nextParent, isProject = nextProject, scopeSignal = signal, projectAppearance = nextAppearance, record = record)
+        return if (nextParent == parent && nextProject == isProject && signal == scopeSignal && nextAppearance == projectAppearance && record == this.record && activity == activityAtMillis) this
+        else copy(parent = nextParent, isProject = nextProject, scopeSignal = signal, projectAppearance = nextAppearance, record = record, activityAtMillis = activity)
     }
 
     /**
@@ -946,7 +1013,7 @@ class AgentRepository(
                     }
                     // The account's records of chats the rows did not hold, for the pages that bring them: facts
                     // already read, kept in either mode like the records the rows carry.
-                    lineage?.records?.forEach { pendingRecords[it.id] = it.fields }
+                    lineage?.records?.forEach { pendingRecords[it.id] = PendingRecord(it.fields, it.activityAtMillis) }
                     // Only entries whose record's flag was read with its fields come back: what an older build
                     // admitted on a bare flag, a membership, a transcript or a source is re-learned from the account.
                     lineage?.roots?.filter { it.isEvidencedStrictly }?.forEach { noteRoot(it) }
@@ -1060,23 +1127,31 @@ class AgentRepository(
                 val pinned = prefs.localAgentState.first().pinnedIds
                 // The page covers the list from where the pages before it ended down to its own oldest row — to the
                 // very end when it is the last page — so a known row created in that stretch that the page did not
-                // return is gone (deleted elsewhere), the way a refresh reconciles the window it re-reads.
+                // return may be gone (deleted elsewhere): it goes once the server, asked by id, says so, the way a
+                // refresh reconciles the window it re-reads.
                 val pageFloor = if (!more) Long.MIN_VALUE else page.items.minOfOrNull { parseIsoMillis(it.createdAt) } ?: ceiling
                 val seen = page.items.mapTo(HashSet()) { it.id }
+                // An older page's row whose public `updatedAt` is newer than the stretch the page covers claims
+                // activity its place in the list does not show — a sweep's bump, as often as not: held until its
+                // record dates it, rather than drawn under Today on the public time.
+                val holdNew = !backend.isDemo && capabilities().accountSession
                 val landed = publish { s ->
+                    if (holdNew && s.agents.isNotEmpty()) holdNewRows(s, page.items.filter { parseIsoMillis(it.updatedAt) > ceiling }, startedIn)
                     (if (page.items.isNotEmpty()) s.withPage(page.items) else s)
                         .let { withRows -> enrichment?.agents?.takeIf { it.isNotEmpty() }?.let { v0 -> withRows.withLegacy(v0.associateBy { it.id }) } ?: withRows }
-                        .let { s2 ->
-                            s2.copy(agents = s2.agents.filter { it.id in seen || it.id !in knownBefore || it.createdAtMillis >= ceiling || it.createdAtMillis < pageFloor || it.createdAtMillis > startedAt - RECENT_WINDOW_MS || it.id in pinned })
-                        }
                         .copy(isLoadingMore = false, hasMore = more, loadMoreError = null)
                 }
+                val suspects = if (landed) unseen(seen, knownBefore, startedAt, pinned, pageFloor, ceiling) else emptyList()
+                val verdict = if (suspects.isEmpty()) Verdict() else pending.track("unlisted rows (confirm by id)") { confirmGone(api, suspects, startedIn) }
+                if (verdict.gone.isNotEmpty()) publish { s -> s.copy(agents = s.agents.filterNot { it.id in verdict.gone }) }
                 if (landed) synchronized(publishLock) {
                     if (generation.get() == startedIn) {
                         pagesLoaded = (pagesLoaded + 1).coerceAtMost(MAX_PAGES)
                         nextCursor = page.nextCursor?.takeIf { it.isNotBlank() }
                         legacyCursor = enrichment?.nextCursor?.takeIf { it.isNotBlank() }
-                        pagedFloor = pageFloor
+                        // A page that left out rows the server still has did not cover its stretch: the next one
+                        // starts where the last whole page ended.
+                        if (verdict.trusted) pagedFloor = pageFloor
                     }
                 }
             }
@@ -1126,6 +1201,9 @@ class AgentRepository(
         // the user just started vanish. And a row whose latest run is not the one it had is a new turn to verify.
         val before = _state.value.agents.associateBy { it.id }
         val knownBefore = before.keys
+        // A list already on screen draws an agent new to it only once its record has placed it (see [holdUntilPlaced]);
+        // the first list of a session has nothing to hold its rows against, and default mode no record to wait for.
+        val holdNew = knownBefore.isNotEmpty() && !backend.isDemo && capabilities().accountSession
         // Everything published by this fetch belongs to the backend and session it started against; a demo / real
         // switch or a sign-out half-way through must not leak the old list into the new one.
         fun publish(transform: (AgentListState) -> AgentListState): Boolean = publish(backend, startedIn, transform)
@@ -1162,6 +1240,7 @@ class AgentRepository(
                         // free, so its rows are published placed from the first page, as the account's are.
                         val enrichment = legacyRead.rows
                         publish { s ->
+                            if (holdNew) holdNewRows(s, page.items, startedIn)
                             s.withPage(page.items)
                                 .let { withRows -> if (enrichment.isNotEmpty()) withRows.withLegacy(enrichment) else withRows }
                                 .let { if (backend.isDemo) it.withSources(demoSources).withAccountSnapshots(demoComposers) else it }
@@ -1204,16 +1283,24 @@ class AgentRepository(
             // Pinned rows outlive the listing window, as they do in the desktop sidebar; the pin sync fetches the
             // ones the window never returned, and this keeps the next listing from dropping them again.
             val pinned = prefs.localAgentState.first().pinnedIds
-            // A row the server did not return is gone when the pass reached the end of the list, or when the row
+            // A row the server did not return may be gone when the pass reached the end of the list, or when the row
             // sits inside the window the pass did read (the list is newest first, so a row created after the
             // window's oldest would have been in it); a row beyond where the pass stopped is merely not reached.
+            // May be: a big account's listing answers short, cursorless or in another order often enough that an
+            // omission is only a suspicion, and the row goes when the server, asked for it by id, says it is gone.
             val complete = depth != RefreshDepth.Quick && !truncated
             val floor = if (complete) Long.MIN_VALUE else if (depth != RefreshDepth.Quick) windowFloor else Long.MAX_VALUE
+            val suspects = unseen(seen, knownBefore, startedAt, pinned, floor, Long.MAX_VALUE)
+            val verdict = if (suspects.isEmpty()) Verdict() else pending.track("unlisted rows (confirm by id)") { confirmGone(api, suspects, startedIn) }
+            // An answer that left out rows the server still has was partial: its cursors, its end and its floor are
+            // not the window's, which stays where the last whole answer put it. A poll's one page never moves a
+            // window paged further either.
+            val keepWindow = !verdict.trusted || (depth == RefreshDepth.Quick && synchronized(publishLock) { pagesLoaded } > pagesRead)
             val landed = publish { s ->
-                s.withoutUnseen(seen, knownBefore, startedAt, pinned, floor)
+                (if (verdict.gone.isEmpty()) s else s.copy(agents = s.agents.filterNot { it.id in verdict.gone }))
                     .let { if (backend.isDemo) it.withSources(demoSources).withAccountSnapshots(demoComposers) else it }
                     // A page that failed before this refresh is moot: the window and its cursors are re-read here.
-                    .copy(isRefreshing = false, hasLoaded = true, isFromCache = false, error = null, hasMore = truncated, loadMoreError = null)
+                    .copy(isRefreshing = false, hasLoaded = true, isFromCache = false, error = null, hasMore = if (keepWindow) nextCursor != null || truncated else truncated, loadMoreError = null)
             }
             if (!silent) stats.spinnerReleased()
             // Under the same lock as the publication: a completed fetch is the cue the account's pins are synced
@@ -1222,9 +1309,14 @@ class AgentRepository(
                 if (generation.get() == startedIn) {
                     lastRefreshedAt = AppClock.now()
                     lastRefreshDepth = depth
-                    pagesLoaded = pagesRead.coerceAtLeast(1)
-                    nextCursor = lastCursor
-                    pagedFloor = if (complete) Long.MIN_VALUE else windowFloor
+                    if (!keepWindow) {
+                        pagesLoaded = pagesRead.coerceAtLeast(1)
+                        nextCursor = lastCursor
+                        pagedFloor = if (complete) Long.MIN_VALUE else windowFloor
+                    } else if (pagesLoaded == 0) {
+                        pagesLoaded = pagesRead.coerceAtLeast(1)
+                        nextCursor = nextCursor ?: lastCursor
+                    }
                     _refreshCompleted.update { it + 1 }
                 }
             }
@@ -1411,8 +1503,9 @@ class AgentRepository(
         return recordMutex.withLock {
             val now = AppClock.now()
             val due = _state.value.agents
-                .filter { it.record == null && it.id !in pendingLaunches && (recordUnresolved[it.id]?.let { until -> now >= until } ?: true) }
-                .sortedWith(compareByDescending<Agent> { it.isRunning }.thenByDescending { it.updatedAtMillis })
+                // A held row is asked on every pass until its record lands: it is not drawn until then.
+                .filter { it.record == null && it.id !in pendingLaunches && (holdUntilPlaced.containsKey(it.id) || (recordUnresolved[it.id]?.let { until -> now >= until } ?: true)) }
+                .sortedWith(compareByDescending<Agent> { holdUntilPlaced.containsKey(it.id) }.thenByDescending { it.isRunning }.thenByDescending { it.updatedAtMillis })
                 .take(budget)
             if (due.isEmpty()) return@withLock 0
             val asked = java.util.concurrent.atomic.AtomicInteger()
@@ -1434,6 +1527,8 @@ class AgentRepository(
                             }
                             if (record == null) {
                                 recordUnresolved[row.id] = now + RECORD_RETRY_MS
+                                // The account lists no such chat: no record is coming to place it, so it is drawn as it is.
+                                releaseHold(row.id, startedIn)
                                 return@withPermit
                             }
                             applyAccountSnapshots(listOf(record), startedIn)
@@ -1581,14 +1676,89 @@ class AgentRepository(
         map { if (it.source == null || it.id in launchedHere) it else it.copy(source = null) }
 
     /**
-     * Rows the server no longer returns inside the window it was read for were deleted elsewhere: every row created
-     * at or after [floor] (`Long.MIN_VALUE` after a pass that reached the end of the list). Kept anyway: rows that
-     * were not known when the fetch started (launched here while the pages were in flight), agents created shortly
-     * before it started (the listing can lag a creation by a moment), rows older than the window, and [pinned]
-     * agents, which the listing window may simply have left behind.
+     * Rows the server did not return inside the stretch it was read for — created at or after [floor]
+     * (`Long.MIN_VALUE` after a pass that reached the end of the list) and before [ceiling] — which may have been
+     * deleted elsewhere, newest first. Never suspects: rows that were not known when the fetch started (launched
+     * here while the pages were in flight), agents created shortly before it started (the listing can lag a
+     * creation by a moment), rows outside the stretch, and [pinned] agents, which the listing window may simply
+     * have left behind.
      */
-    private fun AgentListState.withoutUnseen(seen: Set<String>, knownBefore: Set<String>, startedAt: Long, pinned: Set<String>, floor: Long): AgentListState =
-        copy(agents = agents.filter { it.id in seen || it.id !in knownBefore || it.createdAtMillis < floor || it.createdAtMillis > startedAt - RECENT_WINDOW_MS || it.id in pinned })
+    private fun unseen(seen: Set<String>, knownBefore: Set<String>, startedAt: Long, pinned: Set<String>, floor: Long, ceiling: Long): List<String> =
+        _state.value.agents
+            .filter { it.id !in seen && it.id in knownBefore && it.createdAtMillis >= floor && it.createdAtMillis < ceiling && it.createdAtMillis <= startedAt - RECENT_WINDOW_MS && it.id !in pinned && it.id !in pendingLaunches }
+            .sortedByDescending { it.createdAtMillis }
+            .map { it.id }
+
+    /**
+     * What asking the server about a listing's omissions found: the rows it called gone, how many it still has, and
+     * how many could not be asked. Only an answer whose every omission the server confirmed gone is [trusted] as a
+     * whole listing of its stretch.
+     */
+    private class Verdict(val gone: Set<String> = emptySet(), val alive: Int = 0, val unchecked: Int = 0) {
+        val trusted: Boolean get() = alive == 0 && unchecked == 0
+    }
+
+    /**
+     * Asks the server by id about rows a listing left out ([suspects], newest first): a 404 is the only word that a
+     * row is gone; a row it returns shows the listing was partial, and one that cannot be asked (offline, a server
+     * error) stays. A few at a time and at most [MAX_CONFIRMED_PER_PASS] per pass, stopping at the first row still
+     * there — one is proof enough that the answer was partial, and a glitch that left out hundreds costs a handful of
+     * calls; a row confirmed there is not asked again for [ALIVE_CONFIRMED_MS].
+     */
+    private suspend fun confirmGone(api: CursorApi, suspects: List<String>, startedIn: Int): Verdict {
+        val now = AppClock.now()
+        val (recentlyAlive, due) = suspects.partition { id -> aliveConfirmedAt[id]?.let { now - it < ALIVE_CONFIRMED_MS } == true }
+        val gone = HashSet<String>()
+        var alive = recentlyAlive.size
+        var asked = 0
+        for (chunk in due.take(MAX_CONFIRMED_PER_PASS).chunked(CONFIRM_CHUNK)) {
+            if (alive > 0 || generation.get() != startedIn) break
+            val answers = coroutineScope {
+                chunk.map { id ->
+                    async {
+                        try {
+                            api.getAgent(id)
+                            true
+                        } catch (e: CancellationException) {
+                            throw e
+                        } catch (t: Throwable) {
+                            if ((t as? CursorApiException)?.httpCode == 404) false else null
+                        }
+                    }
+                }.awaitAll()
+            }
+            asked += chunk.size
+            chunk.zip(answers).forEach { (id, answer) ->
+                when (answer) {
+                    true -> { alive++; aliveConfirmedAt[id] = now }
+                    false -> { gone += id; aliveConfirmedAt.remove(id) }
+                    null -> Unit
+                }
+            }
+        }
+        if (generation.get() != startedIn) return Verdict(unchecked = suspects.size)
+        return Verdict(gone, alive, unchecked = suspects.size - gone.size - alive)
+    }
+
+    /**
+     * Holds back the rows of [items] a published list does not hold yet, whose record has not been read and that no
+     * stamp places (see [holdUntilPlaced]); a hold let go by nothing else ends after [PLACEMENT_HOLD_MS]. Called
+     * under [publishLock], with the list the page is about to land in.
+     */
+    private fun holdNewRows(s: AgentListState, items: List<AgentSummaryDto>, startedIn: Int) {
+        val held = s.agents.mapTo(HashSet()) { it.id }
+        val now = AppClock.now()
+        var added = false
+        items.forEach { item ->
+            val id = item.id
+            if (id in held || id in pendingLaunches || placements.containsKey(id) || pendingRecords.containsKey(id) || rootRecords.containsKey(id)) return@forEach
+            if (holdUntilPlaced.putIfAbsent(id, now) == null) added = true
+        }
+        if (added) scope.launch {
+            delay(PLACEMENT_HOLD_MS)
+            publish(null, startedIn) { it }
+        }
+    }
 
     private suspend fun persist() {
         val backend = session.current
@@ -1602,7 +1772,7 @@ class AgentRepository(
             // chats nowhere near the list are the first to go.
             val held = s.agents.mapTo(HashSet()) { it.id }
             val words = placements.entries.filter { (id, _) -> id !in held }.take(MAX_PERSISTED_PLACEMENTS).map { (id, p) -> CachedPlacement(id, p.parent.id, p.parent.kind, p.signal) }
-            val records = pendingRecords.entries.filter { (id, _) -> id !in held }.map { (id, fields) -> CachedRecord(id, fields) }
+            val records = pendingRecords.entries.filter { (id, _) -> id !in held }.map { (id, early) -> CachedRecord(id, early.fields, early.activityAtMillis) }
             Triple(cache.token(), s.agents.filterNot { it.id in pendingLaunches }, CachedLineage(words, roots = rootRecords.values.sortedByDescending { it.lastSeenMillis }.take(MAX_PERSISTED_PLACEMENTS), records = records, registryCompleteAtMillis = registryCompleteAtMillis))
         }
         cache.write(agents, token, lineage)
@@ -2173,8 +2343,8 @@ class AgentRepository(
             }
             recordUnresolved.remove(snap.id)
             if (snap.id !in held) {
-                val fields = snap.recordFields()
-                if (pendingRecords.put(snap.id, fields) != fields) kept = true
+                val early = PendingRecord(snap.recordFields(), snap.activityAtMillis ?: pendingRecords[snap.id]?.activityAtMillis)
+                if (pendingRecords.put(snap.id, early) != early) kept = true
             } else {
                 pendingRecords.remove(snap.id)
             }
@@ -2294,9 +2464,25 @@ class AgentRepository(
         synchronized(publishLock) {
             if (generation.get() != startedIn) return
             members.forEach { (id, kind) -> if (id != rootId) place(id, AgentParent(rootId, kind), signal) }
+            members.keys.forEach { retractMisses.remove(it) }
             if (retract.isNotEmpty() && signal.isAuthoritative) {
+                // An answer naming the root's other members is the account's current word, and a member it leaves out
+                // was released. Membership is sticky where the omission is missing data rather than that word: an
+                // empty answer (a read that failed or lagged looks the same as a Project with no workers left), and a
+                // coordinator's just-created worker, which an answer read a moment before the account registered it
+                // cannot name. Those stamps go only once the omission has stood across [RETRACT_CONFIRM_ANSWERS]
+                // answers over [RETRACT_CONFIRM_MS], so a known child is never let go to the top level on one read.
+                val now = AppClock.now()
                 placements.entries.removeAll { (id, placement) ->
-                    placement.parent.id == rootId && placement.parent.kind in retract && id !in members && placement.signal.isRetractable
+                    if (placement.parent.id != rootId || placement.parent.kind !in retract || id in members || !placement.signal.isRetractable) return@removeAll false
+                    if (members.isNotEmpty() && placement.signal != LineageSignal.COORDINATOR_CREATED) {
+                        retractMisses.remove(id)
+                        return@removeAll true
+                    }
+                    val (since, answers) = retractMisses[id]?.let { it.first to it.second + 1 } ?: (now to 1)
+                    val confirmed = answers >= RETRACT_CONFIRM_ANSWERS && now - since >= RETRACT_CONFIRM_MS
+                    if (confirmed) retractMisses.remove(id) else retractMisses[id] = since to answers
+                    confirmed
                 }
             }
             if (signal == LineageSignal.MEMBERSHIP && (AgentParentKind.PROJECT_WORKER in retract || members.isNotEmpty())) {
@@ -2394,6 +2580,16 @@ class AgentRepository(
         private const val MAX_PAGES = 5
         private const val PERSIST_DELAY_MS = 1_500L
         private const val RECENT_WINDOW_MS = 5 * 60 * 1000L
+        /** Rows a listing left out that are asked about by id per pass (see [confirmGone]), and how many at once. */
+        private const val MAX_CONFIRMED_PER_PASS = 12
+        private const val CONFIRM_CHUNK = 4
+        /** A row the server confirmed it still has, after a listing left it out, is not asked about again for this long. */
+        private const val ALIVE_CONFIRMED_MS = 10 * 60 * 1000L
+        /** The longest a new row is held back waiting for its record to place it (see [AgentListState.awaitingPlacement]). */
+        const val PLACEMENT_HOLD_MS = 60_000L
+        /** A membership stamp goes once this many authoritative answers in a row, over at least [RETRACT_CONFIRM_MS], have left it out. */
+        const val RETRACT_CONFIRM_ANSWERS = 2
+        const val RETRACT_CONFIRM_MS = 10 * 60 * 1000L
         /** Run records read per refresh to settle rows the lists left in question (see [verifyRunStatuses]). */
         private const val MAX_VERIFIED_RUNS = 12
         /** A row without a run-level status is only worth a record read while its activity is this recent. */

@@ -133,9 +133,12 @@ data class CachedLineage(
 @Serializable
 data class CachedPlacement(val id: String, val parentId: String? = null, val kind: AgentParentKind? = null, val signal: LineageSignal)
 
-/** One chat's account record, the fields the desktop's predicates read, for a chat no row on disk holds. */
+/**
+ * One chat's account record, the fields the desktop's predicates read and the activity time it dates the chat by,
+ * for a chat no row on disk holds.
+ */
 @Serializable
-data class CachedRecord(val id: String, val fields: RecordFields)
+data class CachedRecord(val id: String, val fields: RecordFields, val activityAtMillis: Long? = null)
 
 class AgentListCache(private val cache: JsonDiskCache) {
     suspend fun read(): JsonDiskCache.Entry<List<Agent>>? =
