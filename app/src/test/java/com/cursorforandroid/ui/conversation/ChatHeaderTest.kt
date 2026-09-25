@@ -8,6 +8,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.LocalRippleConfiguration
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.semantics.getOrNull
 import androidx.compose.ui.test.click
@@ -25,6 +26,7 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTouchInput
+import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.DpRect
 import androidx.compose.ui.unit.dp
@@ -51,11 +53,12 @@ import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 
 /**
- * A chat's header in the real screen, over the demo's chats, under a 24dp status bar: the controls alone in a row
- * 40dp tall whatever the font, every control's 48dp target starting at the status bar's edge and reaching 8dp over
- * the transcript, where a tap still lands on the control; the chat's name the row's accessibility label and the
- * panel's header, and Rename still in the menu, whose items keep their order with Reload transcript the one way to
- * read the chat again. The same for an ordinary chat and a Project's.
+ * A chat's header in the real screen, over the demo's chats, under a 24dp status bar: the controls in a row 40dp tall
+ * whatever the font, every control's 48dp target starting at the status bar's edge and reaching 8dp over the
+ * transcript, where a tap still lands on the control; the chat's name on one line beside back (a Project's after its
+ * icon), ellipsized short of the right-side buttons and gone with back, no repository line, the name also the row's
+ * accessibility label and the panel's header; and Rename still in the menu, whose items keep their order with Reload
+ * transcript the one way to read the chat again. The same for an ordinary chat and a Project's.
  */
 @RunWith(AndroidJUnit4::class)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
@@ -72,7 +75,7 @@ class ChatHeaderTest {
     private var backs = 0
 
     @OptIn(ExperimentalMaterial3Api::class)
-    private fun open(agentName: String? = null, agentId: String? = null): AppGraph {
+    private fun open(agentName: String? = null, agentId: String? = null, back: Boolean = true): AppGraph {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val graph = AppGraph(context, SecureKeyStore(context) { context.getSharedPreferences("stand-in-secure", Context.MODE_PRIVATE) })
         runBlocking {
@@ -83,7 +86,7 @@ class ChatHeaderTest {
         compose.setContent {
             CursorTheme(mode = ThemeMode.Dark) {
                 CompositionLocalProvider(LocalRippleConfiguration provides null) {
-                    ConversationScreen(graph, id, onBack = { backs++ })
+                    if (back) ConversationScreen(graph, id, onBack = { backs++ }) else ConversationScreen(graph, id, onBack = null, onOpenSidebar = {})
                 }
             }
         }
@@ -120,6 +123,31 @@ class ChatHeaderTest {
 
     private fun label(): String? = header().config.getOrNull(SemanticsProperties.ContentDescription)?.singleOrNull()
 
+    private val title = hasTestTag("chat-header-title")
+
+    private fun titleBounds(): DpRect = compose.onNode(title).getUnclippedBoundsInRoot()
+
+    private fun titleText(): TextLayoutResult {
+        val node = compose.onNode(hasAnyAncestor(title) and hasText("", substring = true)).fetchSemanticsNode()
+        val layouts = mutableListOf<TextLayoutResult>()
+        node.config[SemanticsActions.GetTextLayoutResult].action?.invoke(layouts)
+        return layouts.single()
+    }
+
+    /** The title on the buttons' line: after back, clear of [nextControl], centred on the buttons, one line. */
+    private fun assertTitle(name: String, nextControl: String) {
+        compose.onNode(title and hasAnyAncestor(hasTestTag("chat-header"))).assertExists()
+        compose.onNode(hasAnyAncestor(title) and hasText(name)).assertExists()
+        val box = titleBounds()
+        val back = targetOf("Back")
+        val backGlyphRight = (back.left + back.right) / 2 + CursorDimens.iconButton / 2
+        assertWithMessage("title starts right after back").that((box.left - backGlyphRight).value).isWithin(0.5f).of(0f)
+        val text = compose.onNode(hasAnyAncestor(title) and hasText(name)).getUnclippedBoundsInRoot()
+        assertWithMessage("title clear of $nextControl").that(text.right.value).isAtMost(targetOf(nextControl).left.value)
+        assertWithMessage("title centred on the buttons").that(((box.top + box.bottom) / 2).value).isWithin(0.5f).of(((back.top + back.bottom) / 2).value)
+        assertWithMessage("title lines").that(titleText().lineCount).isEqualTo(1)
+    }
+
     private fun onScreen(text: String) = compose.onAllNodes(hasText(text, substring = true)).fetchSemanticsNodes().isNotEmpty()
 
     private fun assertEdges(controls: List<String>) {
@@ -137,12 +165,15 @@ class ChatHeaderTest {
     }
 
     @Test
-    fun `an ordinary chat - the controls alone, 40dp under the status bar, the name its label and the panel's header`() {
+    fun `an ordinary chat - the controls and the name beside back, 40dp under the status bar, no repository line`() {
         open(agentName = CHAT)
         assertEdges(listOf("Back", "Open pull request", "Open panel", "More"))
         assertThat(label()).isEqualTo(CHAT)
-        assertThat(onScreen(CHAT)).isFalse()
+        assertTitle(CHAT, nextControl = "Open pull request")
+        assertThat(titleText().isLineEllipsized(0)).isFalse()
+        compose.onNode(hasAnyAncestor(title) and hasContentDescription("Project")).assertDoesNotExist()
         assertThat(onScreen(CHAT_DETAIL)).isFalse()
+        assertThat(onScreen("cesium")).isFalse()
 
         compose.onNodeWithContentDescription("Open panel").performClick()
         compose.waitUntil(10_000) { compose.onAllNodes(hasTestTag("conversation-panel")).fetchSemanticsNodes().isNotEmpty() }
@@ -190,7 +221,37 @@ class ChatHeaderTest {
         open(agentId = DemoData.PROJECT_ID)
         assertEdges(listOf("Back", "Open panel", "More"))
         assertThat(label()).isEqualTo(PROJECT)
-        assertThat(onScreen(PROJECT)).isFalse()
+        assertTitle(PROJECT, nextControl = "Open panel")
+    }
+
+    @Test
+    fun `a Project's chat leads its name with the Project's icon`() {
+        open(agentId = DemoData.PROJECT_ID)
+        assertTitle(PROJECT, nextControl = "Open panel")
+        val icon = compose.onNode(hasAnyAncestor(title) and hasContentDescription("Project")).getUnclippedBoundsInRoot()
+        val name = compose.onNode(hasAnyAncestor(title) and hasText(PROJECT)).getUnclippedBoundsInRoot()
+        assertThat(icon.right.value).isAtMost(name.left.value)
+        assertThat(icon.left.value).isWithin(0.5f).of(titleBounds().left.value + 4f)
+    }
+
+    @Test
+    fun `a long name is ellipsized on one line short of the right-side buttons`() {
+        val graph = open(agentName = CHAT)
+        runBlocking { graph.agents.rename(graph.agents.state.value.agents.first { it.name == CHAT }.id, LONG).getOrThrow() }
+        compose.waitUntil(10_000) { onScreen(LONG) }
+        assertEdges(listOf("Back", "Open pull request", "Open panel", "More"))
+        assertTitle(LONG, nextControl = "Open pull request")
+        assertThat(titleText().isLineEllipsized(0)).isTrue()
+    }
+
+    @Test
+    fun `without back - a wide window beside the rail - the header has no name`() {
+        open(agentName = CHAT, back = false)
+        compose.onNodeWithContentDescription("Back").assertDoesNotExist()
+        compose.onNode(title).assertDoesNotExist()
+        assertThat(label()).isEqualTo(CHAT)
+        val bar = headerBounds()
+        assertThat((bar.bottom - bar.top).value).isWithin(0.5f).of(CursorDimens.chatHeaderHeight.value)
     }
 
     private companion object {
@@ -199,5 +260,6 @@ class ChatHeaderTest {
         const val CHAT = "Revenue Scaling Pipeline Research"
         const val CHAT_DETAIL = "cesium · cursor/revenue-pipeline-3f2a"
         const val PROJECT = "Cesium billing launch"
+        const val LONG = "Revenue Scaling Pipeline Research across every regional billing ledger and the quarterly forecast"
     }
 }
