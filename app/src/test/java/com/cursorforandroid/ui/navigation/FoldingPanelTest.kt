@@ -10,14 +10,18 @@ import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.hasAnyAncestor
 import androidx.compose.ui.test.hasContentDescription
+import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.isFocused
 import androidx.compose.ui.test.junit4.createEmptyComposeRule
 import androidx.compose.ui.test.onFirst
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performSemanticsAction
+import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performTouchInput
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -227,6 +231,35 @@ class FoldingPanelTest {
         assertThat(HapticLog.played).containsExactly(landed, landed, landed, stop)
     }
 
+    private fun composerFocused() = exists(hasSetTextAction() and isFocused() and hasAnyAncestor(hasTestTag(COMPOSER)))
+
+    @Test
+    @Config(qualifiers = COVER)
+    fun `a draft being typed keeps the caret through a fold, an unfold and a turn, and a composer a sheet took it from is not given it back`() {
+        launchOnProject()
+        compose.onNode(hasSetTextAction() and hasAnyAncestor(hasTestTag(COMPOSER))).performClick()
+        compose.waitUntil(10_000) { composerFocused() }
+        compose.onNode(hasSetTextAction() and isFocused()).performTextInput(DRAFT)
+        compose.waitForIdle()
+
+        window(INNER) { assertThat(composerFocused()).isTrue() }
+        assertThat(composerFocused()).isTrue()
+        window(INNER_TURNED) { assertThat(composerFocused()).isTrue() }
+        window(COVER) { assertThat(composerFocused()).isTrue() }
+        assertThat(composerFocused()).isTrue()
+        assertThat(onScreen(DRAFT)).isTrue()
+
+        // The sheet covers the composer, so it takes the caret as it opens; unfolded, it stands pinned and leaves it gone.
+        compose.onNodeWithContentDescription(OPEN_PANEL).performClick()
+        compose.waitUntil(10_000) { panelShown() && described(DISMISS_PANEL) }
+        compose.waitForIdle()
+        assertThat(composerFocused()).isFalse()
+        window(INNER)
+        assertThat(pinned()).isTrue()
+        assertThat(composerFocused()).isFalse()
+        assertThat(onScreen(DRAFT)).isTrue()
+    }
+
     @Test
     @Config(qualifiers = SMALL_PHONE)
     fun `on a phone a tab comes back scrolled as it was left when the panel is shut and opened again`() {
@@ -250,6 +283,8 @@ class FoldingPanelTest {
     private companion object {
         const val HOME_PLACEHOLDER = "Ask Cursor to build, fix bugs, explore"
         const val CHAT_PLACEHOLDER = "Follow up"
+        const val COMPOSER = "follow-up-composer"
+        const val DRAFT = "Bill the upgrade from the next cycle"
         const val PANEL = "conversation-panel"
         const val PANEL_CLOSE = "panel-close"
         const val NOTES = "project-notes-tab"
