@@ -257,6 +257,16 @@ class LiveRunHub(
         }
     }
 
+    /**
+     * Gives memory back when the system asks: every run nobody follows and nothing streams is dropped — its snapshot
+     * holds the run's whole story, and a screen that wants it again replays it. Returns how many were dropped.
+     */
+    fun trimMemory(): Int = synchronized(entries) {
+        val before = entries.size
+        entries.values.removeAll { it.subscribers == 0 && it.job == null }
+        before - entries.size
+    }
+
     private fun evictIfNeeded() {
         // Replays that have been read and handed over (see [Entry.historicalOnly]): a few are kept for a second look,
         // the rest go oldest first — a long chat replays dozens on one open, and each holds its whole trace.

@@ -9,6 +9,7 @@ import androidx.core.net.toUri
 import coil3.ImageLoader
 import coil3.decode.BitmapFactoryDecoder
 import coil3.disk.DiskCache
+import coil3.memory.MemoryCache
 import coil3.network.HttpException
 import coil3.network.okhttp.OkHttpNetworkFetcherFactory
 import coil3.request.ErrorResult
@@ -45,6 +46,7 @@ import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
 import java.security.MessageDigest
+import com.cursorforandroid.util.toHex
 
 /** A frame from early in a video plus its length; [frame] is null when the file could not be probed. */
 class VideoPoster(val frame: Bitmap?, val durationMs: Long?)
@@ -100,6 +102,9 @@ class MediaLoader(
             add(OkHttpNetworkFetcherFactory(okHttp))
         }
         .diskCache { imageDiskCache(context.cacheDir) }
+        // Coil's default is a share of the device's memory class, which a large heap doubles; decoded images are
+        // cheap to decode again from the disk cache, a heap they fill is not.
+        .memoryCache { MemoryCache.Builder().maxSizeBytes(minOf(MEMORY_CACHE_BYTES, Runtime.getRuntime().maxMemory() / 8)).build() }
         .build()
 
     private val posters = LruCache<String, VideoPoster>(12)
@@ -285,7 +290,7 @@ class MediaLoader(
      */
     suspend fun keep(bytes: ByteArray, fileName: String): String = withContext(Dispatchers.Main.immediate) {
         withContext(Dispatchers.IO) {
-            val digest = MessageDigest.getInstance("SHA-1").digest(bytes).joinToString("") { "%02x".format(it) }.take(16)
+            val digest = MessageDigest.getInstance("SHA-1").digest(bytes).toHex().take(16)
             val dir = File(context.cacheDir, "$MEDIA_DIR/$OPENED_DIR").apply { mkdirs() }
             val target = File(dir, "$digest-${safeName(fileName)}")
             if (target.isFile && target.length() == bytes.size.toLong()) {
@@ -457,6 +462,16 @@ class MediaLoader(
         return out.toByteArray()
     }
 
+    /**
+     * Gives memory back when the system asks: the video posters, and the decoded images — half of them, or all when
+     * [hard]. The disk cache stays, so an image on screen again decodes rather than downloads.
+     */
+    fun trimMemory(hard: Boolean) {
+        posters.evictAll()
+        val cache = imageLoader.memoryCache ?: return
+        if (hard) cache.clear() else cache.trimToSize(cache.size / 2)
+    }
+
     /** Forgets everything fetched for the signed-out account; the disk cache is wiped off the main thread. */
     suspend fun clearCaches() {
         posters.evictAll()
@@ -605,6 +620,8 @@ class MediaLoader(
     companion object {
         /** Coil's and ExoPlayer's spelling for APK assets; the demo backend serves its sample media this way. */
         const val ASSET_PREFIX = "file:///android_asset/"
+        /** Decoded images kept in memory at most (see the image loader's memory cache). */
+        const val MEMORY_CACHE_BYTES = 32L * 1024 * 1024
         /** Under the cache: the copies [file] makes for other apps; `file_paths.xml` lets the FileProvider hand them out. */
         const val MEDIA_DIR = "media"
         /** Under [MEDIA_DIR]: the files the panel and the file viewer hand to the media viewer ([keep]). */

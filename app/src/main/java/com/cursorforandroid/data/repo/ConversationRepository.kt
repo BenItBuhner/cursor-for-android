@@ -1770,6 +1770,23 @@ class ConversationRepository(
             }
     }
 
+    /**
+     * Gives memory back when the system asks (see `AppGraph.trimMemory`): every chat in memory that nothing shows,
+     * holds, loads or streams is dropped — all of them when [hard], else all but the [KEPT_ON_TRIM] used last, so a
+     * return to the app still opens its last chats at once. The disk keeps what they had, and a screen that comes
+     * back to one reads it from there. Returns how many were dropped.
+     */
+    fun trimMemory(hard: Boolean): Int = synchronized(entries) {
+        val idle = entries.values.filter { it.isIdle }.sortedByDescending { it.lastUsedAt }
+        val victims = if (hard) idle else idle.drop(KEPT_ON_TRIM)
+        victims.forEach { victim ->
+            entries.values.remove(victim)
+            victim.scope.cancel()
+            rememberEvicted(victim)
+        }
+        victims.size
+    }
+
     /** Under the lock of [entries]. Pruned only as the map doubles, so eviction stays cheap however fast chats churn. */
     private fun rememberEvicted(victim: Entry) {
         evictedStates[victim.agentId] = WeakReference(victim.state)
@@ -5806,6 +5823,8 @@ class ConversationRepository(
 
     private companion object {
         const val MAX_ENTRIES = 24
+        /** Idle chats a gentle [trimMemory] leaves in memory: the few a return to the app is likeliest to open. */
+        const val KEPT_ON_TRIM = 4
         /** Evicted chats remembered before the first prune of the ones nobody watches (see [evictedStates]). */
         const val MIN_EVICTED_PRUNE = 64
         /** How far behind the window's first turn an echo's run is remembered (see `Entry.recordEchoes`): a page of older turns brought back keeps its evidence. */

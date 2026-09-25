@@ -84,6 +84,7 @@ class HeldChatMemoryTest {
     @Test
     fun `held chats whose agents keep finishing turns keep only their window in memory`() = runBlocking {
         server = FaultServer(rttMillis = 2L..10L, http2 = true).start()
+        server.clock = { now }
         server.liveRunStreams = true
         val chats = LiveSync.MAX_HELD
         repeat(chats) { addChat("bc-held-$it", now - 100_000L - 1_000L * it) }

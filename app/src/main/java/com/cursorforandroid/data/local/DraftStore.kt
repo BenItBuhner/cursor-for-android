@@ -18,6 +18,7 @@ import java.security.MessageDigest
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
+import com.cursorforandroid.util.toHex
 
 /**
  * The new chats written in the New Chat composer and not sent — the drafts the sidebar lists above its groups — kept on
@@ -301,7 +302,7 @@ class DraftStore(context: Context) {
     }
 
     private fun digest(text: String): String =
-        MessageDigest.getInstance("SHA-256").digest(text.toByteArray(Charsets.UTF_8)).take(8).joinToString("") { "%02x".format(it) }
+        MessageDigest.getInstance("SHA-256").digest(text.toByteArray(Charsets.UTF_8)).toHex(8)
 
     companion object {
         /** The drafts' directory under `files/`: one entry per draft (see [DraftFiles.Root]). */
