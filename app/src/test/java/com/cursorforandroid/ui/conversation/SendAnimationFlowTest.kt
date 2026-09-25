@@ -126,6 +126,7 @@ class SendAnimationFlowTest {
             val root = compose.activity.window.decorView
             val bitmap = Bitmap.createBitmap(root.width, root.height, Bitmap.Config.ARGB_8888)
             compose.runOnUiThread { root.draw(Canvas(bitmap)) }
+            File(dir, "%s_%03d.png".format(demoName, frame)).outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
         }
         // A few frames at rest with the text in the composer, for the demo's lead-in.
         repeat(if (demoDir != null) 12 else 0) { capture(); frame++; compose.mainClock.advanceTimeByFrame() }
