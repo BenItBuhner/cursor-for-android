@@ -970,7 +970,7 @@ class NewAgentViewModel(
                     ?: emptyList(),
                 autoCreatePr = s.autoCreatePr,
                 planMode = s.planMode,
-                mcpServers = graph.mcpServers.enabled(),
+                mcpServers = graph.inlineMcpServers(),
                 env = s.selectedDevice,
                 // A machine that has dropped off the listing is still asked for by the worker it was last listed as.
                 worker = s.selectedDevice.takeIf { it.type == EnvType.MACHINE }?.let { device ->

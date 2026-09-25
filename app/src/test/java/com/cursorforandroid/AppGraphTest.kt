@@ -3,6 +3,7 @@ package com.cursorforandroid
 import android.app.Application
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.cursorforandroid.domain.McpServer
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.runBlocking
 import org.junit.Test
@@ -85,6 +86,21 @@ class AppGraphTest {
 
         assertThat(graph.agents.state.value.agents).isEmpty()
         assertThat(cached.exists()).isFalse()
+    }
+
+    @Test
+    fun `the app's own MCP servers go inline only while the plus menu manages them`() = runBlocking<Unit> {
+        val graph = AppGraph(app)
+        graph.mcpServers.save(McpServer("s1", "docs", url = "https://docs.example/mcp"))
+
+        graph.prefs.setExtendedMode(false)
+        assertThat(graph.inlineMcpServers().map { it.name }).containsExactly("docs")
+
+        // Extended mode lists the account's connectors instead, which Cursor applies to every cloud agent itself.
+        graph.prefs.setExtendedMode(true)
+        assertThat(graph.inlineMcpServers()).isEmpty()
+        assertThat(graph.mcpServers.servers.value.map { it.name }).containsExactly("docs")
+        graph.prefs.setExtendedMode(false)
     }
 
     private fun write(file: File): File {

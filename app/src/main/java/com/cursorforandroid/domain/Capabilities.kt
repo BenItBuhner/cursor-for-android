@@ -88,12 +88,19 @@ data class Capabilities(
      * repository. Off: the documented `POST /v1/agents` with `env {type: machine}`, which does ask it.
      */
     val machineStart: Boolean = false,
+    /**
+     * The account's MCP servers and connectors, as the MCP dropdown on cursor.com/agents and in the desktop Agents
+     * window lists them (`DashboardService/GetAvailableMcpServers`), switched for every cloud agent the account starts
+     * (`UpdateUserDefaultMcpSettings`) and checked for a sign-in (`CheckHttpMcpStatus`). Off: the servers defined in
+     * this app, sent inline as the documented `mcpServers[]`.
+     */
+    val accountConnectors: Boolean = false,
 ) {
     /** True when any private surface is on: what the persistent indicator and the default-mode explanations go by. */
     val anyExtended: Boolean
         get() = accountSession || accountProfile || pinSync || accountLifecycle || accountSlashCommands || accountPullRequests || projects || steering ||
             workspaceFiles || diffDetails || scmPullRequests || remoteDesktop || interactions || accountQueue || agentModes || accountTranscript || accountGoal ||
-            promptFiles || machineStart
+            promptFiles || machineStart || accountConnectors
 
     companion object {
         /** The default: the documented API only. */
@@ -117,6 +124,7 @@ data class Capabilities(
             accountGoal = false,
             promptFiles = false,
             machineStart = false,
+            accountConnectors = false,
         )
 
         /** Extended mode: every private surface, exactly as the app used them before the setting existed. */
@@ -140,6 +148,7 @@ data class Capabilities(
             accountGoal = true,
             promptFiles = true,
             machineStart = true,
+            accountConnectors = true,
         )
 
         /** Extended mode's Stable transcript engine: every private surface but the record read and the goal it carries (see [TranscriptEngine]). */
