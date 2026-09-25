@@ -1,14 +1,6 @@
 package com.cursorforandroid.ui.conversation
 
-import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.SizeTransform
-import androidx.compose.animation.core.tween
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.slideInVertically
-import androidx.compose.animation.slideOutVertically
-import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -22,16 +14,13 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
-import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -60,13 +49,11 @@ import com.cursorforandroid.ui.components.CursorCard
 import com.cursorforandroid.ui.components.CursorIcons
 import com.cursorforandroid.ui.components.Dot
 import com.cursorforandroid.ui.components.MarkdownText
+import com.cursorforandroid.ui.components.RollingText
 import com.cursorforandroid.ui.components.RunningGlyph
-import com.cursorforandroid.ui.components.ShimmerText
 import com.cursorforandroid.ui.components.pressable
 import com.cursorforandroid.ui.icons.ProjectIcons
 import com.cursorforandroid.ui.theme.CursorTheme
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.conflate
 import kotlinx.coroutines.flow.flowOf
 
 /**
@@ -266,40 +253,20 @@ internal fun SubagentRowContent(title: String, look: SubagentLook, model: Subage
 }
 
 /**
- * The line under the title, the desktop's `TextRoll`: each status holds for at least [HOLD_MS] before the next rolls
- * up in its place, so a child racing through its steps reads as a steady line rather than a flicker. It shimmers
- * while the child works; a child waiting on the reader reads in the link's colour.
+ * The line under the title, rolling from one status to the next ([RollingText]). It shimmers while the child works;
+ * a child waiting on the reader reads in the link's colour.
  */
 @Composable
 private fun StatusLine(look: SubagentLook, style: TextStyle) {
     val colors = CursorTheme.colors
-    val shown = heldText(look.status)
-    val color = if (look.attention) colors.link.copy(alpha = 0.85f) else colors.textSecondary
-    AnimatedContent(
-        targetState = shown,
-        transitionSpec = {
-            (slideInVertically(tween(ROLL_MS)) { it / 2 } + fadeIn(tween(ROLL_MS))) togetherWith
-                (slideOutVertically(tween(ROLL_MS)) { -it / 2 } + fadeOut(tween(ROLL_MS))) using SizeTransform(clip = true)
-        },
+    RollingText(
+        look.status,
+        style = style,
+        color = if (look.attention) colors.link.copy(alpha = 0.85f) else colors.textSecondary,
+        shimmer = look.active,
         label = "subagent-status",
         modifier = Modifier.height(LINE_HEIGHT_DP).testTag("subagent-status"),
-    ) { text ->
-        ShimmerText(text, style = style, color = color, active = look.active, maxLines = 1, overflow = TextOverflow.Ellipsis)
-    }
-}
-
-/** [text], but no value shown for less than [HOLD_MS]: the newest one waiting its turn is what shows next. */
-@Composable
-private fun heldText(text: String): String {
-    val latest by rememberUpdatedState(text)
-    var shown by remember { mutableStateOf(text) }
-    LaunchedEffect(Unit) {
-        snapshotFlow { latest }.conflate().collect { next ->
-            if (next != shown) shown = next
-            delay(HOLD_MS)
-        }
-    }
-    return shown
+    )
 }
 
 private fun placementIcon(place: SubagentPlacement): ImageVector = when (place) {
@@ -328,6 +295,4 @@ private val LINE_HEIGHT = 22.sp
 private val LINE_HEIGHT_DP = 22.dp
 private val FULL_LINE = LineHeightStyle(LineHeightStyle.Alignment.Center, LineHeightStyle.Trim.None)
 private const val DIMMED_ALPHA = 0.65f
-private const val HOLD_MS = 1_200L
-private const val ROLL_MS = 220
 private const val FAST = "Fast"
