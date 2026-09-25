@@ -120,11 +120,35 @@ sealed interface TranscriptRow {
         }
     }
 
+    /**
+     * Steps of an open [Stretch] as a row of the list's own (see [StretchSteps]): a few [entries] in a row, drawn as
+     * they are inside the stretch, or — for a thought — one [text] piece of it (see [ThoughtChunks]), so that a
+     * stretch of hundreds of calls and a thought of hundreds of kilobytes are laid out as far as the screen shows them
+     * rather than whole. [gapAbove] is the space in dp above it, where the stretch's column would have put it;
+     * [padTop] and [padBottom] a thought's own padding around its text, and [endPad] the open stretch's below its
+     * last step, all in dp and each rounded to pixels on its own as the column rounded them. [live] when its stretch
+     * is still being written, its steps arriving rather than being opened onto.
+     */
+    data class Step(
+        override val key: String,
+        val stretchKey: String,
+        val entries: List<Entry>,
+        val text: String?,
+        val gapAbove: Int,
+        val padBottom: Int,
+        val live: Boolean = false,
+        val padTop: Int = 0,
+        val endPad: Int = 0,
+    ) : TranscriptRow
+
     /** One step of a [Stretch], in the order it happened. */
     sealed interface Entry {
         val key: String
 
-        data class Thought(val block: ThinkingBlock, override val key: String) : Entry
+        data class Thought(val block: ThinkingBlock, override val key: String) : Entry {
+            /** The thought's text, trimmed, in pieces that stack into the same lines (see [ThoughtChunks]). */
+            val parts: List<String> by lazy(LazyThreadSafetyMode.PUBLICATION) { ThoughtChunks.of(block.text) }
+        }
 
         /**
          * A tool call. [subagent] is the row it is drawn as when it is a subagent's — a task the agent delegated, a

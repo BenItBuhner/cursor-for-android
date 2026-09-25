@@ -36,7 +36,8 @@ import com.cursorforandroid.ui.theme.CursorTheme
 @Composable
 fun TranscriptRowView(row: TranscriptRow, modifier: Modifier = Modifier) {
     // Each composition of a row, first or again, counted for the chat's diagnostics (see TranscriptPerf).
-    SideEffect { TranscriptPerf.focused?.rowComposed() }
+    // A step of an open stretch is counted as a step (see StepRow, EntryView).
+    if (row !is TranscriptRow.Step) SideEffect { TranscriptPerf.focused?.rowComposed() }
     when (row) {
         is TranscriptRow.Item -> TimelineItemView(row.item, modifier)
         is TranscriptRow.Message -> CoordinatorMessageView(row.call, row.call.payload as ToolPayload.CoordinatorMessage, modifier)
@@ -50,6 +51,7 @@ fun TranscriptRowView(row: TranscriptRow, modifier: Modifier = Modifier) {
         is TranscriptRow.Event -> EventRow(row.notification, row.count, modifier)
         is TranscriptRow.Events -> EventGroupView(row, modifier)
         is TranscriptRow.Failure -> RunFailureRow(row.footer, modifier)
+        is TranscriptRow.Step -> StepRow(row, modifier)
     }
 }
 
@@ -64,10 +66,13 @@ fun TranscriptRowView(row: TranscriptRow, modifier: Modifier = Modifier) {
 @Composable
 internal fun StretchView(stretch: TranscriptRow.Stretch, modifier: Modifier = Modifier) {
     stretch.single?.let { entry ->
-        SingleEntry(entry, modifier)
+        SingleEntry(entry, stretch.key, modifier)
         return
     }
-    var expanded by rememberSaveable(stretch.key) { mutableStateOf(false) }
+    // In the conversation's list the steps of an open stretch are rows of their own (see StretchSteps): the line alone is drawn here.
+    val openStretches = LocalOpenStretches.current
+    var toggled by rememberSaveable(stretch.key) { mutableStateOf(false) }
+    val expanded = openStretches?.isOpen(stretch.key) ?: toggled
     val coordinator = LocalTranscriptControls.current.coordinatorMode
     val subagents = subagentStates(stretch)
     val working = subagents.mapNotNull { (entry, state) -> state.look.takeIf { SubagentRows.isWorking(entry.subagent!!, it, state.child, stretch.live) } }
@@ -78,11 +83,11 @@ internal fun StretchView(stretch: TranscriptRow.Stretch, modifier: Modifier = Mo
                 action = summary.action,
                 details = summary.details,
                 expanded = expanded,
-                onToggle = { expanded = !expanded },
+                onToggle = { if (openStretches != null) openStretches.setOpen(stretch.key, !expanded) else toggled = !expanded },
                 busy = summary.busy,
                 lineStats = summary.lineStats,
             )
-            AnimatedVisibility(visible = expanded) {
+            if (openStretches == null) AnimatedVisibility(visible = expanded) {
                 Column(Modifier.fillMaxWidth().padding(top = 6.dp, bottom = 4.dp).testTag("stretch-steps"), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                     // Each entry owns its slot, so an opened output stays with the call it was opened on as the list grows.
                     stretch.listed.forEach { entry -> key(entry.key) { EntryView(entry) } }
@@ -99,7 +104,8 @@ private fun subagentStates(stretch: TranscriptRow.Stretch): List<Pair<Transcript
 
 /** One entry of an open stretch, as Cursor lists a step. */
 @Composable
-private fun EntryView(entry: TranscriptRow.Entry) {
+internal fun EntryView(entry: TranscriptRow.Entry) {
+    SideEffect { TranscriptPerf.focused?.stepComposed() }
     when (entry) {
         is TranscriptRow.Entry.Thought -> ThoughtText(entry.block.text, Modifier.padding(vertical = 4.dp))
         is TranscriptRow.Entry.Call -> StepLine(entry)
@@ -134,9 +140,9 @@ private fun NoteText(entry: TranscriptRow.Entry.Note) {
 
 /** A stretch of one entry is drawn as that entry would be on its own: nothing to summarise. */
 @Composable
-private fun SingleEntry(entry: TranscriptRow.Entry, modifier: Modifier) {
+private fun SingleEntry(entry: TranscriptRow.Entry, stretchKey: String, modifier: Modifier) {
     when (entry) {
-        is TranscriptRow.Entry.Thought -> ThoughtDisclosure(entry, modifier)
+        is TranscriptRow.Entry.Thought -> ThoughtDisclosure(entry, stretchKey, modifier)
         is TranscriptRow.Entry.Call -> Column(modifier.fillMaxWidth()) { StepLine(entry) }
         is TranscriptRow.Entry.Note -> BackgroundMessage(entry.message, modifier)
         is TranscriptRow.Entry.Footer -> RunFooterView(entry.footer, modifier, interrupted = entry.interrupted)
@@ -151,24 +157,25 @@ private fun SingleEntry(entry: TranscriptRow.Entry, modifier: Modifier) {
 
 /** A lone thought: "Thinking" while it streams, then "Thought", closed onto its text. */
 @Composable
-private fun ThoughtDisclosure(entry: TranscriptRow.Entry.Thought, modifier: Modifier) {
+private fun ThoughtDisclosure(entry: TranscriptRow.Entry.Thought, stretchKey: String, modifier: Modifier) {
+    // In the conversation's list the open thought's text is rows of their own, in pieces (see StretchSteps): the line alone is drawn here.
+    val openStretches = LocalOpenStretches.current
     var toggled by rememberSaveable(entry.key) { mutableStateOf<Boolean?>(null) }
-    val text = entry.block.text.trim()
     val streaming = entry.block.isStreaming
-    val expandable = text.isNotEmpty()
-    val expanded = expandable && (toggled ?: streaming)
+    val expandable = entry.block.text.isNotBlank()
+    val expanded = if (openStretches != null) openStretches.isThoughtOpen(stretchKey, entry) else expandable && (toggled ?: streaming)
     val seconds = entry.block.durationSeconds
     Column(modifier.fillMaxWidth()) {
         DisclosureRow(
             action = if (streaming) "Thinking" else "Thought",
             details = if (streaming || seconds == null) null else if (seconds <= 0) "briefly" else "${seconds}s",
             expanded = expanded,
-            onToggle = { toggled = !expanded },
+            onToggle = { if (openStretches != null) openStretches.setThoughtOpen(stretchKey, !expanded) else toggled = !expanded },
             busy = streaming,
             expandable = expandable,
         )
-        AnimatedVisibility(visible = expanded) {
-            ThoughtText(text, Modifier.padding(top = 6.dp, bottom = 4.dp))
+        if (openStretches == null) AnimatedVisibility(visible = expanded) {
+            ThoughtText(entry.block.text, Modifier.padding(top = 6.dp, bottom = 4.dp))
         }
     }
 }

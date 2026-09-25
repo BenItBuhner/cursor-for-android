@@ -223,7 +223,16 @@ class TranscriptPresenter {
         // The summaries the rows carry are computed here, off the main thread, rather than on their first composition.
         rows.forEach { row ->
             when (row) {
-                is TranscriptRow.Stretch -> { row.summary; row.entries.forEach { entry -> (entry as? TranscriptRow.Entry.Events)?.group?.summary } }
+                is TranscriptRow.Stretch -> row.summary.also {
+                    row.entries.forEach { entry ->
+                        when (entry) {
+                            is TranscriptRow.Entry.Events -> entry.group.summary
+                            // A thought's pieces, for when it is open: cut anew on every delta while it is written.
+                            is TranscriptRow.Entry.Thought -> entry.parts
+                            else -> Unit
+                        }
+                    }
+                }
                 is TranscriptRow.Events -> row.summary
                 else -> Unit
             }

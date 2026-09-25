@@ -551,6 +551,7 @@ class TranscriptVerifier(
         is TranscriptRow.Question -> "question ${row.call.name} answered=${(row.call.payload as? ToolPayload.Question)?.isAnswered}"
         is TranscriptRow.Failure -> "FAILURE run=${tail(row.footer.runId)} status=${row.footer.status} reason=${row.footer.reason?.length ?: 0}ch"
         is TranscriptRow.Stretch -> "stretch \"${row.summary.text}\" live=${row.live} entries=${row.entries.size} [${describeEntries(row.entries)}]"
+        is TranscriptRow.Step -> "step ${row.key}"
     }
 
     /** The entries in order, runs of the same kind counted: `note(112ch) call(sendToAgent:completed) footer(FINISHED,12s)×149`. */
