@@ -59,7 +59,7 @@ fun TranscriptRowView(row: TranscriptRow, modifier: Modifier = Modifier) {
  * sequence verbatim and in order: each thought as dimmed prose, each tool call as the line it always was (opening
  * onto its command, diff or output as before), each subagent as its row, each of a coordinator's working notes as
  * dimmed markdown, each injected turn as its line and a run of them behind one ([EventGroupView]). A stretch of one
- * step is that step, drawn as it would be alone; a note never is.
+ * step is that step, drawn as it would be alone; a note or a subagent's row never is.
  */
 @Composable
 internal fun StretchView(stretch: TranscriptRow.Stretch, modifier: Modifier = Modifier) {
