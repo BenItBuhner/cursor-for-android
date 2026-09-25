@@ -263,7 +263,8 @@ class OutgoingSendTest {
         vm.setDraft("Stitch the image into the green screen")
         awaitChip(vm, spec.id) { it?.isUploading == true }
 
-        vm.send()
+        // Into a bubble at the foot of the transcript now: what it says is what the composer's text travels into.
+        assertThat(vm.send()).isEqualTo("Stitch the image into the green screen")
 
         // Same frame: nothing has been awaited yet.
         assertThat(vm.composerIsEmpty()).isTrue()
@@ -456,7 +457,8 @@ class OutgoingSendTest {
         vm.addFiles(listOf(spec))
         account.queueNext = true
         vm.setDraft("When you are done, read the spec")
-        vm.send()
+        // Mid-turn, the bubble only stands while the account queues it: nothing travels into it.
+        assertThat(vm.send()).isNull()
         assertThat(vm.composerIsEmpty()).isTrue()
         val bubble = await("the bubble") { pendingBubbles().singleOrNull() }
         // The status follows the bubble by a step; the send takes its 300–900 ms after that.
@@ -489,8 +491,8 @@ class OutgoingSendTest {
     fun `the documented send clears the composer at the tap, shows a refusal on the bubble, and queues when busy`() = runBlocking<Unit> {
         val vm = open()
         api.failNextCreateRun = FakeCursorApi.httpError(500, "internal", "Something went wrong.")
-        vm.setDraft("Plain text")
-        vm.send()
+        vm.setDraft("  Plain text  ")
+        assertThat(vm.send()).isEqualTo("Plain text")
         assertThat(vm.composerIsEmpty()).isTrue()
         val bubble = await("the bubble") { pendingBubbles().singleOrNull() }
         val failed = awaitStatus(vm, bubble.id) { it is OutgoingStatus.Failed } as OutgoingStatus.Failed

@@ -13,6 +13,7 @@ import com.cursorforandroid.AppGraph
 import com.cursorforandroid.data.repo.SessionState
 import com.cursorforandroid.ui.agents.LocalMediaLoader
 import com.cursorforandroid.ui.auth.SignInScreen
+import com.cursorforandroid.ui.components.SendMotionHost
 import com.cursorforandroid.ui.navigation.AppNavHost
 import com.cursorforandroid.ui.onboarding.ModeChoiceScreen
 import com.cursorforandroid.ui.theme.CursorTheme
@@ -55,17 +56,21 @@ fun CursorRoot(
                 // The loader is provided here rather than around the whole tree because building it is what first
                 // pulls Coil and its HTTP client in, and nothing before this point draws an image.
                 else -> CompositionLocalProvider(LocalMediaLoader provides graph.media) {
-                    AppNavHost(
-                        graph = graph,
-                        user = s.user,
-                        isDemo = s.isDemo,
-                        deepLinkAgentId = deepLinkAgentId,
-                        onDeepLinkConsumed = onDeepLinkConsumed,
-                        newChatRequested = newChatRequested,
-                        onNewChatConsumed = onNewChatConsumed,
-                        searchRequested = searchRequested,
-                        onSearchConsumed = onSearchConsumed,
-                    )
+                    // Over every screen and pane, so a sent message can travel from one composer into a bubble on
+                    // another screen (see SendMotion).
+                    SendMotionHost {
+                        AppNavHost(
+                            graph = graph,
+                            user = s.user,
+                            isDemo = s.isDemo,
+                            deepLinkAgentId = deepLinkAgentId,
+                            onDeepLinkConsumed = onDeepLinkConsumed,
+                            newChatRequested = newChatRequested,
+                            onNewChatConsumed = onNewChatConsumed,
+                            searchRequested = searchRequested,
+                            onSearchConsumed = onSearchConsumed,
+                        )
+                    }
                 }
             }
         }

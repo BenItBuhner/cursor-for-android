@@ -328,6 +328,27 @@ class ConversationViewModelTest {
         assertThat(runBlocking { withTimeout(5_000) { vm.toastMessage.first { it != null } } }).isEqualTo("Your draft was queued in its place.")
     }
 
+    /**
+     * What `send` hands the screen is what a bubble at the foot of the transcript reads, for the composer's text to
+     * travel into: nothing for a message that waits in this device's queue, which shows no bubble, or for a composer
+     * with no text; the trimmed text for one that goes out now.
+     */
+    @Test
+    fun `send says what its bubble reads only for a message that goes into one now`() {
+        val running = open(RUNNING)
+        running.setDraft("After this turn")
+        assertThat(running.send()).isNull()
+        assertThat(runBlocking { withTimeout(5_000) { running.queue.first { it.isNotEmpty() } } }.map { it.text }).containsExactly("After this turn")
+
+        val idle = open(IDLE)
+        idle.setDraft("   ")
+        assertThat(idle.send()).isNull()
+        idle.setDraft(" Now, please \n")
+        assertThat(idle.send()).isEqualTo("Now, please")
+        assertThat(idle.draftText.value).isEmpty()
+        runBlocking { withTimeout(10_000) { idle.isSending.first { !it } } }
+    }
+
     @Test
     fun `removing a queued follow-up takes it away`() {
         val vm = open(RUNNING)
@@ -473,7 +494,7 @@ class ConversationViewModelTest {
         // The agent is on a turn and the demo has no account queue: the message would go behind the turn on this
         // device, as an agent turn. It is refused with the reason instead, and the draft stays put.
         vm.setDraft("Why did the catch-up job stall?")
-        vm.send()
+        assertThat(vm.send()).isNull()
         assertThat(vm.toastMessage.value).contains("Ask mode follow-ups cannot wait in this device's queue")
         assertThat(vm.draftText.value).isEqualTo("Why did the catch-up job stall?")
         assertThat(graph.followUps.state(RUNNING).value.queue).isEmpty()

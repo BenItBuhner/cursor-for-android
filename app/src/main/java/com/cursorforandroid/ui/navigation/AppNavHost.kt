@@ -487,7 +487,8 @@ internal fun AppShell(
                         listState = pane.listState,
                         onOpenSidebar = pane.openSidebar,
                         onOpenAgent = pane.onOpenAgent,
-                        onLaunchOpen = ::openAgent,
+                        // The chat fades in over the pane, its prompt and composer carrying on from this one's.
+                        onLaunchOpen = { id -> stack.gliding { openAgent(id) } },
                         rowActions = pane.rowActions,
                         home = pane.newChatHome,
                         projectsAvailable = pane.projectsAvailable,

@@ -78,7 +78,12 @@ import com.cursorforandroid.domain.SubagentPlacement
 import com.cursorforandroid.ui.agents.RenameChatDialog
 import com.cursorforandroid.ui.agents.SnoozeChatDialog
 import com.cursorforandroid.ui.components.ChatHeader
+import com.cursorforandroid.domain.UserMessage
+import com.cursorforandroid.ui.components.ComposerAnchor
 import com.cursorforandroid.ui.components.ComposerBox
+import com.cursorforandroid.ui.components.LocalSendMotion
+import com.cursorforandroid.ui.components.arrivalGlide
+import com.cursorforandroid.ui.components.rememberArrivalGlide
 import com.cursorforandroid.ui.components.CursorIcons
 import com.cursorforandroid.ui.components.CursorMenu
 import com.cursorforandroid.ui.components.CursorMenuItem
@@ -640,6 +645,11 @@ fun ConversationScreen(
         }
 
         val archived = agent?.isArchived == true
+        // A message sent into a bubble travels there from the composer (see SendMotion); a chat just started from New
+        // Chat has its composer glide down from where that one stood.
+        val sendMotion = LocalSendMotion.current
+        val composerAnchor = remember(agentId) { ComposerAnchor() }
+        val arrival = rememberArrivalGlide(agentId)
         // Extended mode keeps the queue on the account, where the desktop and the web keep theirs; otherwise on this device.
         val accountQueue = capabilities.accountQueue && !isDemo
         val willQueue = isActive || queue.isNotEmpty() || (accountQueue && controls.queue.isNotEmpty())
@@ -650,7 +660,7 @@ fun ConversationScreen(
         // the stack is a dockedCard: stood in from the box's sides so its corners are concentric with the box's, the
         // same gap between each, whether one is stacked or five.
         Column(
-            Modifier.fillMaxWidth().composerDockPadding(),
+            Modifier.fillMaxWidth().composerDockPadding().arrivalGlide(arrival),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             // A fetch that did not go through, said rather than swallowed, in the server's own words: the load's
@@ -728,7 +738,12 @@ fun ConversationScreen(
                     willQueue -> "Follow up (sends when the turn ends)…"
                     else -> "Follow up…"
                 },
-                onSend = viewModel::send,
+                onSend = {
+                    val takeoff = composerAnchor.takeoff()
+                    val before = items.mapNotNullTo(HashSet()) { (it as? UserMessage)?.id }
+                    viewModel.send()?.let { sent -> sendMotion?.depart(takeoff, sent, before) }
+                },
+                anchor = composerAnchor,
                 // Free the moment send is tapped: the message, its files' uploads and its send are the transcript's from then on.
                 canSend = (draft.isNotBlank() || attachments.isNotEmpty() || files.isNotEmpty()) && !archived,
                 isRunning = isActive,
