@@ -13,8 +13,10 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.cursorforandroid.AppGraph
 import com.cursorforandroid.data.FakeCursorApi
 import com.cursorforandroid.data.FakeRunStreamer
+import com.cursorforandroid.data.api.RunStreamEvent
 import com.cursorforandroid.data.local.SecureKeyStore
 import com.cursorforandroid.data.repo.CursorBackend
+import com.cursorforandroid.domain.RunStatus
 import com.cursorforandroid.ui.components.AgentLinkIcon
 import com.cursorforandroid.ui.conversation.ConversationScreen
 import com.cursorforandroid.ui.theme.CursorTheme
@@ -85,6 +87,10 @@ class AgentLinkStatusScreenshotTest {
             else api.addIdleAgent(lane.id, lane.name, "run-${lane.id}", createdAt = STARTED_AT)
         }
         api.addFinishedAgent(COORDINATOR, "Revenue Scaling Pipeline", Triple("run-coordinator", PROMPT, REPLY), firstRunAt = STARTED_AT)
+        // The finished run's log is served whole, so its activity is read and no "Loading the activity" spinner turns above it.
+        streamer.emit("run-coordinator", RunStreamEvent.Assistant(REPLY))
+        streamer.emit("run-coordinator", RunStreamEvent.Result("run-coordinator", RunStatus.FINISHED, REPLY, 60_000, null))
+        streamer.emit("run-coordinator", RunStreamEvent.Done)
         graph.session.enterDemo()
         graph.agents.refresh()
     }
@@ -98,6 +104,9 @@ class AgentLinkStatusScreenshotTest {
 
     private fun show(mode: ThemeMode) {
         seed()
+        // The test harness cancels an infinite animation for good if it starts while the clock auto-advances, which
+        // would freeze the dot grid on its first step; so the clock is paused from the start and stepped by hand.
+        compose.mainClock.autoAdvance = false
         compose.setContent {
             CursorTheme(mode = mode) {
                 // Ripples on API 31+ animate a noise "sparkle", so a frame caught mid-fade is never reproducible.
@@ -106,8 +115,20 @@ class AgentLinkStatusScreenshotTest {
                 }
             }
         }
-        compose.waitUntil(30_000) { compose.onAllNodes(hasText("Push AI receptionist", substring = true), useUnmergedTree = true).fetchSemanticsNodes().isNotEmpty() }
+        compose.waitUntil(30_000) {
+            compose.mainClock.advanceTimeByFrame()
+            compose.onAllNodes(hasText("Push AI receptionist", substring = true), useUnmergedTree = true).fetchSemanticsNodes().isNotEmpty() &&
+                graph.conversations.state(COORDINATOR).value.traceStatus.pending == 0 &&
+                compose.onAllNodes(hasText("Loading the activity", substring = true), useUnmergedTree = true).fetchSemanticsNodes().isEmpty()
+        }
+        compose.mainClock.advanceTimeBy(SETTLE_MILLIS)
         compose.waitForIdle()
+    }
+
+    /** Moves the clock on to [phase] ms into the grid's loop, so a frame catches the same step however long loading took. */
+    private fun advanceToGridPhase(phase: Long) {
+        val now = compose.mainClock.currentTime
+        compose.mainClock.advanceTimeBy(GRID_LOOP_MILLIS - now % GRID_LOOP_MILLIS + phase)
     }
 
     private fun count(tag: String) = compose.onAllNodes(hasTestTag(tag), useUnmergedTree = true).fetchSemanticsNodes().size
@@ -116,8 +137,7 @@ class AgentLinkStatusScreenshotTest {
         show(mode)
         assertThat(count(AgentLinkIcon.TAG_RUNNING)).isEqualTo(4)
         assertThat(count(AgentLinkIcon.TAG_IDLE)).isEqualTo(2)
-        compose.mainClock.autoAdvance = false
-        compose.mainClock.advanceTimeBy(GRID_STEP_MILLIS)
+        advanceToGridPhase(GRID_PHASE_MILLIS)
         captureScreenRoboImage(File(outDir, "$name.png").path, RoborazziOptions())
     }
 
@@ -134,7 +154,7 @@ class AgentLinkStatusScreenshotTest {
         val mode = if (System.getenv("AGENT_LINK_DEMO_THEME") == "light") ThemeMode.Light else ThemeMode.Dark
         val out = File(dir!!).apply { mkdirs() }
         show(mode)
-        compose.mainClock.autoAdvance = false
+        advanceToGridPhase(0)
         var index = 0
         fun roll(frames: Int) = repeat(frames) {
             compose.mainClock.advanceTimeBy(FRAME_MILLIS)
@@ -161,8 +181,10 @@ class AgentLinkStatusScreenshotTest {
     private companion object {
         const val STARTED_AT = "2026-09-25T09:00:00.000Z"
         const val COORDINATOR = "bc-7e0c3f1a-2b4d-4c6e-8f10-1a2b3c4d5e6f"
-        /** An odd step of the grid's 175 ms frames, so the capture is one pattern and never a boundary between two. */
-        const val GRID_STEP_MILLIS = 612L
+        const val GRID_LOOP_MILLIS = 1_400L
+        /** Mid-way through the grid's fourth 175 ms step, so the capture is one pattern and never a boundary between two. */
+        const val GRID_PHASE_MILLIS = 612L
+        const val SETTLE_MILLIS = 1_000L
         const val FRAME_MILLIS = 40L
 
         val LANES = listOf(
