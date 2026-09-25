@@ -194,11 +194,42 @@ class ProjectApiTest {
         val request = server.takeRequest()
         assertThat(request.path).isEqualTo("/aiserver.v1.BackgroundComposerService/StartSideChatBackgroundComposer")
         val body = request.json()
+        assertThat(body.keys).containsExactly("parentBcId", "name", "creationSource", "creationId")
         assertThat(body["parentBcId"]?.jsonPrimitive?.content).isEqualTo("bc-m")
         assertThat(body["name"]?.jsonPrimitive?.content).isEqualTo("Pricing")
-        assertThat(body["creationSource"]?.jsonPrimitive?.content).isEqualTo("BACKGROUND_COMPOSER_SOURCE_API")
+        // The desktop's source. `API` is refused: "Side chats can only be created from an interactive client surface".
+        assertThat(body["creationSource"]?.jsonPrimitive?.content).isEqualTo("BACKGROUND_COMPOSER_SOURCE_GLASS")
         // A bare UUID, as the Agents Window mints it: the account hashes it into the side chat's id.
         assertThat(body["creationId"]?.jsonPrimitive?.content).matches("[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+    }
+
+    @Test
+    fun `an unnamed side chat leaves the name off, and each start mints its own creation id`() = runBlocking<Unit> {
+        server.enqueue(session("s"))
+        server.enqueue(MockResponse().setBody("""{"composer":{"bcId":"bc-s1","sideChatInfo":{"parentBcId":"bc-m"}}}"""))
+        server.enqueue(MockResponse().setBody("""{"composer":{"bcId":"bc-s2","sideChatInfo":{"parentBcId":"bc-m"}}}"""))
+
+        api.startSideChat("bc-m", null)
+        api.startSideChat("bc-m", "   ")
+
+        server.takeRequest()
+        val first = server.takeRequest().json()
+        val second = server.takeRequest().json()
+        for (body in listOf(first, second)) {
+            assertThat(body.keys).containsExactly("parentBcId", "creationSource", "creationId")
+            assertThat(body["creationSource"]?.jsonPrimitive?.content).isEqualTo("BACKGROUND_COMPOSER_SOURCE_GLASS")
+        }
+        assertThat(first["creationId"]).isNotEqualTo(second["creationId"])
+    }
+
+    @Test
+    fun `the account's refusal of a side chat surfaces in its own words`() = runBlocking<Unit> {
+        server.enqueue(session("s"))
+        server.enqueue(MockResponse().setResponseCode(400).setBody("""{"code":"failed_precondition","message":"Side chats can only be created from an interactive client surface"}"""))
+
+        val error = assertThrows(ConnectRpcException::class.java) { runBlocking { api.startSideChat("bc-m", null) } }
+
+        assertThat(error.message).contains("Side chats can only be created from an interactive client surface")
     }
 
     @Test
