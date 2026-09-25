@@ -4,7 +4,9 @@ import androidx.activity.compose.PredictiveBackHandler
 import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.animation.core.Easing
 import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.TweenSpec
 import androidx.compose.animation.core.animate
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
@@ -20,13 +22,19 @@ import androidx.compose.foundation.gestures.draggable
 import androidx.compose.foundation.gestures.horizontalDrag
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
+import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.only
+import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.width
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.derivedStateOf
@@ -38,6 +46,9 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.Saver
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.snapshots.Snapshot
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -52,6 +63,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.input.pointer.util.VelocityTracker
 import androidx.compose.ui.input.pointer.util.addPointerInputChange
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.testTag
@@ -68,6 +80,9 @@ import androidx.compose.ui.unit.dp
 import com.cursorforandroid.ui.components.BackGestureEdges
 import com.cursorforandroid.ui.components.Haptics
 import com.cursorforandroid.ui.components.LocalScrollFadeSurface
+import com.cursorforandroid.ui.components.PaneResizeEdge
+import com.cursorforandroid.ui.components.PaneResizeEdgeWidth
+import com.cursorforandroid.ui.components.PaneSide
 import com.cursorforandroid.ui.components.SheetLanding
 import com.cursorforandroid.ui.components.backGestureEdges
 import com.cursorforandroid.ui.components.coveredFocus
@@ -82,6 +97,7 @@ import kotlin.math.abs
 import kotlin.math.roundToInt
 import kotlin.math.sign
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.launch
 
 /**
@@ -104,6 +120,13 @@ import kotlinx.coroutines.launch
  * chat, composer included, even where the sheet itself would clear it. Committed to closing, it takes the keyboard
  * from a field in the sheet, which would otherwise go on taking keystrokes from off screen until it left the
  * composition, and the keyboard with it after that.
+ *
+ * [pinned], the panel stands beside the content instead of over it: the content narrows to the room the panel leaves
+ * it and reflows as the panel slides, there is no scrim, and the panel is a pane of the layout like the wide window's
+ * rail, opened and shut by its buttons and the keyboard alone: a swipe across the chat is the chat's, back is the
+ * chat's, and a composer holding the keyboard keeps it as the panel opens. Its edge drags to resize it
+ * ([PaneResizeEdge]), and the shell keeps it open or shut for every chat ([PinnedPanelSync]). A button's slide is felt
+ * once, as the panel lands open or shut; a key's jump, and every chat's panel put where the shell has it, are not felt.
  */
 @Composable
 fun SidePanelHost(
@@ -111,6 +134,7 @@ fun SidePanelHost(
     panelWidth: Dp,
     modifier: Modifier = Modifier,
     gesturesEnabled: Boolean = true,
+    pinned: PinnedPanel? = null,
     containerColor: Color = CursorTheme.colors.sidebar,
     contentColor: Color = CursorTheme.colors.textPrimary,
     scrimColor: Color = Color.Black.copy(alpha = 0.45f),
@@ -123,15 +147,33 @@ fun SidePanelHost(
     val flingThreshold = with(density) { FlingThreshold.toPx() } / widthPx
     val rtl = LocalLayoutDirection.current == LayoutDirection.Rtl
     val edges = rememberBackGestureEdges()
+    val beside = pinned != null
+    val swipes = gesturesEnabled && !beside
     val opening = remember(state, scope, edges) { ScrollerHandoff(state, scope, from = SidePanelValue.Closed, edges = edges) }
     val closing = remember(state, scope) { ScrollerHandoff(state, scope, from = SidePanelValue.Open, edges = null) }
-    val focus = rememberSheetFocus { state.isOpen }
+    // Heard apart: a sheet over the content takes its keyboard as it opens and a panel beside it leaves it be, while
+    // either lets go of a field of its own as it shuts.
+    val covered = rememberSheetFocus { state.isOpen && !state.isPinned }
+    val sheet = rememberSheetFocus { state.isOpen }
     val haptics = rememberHaptics()
     SideEffect {
         state.widthPx = widthPx
         state.haptics = haptics
-        opening.update(gesturesEnabled, rtl, flingThreshold)
-        closing.update(gesturesEnabled, rtl, flingThreshold)
+        opening.update(swipes, rtl, flingThreshold)
+        closing.update(swipes, rtl, flingThreshold)
+    }
+    PinnedPanelSync(state, pinned)
+    // Pinned, the panel is composed where the shell has it from the frame the window changes, not from the frame after
+    // it that PinnedPanelSync's snap lands in: composed for that frame, a panel on its way out would lay its tabs out in
+    // a window it never shows in, cutting a list scrolled further than that window has room for back to fit, and one on
+    // its way in would stand blank. A window that no longer pins it puts it away; a slide of its own heads where the
+    // shell has it and shows as it goes; a panel the shell takes over as the device unfolds shows if either had it open.
+    val shown = when {
+        pinned == null -> !state.isPinned && state.isVisible
+        else -> {
+            val open = pinned.open
+            if (open == null || open == state.isOpen) state.isVisible else open || !state.isPinned
+        }
     }
 
     // The sheet lives at the end edge, so dragging toward the start opens it: the drawer's direction, reversed. The
@@ -141,7 +183,7 @@ fun SidePanelHost(
     val drag = Modifier.draggable(
         state = state.draggableState,
         orientation = Orientation.Horizontal,
-        enabled = gesturesEnabled,
+        enabled = swipes,
         reverseDirection = !rtl,
         startDragImmediately = state.isAnimating,
         onDragStopped = { velocity -> scope.launch { state.settle(velocity / widthPx, flingThreshold) } },
@@ -150,12 +192,15 @@ fun SidePanelHost(
     Box(modifier.fillMaxSize().backGestureEdges(edges)) {
         Box(
             Modifier
-                .coveredFocus(focus)
+                // The end edge is the panel's now, bars and cutout included: the chat's own padding for them would stand
+                // as a gap between the two.
+                .then(if (beside) Modifier.besidePanel(state, widthPx, WindowInsets.safeDrawing.only(WindowInsetsSides.End)) else Modifier)
+                .coveredFocus(covered)
                 .nestedScroll(opening)
-                .openDrag(state, scope, edges, enabled = gesturesEnabled && !state.isOpen, rtl = rtl, flingThreshold = flingThreshold),
+                .openDrag(state, scope, edges, enabled = gesturesEnabled && (beside || !state.isOpen), moves = !beside, rtl = rtl, flingThreshold = flingThreshold),
         ) { content() }
 
-        PredictiveBackHandler(enabled = state.isOpen) { events ->
+        PredictiveBackHandler(enabled = state.isOpen && !beside) { events ->
             val start = state.fraction
             try {
                 events.feltOnCommit(haptics).collect { state.seek(start * (1f - it.progress)) }
@@ -167,7 +212,7 @@ fun SidePanelHost(
         }
 
         // Open, or on its way: the scrim covers the content and takes the drag, so the sheet can be swiped shut from anywhere.
-        if (state.isVisible) {
+        if (shown && !beside) {
             Scrim(
                 onClose = { if (gesturesEnabled) scope.launch { state.close() } },
                 fraction = { state.fraction },
@@ -181,13 +226,13 @@ fun SidePanelHost(
                 .fillMaxHeight()
                 .width(panelWidth)
                 .offset { IntOffset(((1f - state.fraction) * widthPx).roundToInt(), 0) }
-                .sheetFocus(focus)
+                .sheetFocus(sheet)
                 .nestedScroll(closing)
                 // Open or not, as the drawer's: a sheet caught mid-slide either way follows the finger.
                 .then(drag)
                 .semantics {
                     paneTitle = PanelTitle
-                    if (state.isOpen) {
+                    if (state.isOpen && !beside) {
                         dismiss {
                             scope.launch { state.close() }
                             true
@@ -199,11 +244,63 @@ fun SidePanelHost(
             // would otherwise be measured and kept up to date off screen for the whole of every chat. The surface runs
             // edge to edge, under the status bar and the navigation bar alike; the content insets itself
             // (`panelInsetPadding` at the panel's root), so the one consumption is the content's whichever host it is in.
-            if (state.isVisible) {
+            if (shown) {
                 Surface(color = containerColor, contentColor = contentColor, shape = RectangleShape, modifier = Modifier.fillMaxSize()) {
                     CompositionLocalProvider(LocalScrollFadeSurface provides containerColor, content = panelContent)
                 }
             }
+        }
+        // Over the boundary, riding it as the panel slides; last, so hit testing reaches it before either side.
+        if (pinned != null && shown) {
+            PaneResizeEdge(
+                side = PaneSide.End,
+                paneWidth = { pinned.width },
+                onResize = pinned::resize,
+                onResizeDone = pinned::resizeDone,
+                contentDescription = ResizePanel,
+                edges = edges,
+                modifier = Modifier
+                    .align(Alignment.CenterEnd)
+                    .offset { IntOffset((PaneResizeEdgeWidth.toPx() / 2 - state.fraction * widthPx).roundToInt(), 0) },
+            )
+        }
+    }
+}
+
+/**
+ * The content beside a pinned panel: as wide as the panel leaves it, following the panel's slide frame by frame, so
+ * the chat reflows into the room rather than being covered. Read at layout, so the slide never recomposes the chat.
+ */
+private fun Modifier.besidePanel(state: SidePanelState, panelPx: Float, endInsets: WindowInsets): Modifier = layout { measurable, constraints ->
+    val width = (constraints.maxWidth - (state.fraction * panelPx).roundToInt()).coerceIn(0, constraints.maxWidth)
+    val placeable = measurable.measure(constraints.copy(minWidth = width, maxWidth = width))
+    layout(constraints.maxWidth, placeable.height) { placeable.placeRelative(0, 0) }
+}.consumeWindowInsets(endInsets)
+
+/**
+ * Keeps a pinned panel where the shell has it for the window — open or shut as the window's size class was left, in
+ * every chat — and put there at once rather than slid: it is how the layout stands, not something the reader just
+ * did. A sheet open over the chat as the window widens into room for the panel stays open, pinned; a pinned panel
+ * whose window narrows past the room for it is put away, not left over the chat as a sheet the reader never opened.
+ */
+@Composable
+private fun PinnedPanelSync(state: SidePanelState, pinned: PinnedPanel?) {
+    LaunchedEffect(state, pinned) {
+        if (pinned == null) {
+            if (state.isPinned) {
+                try {
+                    if (state.isVisible) state.snapTo(SidePanelValue.Closed)
+                } finally {
+                    state.pin = null
+                }
+            }
+            return@LaunchedEffect
+        }
+        if (!state.isPinned && state.isOpen) pinned.setOpen(true)
+        state.pin = pinned
+        snapshotFlow { pinned.open }.filterNotNull().collect { open ->
+            // Launched, so a mutation that outranks the snap cancels the snap alone and not the watch.
+            if (open != state.isOpen) launch { state.snapTo(if (open) SidePanelValue.Open else SidePanelValue.Closed) }
         }
     }
 }
@@ -211,7 +308,14 @@ fun SidePanelHost(
 /** The width the panel takes on a screen of [maxWidth]: most of a phone, a column on anything wider. */
 fun panelWidthFor(maxWidth: Dp): Dp = minOf(maxWidth - PanelMargin, PanelMaxWidth)
 
-/** A host that sizes the panel to its window; see [SidePanelHost]. */
+/**
+ * A host that sizes the panel to its window; see [SidePanelHost]. Where the window has room to spare beside the
+ * panel's column, the panel can be widened over the chat from its strip ([LocalPanelExpand]), as cursor.com's expand
+ * control does; put away, it comes back at its column's width. The surface is the chat's canvas, as the web's panel is.
+ *
+ * Where the shell has room to pin the panel beside the chat ([LocalPinnedPanel]), it stands there at the width the
+ * shell gives it, and widening over the chat gives way to dragging its edge.
+ */
 @Composable
 fun SidePanel(
     state: SidePanelState,
@@ -220,12 +324,25 @@ fun SidePanel(
     panelContent: @Composable () -> Unit,
     content: @Composable () -> Unit,
 ) {
+    val pinned = LocalPinnedPanel.current
     BoxWithConstraints(modifier) {
+        val column = panelWidthFor(maxWidth)
+        val full = maxWidth - PanelMargin
+        val canExpand = pinned == null && full - column >= ExpandGain
+        var expanded by rememberSaveable { mutableStateOf(false) }
+        LaunchedEffect(state.isVisible) { if (!state.isVisible) expanded = false }
+        val sheetWidth by animateDpAsState(if (expanded && canExpand) full else column, tween(SlideMillis, easing = SlideEasing), label = "panel-width")
+        val width = pinned?.width?.coerceAtMost(maxWidth - ChatMinWidth)?.coerceAtLeast(PinnedPanelMinWidth) ?: sheetWidth
+        val expand = remember(canExpand, expanded) { PanelExpand(available = canExpand, expanded = expanded && canExpand, toggle = { expanded = !expanded }) }
         SidePanelHost(
             state = state,
-            panelWidth = panelWidthFor(maxWidth),
+            panelWidth = width,
             gesturesEnabled = gesturesEnabled,
-            panelContent = panelContent,
+            pinned = pinned,
+            containerColor = CursorTheme.colors.canvas,
+            panelContent = {
+                CompositionLocalProvider(LocalPanelExpand provides expand, LocalPanelPinned provides (pinned != null), content = panelContent)
+            },
             content = content,
         )
     }
@@ -256,7 +373,16 @@ class SidePanelState(initialValue: SidePanelValue) {
 
     internal var widthPx = 0f
 
-    /** Plays a swipe's open or close as the sheet lands ([SheetLanding]); set by the [SidePanel] showing this state. */
+    /** The shell's side of the panel while it stands pinned beside the chat ([PinnedPanelSync]); null while it is a sheet. */
+    internal var pin: PinnedPanel? by mutableStateOf(null)
+
+    /** Whether the panel is a pane beside the chat rather than a sheet over it. */
+    val isPinned: Boolean get() = pin != null
+
+    /**
+     * Plays a swipe's open or close as the sheet lands ([SheetLanding]), and a pinned panel's slide as it lands; set by
+     * the [SidePanel] showing this state.
+     */
     internal var haptics: Haptics? = null
 
     private val landing = SheetLanding()
@@ -266,35 +392,59 @@ class SidePanelState(initialValue: SidePanelValue) {
     /** Counts [jumpTo]s: a slide or fling that began before the latest one no longer moves the sheet. */
     private var jumps = 0
 
-    suspend fun open() = slideTo(SidePanelValue.Open)
+    /** Pinned, the window keeps it open for every chat, as [close] keeps it shut. */
+    suspend fun open() = slideTo(SidePanelValue.Open) { pin?.setOpen(true) }
 
-    suspend fun close() = slideTo(SidePanelValue.Closed)
+    suspend fun close() = slideTo(SidePanelValue.Closed) { pin?.setOpen(false) }
 
     suspend fun toggle() = if (isOpen) close() else open()
 
     /**
      * Puts the sheet at [value] in this frame, with no slide: the keyboard's answer (Ctrl+Shift+B, Esc). A slide or a
-     * drag still holding the sheet stops moving it at once, and is cancelled on [scope].
+     * drag still holding the sheet stops moving it at once, and is cancelled on [scope]. Pinned, the shell is told in
+     * the same frame, as [slideTo]'s heading tells it, or [PinnedPanelSync] would put the panel back where it stood.
      */
     fun jumpTo(value: SidePanelValue, scope: CoroutineScope) {
         jumps++
         targetValue = value
         fraction = value.fraction
+        pin?.setOpen(value == SidePanelValue.Open)
         if (!mutex.tryMutate { }) scope.launch { snapTo(value) }
     }
 
-    internal suspend fun slideTo(value: SidePanelValue) {
+    /**
+     * [heading] runs once the panel is headed for [value] and before it moves: where a pinned panel tells the shell.
+     * Told any sooner, the shell's word can reach [PinnedPanelSync] while the panel still heads the other way, and the
+     * panel is snapped to where it was about to slide.
+     */
+    internal suspend fun slideTo(value: SidePanelValue, heading: () -> Unit = {}) {
         val target = value.fraction
         mutex.mutate {
+            val wasOpen = isOpen
             targetValue = value
+            heading()
             val distance = abs(target - fraction)
             if (distance < 0.001f) {
                 fraction = target
                 return@mutate
             }
-            val millis = (SlideMillis * distance).roundToInt().coerceIn(MinSlideMillis, SlideMillis)
+            // Pinned, the slide is the one way a hand moves the panel (it has no swipe and no back gesture), so it lands as a
+            // swipe's release does, felt once where it comes to rest. A sheet's is not: it can end a back gesture already
+            // felt on its commit.
+            val felt = isPinned
+            if (felt) landing.released(wasOpen = wasOpen, open = value == SidePanelValue.Open)
             val jump = jumps
-            runAnimation { animate(fraction, target, animationSpec = tween(millis, easing = SlideEasing)) { v, _ -> if (jumps == jump) fraction = v } }
+            runAnimation {
+                // Pinned, it sets off a frame on: a rail making way for it, or coming back as it goes, hears of it as the
+                // shell is next composed and starts from the frame after, so the two keep step and the chat between them
+                // never turns back.
+                if (isPinned) withFrameNanos { }
+                animate(fraction, target, animationSpec = panelSlide(distance)) { v, _ ->
+                    if (jumps != jump) return@animate
+                    fraction = v
+                    if (felt) landing.at(v)?.let { haptics?.perform(it) }
+                }
+            }
         }
     }
 
@@ -360,13 +510,36 @@ class SidePanelState(initialValue: SidePanelValue) {
     }
 
     companion object {
-        val Saver: Saver<SidePanelState, SidePanelValue> = Saver(save = { it.targetValue }, restore = { SidePanelState(it) })
+        /**
+         * A pinned panel is kept by the shell, and comes back as the window has it rather than as the chat left it. A
+         * sheet comes back as it was left; brought back beside [pinned], as a chat left on a Fold's cover is when it
+         * unfolds, it is open if the sheet was or the window has the panel open, where [PinnedPanelSync] would put it a
+         * frame later.
+         */
+        fun saver(pinned: PinnedPanel?): Saver<SidePanelState, SidePanelValue> = Saver(
+            save = { if (it.isPinned) null else it.targetValue },
+            restore = { SidePanelState(if (it == SidePanelValue.Open || pinned.standsOpen()) SidePanelValue.Open else SidePanelValue.Closed) },
+        )
     }
 }
 
+/** Beside a pinned panel ([LocalPinnedPanel]), the state starts where the window has the panel, open or shut, at once. */
 @Composable
-fun rememberSidePanelState(initialValue: SidePanelValue = SidePanelValue.Closed): SidePanelState =
-    rememberSaveable(saver = SidePanelState.Saver) { SidePanelState(initialValue) }
+fun rememberSidePanelState(initialValue: SidePanelValue = SidePanelValue.Closed): SidePanelState {
+    val pinned = LocalPinnedPanel.current
+    return rememberSaveable(saver = remember(pinned) { SidePanelState.saver(pinned) }) {
+        SidePanelState(
+            when {
+                pinned == null -> initialValue
+                pinned.standsOpen() -> SidePanelValue.Open
+                else -> SidePanelValue.Closed
+            },
+        )
+    }
+}
+
+/** Whether the shell has the panel open, unobserved: what follows the first frame is PinnedPanelSync's, not a recomposition of the chat. */
+private fun PinnedPanel?.standsOpen(): Boolean = this != null && Snapshot.withoutReadObservation { open } == true
 
 private val SidePanelValue.fraction: Float get() = if (this == SidePanelValue.Open) 1f else 0f
 
@@ -387,16 +560,21 @@ private val SidePanelValue.fraction: Float get() = if (this == SidePanelValue.Op
  * read as none at all, leaving it to settle back shut from where the lump of travel put it. A drag taken away before
  * the finger lifts — cancelled, as the system cancels the pointers of a gesture it has taken for itself — has no
  * fling: the sheet settles by where it is, as `draggable` settles a cancelled drag.
+ *
+ * Beside a pinned panel, which doesn't swipe, the same drag is taken just the same and [moves] nothing, open or shut:
+ * left to the chat, the message under the finger would read it as a hold once it outlasts the long-press timeout, and
+ * put its menu up where the finger lifts.
  */
 private fun Modifier.openDrag(
     state: SidePanelState,
     scope: CoroutineScope,
     edges: BackGestureEdges,
     enabled: Boolean,
+    moves: Boolean,
     rtl: Boolean,
     flingThreshold: Float,
 ): Modifier =
-    if (!enabled) this else pointerInput(state, edges, rtl, flingThreshold) {
+    if (!enabled) this else pointerInput(state, edges, moves, rtl, flingThreshold) {
         val tracker = VelocityTracker()
         // Toward the start edge opens: the sheet's travel is the finger's, sign-flipped in LTR.
         val sign = if (rtl) 1f else -1f
@@ -414,9 +592,14 @@ private fun Modifier.openDrag(
                 travel += change.positionChange().x
                 if (abs(travel) < slop) continue
                 val held = change.uptimeMillis - down.uptimeMillis >= viewConfiguration.longPressTimeoutMillis
-                if (sign * travel <= 0f || held || state.isAnimating || state.fraction > 0f) return@awaitEachGesture
+                if (sign * travel <= 0f || held) return@awaitEachGesture
+                if (moves && (state.isAnimating || state.fraction > 0f)) return@awaitEachGesture
                 change.consume()
                 start = change
+            }
+            if (!moves) {
+                horizontalDrag(start.id) { it.consume() }
+                return@awaitEachGesture
             }
             // Raw deltas rather than a held drag: the gesture scope cannot suspend on the state's mutex, and a sheet at
             // rest closed has nothing animating to contend with.
@@ -520,13 +703,24 @@ private fun Scrim(onClose: () -> Unit, fraction: () -> Float, color: Color, modi
 
 private const val PanelTitle = "Conversation panel"
 private const val ClosePanel = "Dismiss panel"
+private const val ResizePanel = "Resize panel"
 
 /** What the panel leaves of the screen beside it, so the transcript stays visible as context. */
 private val PanelMargin = 48.dp
 private val PanelMaxWidth = 400.dp
+/** The least a widened panel must gain over its column for the strip to offer widening at all. */
+private val ExpandGain = 120.dp
 
 private const val SlideMillis = 300
 private const val MinSlideMillis = 100
 private val SlideEasing: Easing = CubicBezierEasing(0.2f, 0f, 0f, 1f)
+
+/**
+ * The panel's slide over [distance] of its way, 0 to 1 — and the wide window's rail's as it makes way for a panel
+ * pinned open or comes back as it shuts, so the chat between the two narrows or widens without turning back.
+ */
+internal fun <T> panelSlide(distance: Float): TweenSpec<T> =
+    tween((SlideMillis * distance).roundToInt().coerceIn(MinSlideMillis, SlideMillis), easing = SlideEasing)
+
 private val FlingThreshold = 400.dp
 private val FlingSpec = spring<Float>(dampingRatio = Spring.DampingRatioNoBouncy, stiffness = 1000f, visibilityThreshold = 0.0005f)

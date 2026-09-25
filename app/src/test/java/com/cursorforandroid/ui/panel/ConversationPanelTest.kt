@@ -6,6 +6,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.hasAnyAncestor
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createComposeRule
@@ -406,8 +407,9 @@ class ConversationPanelTest {
         assertThat(titles(worker)).isEqualTo(listOf("Overview", "Changes", "Pull request", "Files", "Artifacts", "Project", "Usage"))
         assertThat(project.expandedByDefault).isTrue()
 
-        // Rendered on its own, without the graph it owns a view model through, it says so rather than crashing.
-        state = PanelFixtures.projectRoot()
+        // Rendered on its own, without the graph it owns a view model through, it says so rather than crashing. The
+        // coordinator's panel opens on its Project tab; the section is under Details.
+        state = PanelFixtures.projectRoot().copy(tabs = PanelTabsState(selectedKey = PanelTab.Details.key))
         show()
         scrollTo("section-Project")
         assertThat(shown("The Project section needs the app to render")).isTrue()
@@ -427,45 +429,47 @@ class ConversationPanelTest {
     }
 
     @Test
-    fun `a file opened from the panel takes the sections' place and comes back`() {
-        state = PanelFixtures.loaded().copy(browser = PanelFixtures.loaded().browser.copy(file = FileView.Transcript(PanelFixtures.themeRead)))
+    fun `a file opened from the panel shows in a tab of its own, under its path`() {
+        state = PanelFixtures.withFile(PanelFixtures.loaded(), FileView.Transcript(PanelFixtures.themeRead))
         show()
         compose.onNodeWithTag("file-viewer").assertIsDisplayed()
-        compose.onNodeWithText("CursorTheme.kt").assertIsDisplayed()
+        compose.onNodeWithTag("panel-tab-file:${PanelFixtures.themeRead.path}").assertIsDisplayed()
+        compose.onNode(hasText("CursorTheme.kt") and hasAnyAncestor(hasTestTag("breadcrumb"))).assertIsDisplayed()
         assertThat(shown("As the agent read it · 141 lines")).isTrue()
         assertThat(shown("fun CursorTheme(mode: ThemeMode")).isTrue()
         assertThat(compose.onAllNodesWithTag("panel-sections").fetchSemanticsNodes()).isEmpty()
 
-        state = state.copy(browser = state.browser.copy(file = FileView.Changes(state.content.changes.first())))
+        state = PanelFixtures.withFile(state, FileView.Changes(state.content.changes.first()))
         compose.waitForIdle()
         compose.onNodeWithTag("diff-block").assertIsDisplayed()
         assertThat(shown("1 edit · +5 -2")).isTrue()
     }
 
     @Test
-    fun `back from a file opened in the panel returns to the sections, and leaves the panel open`() {
-        state = PanelFixtures.loaded().copy(browser = PanelFixtures.loaded().browser.copy(file = FileView.Transcript(PanelFixtures.themeRead)))
+    fun `back from a file tab returns to the sections and keeps the tab, and leaves the panel open`() {
+        state = PanelFixtures.withFile(PanelFixtures.loaded(), FileView.Transcript(PanelFixtures.themeRead))
         var closes = 0
-        val closing = object : PanelActions by actions {
-            override fun closeFile() {
-                asked += "close-file"
-                state = state.copy(browser = state.browser.copy(file = null))
+        val backing = object : PanelActions by actions {
+            override fun back() {
+                asked += "back"
+                state = state.copy(tabs = state.tabs.copy(selectedKey = null))
             }
         }
         lateinit var dispatcher: OnBackPressedDispatcher
         compose.setContent {
             dispatcher = LocalOnBackPressedDispatcherOwner.current!!.onBackPressedDispatcher
-            CursorTheme(mode = ThemeMode.Dark) { ConversationPanel(state, closing, onClose = { closes++ }) }
+            CursorTheme(mode = ThemeMode.Dark) { ConversationPanel(state, backing, onClose = { closes++ }) }
         }
         compose.onNodeWithTag("file-viewer").assertIsDisplayed()
         assertThat(dispatcher.hasEnabledCallbacks()).isTrue()
 
         compose.runOnIdle { dispatcher.onBackPressed() }
         compose.waitForIdle()
-        assertThat(asked.count { it == "close-file" }).isEqualTo(1)
+        assertThat(asked.count { it == "back" }).isEqualTo(1)
         compose.onNodeWithTag("panel-sections").assertExists()
+        compose.onNodeWithTag("panel-tab-file:${PanelFixtures.themeRead.path}").assertExists()
         assertThat(closes).isEqualTo(0)
-        // With the sections showing, back is no longer the panel content's: the host's closes the panel.
+        // On the home tab back is no longer the panel content's: the host's closes the panel.
         assertThat(dispatcher.hasEnabledCallbacks()).isFalse()
     }
 }

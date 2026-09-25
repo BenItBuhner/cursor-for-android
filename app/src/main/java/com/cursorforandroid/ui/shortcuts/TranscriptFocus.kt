@@ -34,10 +34,16 @@ class TranscriptFocusRequests {
 
 val LocalTranscriptFocus = staticCompositionLocalOf<TranscriptFocusRequests?> { null }
 
-/** What an open chat answers from the keyboard; the chat registers it with [ChatShortcuts] while it is composed. */
+/**
+ * What an open chat answers from the keyboard, and the shell as the window changes under it; the chat registers it
+ * with [ChatShortcuts] while it is composed.
+ */
 interface ChatShortcutTarget {
     /** Ctrl+Shift+B: the right-side panel opened or shut. False when the chat has no panel to show. */
     fun togglePanel(): Boolean
+
+    /** The right-side panel open over the chat as a sheet, where the window has no room to pin it beside the chat. */
+    val sheetOpen: Boolean
 
     /** Ctrl+R. */
     fun catchUp()

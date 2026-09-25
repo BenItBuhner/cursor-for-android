@@ -40,12 +40,15 @@ internal fun ChatKeyboardShortcuts(agentId: String, viewModel: ConversationViewM
                 return true
             }
 
+            override val sheetOpen: Boolean get() = panelState.isOpen && !panelState.isPinned
+
             override fun catchUp() = viewModel.catchUp()
 
             override fun reloadTranscript() = viewModel.reloadTranscriptWithWord()
 
+            // A panel pinned beside the chat is part of the layout, like the rail: Esc leaves the field, not the panel.
             override fun escape(): Boolean {
-                if (!panelState.isOpen) return false
+                if (!panelState.isOpen || panelState.isPinned) return false
                 panelState.jumpTo(SidePanelValue.Closed, scope)
                 return true
             }

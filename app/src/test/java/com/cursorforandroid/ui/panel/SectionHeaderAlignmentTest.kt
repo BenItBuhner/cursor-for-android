@@ -36,7 +36,7 @@ class SectionHeaderAlignmentTest {
     val compose = createComposeRule()
 
     private val panelWidth = 363.dp
-    private val HeaderEndPadding = 12.dp
+    private val HeaderEndPadding = PanelGutter
 
     private fun show(state: PanelState, registry: PanelRegistry = PanelRegistry.default()) {
         compose.setContent {
