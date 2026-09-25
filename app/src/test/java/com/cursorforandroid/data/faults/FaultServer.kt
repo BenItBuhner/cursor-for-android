@@ -205,6 +205,12 @@ class FaultServer(
     val composers: MutableMap<String, Composer> = ConcurrentHashMap()
     /** `ListWorkersForManager`: each coordinator's workers, as (workerId, spawnKind). */
     val workers: MutableMap<String, List<Pair<String, String>>> = ConcurrentHashMap()
+    /**
+     * While above zero, a running run's stream is held open about this long after what its log has so far, a
+     * keep-alive at a time, as the API holds a turn under way, rather than answered whole and closed: each running
+     * chat followed costs a connection's worth of the client's resources, which is what a load test has to see.
+     */
+    @Volatile var holdRunningStreamsMs: Long = 0L
     /** The account's pinned ids, as the first page of the list reports them. */
     val pinned: MutableSet<String> = ConcurrentHashMap.newKeySet()
     /** How many rows one account page carries whatever `n` asks (the service's window is 200; a small account still pages when this is small). */
@@ -973,9 +979,65 @@ class FaultServer(
     /** A Connect error body, as the account service writes one. */
     private fun connectError(code: String, message: String): String = """{"code":"$code","message":${quote(message)}}"""
 
+    /**
+     * Over [http2], a running turn's stream as the API holds it: what the log has at full speed, then each event
+     * [appendRunEvents] adds the moment it comes, a keep-alive between, and the end once the turn does. Takes
+     * precedence over [holdRunningStreamsMs], which trickles the whole answer.
+     */
+    @Volatile var liveRunStreams = false
+    /** How often a held run stream says something (see [liveRunStreams], [liveRunGenerator]). */
+    @Volatile var liveRunBeatMs = HELD_BEAT_MS
+    /**
+     * The agent working on, as the held stream's own words (see [liveRunStreams]): events written after the log once
+     * each beat, and never kept — the server's memory stays flat, so what grows is the client's. Tick counts from 1.
+     */
+    @Volatile var liveRunGenerator: ((runId: String, tick: Int) -> List<Pair<String, String>>)? = null
+    /** Run streams held open at this moment (see [liveRunStreams]). */
+    val liveRunOpen = AtomicInteger()
+
+    /** The agent working on: [events] appended to [runId]'s log, heard at once on its held streams (see [liveRunStreams]). */
+    fun appendRunEvents(runId: String, events: List<Pair<String, String>>) {
+        logs.compute(runId) { _, log -> log.orEmpty() + events }
+        synchronized(liveLock) { liveLock.notifyAll() }
+    }
+
+    private fun heldRun(runId: String, skip: Int): MockResponse =
+        MockResponse().setResponseCode(200).removeHeader("Content-Length").setHeader("Content-Type", "text/event-stream").setBody(object : DuplexResponseBody {
+            override fun onRequest(request: RecordedRequest, http2Stream: Http2Stream) {
+                liveRunOpen.incrementAndGet()
+                try {
+                    val sink = http2Stream.getSink().buffer()
+                    var sent = skip
+                    var tick = 0
+                    while (!closed) {
+                        val log = logs[runId].orEmpty()
+                        while (sent < log.size) {
+                            val (event, data) = log[sent++]
+                            sink.writeUtf8("event: ").writeUtf8(event).writeUtf8("\nid: ").writeUtf8(runId).writeUtf8("#").writeUtf8(sent.toString()).writeUtf8("\ndata: ").writeUtf8(data).writeUtf8("\n\n")
+                        }
+                        if (runs[runId]?.status != "RUNNING") {
+                            sink.writeUtf8("event: done\ndata: {}\n\n").flush()
+                            sink.close()
+                            return
+                        }
+                        liveRunGenerator?.invoke(runId, ++tick)?.forEach { (event, data) ->
+                            sink.writeUtf8("event: ").writeUtf8(event).writeUtf8("\nid: ").writeUtf8(runId).writeUtf8("#g").writeUtf8(tick.toString()).writeUtf8("\ndata: ").writeUtf8(data).writeUtf8("\n\n")
+                        }
+                        sink.writeUtf8(": keep-alive\n\n").flush()
+                        synchronized(liveLock) { if (logs[runId].orEmpty().size == sent && !closed) liveLock.wait(liveRunBeatMs) }
+                    }
+                } catch (_: IOException) {
+                    // The client reset the stream: it is gone.
+                } finally {
+                    liveRunOpen.decrementAndGet()
+                }
+            }
+        })
+
     private fun stream(runId: String, lastEventId: String?, cutAfter: Int?): MockResponse {
         val log = logs[runId] ?: return json(410, error("stream_expired", "This run's live stream has expired."))
         val skip = lastEventId?.substringAfterLast('#')?.toIntOrNull() ?: 0
+        if (http2 && liveRunStreams && cutAfter == null && runs[runId]?.status == "RUNNING") return heldRun(runId, skip)
         val remaining = log.drop(skip)
         val served = if (cutAfter != null) remaining.take(cutAfter) else remaining
         val body = StringBuilder()
@@ -984,8 +1046,17 @@ class FaultServer(
             body.append("id: ").append(runId).append('#').append(skip + i + 1).append('\n')
             body.append("data: ").append(data).append("\n\n")
         }
-        if (cutAfter == null) body.append("event: done\ndata: {}\n\n")
+        val holding = cutAfter == null && holdRunningStreamsMs > 0 && runs[runId]?.status == "RUNNING"
+        if (holding) {
+            // As the API holds a turn under way: what the log has so far, then its keep-alive comments for as long as
+            // the turn goes on here, trickled so the connection (and the client's thread on it) stays taken.
+            val beats = (holdRunningStreamsMs / HELD_BEAT_MS).toInt().coerceAtLeast(1)
+            repeat(beats) { body.append(": keep-alive ").append("-".repeat(HELD_BEAT_BYTES - 15)).append("\n\n") }
+        } else if (cutAfter == null) {
+            body.append("event: done\ndata: {}\n\n")
+        }
         val response = MockResponse().setResponseCode(200).setHeader("Content-Type", "text/event-stream").setBody(body.toString())
+        if (holding) response.throttleBody(HELD_BEAT_BYTES.toLong(), HELD_BEAT_MS, TimeUnit.MILLISECONDS)
         if (cutAfter != null) response.setSocketPolicy(SocketPolicy.DISCONNECT_AT_END)
         return response
     }
@@ -1025,6 +1096,9 @@ class FaultServer(
     companion object {
         /** The longest a [Fault.Held] reply waits for its release: past any test's own wait, short of wedging the run. */
         const val HOLD_CEILING_S = 60L
+        /** A held stream's keep-alive: its size, and how often one goes out (see [holdRunningStreamsMs]). */
+        private const val HELD_BEAT_BYTES = 64
+        private const val HELD_BEAT_MS = 500L
         /** A string of a prefetched step longer than this is heavy data `filter_heavy_step_data` leaves out. */
         const val HEAVY_CHARS = 2_000
         /** The account service the record RPCs belong to (see `HeadlessConversationApi.SERVICE`). */

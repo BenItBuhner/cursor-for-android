@@ -148,9 +148,52 @@ class TranscriptRowsTest {
         assertThat(stretch.subagents.map { it.subagent?.source }).containsExactly(SubagentCall.Source.Task, SubagentCall.Source.Task)
         // The index finds them where they sit.
         assertThat(SubagentRows.index(rows).isLatest(stretch.subagents.last().call, stretch.subagents.last().subagent!!)).isTrue()
-        // A stretch of the subagent alone is drawn as its row.
+        // A stretch of the subagent alone is still a stretch, its row behind the summary.
         val alone = TranscriptRows.of(listOf(UserMessage("u1", "Go."), ActivityGroup("g", listOf(delegating.filterIsInstance<ActivityGroup>()[1].calls.first()))), coordinatorMode = false)
-        assertThat(kinds(alone)).containsExactly("item:UserMessage", "single:g:t1").inOrder()
+        assertThat(kinds(alone)).containsExactly("item:UserMessage", "stretch:1 agent").inOrder()
+        assertThat((alone[1] as TranscriptRow.Stretch).subagents.map { it.key }).containsExactly("g:t1")
+    }
+
+    /**
+     * Bennett's frame (internal/user-screenshots/subagent-outside-dropdown.jpg): a turn whose first step was the
+     * subagent, no thinking streamed before it, had its row loose between the prompt and the reply instead of behind
+     * a summary. Whatever comes before or after it in the turn, a subagent's row sits inside a collapsed stretch.
+     */
+    @Test
+    fun `a subagent's row is behind a summary whether or not a thought or another call came before it`() {
+        val task = ToolCall("t1", "task", ToolKind.Task, "running", "Queue sends instantly while running", payload = ToolPayload.Subagent("Queue sends instantly while running", agentId = "bc-q1", isBackground = true))
+        val thought = ThinkingBlock("Delegating the queue fix.", durationSeconds = 2)
+        val shell = ToolCall("x1", "run_terminal_cmd", ToolKind.Shell, "completed", "git status")
+        val footer = RunFooter("f1", "run-1", RunStatus.FINISHED, 19_000, emptyList())
+        fun agent(vararg items: TimelineItem) = kinds(TranscriptRows.of(listOf(UserMessage("u1", "Queue it instantly.")) + items, coordinatorMode = false))
+
+        // The subagent first and only, no reasoning, then the reply.
+        assertThat(agent(ActivityGroup("g1", listOf(task)), AssistantMessage("a1", "On it."), footer))
+            .containsExactly("item:UserMessage", "stretch:1 agent", "item:AssistantMessage", "single:f1").inOrder()
+        // The same turn with its reasoning streamed first: the same shape.
+        assertThat(agent(ActivityGroup("g1", listOf(thought, task)), AssistantMessage("a1", "On it."), footer))
+            .containsExactly("item:UserMessage", "stretch:1 agent · 1 thought", "item:AssistantMessage", "single:f1").inOrder()
+        // The reasoning in a group of its own before the subagent's.
+        assertThat(agent(ActivityGroup("g0", listOf(thought)), ActivityGroup("g1", listOf(task)), AssistantMessage("a1", "On it.")))
+            .containsExactly("item:UserMessage", "stretch:1 agent · 1 thought", "item:AssistantMessage").inOrder()
+        // Alone between two replies, mid-turn.
+        assertThat(agent(ActivityGroup("g0", listOf(shell)), AssistantMessage("a0", "Checked."), ActivityGroup("g1", listOf(task)), AssistantMessage("a1", "Delegated.")))
+            .containsExactly("item:UserMessage", "single:g0:x1", "item:AssistantMessage", "stretch:1 agent", "item:AssistantMessage").inOrder()
+        // The last step of the turn, nothing after it but the footer; and the run still writing.
+        assertThat(agent(ActivityGroup("g1", listOf(task)), footer)).containsExactly("item:UserMessage", "stretch:Worked 19s · 1 agent").inOrder()
+        val live = TranscriptRows.of(listOf(UserMessage("u1", "Queue it instantly."), ActivityGroup("g1", listOf(task))), coordinatorMode = false, runActive = true)
+        assertThat(kinds(live)).containsExactly("item:UserMessage", "stretch:Working · 1 agent").inOrder()
+        assertThat((live[1] as TranscriptRow.Stretch).single).isNull()
+
+        // A Project's coordinator: the worker it messages first, before its word to the user, then its work and note.
+        val send = ToolCall("s1", "sendToAgent", ToolKind.Coordinator, "completed", "bc-w1")
+        val message = ToolCall("m1", "send_message", ToolKind.Coordinator, "completed", "", payload = ToolPayload.CoordinatorMessage("The worker is on it."))
+        val coordinator = TranscriptRows.of(
+            listOf(UserMessage("u1", "Queue it instantly."), ActivityGroup("g1", listOf(send, message, shell)), AssistantMessage("a1", "Noted."), footer),
+            coordinatorMode = true,
+        )
+        assertThat(kinds(coordinator)).containsExactly("item:UserMessage", "stretch:1 agent", "message:m1", "stretch:Worked 19s · 1 command · 1 note").inOrder()
+        assertThat((coordinator[1] as TranscriptRow.Stretch).subagents.single().subagent?.source).isEqualTo(SubagentCall.Source.Messaged)
     }
 
     @Test

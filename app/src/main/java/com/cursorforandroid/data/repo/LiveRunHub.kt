@@ -1,5 +1,6 @@
 package com.cursorforandroid.data.repo
 
+import com.cursorforandroid.crash.Breadcrumbs
 import com.cursorforandroid.data.api.RunStreamEvent
 import com.cursorforandroid.data.api.dto.RunDto
 import com.cursorforandroid.domain.AgentLifecycle
@@ -188,6 +189,13 @@ class LiveRunHub(
 
     fun current(agentId: String, runId: String): Snapshot? = synchronized(entries) { entries[key(agentId, runId)]?.state?.value }
 
+    /** For a crash report: the runs kept, those with a connection of their own, and the live subscribers on them. */
+    fun stats(): String = synchronized(entries) {
+        val streaming = entries.values.count { it.job?.isActive == true }
+        val subscribers = entries.values.sumOf { it.subscribers }
+        "runs=${entries.size} streaming=$streaming subscribers=$subscribers"
+    }
+
     fun resetAll() {
         // Detached under the lock, before the map is cleared: cancellation is cooperative, so a collector already
         // inside an event callback is stopped by losing ownership, not by the cancel that follows it.
@@ -249,6 +257,16 @@ class LiveRunHub(
         }
     }
 
+    /**
+     * Gives memory back when the system asks: every run nobody follows and nothing streams is dropped — its snapshot
+     * holds the run's whole story, and a screen that wants it again replays it. Returns how many were dropped.
+     */
+    fun trimMemory(): Int = synchronized(entries) {
+        val before = entries.size
+        entries.values.removeAll { it.subscribers == 0 && it.job == null }
+        before - entries.size
+    }
+
     private fun evictIfNeeded() {
         // Replays that have been read and handed over (see [Entry.historicalOnly]): a few are kept for a second look,
         // the rest go oldest first — a long chat replays dozens on one open, and each holds its whole trace.
@@ -301,8 +319,11 @@ class LiveRunHub(
             }
         } catch (t: CancellationException) {
             throw t
-        } catch (_: Throwable) {
+        } catch (t: Throwable) {
             // The record could not be read and the loop gave up on this pass; a later subscriber starts a fresh one.
+            // Memory running out here is survived as well, but the process may die at the next allocation anywhere:
+            // the crash report names this stream (see Breadcrumbs).
+            if (t is OutOfMemoryError) Breadcrumbs.add("out of memory following run ${Breadcrumbs.tail(entry.runId)} of ${Breadcrumbs.tail(entry.agentId)}")
         }
         // Whether the run finished or the loop ended, a later subscriber may start a fresh connection.
         synchronized(entries) { if (entry.job === self) entry.job = null }
@@ -345,6 +366,7 @@ class LiveRunHub(
             throw t
         } catch (t: Throwable) {
             // A streamer that blew up mid-pass is a dropped connection whose position is unknown.
+            if (t is OutOfMemoryError) Breadcrumbs.add("out of memory reading run ${Breadcrumbs.tail(entry.runId)} of ${Breadcrumbs.tail(entry.agentId)}")
             pass.error = pass.error ?: RunStreamEvent.Error("stream_failed", t.message ?: "The run's stream failed.", resumeFrom = null)
         }
         return pass

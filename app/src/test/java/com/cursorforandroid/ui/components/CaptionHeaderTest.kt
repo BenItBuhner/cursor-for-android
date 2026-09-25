@@ -106,6 +106,33 @@ class CaptionHeaderTest {
     }
 
     @Test
+    fun `a chat header's title stands beside back in the bar, centred on it and short of the window controls`() {
+        compose.setContent {
+            CursorTheme(mode = ThemeMode.Dark) {
+                CompositionLocalProvider(LocalCaptionBar provides bar) {
+                    ChatHeader(
+                        "Chat",
+                        title = "A chat whose name runs on long enough to reach the window's own controls at the end",
+                        leading = { FlatIconButton(CursorIcons.ChevronLeft, "Back", onClick = {}) },
+                        trailing = { FlatIconButton(CursorIcons.More, "More", onClick = {}) },
+                    )
+                }
+            }
+        }
+        compose.waitForIdle()
+        val title = compose.onNodeWithTag("chat-header-title", useUnmergedTree = true).getUnclippedBoundsInRoot()
+        assertThat((title.top + title.bottom).value / 2).isWithin(0.5f).of(bar.heightPx / 2f)
+        val back = bounds("Back")
+        assertThat(title.left.value).isGreaterThan((back.left + back.right).value / 2)
+        assertThat(title.left.value).isAtLeast(appMenu.right.toFloat())
+        assertThat(title.right.value).isAtMost(bounds("More").left.value)
+        assertThat(title.right.value).isAtMost(windowControls.left.toFloat())
+        assertClearOfControls("Back")
+        assertClearOfControls("More")
+        assertCentredOnBar("Back")
+    }
+
+    @Test
     fun `the rail's header stands in the bar clear of the app menu, its logo left to the system's`() {
         compose.setContent {
             CursorTheme(mode = ThemeMode.Dark) {
