@@ -1796,7 +1796,9 @@ class ConversationRepository(
         val all = synchronized(entries) { entries.values.toList() }
         val items = all.sumOf { it.state.value.items.size }
         return "chats=${all.size} screens=${all.count { it.screens > 0 }} held=${all.count { it.held }} " +
-            "streams=${all.count { it.streamJob?.isActive == true }} loading=${all.count { it.loadJob?.isActive == true }} items=$items"
+            "streams=${all.count { it.streamJob?.isActive == true }} loading=${all.count { it.loadJob?.isActive == true }} items=$items " +
+            "traces=${all.sumOf { it.traces.size }} traceItems=${all.sumOf { e -> e.traces.values.sumOf { it.size } }} " +
+            "maxTraces=${all.maxOfOrNull { it.traces.size } ?: 0}"
     }
 
     /**
@@ -2230,21 +2232,34 @@ class ConversationRepository(
      */
     private fun Entry.trimWindow() {
         val keep = keptTurns(recordWindow)
-        if (window <= keep) return
         publish(
             mutate = {
-                window = keep
-                recordWindow?.let { w ->
-                    if (w.turns.size > keep) {
-                        val kept = w.turns.takeLast(keep)
-                        recordWindow = RecordWindow(w.total, kept.first().stepIndex, kept, emptyList(), w.state, w.readAtMillis, w.newestTurn, w.turnIndexed)
+                if (window > keep) {
+                    window = keep
+                    recordWindow?.let { w ->
+                        if (w.turns.size > keep) {
+                            val kept = w.turns.takeLast(keep)
+                            recordWindow = RecordWindow(w.total, kept.first().stepIndex, kept, emptyList(), w.state, w.readAtMillis, w.newestTurn, w.turnIndexed)
+                        }
                     }
                 }
-                val kept = layout().runs.mapTo(HashSet()) { it.id }
-                traces = traces.filterKeys { it in kept }
-                if (partial.isNotEmpty()) partial = partial.filterKeys { it in kept }
+                dropUnshownTraces()
             },
         )
+    }
+
+    /**
+     * The traces of runs the window no longer shows leave memory (the disk keeps every finished one, see
+     * [onRunFinished]). Under the entry's monitor. A run's trace is its tool calls' whole results — files read, a
+     * shell's output, diffs — and a chat that runs on adds one per turn: kept for every turn past the window, a held
+     * chat (see [hold]) grew by a turn's trace each time its agent finished one, for as long as the app was open.
+     */
+    private fun Entry.dropUnshownTraces() {
+        if (traces.isEmpty() && partial.isEmpty()) return
+        val kept = layout().runs.mapTo(HashSet()) { it.id }
+        live?.runId?.let { kept += it }
+        if (traces.keys.any { it !in kept }) traces = traces.filterKeys { it in kept }
+        if (partial.keys.any { it !in kept }) partial = partial.filterKeys { it in kept }
     }
 
     /**
@@ -2565,6 +2580,8 @@ class ConversationRepository(
         var unfollowed = false
         val workers = synchronized(this) {
             mutate()
+            // No screen on the chat — held, or left behind — shows only its window: nothing past it is kept either.
+            if (screens == 0 && traces.size + partial.size > window) dropUnshownTraces()
             // A queued message whose copy the transcript now carries is filed in this very frame (see [Entry.fileInFrame]).
             if (awaiting.isNotEmpty()) {
                 filed = fileInFrame(fileSteers)
