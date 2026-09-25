@@ -249,13 +249,13 @@ class ProjectApi(
     }
 
     /**
-     * The Agents Window's own request: `parent_bc_id`, the optional `name` (left out when blank; the account names
-     * the chat "New Side Chat"), `creation_source` — a `BackgroundComposerSource`, the desktop's `GLASS`, this app's
-     * `API` — and `creation_id`, a fresh UUID the account hashes into the new chat's `bc_id` (`side-chat:<parent>:<id>`),
-     * so a retry with the same id creates nothing twice. The record that comes back names its parent in `sideChatInfo`.
+     * The Agents Window's own request (desktop 3.22.7): `parent_bc_id`, the optional `name` (left out when blank; the
+     * account names the chat "New Side Chat"), `creation_source` [SIDE_CHAT_SOURCE] and `creation_id`, a fresh UUID
+     * the account hashes into the new chat's `bc_id` (`side-chat:<parent>:<id>`), so a retry with the same id creates
+     * nothing twice. The record that comes back names its parent in `sideChatInfo`.
      */
     override suspend fun startSideChat(parentId: String, name: String?): ComposerSnapshot {
-        val request = StartSideChatDto(parentId, name?.trim()?.takeIf { it.isNotEmpty() }, SOURCE, UUID.randomUUID().toString())
+        val request = StartSideChatDto(parentId, name?.trim()?.takeIf { it.isNotEmpty() }, SIDE_CHAT_SOURCE, UUID.randomUUID().toString())
         val response = call("StartSideChatBackgroundComposer", request, StartSideChatDto.serializer(), ComposerResponseDto.serializer())
         return response.composer?.let { BackgroundComposerApi.snapshot(it) } ?: throw ConnectRpcException(200, null, "Cursor started no side chat.")
     }
@@ -535,6 +535,12 @@ class ProjectApi(
     private companion object {
         /** What this app is to the account service: a client on the API, like the SDK's chats. */
         val SOURCE = AgentSource.API.wireName
+        /**
+         * The account refuses a side chat whose `creation_source` is not an interactive client surface ("Side chats can
+         * only be created from an interactive client surface"): [SOURCE]'s `API` is the programmatic kind. The desktop
+         * sends `GLASS`, the one value its runtime proves accepted.
+         */
+        val SIDE_CHAT_SOURCE = AgentSource.GLASS.wireName
         /** `aiserver.v1.CloudSubagentParentAgentType`: the parent of a re-parented chat is a cloud agent. */
         const val PARENT_TYPE_CLOUD = "CLOUD_SUBAGENT_PARENT_AGENT_TYPE_CLOUD"
         const val STORE_PAGE = 50
