@@ -164,6 +164,8 @@ class PreferencesStore(
         val collapsedSidebarSections = stringSetPreferencesKey("sidebar_collapsed_sections")
         /** Settings › Appearance › Shorten long Projects list; absent reads as on (see [shortenSidebarLists]). */
         val shortenSidebarLists = booleanPreferencesKey("sidebar_shorten_long_lists")
+        /** Settings › Experimental › Keep chats live; absent reads as off (see [liveSync]). */
+        val liveSync = booleanPreferencesKey("live_sync")
         /** Settings › New chat page: what the New Chat pane lists under its composer (`recent` / `projects`); absent is Recent. */
         val newChatHome = stringPreferencesKey("new_chat_home")
         /** The transcript notices closed over each chat's composer: `agentId -> identities` (see `LoadNotice.identity`). */
@@ -418,6 +420,13 @@ class PreferencesStore(
     val shortenSidebarLists: Flow<Boolean> = data.map { it[Keys.shortenSidebarLists] ?: true }
 
     suspend fun setShortenSidebarLists(enabled: Boolean) = edit { it[Keys.shortenSidebarLists] = enabled }
+
+    /**
+     * Settings › Experimental › Keep chats live: background live sync (see `LiveSync`); off unless turned on.
+     */
+    val liveSync: Flow<Boolean> = data.map { it[Keys.liveSync] ?: false }
+
+    suspend fun setLiveSync(enabled: Boolean) = edit { it[Keys.liveSync] = enabled }
 
     /**
      * Settings › New chat page: the recent chats under the New Chat composer, the Projects, or the composer alone (see

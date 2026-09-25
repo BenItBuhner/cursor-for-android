@@ -83,6 +83,9 @@ object SettingsCopy {
     const val UNREAD_THIS_PHONE_DETAIL = "Chats from elsewhere show as read until opened here."
     const val SHORTEN_PROJECTS = "Shorten long Projects list"
     const val SHORTEN_PROJECTS_DETAIL = "Shows 5 Projects until you tap Show more."
+    const val GROUP_EXPERIMENTAL = "Experimental"
+    const val LIVE_SYNC = "Keep chats live"
+    const val LIVE_SYNC_DETAIL = "While the app is open, running chats, their Project coordinators and your last few chats stream in the background, so they open up to date. Uses more data and battery while agents run."
     const val GROUP_UPDATES = "Version and updates"
     const val SIGN_OUT = "Sign out"
     const val LEAVE_DEMO = "Leave demo"
@@ -108,6 +111,8 @@ object SettingsTags {
     const val SIGN_OUT = "settings_sign_out"
     const val UNREAD_THIS_PHONE = "settings_unread_this_phone"
     const val SHORTEN_PROJECTS = "settings_shorten_projects"
+    const val LIVE_SYNC = "settings_live_sync"
+    const val LIVE_SYNC_TOGGLE = "settings_live_sync_toggle"
     const val VERSION_ROW = "settings_version"
     const val WHATS_NEW_ROW = "settings_whats_new"
     const val DEBUG_SHEET = "settings_debug_sheet"
@@ -251,6 +256,11 @@ fun SettingsScreen(
                     HairlineDivider()
                     TranscriptEngineRow(graph, extendedMode = extendedMode)
                 }
+
+                Group(SettingsCopy.GROUP_EXPERIMENTAL)
+                SettingsCard {
+                    LiveSyncRow(graph)
+                }
             }
 
             Group(SettingsCopy.GROUP_UPDATES)
@@ -372,6 +382,22 @@ private fun ShortenProjectsRow(graph: AppGraph) {
         checked = enabled,
         onCheckedChange = { scope.launch { graph.prefs.setShortenSidebarLists(it) } },
         modifier = Modifier.testTag(SettingsTags.SHORTEN_PROJECTS),
+    )
+}
+
+/** Background live sync (see `LiveSync`): the public API's run streams, so it needs no Extended mode. */
+@Composable
+internal fun LiveSyncRow(graph: AppGraph) {
+    val scope = rememberCoroutineScope()
+    // On the main dispatcher for the reason the Extended mode switch is (see SettingsScreen).
+    val enabled by graph.prefs.liveSync.collectAsStateWithLifecycle(initialValue = false, context = Dispatchers.Main.immediate)
+    SettingsToggleRow(
+        title = SettingsCopy.LIVE_SYNC,
+        description = SettingsCopy.LIVE_SYNC_DETAIL,
+        checked = enabled,
+        onCheckedChange = { scope.launch { graph.prefs.setLiveSync(it) } },
+        modifier = Modifier.testTag(SettingsTags.LIVE_SYNC),
+        toggleModifier = Modifier.testTag(SettingsTags.LIVE_SYNC_TOGGLE),
     )
 }
 

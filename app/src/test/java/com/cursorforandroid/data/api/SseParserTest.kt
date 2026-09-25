@@ -168,7 +168,7 @@ class SseParserTest {
         )
         server.start()
         val streamer = SseRunStreamer(OkHttpClient(), { null }, urlFor = { _, _ -> server.url("/stream").toString() })
-        val events = streamer.stream("bc-1", "run-1").toList()
+        val events = streamer.stream("bc-1", "run-1").story()
 
         assertThat(events.map { it::class.simpleName }).containsExactly("Assistant", "Assistant", "Error").inOrder()
         val error = events.last() as RunStreamEvent.Error
@@ -200,7 +200,7 @@ class SseParserTest {
         )
         server.start()
         val streamer = SseRunStreamer(OkHttpClient(), { null }, urlFor = { _, _ -> server.url("/stream").toString() }, waiter = {})
-        val events = streamer.stream("bc-1", "run-1").toList()
+        val events = streamer.stream("bc-1", "run-1").story()
 
         assertThat(events.map { it::class.simpleName }).containsExactly("Assistant", "Result", "Done").inOrder()
         assertThat((events[1] as RunStreamEvent.Result).text).isEqualTo("ok")
@@ -230,7 +230,7 @@ class SseParserTest {
         )
         server.start()
         val streamer = SseRunStreamer(OkHttpClient(), { null }, urlFor = { _, _ -> server.url("/stream").toString() }, waiter = {})
-        val events = streamer.stream("bc-1", "run-1").toList()
+        val events = streamer.stream("bc-1", "run-1").story()
 
         assertThat(events.map { it::class.simpleName }).containsExactly("ToolCall", "Assistant", "Result", "Done").inOrder()
         assertThat(server.requestCount).isEqualTo(1)
@@ -249,7 +249,7 @@ class SseParserTest {
         server.enqueue(MockResponse().setResponseCode(503))
         server.start()
         val streamer = SseRunStreamer(OkHttpClient(), { null }, urlFor = { _, _ -> server.url("/stream").toString() }, maxAttempts = 1)
-        val events = streamer.stream("bc-1", "run-1").toList()
+        val events = streamer.stream("bc-1", "run-1").story()
 
         assertThat(events.map { it::class.simpleName }).containsExactly("Assistant", "Error").inOrder()
         assertThat((events.first() as RunStreamEvent.Assistant).text).isEqualTo("part one")
@@ -273,7 +273,7 @@ class SseParserTest {
         server.start()
         val waits = mutableListOf<Long>()
         val streamer = SseRunStreamer(OkHttpClient(), { null }, urlFor = { _, _ -> server.url("/stream").toString() }, maxAttempts = 4, waiter = { waits += it })
-        val events = streamer.stream("bc-1", "run-1").toList()
+        val events = streamer.stream("bc-1", "run-1").story()
 
         val error = events.single() as RunStreamEvent.Error
         assertThat(error.code).isEqualTo("stream_unavailable")
@@ -288,7 +288,7 @@ class SseParserTest {
         delivered.enqueue(MockResponse().setHeader("Content-Type", "text/event-stream").setBody("event: assistant\ndata: {\"text\":\"part one\"}\n\n"))
         delivered.start()
         val second = SseRunStreamer(OkHttpClient(), { null }, urlFor = { _, _ -> delivered.url("/stream").toString() }, maxAttempts = 4, waiter = { waits += it })
-        val afterDelivery = second.stream("bc-1", "run-1").toList()
+        val afterDelivery = second.stream("bc-1", "run-1").story()
         assertThat(afterDelivery.map { it::class.simpleName }).containsExactly("Assistant", "Error").inOrder()
         assertThat(delivered.requestCount).isEqualTo(1)
         delivered.shutdown()
@@ -315,7 +315,7 @@ class SseParserTest {
         val client = CursorApiFactory.sseClient(CursorApiFactory.okHttp { "key_test" })
         val streamer = SseRunStreamer(client, { "key_test" }, urlFor = { _, _ -> server.url("/v1/agents/bc-1/runs/run-1/stream").toString() })
 
-        val events = streamer.stream("bc-1", "run-1").toList()
+        val events = streamer.stream("bc-1", "run-1").story()
 
         assertThat(events.filterIsInstance<RunStreamEvent.Assistant>().single().text).isEqualTo("part one")
         assertThat(events.filterIsInstance<RunStreamEvent.Result>().single().status).isEqualTo(RunStatus.FINISHED)
@@ -337,7 +337,7 @@ class SseParserTest {
         server.enqueue(MockResponse().setResponseCode(410).setBody("{\"error\":{\"code\":\"stream_expired\",\"message\":\"expired\"}}"))
         server.start()
         val streamer = SseRunStreamer(OkHttpClient(), { null }, urlFor = { _, _ -> server.url("/stream").toString() })
-        val events = streamer.stream("bc-1", "run-1").toList()
+        val events = streamer.stream("bc-1", "run-1").story()
         assertThat(events).hasSize(1)
         val error = events.single() as RunStreamEvent.Error
         assertThat(error.code).isEqualTo("stream_expired")
@@ -360,7 +360,7 @@ class SseParserTest {
         )
         server.start()
         val streamer = SseRunStreamer(OkHttpClient(), { null }, urlFor = { _, _ -> server.url("/stream").toString() })
-        val events = streamer.stream("bc-1", "run-1").toList()
+        val events = streamer.stream("bc-1", "run-1").story()
         // What arrived is kept; the error is the last word, and it is not retried here: only the caller can tell a
         // dead stream from a finished run, by reading the run record.
         assertThat(events.map { it::class.simpleName }).containsExactly("Status", "Assistant", "Error").inOrder()
@@ -385,7 +385,7 @@ class SseParserTest {
         )
         server.start()
         val streamer = SseRunStreamer(OkHttpClient(), { null }, urlFor = { _, _ -> server.url("/stream").toString() })
-        val events = streamer.stream("bc-1", "run-1").toList()
+        val events = streamer.stream("bc-1", "run-1").story()
         val error = events.last() as RunStreamEvent.Error
         assertThat(error.code).isEqualTo("stream_closed")
         assertThat(error.resumeFrom).isEqualTo("10-0")
@@ -399,7 +399,7 @@ class SseParserTest {
         server.enqueue(MockResponse().setResponseCode(400).setBody("{\"error\":{\"code\":\"invalid_last_event_id\",\"message\":\"Unknown event id\"}}"))
         server.start()
         val streamer = SseRunStreamer(OkHttpClient(), { null }, urlFor = { _, _ -> server.url("/stream").toString() })
-        val events = streamer.stream("bc-1", "run-1", lastEventId = "stale-0").toList()
+        val events = streamer.stream("bc-1", "run-1", lastEventId = "stale-0").story()
         val error = events.single() as RunStreamEvent.Error
         assertThat(error.code).isEqualTo("invalid_last_event_id")
         assertThat(error.resumeFrom).isNull()
@@ -421,7 +421,7 @@ class SseParserTest {
         server.enqueue(MockResponse().setResponseCode(503))
         server.start()
         val streamer = SseRunStreamer(OkHttpClient(), { null }, urlFor = { _, _ -> server.url("/stream").toString() }, maxAttempts = 1)
-        val events = streamer.stream("bc-1", "run-1").toList()
+        val events = streamer.stream("bc-1", "run-1").story()
         assertThat(events.map { it::class.simpleName }).containsExactly("Status", "Assistant", "Error").inOrder()
         val error = events.last() as RunStreamEvent.Error
         assertThat(error.code).isEqualTo("stream_unavailable")
@@ -430,6 +430,31 @@ class SseParserTest {
         assertThat(server.requestCount).isEqualTo(2)
         server.takeRequest()
         assertThat(server.takeRequest().getHeader("Last-Event-ID")).isEqualTo("10-0")
+        server.shutdown()
+    }
+
+    /** What a pass tells its collector, without the resume positions between the events (see [RunStreamEvent.Position]). */
+    private suspend fun kotlinx.coroutines.flow.Flow<RunStreamEvent>.story(): List<RunStreamEvent> = toList().filterNot { it is RunStreamEvent.Position }
+
+    /** Each event read is followed by where the stream stands after it, so a collector that keeps what it applied can resume there. */
+    @Test
+    fun `every frame read is followed by its resume position`() = runTest {
+        val server = MockWebServer()
+        server.enqueue(
+            MockResponse().setHeader("Content-Type", "text/event-stream").setBody(
+                "id: 10-0\nevent: assistant\ndata: {\"text\":\"one\"}\n\n" +
+                    "id: 11-0\nevent: heartbeat\ndata: {}\n\n" +
+                    "id: 12-0\nevent: result\ndata: {\"runId\":\"run-1\",\"status\":\"FINISHED\"}\n\n" +
+                    "id: 13-0\nevent: done\ndata: {}\n\n",
+            ),
+        )
+        server.start()
+        val streamer = SseRunStreamer(OkHttpClient(), { null }, urlFor = { _, _ -> server.url("/stream").toString() })
+        val events = streamer.stream("bc-1", "run-1").toList()
+
+        assertThat(events.map { (it as? RunStreamEvent.Position)?.id ?: it::class.simpleName }).containsExactly(
+            "Assistant", "10-0", "Heartbeat", "11-0", "Result", "12-0", "Done", "13-0",
+        ).inOrder()
         server.shutdown()
     }
 }
