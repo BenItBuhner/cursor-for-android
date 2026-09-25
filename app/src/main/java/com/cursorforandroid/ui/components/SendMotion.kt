@@ -317,7 +317,7 @@ private fun FlightOverlay(motion: SendMotion) {
                     drawText(takeoff.layout, color = colors.textPrimary, topLeft = takeoff.origin + shift, alpha = alpha)
                 }
             }
-            SendFlight.Phase.Flying -> drawFlight(flight, shift, measurer, style, colors.textPrimary, colors.fillFaint, colors.stroke)
+            SendFlight.Phase.Flying -> drawFlight(flight, shift, measurer, style, colors.textPrimary, colors.canvas, colors.fillFaint, colors.stroke)
         }
     }
 }
@@ -328,6 +328,7 @@ private fun DrawScope.drawFlight(
     measurer: TextMeasurer,
     style: androidx.compose.ui.text.TextStyle,
     textColor: Color,
+    page: Color,
     fill: Color,
     stroke: Color,
 ) {
@@ -345,6 +346,9 @@ private fun DrawScope.drawFlight(
     val box = lerpRect(from, surface, e).translate(shift)
     val radius = CornerRadius(BubbleRadius.toPx())
     val grown = (e / SurfaceGrow).coerceIn(0f, 1f)
+    // The bubble's fill is a tint of the page; over the transcript it crosses, the page is laid under it first, so
+    // what it passes over does not show through.
+    drawRoundRect(page.copy(alpha = page.alpha * fade * grown), box.topLeft, box.size, radius, alpha = alpha)
     drawRoundRect(fill.copy(alpha = fill.alpha * fade * grown), box.topLeft, box.size, radius, alpha = alpha)
     val hairline = 1.dp.toPx()
     drawRoundRect(
