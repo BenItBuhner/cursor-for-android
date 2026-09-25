@@ -20,6 +20,7 @@ import com.cursorforandroid.data.update.UpdatePlatform
 import com.cursorforandroid.domain.AppRelease
 import java.io.File
 import java.security.MessageDigest
+import com.cursorforandroid.util.toHex
 
 /**
  * The real device behind [UpdatePlatform]: `PackageManager`, `PackageInstaller`, connectivity and the process lifecycle.
@@ -133,7 +134,7 @@ open class AndroidUpdatePlatform(context: Context, override val installedVersion
     }
 
     private fun sha256Hex(bytes: ByteArray): String =
-        MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
+        MessageDigest.getInstance("SHA-256").digest(bytes).toHex()
 }
 
 /**

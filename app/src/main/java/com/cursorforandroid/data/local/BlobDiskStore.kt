@@ -6,6 +6,7 @@ import java.io.File
 import java.security.MessageDigest
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
+import com.cursorforandroid.util.toHex
 
 /**
  * The account records' blobs on disk (Extended mode, the Beta transcript engine): one file per blob under a directory
@@ -147,7 +148,13 @@ class BlobDiskStore(private val cache: JsonDiskCache, private val maxBytes: Long
         }
     }
 
-    private fun chatDir(agentId: String): File = File(dir, sha1(agentId).take(24))
+    private val chatDirs = java.util.concurrent.ConcurrentHashMap<String, File>()
+
+    private fun chatDir(agentId: String): File {
+        chatDirs[agentId]?.let { return it }
+        if (chatDirs.size >= MAX_NAMED_CHATS) chatDirs.clear()
+        return File(dir, sha1(agentId).take(24)).also { chatDirs[agentId] = it }
+    }
 
     private fun file(agentId: String, blobId: String): File = File(chatDir(agentId), nameOf(blobId))
 
@@ -160,11 +167,13 @@ class BlobDiskStore(private val cache: JsonDiskCache, private val maxBytes: Long
         private const val INDEX = "prefetched"
         /** Ahead of a prefetched copy's name (see [readPartial]): `qx…` or `qh…`, never a whole blob's, never the index. */
         private const val PARTIAL = "q"
+        /** Chats whose directory name is remembered rather than hashed again on every read. */
+        private const val MAX_NAMED_CHATS = 1_024
 
         /** A file name for a blob id: its characters in hex, reversible whatever the id's alphabet; a hash for an id too long for a name. */
         internal fun nameOf(blobId: String): String {
             val bytes = blobId.toByteArray()
-            return if (bytes.size <= 100) "x" + bytes.joinToString("") { "%02x".format(it) } else "h${sha1(blobId)}"
+            return if (bytes.size <= 100) "x" + bytes.toHex() else "h${sha1(blobId)}"
         }
 
         /** The id a file was named after, or null for one named by a hash. */
@@ -174,6 +183,6 @@ class BlobDiskStore(private val cache: JsonDiskCache, private val maxBytes: Long
             return runCatching { String(ByteArray(hex.length / 2) { i -> hex.substring(i * 2, i * 2 + 2).toInt(16).toByte() }) }.getOrNull()
         }
 
-        private fun sha1(text: String): String = MessageDigest.getInstance("SHA-1").digest(text.toByteArray()).joinToString("") { "%02x".format(it) }
+        private fun sha1(text: String): String = MessageDigest.getInstance("SHA-1").digest(text.toByteArray()).toHex()
     }
 }

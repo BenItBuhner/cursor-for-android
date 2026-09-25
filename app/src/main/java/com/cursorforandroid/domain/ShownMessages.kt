@@ -50,13 +50,16 @@ class ShownMessages(
     fun keep(items: List<TimelineItem>, source: String = ""): List<TimelineItem> {
         var present: MutableList<CoordinatorTranscript.Sent>? = null
         var headId: String? = null
+        var headItem: TimelineItem? = null
         var head: String? = null
         var previous: String? = null
         for (item in items) {
             when (item) {
-                is UserMessage, is SystemNotification -> { headId = item.id; head = headKey(item) }
+                // Keyed only once a message is sent under it: most turns send none, and a key reads the whole prompt.
+                is UserMessage, is SystemNotification -> { headId = item.id; headItem = item; head = null }
                 is ActivityGroup -> for (step in item.steps) {
                     val sent = CoordinatorTranscript.sentBy(item, step) ?: continue
+                    if (head == null && headItem != null) head = headKey(headItem)
                     (present ?: ArrayList<CoordinatorTranscript.Sent>().also { present = it }) += sent
                     shown.remove(sent.text)
                     reworded(sent, head)?.let { shown.remove(it) }

@@ -57,6 +57,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeout
 import okhttp3.Dns
 import okhttp3.OkHttpClient
+import okhttp3.ResponseBody.Companion.asResponseBody
+import okio.buffer
 import java.io.File
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.TimeUnit
@@ -124,6 +126,28 @@ class FaultRig(
     val lastGoodDns = com.cursorforandroid.data.api.LastGoodDns(system = dns)
     private val protocols = if (http2) listOf(okhttp3.Protocol.H2_PRIOR_KNOWLEDGE) else listOf(okhttp3.Protocol.HTTP_2, okhttp3.Protocol.HTTP_1_1)
 
+    /** Bytes the clients received (headers and bodies), every call on every client of this rig. */
+    val bytesIn = java.util.concurrent.atomic.AtomicLong()
+    /** Bytes the clients sent (headers and bodies). */
+    val bytesOut = java.util.concurrent.atomic.AtomicLong()
+    /** Calls the clients started. */
+    val calls = java.util.concurrent.atomic.AtomicInteger()
+    private val wire = object : okhttp3.EventListener() {
+        override fun callStart(call: okhttp3.Call) { calls.incrementAndGet() }
+        override fun requestHeadersEnd(call: okhttp3.Call, request: okhttp3.Request) { bytesOut.addAndGet(request.headers.byteCount()) }
+        override fun requestBodyEnd(call: okhttp3.Call, byteCount: Long) { bytesOut.addAndGet(byteCount) }
+        override fun responseHeadersEnd(call: okhttp3.Call, response: okhttp3.Response) { bytesIn.addAndGet(response.headers.byteCount()) }
+    }
+    /** Counts a body's bytes as they are read, so a stream cancelled half way counts what it did bring. */
+    private val countBodies = okhttp3.Interceptor { chain ->
+        val response = chain.proceed(chain.request())
+        val body = response.body ?: return@Interceptor response
+        val counted = object : okio.ForwardingSource(body.source()) {
+            override fun read(sink: okio.Buffer, byteCount: Long): Long = super.read(sink, byteCount).also { if (it > 0) bytesIn.addAndGet(it) }
+        }
+        response.newBuilder().body(counted.buffer().asResponseBody(body.contentType(), body.contentLength())).build()
+    }
+
     val client: OkHttpClient = CursorApiFactory.okHttp(key).newBuilder()
         .connectTimeout(connectTimeoutMs, TimeUnit.MILLISECONDS)
         .readTimeout(readTimeoutMs, TimeUnit.MILLISECONDS)
@@ -131,6 +155,8 @@ class FaultRig(
         .callTimeout(60, TimeUnit.SECONDS)
         .dns(lastGoodDns)
         .protocols(protocols)
+        .eventListener(wire)
+        .addNetworkInterceptor(countBodies)
         .build()
     val api: CursorApi = CursorApiFactory.retrofit(client, baseUrl)
     val streamer = SseRunStreamer(
@@ -161,6 +187,8 @@ class FaultRig(
         .callTimeout(60, TimeUnit.SECONDS)
         .dns(lastGoodDns)
         .protocols(protocols)
+        .eventListener(wire)
+        .addNetworkInterceptor(countBodies)
         .build()
         // As `AppGraph` widens the account client: every lane of the throttle on the wire at once.
         .also { it.dispatcher.maxRequestsPerHost = ApiThrottle.ON_THE_WIRE + 2 }

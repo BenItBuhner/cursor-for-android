@@ -1247,6 +1247,24 @@ class AppGraph(
     }
 
     /**
+     * The system asking for memory back ([level] as `onTrimMemory` gives it): what is built gives up what it can read
+     * again — the chats nobody shows, holds or streams, the runs nobody follows, decoded images. A hidden UI trims
+     * gently; memory running low, or the app in the background, trims hard. Nothing is built to be trimmed.
+     */
+    fun trimMemory(level: Int) {
+        @Suppress("DEPRECATION")
+        val hard = level == android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW ||
+            level == android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL ||
+            level >= android.content.ComponentCallbacks2.TRIM_MEMORY_BACKGROUND
+        @Suppress("DEPRECATION")
+        if (level < android.content.ComponentCallbacks2.TRIM_MEMORY_UI_HIDDEN && !hard) return
+        val chats = if (lazyConversations.isInitialized()) conversations.trimMemory(hard) else 0
+        val runs = if (lazyLiveRuns.isInitialized()) liveRuns.trimMemory() else 0
+        if (lazyMedia.isInitialized()) media.trimMemory(hard)
+        Breadcrumbs.add("trim memory $level: ${if (hard) "hard" else "gentle"}, $chats chats and $runs runs let go")
+    }
+
+    /**
      * The app's account of the moment, for a crash report (see [CrashLog.install]): the build and device, background
      * live sync, the chats in memory and the run streams, memory and threads by pool, and the last things done. Reads
      * only what is already built — nothing is created to describe it.
