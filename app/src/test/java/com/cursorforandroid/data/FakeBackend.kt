@@ -347,7 +347,7 @@ open class FakeCursorApi : CursorApi {
  * continues after it (ids here are `<runId>#<position>`). [dropNextConnection] scripts the server ending a
  * connection early with an in-band `error`, the way a worker that went away or a machine still waking up does.
  */
-class FakeRunStreamer : RunStreamer {
+class FakeRunStreamer(private val replay: Int = 256) : RunStreamer {
     private val channels = ConcurrentHashMap<String, MutableSharedFlow<RunStreamEvent>>()
     val connections = CopyOnWriteArrayList<String>()
     /** The `lastEventId` each connection was opened with, in order. */
@@ -356,7 +356,7 @@ class FakeRunStreamer : RunStreamer {
 
     private class Drop(val code: String, val message: String, val afterEvents: Int)
 
-    private fun channel(runId: String) = channels.getOrPut(runId) { MutableSharedFlow(replay = 256) }
+    private fun channel(runId: String) = channels.getOrPut(runId) { MutableSharedFlow(replay = replay) }
 
     suspend fun emit(runId: String, event: RunStreamEvent) = channel(runId).emit(event)
 
