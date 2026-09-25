@@ -110,8 +110,8 @@ class NavStack private constructor(initial: List<NavEntry>) {
     internal var glideTop by mutableStateOf<String?>(null)
 
     /**
-     * Makes [change], and has whatever it leaves on top fade in where it stands over the screen it covers, rather than
-     * slide in from the side: a chat started from the New Chat composer, whose prompt and composer carry on into the
+     * Makes [change], and has whatever it leaves on top fade in where it stands as the screen it covers fades out,
+     * rather than slide in from the side: a chat started from the New Chat composer, whose prompt and composer carry on into the
      * chat (see [com.cursorforandroid.ui.components.SendMotion]) and would be carried off sideways by a slide. Back
      * from it slides as ever.
      */

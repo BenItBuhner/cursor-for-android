@@ -31,6 +31,20 @@ class NavStackTest {
     }
 
     @Test
+    fun `a change made gliding marks the top it leaves for the host's fade, and one that leaves the top alone marks nothing`() {
+        val stack = NavStack(Screen.Home)
+        assertThat(stack.gliding { stack.openAgent("bc-1"); "kept" }).isEqualTo("kept")
+        assertThat(stack.glideTop).isEqualTo(stack.top.id)
+        assertThat(stack.instantTop).isNull()
+        // Still a push: back returns to the pane it faded in over.
+        assertThat(stack.screens).containsExactly(Screen.Home, agent(1)).inOrder()
+
+        stack.glideTop = null
+        stack.gliding { stack.openAgent("bc-1") }
+        assertThat(stack.glideTop).isNull()
+    }
+
+    @Test
     fun `opening a chat from the New Chat pane pushes it`() {
         val stack = NavStack(Screen.Home)
         stack.openAgent("bc-1")
