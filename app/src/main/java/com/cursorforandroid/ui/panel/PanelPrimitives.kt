@@ -33,9 +33,10 @@ import com.cursorforandroid.ui.components.pressable
 import com.cursorforandroid.ui.theme.CursorTheme
 
 /**
- * A section's header, the one component every section is headed by: its glyph, its title (a heading, for
- * TalkBack's heading navigation), and a trailing slot at the end edge — the hint in the tertiary colour, then the
- * chevron that turns down when the section is open. The whole row toggles it.
+ * A section's header, the one component every section is headed by: its title (a heading, for TalkBack's heading
+ * navigation) and a trailing slot at the end edge — the hint in the quaternary colour, then the chevron that turns
+ * down when the section is open. The whole row toggles it. No glyph and no rule: the web's panel sets its groups
+ * apart by type and air alone.
  *
  * The title carries the row's weight and fills whatever the trailing slot leaves, so the hint and the chevron sit
  * against the end edge in every header alike, hint or no hint, short or long. (A weighted spacer beside a weighted
@@ -51,13 +52,11 @@ internal fun SectionHeader(section: PanelSection, hint: String?, expanded: Boole
         Modifier
             .fillMaxWidth()
             .pressable(onToggle, CursorTheme.shapes.base)
-            .heightIn(min = 40.dp)
-            .padding(horizontal = 12.dp, vertical = 6.dp)
+            .heightIn(min = 44.dp)
+            .padding(horizontal = PanelGutter, vertical = 6.dp)
             .testTag("section-${section.id.name}"),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Icon(section.icon, null, tint = colors.iconTertiary, modifier = Modifier.size(15.dp))
-        Spacer(Modifier.width(9.dp))
         Text(section.title, style = type.baseMedium, color = colors.textPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f).semantics { heading() })
         if (hint != null) {
             Text(
@@ -72,6 +71,9 @@ internal fun SectionHeader(section: PanelSection, hint: String?, expanded: Boole
         Icon(CursorIcons.ChevronRight, null, tint = colors.iconQuaternary, modifier = Modifier.size(ChevronSize).rotate(chevron))
     }
 }
+
+/** The panel's side inset, every row's: the web's strip and sections keep their content 16px off the edges. */
+internal val PanelGutter = 16.dp
 
 /** The most of a header's width a hint may take before it is ellipsised, so the title always keeps room. */
 internal val HintMaxWidth = 190.dp
@@ -98,7 +100,7 @@ internal fun PanelRow(
             .fillMaxWidth()
             .then(if (onClick != null) Modifier.pressable(onClick, CursorTheme.shapes.base) else Modifier)
             .heightIn(min = 36.dp)
-            .padding(horizontal = 12.dp, vertical = 5.dp),
+            .padding(horizontal = PanelGutter, vertical = 5.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         if (icon != null) {
@@ -126,7 +128,7 @@ internal fun FactRow(label: String, value: String, modifier: Modifier = Modifier
             .fillMaxWidth()
             .then(if (onClick != null) Modifier.pressable(onClick, CursorTheme.shapes.base) else Modifier)
             .heightIn(min = 30.dp)
-            .padding(horizontal = 12.dp, vertical = 4.dp),
+            .padding(horizontal = PanelGutter, vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(label, style = type.base, color = colors.textTertiary, modifier = Modifier.width(96.dp))
@@ -137,13 +139,13 @@ internal fun FactRow(label: String, value: String, modifier: Modifier = Modifier
 /** A line of explanation in the section's body, dimmed. */
 @Composable
 internal fun PanelNote(text: String, modifier: Modifier = Modifier) {
-    Text(text, style = CursorTheme.typography.small, color = CursorTheme.colors.textQuaternary, modifier = modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp))
+    Text(text, style = CursorTheme.typography.small, color = CursorTheme.colors.textQuaternary, modifier = modifier.fillMaxWidth().padding(horizontal = PanelGutter, vertical = 4.dp))
 }
 
 /** A small caption above a group of rows: "From the pull request", "Checks". */
 @Composable
 internal fun PanelCaption(text: String, modifier: Modifier = Modifier) {
-    Text(text, style = CursorTheme.typography.small, color = CursorTheme.colors.textTertiary, modifier = modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp).semantics { heading() })
+    Text(text, style = CursorTheme.typography.small, color = CursorTheme.colors.textTertiary, modifier = modifier.fillMaxWidth().padding(horizontal = PanelGutter, vertical = 4.dp).semantics { heading() })
 }
 
 /**
@@ -165,7 +167,7 @@ internal fun StateRow(
 ) {
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
-    Column(modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+    Column(modifier.fillMaxWidth().padding(horizontal = PanelGutter, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Row(verticalAlignment = Alignment.Top) {
             Icon(icon, null, tint = tint, modifier = Modifier.size(15.dp).padding(top = 1.dp))
             Spacer(Modifier.width(9.dp))
@@ -185,7 +187,7 @@ internal fun StateRow(
 
 @Composable
 internal fun LoadingRow(text: String, modifier: Modifier = Modifier) {
-    Row(modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+    Row(modifier.fillMaxWidth().padding(horizontal = PanelGutter, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
         SpinnerRing(size = 13.dp)
         Spacer(Modifier.width(9.dp))
         Text(text, style = CursorTheme.typography.base, color = CursorTheme.colors.textQuaternary)

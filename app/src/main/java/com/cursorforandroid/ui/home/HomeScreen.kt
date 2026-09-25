@@ -95,6 +95,8 @@ import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.util.AppClock
 import com.cursorforandroid.util.TimeFormat
+import androidx.compose.ui.unit.IntOffset
+import com.cursorforandroid.ui.components.onContextClick
 
 /**
  * The "New Chat" pane — the home of the official app: context selectors, the composer, then — as Settings › New chat
@@ -320,6 +322,7 @@ fun RecentChatRow(
     val agent = row.agent
     val shape = CursorTheme.shapes.xl
     var menuOpen by remember { mutableStateOf(false) }
+    var menuAt by remember { mutableStateOf<IntOffset?>(null) }
     val interaction = remember { MutableInteractionSource() }
     val haptics = rememberHaptics()
     Box(modifier) {
@@ -330,11 +333,12 @@ fun RecentChatRow(
                 if (actions != null) {
                     Modifier
                         .clip(shape)
+                        .onContextClick { at -> menuAt = at; menuOpen = true }
                         .combinedClickable(
                             interactionSource = interaction,
                             indication = ripple(color = colors.base),
                             onClick = onClick,
-                            onLongClick = { haptics.perform(Haptic.LongPress); menuOpen = true },
+                            onLongClick = { haptics.perform(Haptic.LongPress); menuAt = null; menuOpen = true },
                         )
                 } else {
                     Modifier.pressable(onClick, shape)
@@ -374,7 +378,7 @@ fun RecentChatRow(
             }
         }
     }
-        if (actions != null) ChatRowMenu(row = row, expanded = menuOpen, onDismiss = { menuOpen = false }, actions = actions)
+        if (actions != null) ChatRowMenu(row = row, expanded = menuOpen, onDismiss = { menuOpen = false }, actions = actions, at = menuAt)
     }
 }
 

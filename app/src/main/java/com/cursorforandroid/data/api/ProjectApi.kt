@@ -3,6 +3,8 @@ package com.cursorforandroid.data.api
 import com.cursorforandroid.data.auth.SessionTokenProvider
 import com.cursorforandroid.domain.AgentParentKind
 import com.cursorforandroid.domain.AgentSource
+import com.cursorforandroid.domain.AgentStoreKind
+import com.cursorforandroid.domain.AgentStoreRef
 import com.cursorforandroid.domain.ContextEntry
 import com.cursorforandroid.domain.ProjectAppearance
 import com.cursorforandroid.domain.ProjectLineage
@@ -124,6 +126,9 @@ interface AgentStoreApi {
     /** The store id of the store [sourceId] (a Project's coordinator) owns, or null when the account lists none for it. */
     suspend fun storeFor(sourceId: String): String?
 
+    /** `ListAgentStores`: every store the account lists for this user, with whose it is (the Project's, the user's own). */
+    suspend fun stores(): List<AgentStoreRef> = emptyList()
+
     /** `ListAgentStoreEntries`: what [relativePath] ("" for the root) of [storeId] holds. */
     suspend fun entries(storeId: String, relativePath: String): List<ContextEntry>
 
@@ -244,13 +249,13 @@ class ProjectApi(
     }
 
     /**
-     * The Agents Window's own request: `parent_bc_id`, the optional `name` (left out when blank; the account names
-     * the chat "New Side Chat"), `creation_source` — a `BackgroundComposerSource`, the desktop's `GLASS`, this app's
-     * `API` — and `creation_id`, a fresh UUID the account hashes into the new chat's `bc_id` (`side-chat:<parent>:<id>`),
-     * so a retry with the same id creates nothing twice. The record that comes back names its parent in `sideChatInfo`.
+     * The Agents Window's own request (desktop 3.22.7): `parent_bc_id`, the optional `name` (left out when blank; the
+     * account names the chat "New Side Chat"), `creation_source` [SIDE_CHAT_SOURCE] and `creation_id`, a fresh UUID
+     * the account hashes into the new chat's `bc_id` (`side-chat:<parent>:<id>`), so a retry with the same id creates
+     * nothing twice. The record that comes back names its parent in `sideChatInfo`.
      */
     override suspend fun startSideChat(parentId: String, name: String?): ComposerSnapshot {
-        val request = StartSideChatDto(parentId, name?.trim()?.takeIf { it.isNotEmpty() }, SOURCE, UUID.randomUUID().toString())
+        val request = StartSideChatDto(parentId, name?.trim()?.takeIf { it.isNotEmpty() }, SIDE_CHAT_SOURCE, UUID.randomUUID().toString())
         val response = call("StartSideChatBackgroundComposer", request, StartSideChatDto.serializer(), ComposerResponseDto.serializer())
         return response.composer?.let { BackgroundComposerApi.snapshot(it) } ?: throw ConnectRpcException(200, null, "Cursor started no side chat.")
     }
@@ -287,6 +292,25 @@ class ProjectApi(
             pageToken = response.nextPageToken?.takeIf { it.isNotBlank() && response.hasMore } ?: return null
         }
         return null
+    }
+
+    override suspend fun stores(): List<AgentStoreRef> {
+        val stores = ArrayList<AgentStoreRef>()
+        var pageToken: String? = null
+        repeat(MAX_STORE_PAGES) {
+            val response = call("ListAgentStores", ListStoresDto(STORE_PAGE, pageToken), ListStoresDto.serializer(), ListStoresResponseDto.serializer())
+            response.stores.forEach { store ->
+                val id = store.storeId.takeIf { it.isNotBlank() } ?: return@forEach
+                stores += AgentStoreRef(
+                    storeId = id,
+                    kind = AgentStoreKind.parse(store.kind?.contentOrNull),
+                    sourceId = (store.source?.sourceId ?: store.sourceId)?.takeIf { it.isNotBlank() },
+                    lastFileWriteAtMillis = store.lastFileWriteAtMs?.longOrNull,
+                )
+            }
+            pageToken = response.nextPageToken?.takeIf { it.isNotBlank() && response.hasMore } ?: return stores
+        }
+        return stores
     }
 
     override suspend fun entries(storeId: String, relativePath: String): List<ContextEntry> {
@@ -438,11 +462,19 @@ class ProjectApi(
     @Serializable
     private data class ListStoresResponseDto(val stores: List<StoreDto> = emptyList(), val hasMore: Boolean = false, val nextPageToken: String? = null)
 
+    /** `aiserver.v1.AgentStore` as `ListAgentStores` lists it: the id, whose it is, the chat or automation it belongs to, when it last changed. */
     @Serializable
-    private data class StoreDto(val storeId: String = "", val sourceId: String? = null, val source: StoreSourceDto? = null)
+    private data class StoreDto(
+        val storeId: String = "",
+        val sourceId: String? = null,
+        val source: StoreSourceDto? = null,
+        val kind: JsonPrimitive? = null,
+        val lastFileWriteAtMs: JsonPrimitive? = null,
+    )
 
     @Serializable
-    private data class StoreSourceDto(val sourceId: String? = null)
+    private data class StoreSourceDto(val sourceId: String? = null, val kind: JsonPrimitive? = null)
+
 
     @Serializable
     private data class StoreEntriesDto(val storeId: String, val relativePath: String)
@@ -503,6 +535,12 @@ class ProjectApi(
     private companion object {
         /** What this app is to the account service: a client on the API, like the SDK's chats. */
         val SOURCE = AgentSource.API.wireName
+        /**
+         * The account refuses a side chat whose `creation_source` is not an interactive client surface ("Side chats can
+         * only be created from an interactive client surface"): [SOURCE]'s `API` is the programmatic kind. The desktop
+         * sends `GLASS`, the one value its runtime proves accepted.
+         */
+        val SIDE_CHAT_SOURCE = AgentSource.GLASS.wireName
         /** `aiserver.v1.CloudSubagentParentAgentType`: the parent of a re-parented chat is a cloud agent. */
         const val PARENT_TYPE_CLOUD = "CLOUD_SUBAGENT_PARENT_AGENT_TYPE_CLOUD"
         const val STORE_PAGE = 50

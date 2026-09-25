@@ -154,6 +154,27 @@ class AppGraphExtendedModeTest {
         assertThat(graph.extendedMode.capabilities()).isEqualTo(Capabilities.EXTENDED_STABLE)
     }
 
+    @Test
+    fun `the composers' microphone is there wherever a dictation can be transcribed, with no switch to turn on`() = runBlocking<Unit> {
+        val graph = AppGraph(app)
+        graph.extendedMode.onEnabled = {}
+        // Default mode: the account's transcription refuses a session, so there is no mic to fail at every tap.
+        assertThat(graph.voiceInput.first()).isFalse()
+
+        graph.extendedMode.acknowledge()
+        assertThat(graph.extendedMode.enable()).isTrue()
+        assertThat(graph.voiceInput.first()).isTrue()
+
+        graph.extendedMode.disable()
+        assertThat(graph.voiceInput.first()).isFalse()
+
+        graph.extendedMode.enable()
+        assertThat(graph.voiceInput.first()).isTrue()
+        // The demo has no account to transcribe with.
+        graph.prefs.setDemoMode(true)
+        assertThat(graph.voiceInput.first()).isFalse()
+    }
+
     private fun write(file: File): File {
         file.parentFile?.mkdirs()
         file.writeText("{}")

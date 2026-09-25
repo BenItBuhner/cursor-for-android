@@ -84,8 +84,6 @@ object SettingsCopy {
     const val SHORTEN_PROJECTS = "Shorten long Projects list"
     const val SHORTEN_PROJECTS_DETAIL = "Shows 5 Projects until you tap Show more."
     const val GROUP_EXPERIMENTAL = "Experimental"
-    const val VOICE_INPUT = "Voice input"
-    const val VOICE_INPUT_DETAIL = "A microphone in the composer. Your words are transcribed by Cursor and put in, not sent."
     const val LIVE_SYNC = "Keep chats live"
     const val LIVE_SYNC_DETAIL = "While the app is open, running chats, their Project coordinators and your last few chats stream in the background, so they open up to date. Uses more data and battery while agents run."
     const val GROUP_UPDATES = "Version and updates"
@@ -113,8 +111,6 @@ object SettingsTags {
     const val SIGN_OUT = "settings_sign_out"
     const val UNREAD_THIS_PHONE = "settings_unread_this_phone"
     const val SHORTEN_PROJECTS = "settings_shorten_projects"
-    const val VOICE_INPUT = "settings_voice_input"
-    const val VOICE_INPUT_TOGGLE = "settings_voice_input_toggle"
     const val LIVE_SYNC = "settings_live_sync"
     const val LIVE_SYNC_TOGGLE = "settings_live_sync_toggle"
     const val VERSION_ROW = "settings_version"
@@ -263,8 +259,6 @@ fun SettingsScreen(
 
                 Group(SettingsCopy.GROUP_EXPERIMENTAL)
                 SettingsCard {
-                    VoiceInputRow(graph, extendedMode = extendedMode)
-                    HairlineDivider()
                     LiveSyncRow(graph)
                 }
             }
@@ -388,26 +382,6 @@ private fun ShortenProjectsRow(graph: AppGraph) {
         checked = enabled,
         onCheckedChange = { scope.launch { graph.prefs.setShortenSidebarLists(it) } },
         modifier = Modifier.testTag(SettingsTags.SHORTEN_PROJECTS),
-    )
-}
-
-/**
- * Dictation in the composer ([com.cursorforandroid.ui.components.VoiceInput]). Off until turned on; it transcribes on
- * Cursor's account service, so without Extended mode the row is dimmed and reads as off whatever was stored.
- */
-@Composable
-internal fun VoiceInputRow(graph: AppGraph, extendedMode: Boolean) {
-    val scope = rememberCoroutineScope()
-    // On the main dispatcher for the reason the Extended mode switch is (see SettingsScreen).
-    val enabled by graph.prefs.voiceInput.collectAsStateWithLifecycle(initialValue = false, context = Dispatchers.Main.immediate)
-    SettingsToggleRow(
-        title = SettingsCopy.VOICE_INPUT,
-        description = if (extendedMode) SettingsCopy.VOICE_INPUT_DETAIL else ExtendedModeCopy.NEEDS_MODE,
-        checked = extendedMode && enabled,
-        onCheckedChange = { scope.launch { graph.prefs.setVoiceInput(it) } },
-        enabled = extendedMode,
-        modifier = Modifier.testTag(SettingsTags.VOICE_INPUT),
-        toggleModifier = Modifier.testTag(SettingsTags.VOICE_INPUT_TOGGLE),
     )
 }
 

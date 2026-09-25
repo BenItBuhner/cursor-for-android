@@ -72,6 +72,7 @@ import com.cursorforandroid.data.demo.DemoBackendFactory
 import com.cursorforandroid.data.demo.DemoData
 import com.cursorforandroid.data.demo.DemoPullRequests
 import com.cursorforandroid.data.demo.DemoReview
+import com.cursorforandroid.data.demo.DemoStores
 import com.cursorforandroid.data.local.AppCaches
 import com.cursorforandroid.data.local.AttachmentStore
 import com.cursorforandroid.data.local.DiskSweep
@@ -106,6 +107,7 @@ import com.cursorforandroid.data.repo.NewChatDrafts
 import com.cursorforandroid.data.repo.Onboarding
 import com.cursorforandroid.data.repo.PinRepository
 import com.cursorforandroid.data.repo.ProjectEditor
+import com.cursorforandroid.data.repo.AgentStoreRepository
 import com.cursorforandroid.data.repo.ProjectRepository
 import com.cursorforandroid.data.repo.PromptUploader
 import com.cursorforandroid.data.repo.PullRequestRepository
@@ -124,6 +126,7 @@ import com.cursorforandroid.data.update.GitHubReleasesClient
 import com.cursorforandroid.data.update.UpdateCache
 import com.cursorforandroid.data.update.UpdateManager
 import com.cursorforandroid.data.update.WhatsNewRepository
+import com.cursorforandroid.domain.AgentStoreRef
 import com.cursorforandroid.domain.AgentDiff
 import com.cursorforandroid.domain.AgentMode
 import com.cursorforandroid.domain.AgentScope
@@ -372,10 +375,11 @@ class AppGraph(
     val transcription: TranscriptionApi get() = lazyTranscription.value
 
     /**
-     * Whether the composers offer the microphone: the Experimental "Voice input" switch, which transcribes through the
-     * account (`api2`) and so is dormant while Extended mode is off, and never in the demo, which has no account to ask.
+     * Whether the composers offer the microphone: wherever a dictation can be transcribed. That is through the account
+     * (`api2`), whose session is refused while Extended mode is off, so the mic is there in Extended mode and gone in
+     * Default mode rather than failing at every tap; never in the demo, which has no account to ask.
      */
-    val voiceInput: Flow<Boolean> = combine(prefs.voiceInput, extendedMode.enabled, prefs.demoMode) { voice, extended, demo -> voice && extended && !demo }
+    val voiceInput: Flow<Boolean> = combine(extendedMode.enabled, prefs.demoMode) { extended, demo -> extended && !demo }
         .distinctUntilChanged()
     /**
      * The account's own transcript of a chat (`FetchBackgroundComposer`), on the account client with the transcript's
@@ -484,6 +488,7 @@ class AppGraph(
         override suspend fun pause(agentId: String, runId: String?) = lazyProjectApi.value.pause(agentId, runId)
         override suspend fun resume(agentId: String) = lazyProjectApi.value.resume(agentId)
         override suspend fun storeFor(sourceId: String): String? = lazyProjectApi.value.storeFor(sourceId)
+        override suspend fun stores(): List<AgentStoreRef> = lazyProjectApi.value.stores()
         override suspend fun entries(storeId: String, relativePath: String): List<ContextEntry> = lazyProjectApi.value.entries(storeId, relativePath)
         override suspend fun readFile(storeId: String, relativePath: String): String = lazyProjectApi.value.readFile(storeId, relativePath)
         override suspend fun presignRead(target: StoreReadTarget, relativePath: String): PresignedStoreRead? = lazyProjectApi.value.presignRead(target, relativePath)
@@ -664,6 +669,13 @@ class AppGraph(
     private val lazyProjectCreation = lazy { ConnectProjectCreationApi(lazyAccountRpc.value, lazySessionTokens.value) }
     private val lazyProjectEditor = lazy { ProjectEditor(session, agents, projects, creation = { lazyProjectCreation.value }, capabilities = capabilities) }
     val projectEditor: ProjectEditor get() = lazyProjectEditor.value
+
+    /**
+     * The panel's Context tabs: the Project's Agent Store (its notes, its files) and the user's own, read through the
+     * same account endpoints as the Project section, behind the `projects` capability; the demo's stores stand in.
+     */
+    private val lazyAgentStores = lazy { AgentStoreRepository(api = projectAccount, capabilities = capabilities, isDemo = { session.isDemo }, demo = DemoStores) }
+    val agentStores: AgentStoreRepository get() = lazyAgentStores.value
 
     private val lazyCatalog = lazy {
         CatalogRepository(session, caches.catalog, throttlePausedUntil = { if (lazyAccountRpc.isInitialized()) lazyAccountRpc.value.throttle.pausedUntil() else null })
@@ -989,6 +1001,7 @@ class AppGraph(
             if (lazyPullRequests.isInitialized()) pullRequests.reset()
             if (lazyReviews.isInitialized()) reviews.reset()
             if (lazyWorkspace.isInitialized()) workspace.reset()
+            if (lazyAgentStores.isInitialized()) agentStores.reset()
             if (lazyRemote.isInitialized()) remote.reset()
             if (lazyArtifacts.isInitialized()) artifacts.resetAll()
             if (lazyStoreFiles.isInitialized()) storeFiles.resetAll()
@@ -1026,6 +1039,7 @@ class AppGraph(
             // The panel's account reads — a pull request the SCM service answered, a workspace listing, a diff — go too.
             if (lazyReviews.isInitialized()) reviews.reset()
             if (lazyWorkspace.isInitialized()) workspace.reset()
+            if (lazyAgentStores.isInitialized()) agentStores.reset()
             if (lazyRemote.isInitialized()) remote.reset()
             if (lazyAgents.isInitialized()) agents.forgetAccountSources(prefs.localAgentState.first().launchedHereIds)
             session.forgetAccountProfile()
@@ -1072,6 +1086,7 @@ class AppGraph(
             "pullRequestApi" to lazyPullRequestApi,
             "machineApi" to lazyMachineApi,
             "workspace" to lazyWorkspace,
+            "agentStores" to lazyAgentStores,
             "remote" to lazyRemote,
             "agents" to lazyAgents,
             "pullRequests" to lazyPullRequests,

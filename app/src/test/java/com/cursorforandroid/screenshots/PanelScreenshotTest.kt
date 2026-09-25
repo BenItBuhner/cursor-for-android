@@ -136,9 +136,9 @@ class PanelScreenshotTest {
         val media = remember(loader) { MarkdownMediaContext("bc-demo", loader) }
         CursorTheme(mode = ThemeMode.Dark) {
             CompositionLocalProvider(LocalRippleConfiguration provides null, LocalMarkdownMedia provides media) {
-                // The panel as it sits on a phone: over the chat's canvas, the width the host gives it.
+                // The panel as it sits on a phone: over the chat's canvas, the width the host gives it, on the same canvas.
                 Box(Modifier.fillMaxSize().background(CursorTheme.colors.canvas).testTag("scene")) {
-                    Box(Modifier.align(Alignment.CenterEnd).width(363.dp).fillMaxHeight().background(CursorTheme.colors.sidebar)) {
+                    Box(Modifier.align(Alignment.CenterEnd).width(363.dp).fillMaxHeight().background(CursorTheme.colors.canvas)) {
                         ConversationPanel(state, PanelActions.None, onClose = {})
                     }
                     if (systemBars) {
@@ -177,7 +177,7 @@ class PanelScreenshotTest {
     }
 
     private fun scrollToTop() {
-        compose.onNodeWithTag("panel-sections").performScrollToNode(hasTestTag("section-Header"))
+        compose.onNodeWithTag("panel-sections").performScrollToNode(hasTestTag("details-title"))
         compose.waitForIdle()
     }
 
@@ -406,7 +406,7 @@ class PanelScreenshotTest {
             }
         """.trimIndent()
         val file = RepoFile("app/src/main/java/com/cursorforandroid/ui/settings/ThemeToggle.kt", code.toByteArray(), code.length.toLong(), sha = "abc", downloadUrl = "https://raw.githubusercontent.com/x")
-        compose.setContent { Panel(PanelFixtures.loaded().copy(browser = PanelFixtures.loaded().browser.copy(file = FileView.Repository(file)))) }
+        compose.setContent { Panel(PanelFixtures.withFile(PanelFixtures.loaded(), FileView.Repository(file))) }
         compose.waitUntil(10_000) { compose.onAllNodes(hasText("fun ThemeToggle", substring = true)).fetchSemanticsNodes().isNotEmpty() }
         capture("44_panel_file_viewer")
     }

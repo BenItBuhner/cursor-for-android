@@ -13,7 +13,12 @@ import com.cursorforandroid.data.repo.VmRead
 import com.cursorforandroid.domain.Agent
 import com.cursorforandroid.domain.AgentDiff
 import com.cursorforandroid.domain.AgentDiffFile
+import com.cursorforandroid.domain.AgentStoreRef
 import com.cursorforandroid.domain.AgentUsage
+import com.cursorforandroid.domain.ContextDocument
+import com.cursorforandroid.domain.ContextEntry
+import com.cursorforandroid.domain.ContextStores
+import com.cursorforandroid.domain.RecentContextFile
 import com.cursorforandroid.domain.Artifact
 import com.cursorforandroid.domain.Capabilities
 import com.cursorforandroid.domain.DesktopFailure
@@ -28,6 +33,7 @@ import com.cursorforandroid.domain.RepoContents
 import com.cursorforandroid.domain.RepoFile
 import com.cursorforandroid.domain.RunStatus
 import com.cursorforandroid.domain.ScmHost
+import com.cursorforandroid.domain.StorePath
 import com.cursorforandroid.data.repo.SteeringRepository
 import com.cursorforandroid.domain.AgentParentKind
 import com.cursorforandroid.domain.TimelineItem
@@ -65,7 +71,7 @@ sealed interface RemoteLoad<out T> {
     val isLoading: Boolean get() = this is Loading
 }
 
-/** Where the Files › Repository tab stands: the directory on screen, and the file opened from it, if any. */
+/** Where the Files › Repository tab stands: the directory on screen. A file opened from it opens as a tab ([PanelTab.File]). */
 data class RepoBrowserState(
     val repoUrl: String? = null,
     /** The branch or commit the tree is read at; null is the host's default branch. */
@@ -74,14 +80,12 @@ data class RepoBrowserState(
     val host: ScmHost? = null,
     val path: String = "",
     val listing: RemoteLoad<RepoContents.Directory> = RemoteLoad.Idle,
-    /** A file being viewed: from the repository, or the copy a tool call carried ([FileView.Transcript]). */
-    val file: FileView? = null,
 ) {
     val canBrowse: Boolean get() = host != null && repoUrl != null
     val isAtRoot: Boolean get() = path.isEmpty()
 }
 
-/** The file the viewer shows: fetched from the repository, or what a tool call carried, with the read that produced it. */
+/** What a file tab shows: fetched from the repository, or what a tool call carried, with the read that produced it. */
 sealed interface FileView {
     val path: String
     data class Loading(override val path: String) : FileView
@@ -132,6 +136,32 @@ sealed interface DesktopState {
     data class Failed(val failure: DesktopFailure, val viewOnly: Boolean = true) : DesktopState
 }
 
+/**
+ * The Project tab's Context reads (see [PanelTab.Project], [PanelTab.Document]): which stores the chat has, the
+ * Project's notes, each folder listed so far by store and path, the folders open in the tree, the Recents row, and
+ * the documents open in tabs with whether each shows its source.
+ */
+data class ContextPanelState(
+    /** The Project tab shows its files rather than its notes: the header's toggle (see the web's All Files). */
+    val allFiles: Boolean = false,
+    val stores: RemoteLoad<ContextStores> = RemoteLoad.Idle,
+    val notes: RemoteLoad<ContextDocument?> = RemoteLoad.Idle,
+    val listings: Map<String, RemoteLoad<List<ContextEntry>>> = emptyMap(),
+    val expandedFolders: Set<String> = emptySet(),
+    val recents: RemoteLoad<List<RecentContextFile>> = RemoteLoad.Idle,
+    val documents: Map<String, RemoteLoad<ContextDocument>> = emptyMap(),
+    val sourceTabs: Set<String> = emptySet(),
+) {
+    fun listing(store: AgentStoreRef, path: String): RemoteLoad<List<ContextEntry>> = listings[folderKey(store, path)] ?: RemoteLoad.Idle
+    fun isExpanded(store: AgentStoreRef, path: String): Boolean = folderKey(store, path) in expandedFolders
+    fun document(tab: PanelTab.Document): RemoteLoad<ContextDocument> = documents[tab.key] ?: RemoteLoad.Idle
+    fun showsSource(tab: PanelTab.Document): Boolean = tab.key in sourceTabs
+
+    companion object {
+        fun folderKey(store: AgentStoreRef, path: String): String = "${store.storeId}:${path.trim('/')}"
+    }
+}
+
 /** Everything the panel's sections read. Derived from the repositories the conversation already keeps, plus the reads the panel asks for. */
 data class PanelState(
     val agentId: String,
@@ -171,8 +201,38 @@ data class PanelState(
      * default.
      */
     val expandedSections: Map<PanelSectionId, Boolean> = emptyMap(),
+    /** The tabs opened beside the pinned ones, and which one is showing (see [PanelTab]). */
+    val tabs: PanelTabsState = PanelTabsState(),
+    /** What each file tab shows, by the tab's key. */
+    val files: Map<String, FileView> = emptyMap(),
+    /** The rows of the chats open as tabs, by id, as the agent list has them. */
+    val tabAgents: Map<String, Agent> = emptyMap(),
+    /** The Context tabs' reads. */
+    val context: ContextPanelState = ContextPanelState(),
 ) {
     val prUrl: String? get() = agent?.prUrl
+    /**
+     * The Project this chat belongs to — itself for a coordinator, the coordinator for a primary, a side chat or a
+     * subagent whose parent the list shows to be a Project — or null for a chat of the account's own.
+     */
+    val projectRootId: String?
+        get() {
+            val current = agent ?: return null
+            if (current.looksLikeProject) return current.id
+            val parent = current.parent ?: return null
+            return if (parent.kind == AgentParentKind.PROJECT_WORKER || parentAgent?.looksLikeProject == true) parent.id else null
+        }
+    /** The Project's row when it is loaded: this chat, or its parent. */
+    val projectRoot: Agent? get() = projectRootId?.let { id -> if (agent?.id == id) agent else parentAgent?.takeIf { it.id == id } }
+    /** Whether the panel has a Project tab: a Project's coordinator, or a chat inside one. */
+    val hasProjectTab: Boolean get() = projectRootId != null
+    /** The tab the panel opens on and back returns to: the Project in a Project, the chat's sections anywhere else. */
+    val homeTab: PanelTab get() = if (hasProjectTab) PanelTab.Project else PanelTab.Details
+    /** The strip, left to right: the pinned tabs, then the rest in the order they were opened. */
+    val stripTabs: List<PanelTab> get() = listOfNotNull(PanelTab.Project.takeIf { hasProjectTab }, PanelTab.Details) + tabs.open
+    /** The tab showing: the one the reader picked while it is on the strip, else the home tab. */
+    val currentTab: PanelTab get() = tabs.selectedKey?.let { key -> stripTabs.firstOrNull { it.key == key } } ?: homeTab
+    fun file(tab: PanelTab.File): FileView? = files[tab.key]
     val hasPullRequest: Boolean get() = prUrl != null
     /** The files the Changes section lists: the pull request's when it has them, else the branch diff's (Extended). */
     val branchDiffFiles: List<AgentDiffFile> get() = diff.valueOrNull?.files.orEmpty()
@@ -200,8 +260,20 @@ class PanelViewModel(private val graph: AppGraph, val agentId: String) : ViewMod
     private val sideChatsLoad = MutableStateFlow<RemoteLoad<Unit>>(RemoteLoad.Idle)
     private val sideChatCreation = MutableStateFlow<RemoteLoad<String>>(RemoteLoad.Idle)
     private val expandedSections = MutableStateFlow<Map<PanelSectionId, Boolean>>(emptyMap())
+    /** The tabs opened this session, in order, and the key of the one the reader picked (null: the home tab). */
+    private val openTabs = MutableStateFlow<List<PanelTab>>(emptyList())
+    private val selectedTabKey = MutableStateFlow<String?>(null)
+    /** The keys of the tabs the reader was on before the one showing, oldest first, each once: what back walks. */
+    private val trail = ArrayList<String>()
+    private val files = MutableStateFlow<Map<String, FileView>>(emptyMap())
+    private val fileJobs = HashMap<String, Job>()
+    /** What each file tab's Retry asks again: its last open, with the agent's machine woken first when asked. */
+    private val reopens = HashMap<String, (wake: Boolean) -> Unit>()
+    private val context = MutableStateFlow(ContextPanelState())
+    private var contextJob: Job? = null
+    private val folderJobs = HashMap<String, Job>()
+    private val documentJobs = HashMap<String, Job>()
     private var browseJob: Job? = null
-    private var fileJob: Job? = null
     private var pullRequestJob: Job? = null
     private var diffJob: Job? = null
     private var workspaceJob: Job? = null
@@ -225,6 +297,14 @@ class PanelViewModel(private val graph: AppGraph, val agentId: String) : ViewMod
         .distinctUntilChanged()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
+    /** The rows of the chats open as tabs, kept current by the agent list. */
+    private val tabAgents: StateFlow<Map<String, Agent>> = combine(openTabs, graph.agents.state) { tabs, s ->
+        val ids = tabs.mapNotNullTo(HashSet()) { (it as? PanelTab.Agent)?.agentId }
+        if (ids.isEmpty()) emptyMap() else s.agents.filter { it.id in ids }.associateBy { it.id }
+    }
+        .distinctUntilChanged()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyMap())
+
     /** The tool payloads read off the timeline, recomputed only when the items change and off the main thread. */
     @OptIn(ExperimentalCoroutinesApi::class)
     private val content: StateFlow<Pair<TranscriptContent, List<MessageAttachment>>> = graph.conversations.state(agentId)
@@ -237,8 +317,10 @@ class PanelViewModel(private val graph: AppGraph, val agentId: String) : ViewMod
     private val vmLoads = combine(diff, workspace, machine, desktop, pullRequestCreation) { d, w, m, dk, c -> VmLoads(d, w, m, dk, c) }
     /** The chat's kin — its parent, its side chats and the reads and writes about them — folded for the same reason. */
     private val sideChatLoads = combine(parentAgent, sideChats, sideChatsLoad, sideChatCreation) { parent, chats, load, creation -> SideChatLoads(parent, chats, load, creation) }
-    /** [vmLoads] with what the account has said about the chat's controls, its side chats and the reader's expanded sections. */
-    private val extendedLoads = combine(vmLoads, graph.steering.state(agentId), sideChatLoads, expandedSections) { vm, controls, side, expanded -> ExtendedLoads(vm, controls, side, expanded) }
+    /** The panel's tabs as the reader left them, what they show and the Context tabs' reads, folded for the same reason. */
+    private val tabLoads = combine(openTabs, selectedTabKey, files, tabAgents, context) { open, selected, shown, agents, ctx -> TabLoads(PanelTabsState(open, selected), shown, agents, ctx) }
+    /** [vmLoads] with what the account has said about the chat's controls, its side chats, the reader's expanded sections and tabs. */
+    private val extendedLoads = combine(vmLoads, graph.steering.state(agentId), sideChatLoads, expandedSections, tabLoads) { vm, controls, side, expanded, tabs -> ExtendedLoads(vm, controls, side, expanded, tabs) }
 
     val state: StateFlow<PanelState> = combine(
         agent,
@@ -271,6 +353,10 @@ class PanelViewModel(private val graph: AppGraph, val agentId: String) : ViewMod
             sideChatsLoad = loads.extended.sideChats.load,
             sideChatCreation = loads.extended.sideChats.creation,
             expandedSections = loads.extended.expandedSections,
+            tabs = loads.extended.tabs.tabs,
+            files = loads.extended.tabs.files,
+            tabAgents = loads.extended.tabs.agents,
+            context = loads.extended.tabs.context,
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), PanelState(agentId, agent = graph.agents.agent(agentId), isDemo = graph.session.isDemo))
 
@@ -287,6 +373,14 @@ class PanelViewModel(private val graph: AppGraph, val agentId: String) : ViewMod
         val controls: ConversationControls,
         val sideChats: SideChatLoads,
         val expandedSections: Map<PanelSectionId, Boolean>,
+        val tabs: TabLoads,
+    )
+
+    private data class TabLoads(
+        val tabs: PanelTabsState,
+        val files: Map<String, FileView>,
+        val agents: Map<String, Agent>,
+        val context: ContextPanelState,
     )
 
     private data class SideChatLoads(
@@ -317,6 +411,220 @@ class PanelViewModel(private val graph: AppGraph, val agentId: String) : ViewMod
     override fun onCleared() {
         graph.steering.detach(agentId)
         super.onCleared()
+    }
+
+    // -- the panel's tabs ---------------------------------------------------------------------------------------------
+
+    /**
+     * The tabs as they stand now, with this chat's row and its parent's as the list has them — what decides whether
+     * there is a Project tab — read whether or not anything is collecting [state].
+     */
+    private fun tabsNow(): PanelState {
+        val current = graph.agents.agent(agentId)
+        return PanelState(agentId, agent = current, parentAgent = current?.parent?.id?.let(graph.agents::agent), tabs = PanelTabsState(openTabs.value, selectedTabKey.value))
+    }
+
+    /** The key of the tab showing, as the strip has it. */
+    private fun currentKey(): String = tabsNow().currentTab.key
+
+    /** Shows [tab], opening it first when it is not on the strip; the tab left goes on the trail back walks. */
+    fun selectTab(tab: PanelTab) {
+        if (tab.closable && openTabs.value.none { it.key == tab.key }) openTabs.update { it + tab }
+        val from = currentKey()
+        if (from != tab.key) {
+            trail.remove(from)
+            trail.add(from)
+        }
+        trail.remove(tab.key)
+        selectedTabKey.value = tab.key
+        if (tab == PanelTab.Project) loadContext()
+    }
+
+    /**
+     * Back within the panel: to the tab the reader was on before this one, while it is still on the strip, and from
+     * the first of them to the home tab. The tabs stay open; at the home tab, back is the panel's own and closes it.
+     */
+    fun back() {
+        trail.remove(currentKey())
+        selectPrevious()
+    }
+
+    /** Selects the last tab of the trail still on the strip, the home tab among them; the home tab when none is. */
+    private fun selectPrevious() {
+        val strip = tabsNow().stripTabs
+        while (trail.isNotEmpty()) {
+            val key = trail.removeAt(trail.lastIndex)
+            if (strip.any { it.key == key }) {
+                selectedTabKey.value = key
+                return
+            }
+        }
+        selectedTabKey.value = null
+    }
+
+    /** Takes a tab off the strip, with what it read; the one showing hands over to the tab before it, or the home tab. */
+    fun closeTab(tab: PanelTab) {
+        if (!tab.closable) return
+        val showing = currentKey() == tab.key
+        openTabs.update { open -> open.filterNot { it.key == tab.key } }
+        trail.remove(tab.key)
+        when (tab) {
+            is PanelTab.Document -> {
+                documentJobs.remove(tab.key)?.cancel()
+                context.update { it.copy(documents = it.documents - tab.key, sourceTabs = it.sourceTabs - tab.key) }
+            }
+            is PanelTab.File -> {
+                fileJobs.remove(tab.key)?.cancel()
+                reopens.remove(tab.key)
+                files.update { it - tab.key }
+            }
+            else -> Unit
+        }
+        if (showing) selectPrevious()
+    }
+
+    /**
+     * Opens another chat as a tab beside this one: a worker, a subagent, a side chat, the Project's coordinator. This
+     * chat itself has no tab of its own; asked for, the panel shows its sections.
+     */
+    fun openAgentTab(id: String) {
+        if (id == agentId) selectTab(PanelTab.Details) else selectTab(PanelTab.Agent(id))
+    }
+
+    /** Opens (or returns to) [path] of [store] as a document tab and reads it. */
+    fun openDocument(store: AgentStoreRef, path: String) {
+        val tab = PanelTab.Document(store.storeId, path.trim('/'))
+        selectTab(tab)
+        loadDocument(tab)
+    }
+
+    /** Opens a picture or a recording as a tab of its own. */
+    fun openMedia(src: String, name: String, isVideo: Boolean) {
+        selectTab(PanelTab.Media(src, name.ifBlank { src.substringAfterLast('/') }, isVideo))
+    }
+
+    /** The Project tab on its notes or, with [allFiles], on the Context stores. */
+    fun openProject(allFiles: Boolean) {
+        context.update { it.copy(allFiles = allFiles) }
+        selectTab(PanelTab.Project)
+    }
+
+    /**
+     * A store path a link inside the panel names ([PanelActions.openStorePath]): a picture or a recording as a media
+     * tab; a file of one of the account's stores — this chat's Context, the Project's, the user's, another agent's by
+     * its id — as a document tab; [otherwise] when no store the account lists holds it.
+     */
+    fun openStorePath(path: StorePath, chatAgentId: String, otherwise: () -> Unit) {
+        if (path.isImage || path.isVideo) {
+            openMedia(path.text, path.fileName, path.isVideo)
+            return
+        }
+        val owner = path.ownerId(chatAgentId)
+        fun holds(store: AgentStoreRef) = store.storeId == path.mount || (owner != null && store.sourceId == owner)
+        context.value.stores.valueOrNull?.all?.firstOrNull(::holds)?.let { store ->
+            openDocument(store, path.relativePath)
+            return
+        }
+        viewModelScope.launch {
+            val store = (graph.agentStores.stores() as? VmRead.Loaded)?.value?.firstOrNull(::holds)
+            if (store != null) openDocument(store, path.relativePath) else otherwise()
+        }
+    }
+
+    /** Opens [path]'s tab on [view]; [reopen] is what its Retry asks again. */
+    private fun showFile(path: String, view: FileView, reopen: ((wake: Boolean) -> Unit)? = null): PanelTab.File {
+        val tab = PanelTab.File(path)
+        fileJobs.remove(tab.key)?.cancel()
+        if (reopen != null) reopens[tab.key] = reopen else reopens.remove(tab.key)
+        files.update { it + (tab.key to view) }
+        selectTab(tab)
+        return tab
+    }
+
+    /** Opens [path]'s tab on its loading state, then on what [read] answers. */
+    private fun loadFile(path: String, reopen: (wake: Boolean) -> Unit, read: suspend () -> FileView) {
+        val tab = showFile(path, FileView.Loading(path), reopen)
+        fileJobs[tab.key] = viewModelScope.launch {
+            val view = read()
+            if (tab.key in files.value) files.update { it + (tab.key to view) }
+        }
+    }
+
+    // -- Context: the Project's store and the user's -----------------------------------------------------------------------
+
+    /**
+     * Reads which stores the chat has, then — in parallel — the Project's notes, both roots' listings and the
+     * Recents row. Idempotent while a read is out; [force] re-reads through the repository's cache.
+     */
+    fun loadContext(force: Boolean = false) {
+        if (contextJob?.isActive == true && !force) return
+        val current = context.value.stores
+        if (!force && current is RemoteLoad.Loaded) return
+        contextJob?.cancel()
+        context.update { it.copy(stores = RemoteLoad.Loading) }
+        contextJob = viewModelScope.launch {
+            val root = tabsNow().projectRootId
+            val read = graph.agentStores.storesFor(agentId, root, force)
+            val stores = when (read) {
+                is VmRead.Loaded -> read.value
+                is VmRead.NotAvailable -> {
+                    context.update { it.copy(stores = RemoteLoad.Unsupported(read.reason), notes = RemoteLoad.Unsupported(read.reason), recents = RemoteLoad.Unsupported(read.reason)) }
+                    return@launch
+                }
+                is VmRead.Failed -> {
+                    context.update { it.copy(stores = RemoteLoad.Failed(read.message, retryable = !read.endpointChanged)) }
+                    return@launch
+                }
+            }
+            // The roots open at once, as the web's tree does; deeper folders as they are tapped.
+            context.update { c -> c.copy(stores = RemoteLoad.Loaded(stores), expandedFolders = c.expandedFolders + stores.all.map { ContextPanelState.folderKey(it, "") }) }
+            stores.all.forEach { store -> listFolder(store, "", force) }
+            val project = stores.project
+            if (project != null) {
+                context.update { it.copy(notes = RemoteLoad.Loading) }
+                launch { context.update { it.copy(notes = graph.agentStores.notes(project, force).toLoad()) } }
+            } else {
+                context.update { it.copy(notes = RemoteLoad.Loaded(null)) }
+            }
+            context.update { it.copy(recents = RemoteLoad.Loading) }
+            launch { context.update { it.copy(recents = graph.agentStores.recents(agentId, stores.all, force = force).toLoad()) } }
+        }
+    }
+
+    /** Opens or closes a folder of the tree; an opened folder not yet listed is listed. */
+    fun toggleFolder(store: AgentStoreRef, path: String) {
+        val key = ContextPanelState.folderKey(store, path)
+        val expanding = key !in context.value.expandedFolders
+        context.update { it.copy(expandedFolders = if (expanding) it.expandedFolders + key else it.expandedFolders - key) }
+        if (expanding && context.value.listings[key] !is RemoteLoad.Loaded) listFolder(store, path)
+    }
+
+    private fun listFolder(store: AgentStoreRef, path: String, force: Boolean = false) {
+        val key = ContextPanelState.folderKey(store, path)
+        if (folderJobs[key]?.isActive == true && !force) return
+        folderJobs[key]?.cancel()
+        context.update { it.copy(listings = it.listings + (key to RemoteLoad.Loading)) }
+        folderJobs[key] = viewModelScope.launch {
+            val load = graph.agentStores.entries(store, path, force).toLoad()
+            context.update { it.copy(listings = it.listings + (key to load)) }
+        }
+    }
+
+    /** Reads the document behind [tab]; the store is the one the listing named, or the id alone when the tab outlived it. */
+    fun loadDocument(tab: PanelTab.Document, force: Boolean = false) {
+        val current = context.value.documents[tab.key]
+        if (!force && (current is RemoteLoad.Loaded || current is RemoteLoad.Loading)) return
+        documentJobs[tab.key]?.cancel()
+        context.update { it.copy(documents = it.documents + (tab.key to RemoteLoad.Loading)) }
+        documentJobs[tab.key] = viewModelScope.launch {
+            val store = context.value.stores.valueOrNull?.all?.firstOrNull { it.storeId == tab.storeId } ?: AgentStoreRef(tab.storeId)
+            val load = graph.agentStores.document(store, tab.path, force).toLoad()
+            context.update { it.copy(documents = it.documents + (tab.key to load)) }
+        }
+    }
+
+    fun setDocumentSource(tab: PanelTab.Document, source: Boolean) {
+        context.update { it.copy(sourceTabs = if (source) it.sourceTabs + tab.key else it.sourceTabs - tab.key) }
     }
 
     // -- the chat's controls on the account (Extended mode) -----------------------------------------------------------
@@ -355,6 +663,8 @@ class PanelViewModel(private val graph: AppGraph, val agentId: String) : ViewMod
             onSuccess = { RemoteLoad.Loaded(it) },
             onFailure = { RemoteLoad.Failed(it.userMessage(), retryable = it !is IllegalStateException) },
         )
+        // A side chat started from here opens beside the conversation at once, as a tab of the panel.
+        result.onSuccess { openAgentTab(it) }
         return result.map { "Side chat started." }
     }
 
@@ -453,7 +763,6 @@ class PanelViewModel(private val graph: AppGraph, val agentId: String) : ViewMod
     fun browseWorkspace(path: String = "") {
         val clean = path.trim().trim('/')
         workspace.update { it.copy(path = clean) }
-        browser.update { it.copy(file = null) }
     }
 
     fun browseWorkspaceUp() {
@@ -462,31 +771,20 @@ class PanelViewModel(private val graph: AppGraph, val agentId: String) : ViewMod
         browseWorkspace(path.substringBeforeLast('/', missingDelimiterValue = ""))
     }
 
-    /** Reads [path] off the agent's VM (`ReadBinaryFile`) into the viewer. */
+    /** Reads [path] off the agent's VM (`ReadBinaryFile`) into a tab of its own. */
     fun openWorkspaceFile(path: String) {
-        reopen = { openWorkspaceFile(path) }
-        fileJob?.cancel()
-        browser.update { it.copy(file = FileView.Loading(path)) }
-        fileJob = viewModelScope.launch {
-            val read = graph.workspace.file(agentId, path, force = true)
-            browser.update { b ->
-                if (b.file?.path != path) return@update b
-                b.copy(
-                    file = when (read) {
-                        is VmRead.Loaded -> FileView.Workspace(read.value)
-                        is VmRead.NotAvailable -> FileView.Failed(path, read.reason)
-                        is VmRead.Failed -> FileView.Failed(path, read.message, asked = read.asked, retryable = true)
-                    },
-                )
+        loadFile(path, reopen = { openWorkspaceFile(path) }) {
+            when (val read = graph.workspace.file(agentId, path, force = true)) {
+                is VmRead.Loaded -> FileView.Workspace(read.value)
+                is VmRead.NotAvailable -> FileView.Failed(path, read.reason)
+                is VmRead.Failed -> FileView.Failed(path, read.message, asked = read.asked, retryable = true)
             }
         }
     }
 
-    /** What the viewer's Retry asks again: the last open, with the agent's machine woken first when [wake]. */
-    private var reopen: ((wake: Boolean) -> Unit)? = null
-
+    /** Asks the showing file tab's read again after a failure, with the agent's machine woken first when [wake]. */
     fun retryFile(wake: Boolean) {
-        reopen?.invoke(wake)
+        reopens[currentKey()]?.invoke(wake)
     }
 
     /**
@@ -496,33 +794,24 @@ class PanelViewModel(private val graph: AppGraph, val agentId: String) : ViewMod
      * with the chat, the file not there, the request refused and what came back.
      */
     private fun readAgentFile(path: String, wake: Boolean) {
-        reopen = { again -> readAgentFile(path, again) }
-        fileJob?.cancel()
-        browser.update { it.copy(file = FileView.Loading(path)) }
-        fileJob = viewModelScope.launch {
-            val read = graph.agentFileReads.read(agentId, path, force = true, wake = wake)
-            browser.update { b ->
-                if (b.file?.path != path) return@update b
-                b.copy(
-                    file = when (read) {
-                        is FileRead.Loaded -> if (read.source == FileRead.Source.Repository) FileView.Repository(read.file) else FileView.Workspace(read.file)
-                        is FileRead.NotReadable -> FileView.Failed(path, read.reason, title = NO_COPY)
-                        is FileRead.Failed -> when (read.reason) {
-                            FileRead.Reason.MachineAsleep -> FileView.Failed(path, "Wake it and the file is read again.", title = "The agent's machine is asleep", asked = read.asked, retryable = true, wakeable = true)
-                            FileRead.Reason.MachineGone -> FileView.Failed(path, "The chat expired or was archived, and its VM went with it; only what the transcript carried can be shown.", title = "The agent's machine is gone", asked = read.asked)
-                            FileRead.Reason.NotFound -> FileView.Failed(path, "It was moved or deleted, or went with a machine that was replaced.", title = "The agent's machine has no such file", asked = read.asked, retryable = true)
-                            FileRead.Reason.OutsideWorkspace -> FileView.Failed(path, AgentFileRepository.OUTSIDE_WORKSPACE + " This chat didn't include a copy.", title = "This file is outside the agent's workspace", asked = read.asked, copyablePath = path)
-                            FileRead.Reason.Other -> FileView.Failed(path, read.message, asked = read.asked, retryable = read.retryable)
-                        }
-                    },
-                )
+        loadFile(path, reopen = { again -> readAgentFile(path, again) }) {
+            when (val read = graph.agentFileReads.read(agentId, path, force = true, wake = wake)) {
+                is FileRead.Loaded -> if (read.source == FileRead.Source.Repository) FileView.Repository(read.file) else FileView.Workspace(read.file)
+                is FileRead.NotReadable -> FileView.Failed(path, read.reason, title = NO_COPY)
+                is FileRead.Failed -> when (read.reason) {
+                    FileRead.Reason.MachineAsleep -> FileView.Failed(path, "Wake it and the file is read again.", title = "The agent's machine is asleep", asked = read.asked, retryable = true, wakeable = true)
+                    FileRead.Reason.MachineGone -> FileView.Failed(path, "The chat expired or was archived, and its VM went with it; only what the transcript carried can be shown.", title = "The agent's machine is gone", asked = read.asked)
+                    FileRead.Reason.NotFound -> FileView.Failed(path, "It was moved or deleted, or went with a machine that was replaced.", title = "The agent's machine has no such file", asked = read.asked, retryable = true)
+                    FileRead.Reason.OutsideWorkspace -> FileView.Failed(path, AgentFileRepository.OUTSIDE_WORKSPACE + " This chat didn't include a copy.", title = "This file is outside the agent's workspace", asked = read.asked, copyablePath = path)
+                    FileRead.Reason.Other -> FileView.Failed(path, read.message, asked = read.asked, retryable = read.retryable)
+                }
             }
         }
     }
 
-    /** Shows one file of the branch diff in the viewer: its patch, or the file as it now stands. */
+    /** Opens one file of the branch diff as a tab: its patch, or the file as it now stands. */
     fun openBranchDiffFile(file: AgentDiffFile) {
-        browser.update { it.copy(file = FileView.BranchDiff(file)) }
+        showFile(file.path, FileView.BranchDiff(file))
     }
 
     // -- the Remote section -------------------------------------------------------------------------------------------
@@ -614,17 +903,14 @@ class PanelViewModel(private val graph: AppGraph, val agentId: String) : ViewMod
 
     // -- the repository browser --------------------------------------------------------------------------------------
 
-    /** Lists [path] of the agent's repository at its branch; the root when empty. */
+    /** Lists [path] of the agent's repository at its branch; the root when empty. A path that is a file opens as a tab. */
     fun browse(path: String = "", force: Boolean = false) {
         val current = state.value.browser
         val repoUrl = current.repoUrl ?: return
         val clean = path.trim().trim('/')
-        if (!force && current.path == clean && current.listing is RemoteLoad.Loaded) {
-            browser.update { it.copy(file = null) }
-            return
-        }
+        if (!force && current.path == clean && current.listing is RemoteLoad.Loaded) return
         browseJob?.cancel()
-        browser.update { it.copy(path = clean, listing = RemoteLoad.Loading, file = null) }
+        browser.update { it.copy(path = clean, listing = RemoteLoad.Loading) }
         browseJob = viewModelScope.launch {
             val result = graph.reviews.contents(repoUrl, current.ref, clean, force)
             browser.update { b ->
@@ -634,15 +920,15 @@ class PanelViewModel(private val graph: AppGraph, val agentId: String) : ViewMod
                         onSuccess = { contents ->
                             when (contents) {
                                 is RepoContents.Directory -> RemoteLoad.Loaded(contents)
-                                // Asked for a directory, got a file: show it, and keep the parent as the listing.
+                                // Asked for a directory, got a file: it opens as a tab, and the listing stays empty.
                                 is RepoContents.File -> RemoteLoad.Loaded(RepoContents.Directory(clean, emptyList()))
                             }
                         },
                         onFailure = { failureOf(it) },
                     ),
-                    file = (result.getOrNull() as? RepoContents.File)?.let { FileView.Repository(it.file) },
                 )
             }
+            (result.getOrNull() as? RepoContents.File)?.let { showFile(it.file.path, FileView.Repository(it.file)) }
         }
     }
 
@@ -653,33 +939,24 @@ class PanelViewModel(private val graph: AppGraph, val agentId: String) : ViewMod
         browse(path.substringBeforeLast('/', missingDelimiterValue = ""))
     }
 
-    /** Opens [path] of the repository at the agent's branch in the viewer. */
+    /** Opens [path] of the repository at the agent's branch as a tab. */
     fun openRepoFile(path: String) {
-        reopen = { openRepoFile(path) }
         val current = state.value.browser
         val repoUrl = current.repoUrl ?: return
-        fileJob?.cancel()
-        browser.update { it.copy(file = FileView.Loading(path)) }
-        fileJob = viewModelScope.launch {
-            val result = graph.reviews.contents(repoUrl, current.ref, path)
-            browser.update { b ->
-                if (b.file?.path != path) return@update b
-                b.copy(
-                    file = result.fold(
-                        onSuccess = { contents -> if (contents is RepoContents.File) FileView.Repository(contents.file) else FileView.Failed(path, "$path is a directory.") },
-                        onFailure = { FileView.Failed(path, graph.reviews.describe(it), retryable = true) },
-                    ),
-                )
-            }
+        loadFile(path, reopen = { openRepoFile(path) }) {
+            graph.reviews.contents(repoUrl, current.ref, path).fold(
+                onSuccess = { contents -> if (contents is RepoContents.File) FileView.Repository(contents.file) else FileView.Failed(path, "$path is a directory.") },
+                onFailure = { FileView.Failed(path, graph.reviews.describe(it), retryable = true) },
+            )
         }
     }
 
     /**
-     * Opens a file the agent touched: the text a tool call carried when there is one (a read shows what the agent
-     * saw, a write what it left), its diffs when it was only edited, else — with the agent's machine readable
+     * Opens a file the agent touched as a tab: the text a tool call carried when there is one (a read shows what the
+     * agent saw, a write what it left), its diffs when it was only edited, else — with the agent's machine readable
      * (Extended mode) — the file read off it wherever it is, `/tmp` as much as the workspace; else, for a file of
      * the repository, the repository at the agent's branch. A picture, a recording or a sound never gets here: its
-     * row opens the media viewer.
+     * row opens it as a media tab.
      */
     fun openTouched(path: String) {
         val current = state.value
@@ -689,22 +966,26 @@ class PanelViewModel(private val graph: AppGraph, val agentId: String) : ViewMod
         val read = readOf(path)
         val inRepository = AgentFileRepository.isInWorkspace(path, null)
         when {
-            written != null -> browser.update { it.copy(file = FileView.Transcript(written)) }
-            change != null && change.diffs.isNotEmpty() -> browser.update { it.copy(file = FileView.Changes(change)) }
-            read != null -> browser.update { it.copy(file = FileView.Transcript(read)) }
+            written != null -> showFile(path, FileView.Transcript(written))
+            change != null && change.diffs.isNotEmpty() -> showFile(path, FileView.Changes(change))
+            read != null -> showFile(path, FileView.Transcript(read))
             current.capabilities.workspaceFiles && !current.isDemo -> readAgentFile(path, wake = false)
             inRepository && current.browser.canBrowse && !current.isDemo -> openRepoFile(AgentFileRepository.relativeGuess(path))
-            inRepository -> browser.update { it.copy(file = FileView.Failed(path, "The repository can't be browsed from here, and reading the agent's workspace needs Extended mode.", title = NO_COPY)) }
-            else -> browser.update { it.copy(file = FileView.Failed(path, AgentFileRepository.outsideNeedsExtended(path), title = NO_COPY)) }
+            inRepository -> showFile(path, FileView.Failed(path, "The repository can't be browsed from here, and reading the agent's workspace needs Extended mode.", title = NO_COPY))
+            else -> showFile(path, FileView.Failed(path, AgentFileRepository.outsideNeedsExtended(path), title = NO_COPY))
         }
     }
 
-    /** Shows one change's diffs in the viewer. */
+    /** Opens one change's diffs as a tab. */
     fun openChange(change: TranscriptContent.FileChange) {
-        browser.update { it.copy(file = FileView.Changes(change)) }
+        showFile(change.path, FileView.Changes(change))
     }
 
-    fun closeFile() = browser.update { it.copy(file = null) }
+    /** Closes the file tab showing, if it is one. */
+    fun closeFile() {
+        val tab = tabsNow().currentTab
+        if (tab is PanelTab.File) closeTab(tab)
+    }
 
     private fun readOf(path: String): ToolPayload.FileContent? {
         val items = graph.conversations.state(agentId).value.items
