@@ -1,5 +1,7 @@
 package com.cursorforandroid.ui.components
 
+import android.graphics.Bitmap
+import android.graphics.Canvas
 import androidx.activity.ComponentActivity
 import androidx.compose.foundation.layout.width
 import androidx.compose.runtime.CompositionLocalProvider
@@ -34,6 +36,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
+import kotlin.math.roundToInt
 
 /**
  * The status icon a link to an agent opens with (see [AgentLinkIcon]): the dot grid while the list says the agent's run
@@ -108,6 +111,34 @@ class AgentLinkStatusTest {
         compose.waitForIdle()
         assertThat(count(AgentLinkIcon.TAG_RUNNING)).isEqualTo(1)
         assertThat(count(AgentLinkIcon.TAG_IDLE)).isEqualTo(1)
+    }
+
+    @Test
+    fun `the working icon in the text animates, stepping through the grid's whole loop`() {
+        // The test harness cancels infinite animations for good if they start while the clock auto-advances, so the
+        // clock is paused before the text is composed, as it is never in the app.
+        compose.mainClock.autoAdvance = false
+        show()
+        compose.mainClock.advanceTimeByFrame()
+        // captureToImage waits for a redraw the paused clock never schedules, so the window is drawn by hand.
+        fun drawn(): List<Int> {
+            val bounds = compose.onNode(hasTestTag(AgentLinkIcon.TAG_RUNNING), useUnmergedTree = true).fetchSemanticsNode().boundsInWindow
+            val window = compose.activity.window.decorView
+            val bitmap = Bitmap.createBitmap(window.width, window.height, Bitmap.Config.ARGB_8888)
+            window.draw(Canvas(bitmap))
+            val left = bounds.left.roundToInt()
+            val top = bounds.top.roundToInt()
+            val width = bounds.width.roundToInt()
+            val height = bounds.height.roundToInt()
+            return IntArray(width * height).also { bitmap.getPixels(it, 0, width, left, top, width, height) }.toList()
+        }
+        val loop = List(8) { step ->
+            if (step > 0) compose.mainClock.advanceTimeBy(175)
+            drawn()
+        }
+        assertThat(loop.toSet()).hasSize(8)
+        compose.mainClock.advanceTimeBy(175)
+        assertThat(drawn()).isEqualTo(loop.first())
     }
 
     @Test
