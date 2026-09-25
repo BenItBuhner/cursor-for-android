@@ -593,6 +593,7 @@ fun ConversationScreen(
                     modifier = Modifier
                         .fillMaxWidth()
                         .align(Alignment.TopCenter)
+                        .holdingHeight(openStretches, topDown = !following)
                         .scrollEdgeFade(listState, reverseLayout = listReversed, surface = colors.canvas)
                         .readerScrolling(readerScroll)
                         .testTag("transcript"),
@@ -608,7 +609,7 @@ fun ConversationScreen(
                     before.forEach(::edge)
                     // Without a content type the lazy layout offers a scrolled-off user bubble's slot to an activity
                     // group, whose subtree shares nothing with it: the reuse always fails and costs more than it saves.
-                    items(if (following) listedRows.asReversed() else listedRows, key = { it.key }, contentType = ::transcriptContentType) { row -> TranscriptRowView(row, paneWidth.then(stepAppearance(row))) }
+                    items(if (following) listedRows.asReversed() else listedRows, key = { it.key }, contentType = ::transcriptContentType) { row -> TranscriptRowView(row, paneWidth.then(rowMotion(row, openStretches))) }
                     after.forEach(::edge)
                 }
                 SideEffect { transcriptScroll.orient(following, order) }
