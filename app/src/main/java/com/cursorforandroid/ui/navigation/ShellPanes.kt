@@ -35,7 +35,6 @@ import com.cursorforandroid.ui.panel.LocalPinnedPanel
 import com.cursorforandroid.ui.panel.PaneWidthClass
 import com.cursorforandroid.ui.panel.PaneWidths
 import com.cursorforandroid.ui.panel.PinnedPanel
-import com.cursorforandroid.ui.panel.PinnedPanelDefaultWidth
 import com.cursorforandroid.ui.panel.PinnedPanelMinWidth
 import com.cursorforandroid.ui.panel.RailMaxWidth
 import com.cursorforandroid.ui.panel.RailMinWidth
@@ -48,9 +47,10 @@ import kotlinx.coroutines.launch
 
 /**
  * The wide window's width as the sidebar rail, the chat and a conversation panel pinned beside it share it
- * ([PaneWidths]), with what the reader has made of it: the widths the rail and the panel were dragged to, and the panel
- * open or shut for each window size class, all kept for the device ([PreferencesStore]) and read once as the shell
- * starts. It is every chat's [PinnedPanel], so the panel left open beside one chat stands open beside the next.
+ * ([PaneWidths]), with what the reader has made of it: the width the rail was dragged to and the share of the window
+ * the panel was, and the panel open or shut for each window size class, all kept for the device ([PreferencesStore])
+ * and read once as the shell starts. It is every chat's [PinnedPanel], so the panel left open beside one chat stands
+ * open beside the next.
  */
 @Stable
 internal class ShellPanes(
@@ -62,9 +62,15 @@ internal class ShellPanes(
     private var configured by mutableStateOf(0.dp)
     private var measured by mutableStateOf<Dp?>(null)
     private var railWant by mutableStateOf<Dp?>(null)
-    private var panelWant by mutableStateOf<Dp?>(null)
+    private var panelFraction by mutableStateOf<Float?>(null)
     private var openMedium by mutableStateOf<Boolean?>(null)
     private var openExpanded by mutableStateOf<Boolean?>(null)
+
+    /** Whether the panel's edge is being dragged: from its first move until it lets go or is taken away. */
+    private var resizing = false
+
+    /** [panelFraction] as the drag under way found it, to go back to if the drag is taken away. */
+    private var resizedFrom: Float? = null
 
     /** The shell's width: as last measured, and the configuration's from a change until the shell is measured again. */
     val window: Dp get() = measured ?: configured
@@ -75,7 +81,7 @@ internal class ShellPanes(
             railExpanded = railExpanded(),
             railWidth = railWant ?: CursorDimens.sidebarWidth,
             panelOpen = chatOnTop() && open == true,
-            panelWidth = panelWant ?: PinnedPanelDefaultWidth,
+            panelFraction = panelFraction,
         )
     }
 
@@ -115,6 +121,8 @@ internal class ShellPanes(
 
     override val width: Dp get() = widths.panel
 
+    override val splits: Boolean get() = widths.splits
+
     /**
      * The configuration's screen width, read in composition: a change drops the old measurement until the next. True
      * where [width] is a change, the window folded, unfolded, turned or resized under the shell. A panel open over the
@@ -144,13 +152,25 @@ internal class ShellPanes(
         scope.launch { prefs.setPanelOpen(widthClass, open) }
     }
 
+    /** Kept as a share of the window from the first move on, so the panel comes back in proportion on another window. */
     override fun resize(width: Dp) {
-        panelWant = width.coerceIn(PinnedPanelMinWidth, widths.panelMax)
+        if (!resizing) {
+            resizing = true
+            resizedFrom = panelFraction
+        }
+        panelFraction = width.coerceIn(PinnedPanelMinWidth, widths.panelMax) / window
     }
 
     override fun resizeDone() {
-        val width = widths.panel
-        scope.launch { prefs.setPanelWidthDp(width.value.roundToInt()) }
+        resizing = false
+        val fraction = panelFraction ?: return
+        scope.launch { prefs.setPanelWidthFraction(fraction) }
+    }
+
+    override fun resizeCancelled() {
+        if (!resizing) return
+        resizing = false
+        panelFraction = resizedFrom
     }
 
     fun resizeRail(width: Dp) {
@@ -165,11 +185,11 @@ internal class ShellPanes(
     /** What the device kept, read once; anything the reader has changed since the shell started stays as they left it. */
     suspend fun load() {
         val rail = prefs.railWidthDp.first()
-        val panel = prefs.panelWidthDp.first()
+        val panel = prefs.panelWidthFraction.first()
         val medium = prefs.panelOpen(PaneWidthClass.Medium).first()
         val expanded = prefs.panelOpen(PaneWidthClass.Expanded).first()
         if (railWant == null) railWant = rail?.dp
-        if (panelWant == null) panelWant = panel?.dp
+        if (panelFraction == null) panelFraction = panel
         if (openMedium == null) openMedium = medium
         if (openExpanded == null) openExpanded = expanded
     }

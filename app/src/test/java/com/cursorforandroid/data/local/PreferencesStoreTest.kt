@@ -6,6 +6,7 @@ import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.preferencesDataStoreFile
@@ -255,7 +256,7 @@ class PreferencesStoreTest {
     }
 
     @Test
-    fun `the pre-release, haptic and voice input switches an earlier build stored are deleted, and nothing else is`() = runBlocking<Unit> {
+    fun `the pre-release, haptic and voice input switches and the panel's width in dp an earlier build stored are deleted, and nothing else is`() = runBlocking<Unit> {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val store = PreferenceDataStoreFactory.create(
             scope = CoroutineScope(Dispatchers.IO + SupervisorJob()),
@@ -265,16 +266,21 @@ class PreferencesStoreTest {
             p[booleanPreferencesKey("update_include_pre_releases")] = true
             p[booleanPreferencesKey("haptic_feedback")] = false
             p[booleanPreferencesKey("voice_input")] = true
+            p[intPreferencesKey("panel_width_dp")] = 400
             p[booleanPreferencesKey("auto_update")] = false
             p[stringPreferencesKey("theme_mode")] = ThemeMode.Light.name
+            p[intPreferencesKey("rail_width_dp")] = 240
         }
         val prefs = PreferencesStore(context, store)
 
         assertThat(prefs.forgetRetiredSettings()).isTrue()
         val left = store.data.first().asMap().keys.map { it.name }
-        assertThat(left).containsExactly("auto_update", "theme_mode")
+        assertThat(left).containsExactly("auto_update", "theme_mode", "rail_width_dp")
         assertThat(prefs.autoUpdate.first()).isFalse()
         assertThat(prefs.themeMode.first()).isEqualTo(ThemeMode.Light)
+        // The panel opens at half the window again, until it is dragged; the rail keeps the width it was dragged to.
+        assertThat(prefs.panelWidthFraction.first()).isNull()
+        assertThat(prefs.railWidthDp.first()).isEqualTo(240)
         // Once they are gone there is nothing to write.
         assertThat(prefs.forgetRetiredSettings()).isTrue()
     }
@@ -312,11 +318,11 @@ class PreferencesStoreTest {
     fun `the wide layout's pane widths and each size class's panel are kept for the device`() = runBlocking<Unit> {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val prefs = PreferencesStore(context)
-        assertThat(prefs.panelWidthDp.first()).isNull()
+        assertThat(prefs.panelWidthFraction.first()).isNull()
         assertThat(prefs.railWidthDp.first()).isNull()
         assertThat(prefs.panelOpen(PaneWidthClass.Medium).first()).isFalse()
         assertThat(prefs.panelOpen(PaneWidthClass.Expanded).first()).isFalse()
-        prefs.setPanelWidthDp(512)
+        prefs.setPanelWidthFraction(0.4f)
         prefs.setRailWidthDp(240)
         prefs.setPanelOpen(PaneWidthClass.Expanded, true)
         // Each class keeps its own: opened on a tablet on its side, still shut upright.
@@ -325,7 +331,7 @@ class PreferencesStoreTest {
         // The device's, not the account's: a sign-out leaves them, and the next start reads them back.
         prefs.clearSession()
         val restarted = PreferencesStore(context)
-        assertThat(restarted.panelWidthDp.first()).isEqualTo(512)
+        assertThat(restarted.panelWidthFraction.first()).isEqualTo(0.4f)
         assertThat(restarted.railWidthDp.first()).isEqualTo(240)
         assertThat(restarted.panelOpen(PaneWidthClass.Expanded).first()).isTrue()
         restarted.setPanelOpen(PaneWidthClass.Expanded, false)

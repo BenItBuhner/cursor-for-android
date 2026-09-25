@@ -254,7 +254,7 @@ fun SidePanelHost(
         if (pinned != null && shown) {
             PaneResizeEdge(
                 side = PaneSide.End,
-                paneWidth = { pinned.width },
+                paneWidth = { if (pinned.splits) panelWidth else pinned.width },
                 onResize = pinned::resize,
                 onResizeDone = pinned::resizeDone,
                 contentDescription = ResizePanel,
@@ -262,6 +262,7 @@ fun SidePanelHost(
                 modifier = Modifier
                     .align(Alignment.CenterEnd)
                     .offset { IntOffset((PaneResizeEdgeWidth.toPx() / 2 - state.fraction * widthPx).roundToInt(), 0) },
+                onResizeCancelled = { pinned.resizeCancelled() },
             )
         }
     }
@@ -332,7 +333,12 @@ fun SidePanel(
         var expanded by rememberSaveable { mutableStateOf(false) }
         LaunchedEffect(state.isVisible) { if (!state.isVisible) expanded = false }
         val sheetWidth by animateDpAsState(if (expanded && canExpand) full else column, tween(SlideMillis, easing = SlideEasing), label = "panel-width")
-        val width = pinned?.width?.coerceAtMost(maxWidth - ChatMinWidth)?.coerceAtLeast(PinnedPanelMinWidth) ?: sheetWidth
+        // Half and half with the chat, it is half of this frame's room, the rail's slide included.
+        val width = when {
+            pinned == null -> sheetWidth
+            pinned.splits -> maxWidth / 2
+            else -> pinned.width.coerceAtMost(maxWidth - ChatMinWidth).coerceAtLeast(PinnedPanelMinWidth)
+        }
         val expand = remember(canExpand, expanded) { PanelExpand(available = canExpand, expanded = expanded && canExpand, toggle = { expanded = !expanded }) }
         SidePanelHost(
             state = state,

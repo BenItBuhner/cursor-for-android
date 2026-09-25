@@ -15,8 +15,14 @@ interface PinnedPanel {
     /** Whether the panel stands open beside the chat on this window's size class; null until that has been read. */
     val open: Boolean?
 
-    /** The width the panel stands at: as last dragged, within what the window leaves it beside the chat. */
+    /** The width the panel stands at: half the window, or as last dragged, within what the window leaves it beside the chat. */
     val width: Dp
+
+    /**
+     * Whether the panel, not yet dragged, shares with the chat, half and half, what the rail leaves of the window
+     * ([PaneWidths.splits]): it is half the room the two stand in, following the rail as it comes and goes.
+     */
+    val splits: Boolean
 
     fun setOpen(open: Boolean)
 
@@ -25,6 +31,9 @@ interface PinnedPanel {
 
     /** The drag let go: the width it came to is kept. */
     fun resizeDone()
+
+    /** The drag taken away before it let go: the panel goes back to how the drag found it, and nothing is kept. */
+    fun resizeCancelled()
 }
 
 /** The shell's [PinnedPanel] where the window has room to pin the panel beside the chat; null where it is a sheet over it. */
