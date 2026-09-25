@@ -159,10 +159,12 @@ class NewAgentViewModelTest {
     @Test
     fun `sending opens the chat on its prompt before the server has answered and leaves the composer free`() = runBlocking {
         val vm = loaded()
-        vm.setPrompt("Do the thing")
         var opened: String? = null
+        // Nothing to send is refused on the spot, and says so: the prompt it would lift off the composer stays put.
+        assertThat(vm.launch(onOpen = { opened = it })).isFalse()
+        vm.setPrompt("Do the thing")
 
-        vm.launch(onOpen = { opened = it })
+        assertThat(vm.launch(onOpen = { opened = it })).isTrue()
         awaitUntil { opened != null }
 
         // The chat is open and showing the prompt while the request is still in flight...
