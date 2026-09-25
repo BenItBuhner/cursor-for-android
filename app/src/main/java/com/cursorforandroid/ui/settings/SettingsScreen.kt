@@ -413,7 +413,8 @@ internal fun VoiceInputRow(graph: AppGraph, extendedMode: Boolean) {
 private fun NotificationRows(graph: AppGraph) {
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
-    val enabled by graph.prefs.liveNotifications.collectAsStateWithLifecycle(initialValue = true)
+    // On the main dispatcher for the reason the Extended mode switch is (see SettingsScreen).
+    val enabled by graph.prefs.liveNotifications.collectAsStateWithLifecycle(initialValue = true, context = Dispatchers.Main.immediate)
     var resumeCount by remember { mutableIntStateOf(0) }
     LifecycleResumeEffect(Unit) {
         resumeCount++
