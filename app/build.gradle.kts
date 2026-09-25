@@ -66,7 +66,13 @@ fun versionFromGit(): Pair<String, Boolean> {
         return "0.0.0" to true
     }
     val (major, minor, patch, preRelease) = releaseTagVersion.matchEntire("v$latest")!!.destructured
-    return (if (preRelease.isEmpty()) "$major.$minor.${patch.toInt() + 1}" else "$major.$minor.$patch") to true
+    if (preRelease.isNotEmpty()) return "$major.$minor.$patch" to true
+    // versionCodeFor caps MINOR and PATCH at 99, so the release after X.Y.99 is X.(Y+1).0 and after X.99.99 is (X+1).0.0.
+    return when {
+        patch.toInt() < 99 -> "$major.$minor.${patch.toInt() + 1}"
+        minor.toInt() < 99 -> "$major.${minor.toInt() + 1}.0"
+        else -> "${major.toInt() + 1}.0.0"
+    } to true
 }
 
 val appVersionNameSuffix: String? = providers.gradleProperty("app.versionNameSuffix").orNull?.takeIf { it.isNotBlank() }
