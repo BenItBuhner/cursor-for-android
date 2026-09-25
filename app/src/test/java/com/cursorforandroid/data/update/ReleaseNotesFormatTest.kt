@@ -75,6 +75,31 @@ class ReleaseNotesFormatTest {
         assertThat(ReleaseNotesFormat.curated(body)).isEqualTo("Some notes.")
     }
 
+    /** The row scripts/release-cut.sh and release.yml write since v0.4.2, in both of its forms. */
+    @Test
+    fun `the remote crash reporting row is cut with the rest of the header`() {
+        listOf(
+            "Off - this build has no project to report to. Crash reports stay on the device; share them from Settings > Debug (long-press the version row).",
+            "Opt-in, off by default (Settings > Privacy). Anonymous; R8 mapping id `0f1e2d3c`. Crash reports are also kept on the device (Settings > Debug).",
+        ).forEach { row ->
+            val body = """
+                | | |
+                |---|---|
+                | versionName | `0.4.2` |
+                | Remote crash reporting | $row |
+                | CI | https://github.com/BenItBuhner/cursor-for-android/actions/runs/1 |
+
+                **Install:** download `cursor-for-android-0.4.2.apk`.
+
+                ## Queue
+
+                - Kept.
+            """.trimIndent()
+
+            assertThat(ReleaseNotesFormat.curated(body)).isEqualTo("## Queue\n\n- Kept.")
+        }
+    }
+
     @Test
     fun `nothing inside a fenced block is read as a heading or a marker`() {
         val body = """

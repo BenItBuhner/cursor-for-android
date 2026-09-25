@@ -285,9 +285,9 @@ fi
     echo "| Signing | **Debug key** - dry run; not publishable. |"
   fi
   if [[ -n "$mapping_uuid" ]]; then
-    echo "| Crash reports | Opt-in, off by default (Settings > Privacy). Anonymous; R8 mapping id \`${mapping_uuid}\`. |"
+    echo "| Remote crash reporting | Opt-in, off by default (Settings > Privacy). Anonymous; R8 mapping id \`${mapping_uuid}\`. Crash reports are also kept on the device (Settings > Debug). |"
   else
-    echo "| Crash reports | None - this build was made without a project to report to. |"
+    echo "| Remote crash reporting | Off - this build has no project to report to. Crash reports stay on the device; share them from Settings > Debug (long-press the version row). |"
   fi
   [[ -z "$ci_proof" ]] || echo "| CI | ${ci_proof%% *} |"
   echo

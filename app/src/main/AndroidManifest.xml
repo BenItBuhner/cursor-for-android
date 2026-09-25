@@ -34,9 +34,12 @@
         </intent>
     </queries>
 
+    <!-- largeHeap: headroom for accounts with dozens of agents working at once (a 256 MB limit on Bennett's phone);
+         the memory the chats hold is bounded regardless, and the stress tests hold it to budgets. -->
     <application
         android:name=".CursorApp"
         android:allowBackup="false"
+        android:largeHeap="true"
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:enableOnBackInvokedCallback="true"
         android:icon="@mipmap/ic_launcher"

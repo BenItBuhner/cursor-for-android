@@ -114,6 +114,11 @@ data class QueuePlacement(
      */
     val shownIds: Set<String> = emptySet(),
     val shownTexts: Set<String> = emptySet(),
+    /**
+     * The [waiting] rows whose request is still out: queued on the card from the tap, while the account has not yet
+     * said it holds them. The card shows them in flight, their actions held until the account knows their id.
+     */
+    val sendingIds: Set<String> = emptySet(),
 ) {
     val isEmpty: Boolean get() = deliveredIds.isEmpty() && deliveredTexts.isEmpty() && returned.isEmpty() && waiting.isEmpty() && shownIds.isEmpty() && shownTexts.isEmpty()
 
@@ -233,7 +238,12 @@ data class ConversationControls(
         // account's own name for the same message) — the same words are other queued messages' too.
         val kept = placement.waiting.filter { w -> shown.none { it.id == w.id || (w.id.startsWith(QueuePlacement.LOCAL_ID_PREFIX) && QueuePlacement.textKey(it.text) == QueuePlacement.textKey(w.text)) } }
         if (kept.isNotEmpty()) changed = true
-        return if (changed) copy(queue = shown + kept) else this
+        val sending = placement.sendingIds.mapTo(HashSet()) { QUEUE_ACTION_PREFIX + it }
+        return when {
+            sending.isNotEmpty() -> copy(queue = shown + kept, inFlight = inFlight + sending)
+            changed -> copy(queue = shown + kept)
+            else -> this
+        }
     }
 
     companion object {

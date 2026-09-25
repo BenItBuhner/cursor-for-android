@@ -18,6 +18,7 @@ import com.cursorforandroid.data.api.PromptUploadPart
 import com.cursorforandroid.data.api.dto.RunDto
 import com.cursorforandroid.data.repo.AttachmentUploads
 import com.cursorforandroid.data.repo.CursorBackend
+import com.cursorforandroid.domain.ConversationControls
 import com.cursorforandroid.domain.PendingFollowup
 import com.cursorforandroid.domain.PromptFile
 import com.cursorforandroid.domain.PromptImage
@@ -27,7 +28,10 @@ import com.cursorforandroid.ui.components.PendingAttachment
 import com.cursorforandroid.ui.components.PendingFile
 import com.cursorforandroid.util.MainDispatcherRule
 import com.google.common.truth.Truth.assertThat
+import com.google.common.truth.Truth.assertWithMessage
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
@@ -138,7 +142,7 @@ class OutgoingSendTest {
             sent += followup
             if (queueNext) {
                 queueNext = false
-                pending += PendingFollowup("pf-${calls.get()}", followup.text)
+                pending += PendingFollowup(followup.followupId, followup.text)
                 return null
             }
             val runId = "run-account-${calls.get()}"
@@ -441,45 +445,117 @@ class OutgoingSendTest {
         assertThat(vm.composerIsEmpty()).isTrue()
     }
 
-    /**
-     * The agent is mid-turn, so the message goes to the account's queue: the composer is empty at the tap, the
-     * bubble stands while the request is out, and comes down once the account has queued the message (its card is
-     * what shows it then). Refused instead, it stays on the bubble with Retry.
-     */
-    @Test
-    fun `queued on the account, the composer clears at the tap, and a refusal shows on the bubble`() = runBlocking<Unit> {
+    /** The account's queue as the card above the composer draws it, against the transcript's own frame. */
+    private fun card(): ConversationControls = graph.steering.state(AGENT).value.placed(graph.conversations.state(AGENT).value.queuePlacement)
+
+    /** Every pending bubble shown for [text] while [block] runs, sampled on every frame of the transcript. */
+    private suspend fun bubblesDuring(text: String, block: suspend () -> Unit): List<String> {
+        val seen = CopyOnWriteArrayList<String>()
+        val watcher = CoroutineScope(Dispatchers.Default).launch {
+            graph.conversations.state(AGENT).collect { s -> s.items.filterIsInstance<UserMessage>().filter { it.isPending && it.text == text }.forEach { seen += it.id } }
+        }
+        try { block() } finally { watcher.cancel() }
+        return seen
+    }
+
+    private suspend fun openMidTurn(): ConversationViewModel {
         api.addRunningAgent(AGENT, "Green screen", "run-live")
         graph.agents.refresh()
         val vm = open()
-        awaitUntil("busy") { graph.followUps.decide(AGENT).busy }
+        awaitUntil("the chat on its turn") { graph.conversations.state(AGENT).value.runStatus?.isActive == true && graph.followUps.decide(AGENT).busy }
+        return vm
+    }
 
+    /**
+     * The agent is mid-turn, so the message goes to the account's queue — straight onto the card at the tap, in
+     * flight until the account holds it, and never as a bubble in the transcript first (Bennett, 0.4.1: the send
+     * played into a bubble and a round trip later popped onto the card). Its file goes up meanwhile, on the row.
+     */
+    @Test
+    fun `mid-turn, the message is on the card from the tap and never a bubble first`() = runBlocking<Unit> {
+        val vm = openMidTurn()
         val spec = file("spec.pdf")
         vm.addFiles(listOf(spec))
+        awaitChip(vm, spec.id) { it?.done == true }
         account.queueNext = true
+        account.gate = CountDownLatch(1)
         vm.setDraft("When you are done, read the spec")
-        // Mid-turn, the bubble only stands while the account queues it: nothing travels into it.
+        val bubbles = bubblesDuring("When you are done, read the spec") {
+            // Mid-turn nothing travels into a bubble.
+            assertThat(vm.send()).isNull()
+            assertThat(vm.composerIsEmpty()).isTrue()
+            // On the card before the account has been answered, held in flight: no action on an id it does not know yet.
+            val row = await("on the card") { card().queue.singleOrNull { it.text == "When you are done, read the spec" } }
+            assertThat(card().inFlightQueueIds).contains(row.id)
+            assertThat(row.files.map { it.name }).containsExactly("spec.pdf")
+            assertThat(account.sent).isEmpty()
+            account.gate!!.countDown()
+            await("queued on the account") { account.sent.singleOrNull() }
+            withTimeout(15_000) { vm.isSending.first { !it } }
+            awaitUntil("the row's actions back") { card().inFlightQueueIds.isEmpty() }
+            assertThat(card().queue.map { it.id }).containsExactly(row.id)
+            assertThat(account.sent.single().followupId).isEqualTo(row.id)
+            // The account's own list names it: one row, the list's.
+            graph.steering.refreshQueue(AGENT)
+            assertThat(card().queue.map { it.text }).containsExactly("When you are done, read the spec")
+        }
+        assertWithMessage("pending bubbles shown for a queued message").that(bubbles).isEmpty()
+        assertThat(account.sent.single().files.single().uploadId).isEqualTo("up-spec.pdf")
+    }
+
+    /**
+     * Mid-turn, and the account refuses the message: it leaves the card — which would go on promising a message the
+     * account never took — for a bubble with the reason, Retry and Edit. Retry sends it from there.
+     */
+    @Test
+    fun `mid-turn, a refused message leaves the card for a bubble with its Retry`() = runBlocking<Unit> {
+        val vm = openMidTurn()
+        account.failNext = ConnectRpcException(500, "internal", "Something went wrong on the account service.")
+        account.gate = CountDownLatch(1)
+        vm.setDraft("And the trace")
         assertThat(vm.send()).isNull()
         assertThat(vm.composerIsEmpty()).isTrue()
-        val bubble = await("the bubble") { pendingBubbles().singleOrNull() }
-        // The status follows the bubble by a step; the send takes its 300–900 ms after that.
-        awaitStatus(vm, bubble.id) { it != null }
-        awaitStatus(vm, bubble.id) { it == null }
-        assertThat(account.sent.single().text).isEqualTo("When you are done, read the spec")
-        // Queued: the bubble is down, the card carries the message from here.
-        awaitUntil("bubble down") { pendingBubbles().isEmpty() }
-        assertThat(vm.composerIsEmpty()).isTrue()
-
-        account.failNext = ConnectRpcException(500, "internal", "Something went wrong on the account service.")
-        vm.setDraft("And the trace")
-        vm.send()
-        assertThat(vm.composerIsEmpty()).isTrue()
+        await("on the card") { card().queue.singleOrNull { it.text == "And the trace" } }
+        assertThat(pendingBubbles()).isEmpty()
+        account.gate!!.countDown()
+        account.gate = null
         val refused = await("the bubble") { pendingBubbles().singleOrNull() }
+        assertThat(refused.text).isEqualTo("And the trace")
         val failed = awaitStatus(vm, refused.id) { it is OutgoingStatus.Failed } as OutgoingStatus.Failed
         assertThat(failed.message).contains("Something went wrong")
+        assertThat(card().queue).isEmpty()
+
         account.queueNext = true
         vm.retryOutgoing(refused.id)
         awaitStatus(vm, refused.id) { it == null }
-        assertThat(account.sent.map { it.text }).containsExactly("When you are done, read the spec", "And the trace").inOrder()
+        assertThat(account.sent.map { it.text }).containsExactly("And the trace")
+        awaitUntil("bubble down for the card") { pendingBubbles().isEmpty() && card().queue.any { it.text == "And the trace" } }
+    }
+
+    /**
+     * The turn ends while the message is on its way: queued at the tap, but the account starts its run at once. The
+     * message leaves the card for the transcript, filed under that run — never on both, never lost.
+     */
+    @Test
+    fun `a turn that ends mid-send files the queued message under the run the account started`() = runBlocking<Unit> {
+        val vm = openMidTurn()
+        account.gate = CountDownLatch(1)
+        vm.setDraft("Then ship it")
+        assertThat(vm.send()).isNull()
+        await("on the card") { card().queue.singleOrNull { it.text == "Then ship it" } }
+        // The turn ends on the server and the chat sees it end, the request still out.
+        api.runs["run-live"] = api.runs.getValue("run-live").copy(status = "FINISHED")
+        api.v0[AGENT] = api.v0.getValue(AGENT).copy(status = "FINISHED")
+        graph.conversations.reload(AGENT)
+        awaitUntil("the chat sees the turn end") { graph.conversations.state(AGENT).value.runStatus?.isActive == false }
+        account.gate!!.countDown()
+        account.gate = null
+        awaitUntil("filed under the account's run") {
+            graph.conversations.state(AGENT).value.items.any { it is UserMessage && it.text == "Then ship it" && !it.isPending }
+        }
+        withTimeout(15_000) { vm.isSending.first { !it } }
+        assertThat(card().queue.none { it.text == "Then ship it" }).isTrue()
+        assertThat(graph.conversations.state(AGENT).value.activeRunId).isEqualTo("run-account-1")
     }
 
     /**
@@ -546,10 +622,13 @@ class OutgoingSendTest {
         vm2.addFiles(listOf(file("spec.pdf")))
         vm2.setDraft("And the spec")
         vm2.send()
-        val second = await("the bubble") { pendingBubbles().singleOrNull() }
+        // A bubble, or — the chat still showing the first message's run under way — the queue's card row.
+        await("the message shown") { pendingBubbles().singleOrNull() ?: card().queue.singleOrNull() }
         secondVisit.clear()
         account.gate!!.countDown()
         account.gate = null
+        // Either way the refusal lands on a bubble.
+        val second = await("the bubble") { pendingBubbles().singleOrNull() }
         val sends = graph.outgoing.forAgent(AGENT)
         await("failed after the chat was left") { (sends.statuses.value[second.id] as? OutgoingStatus.Failed) }
 
