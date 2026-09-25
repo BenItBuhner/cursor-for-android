@@ -4,6 +4,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.ProcessLifecycleOwner
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 
 /**
@@ -29,6 +30,6 @@ object LiveSyncBinding {
                 }
             },
         )
-        graph.liveSync.start(graph.agents.state.map { it.agents }, graph.liveSyncEnabled, foreground)
+        graph.liveSync.start(graph.agents.state.map { it.agents }.distinctUntilChanged(), graph.liveSyncEnabled, foreground)
     }
 }

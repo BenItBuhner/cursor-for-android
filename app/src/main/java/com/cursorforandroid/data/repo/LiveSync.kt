@@ -43,6 +43,7 @@ class LiveSync(
 ) {
     /** What a hold is taken on: the conversations, seen through the three calls sync needs. */
     interface Target {
+        /** Idempotent: holding a chat already held changes nothing. */
         fun hold(agentId: String)
         fun release(agentId: String)
         /** Returns once the chat's hold has done its first load (or failed it). */
@@ -118,7 +119,8 @@ class LiveSync(
         // One new hold at a time, each after the last one's first load: their reads never crowd out the chat the
         // reader opens (a new list cancels what is left, see [start]).
         for (id in wanted) {
-            if (synchronized(this) { id in held }) continue
+            // Held already: asked again, which costs nothing, for the conversations may have been reset since (a sign-out).
+            if (synchronized(this) { id in held }) { target.hold(id); continue }
             target.hold(id)
             synchronized(this) { held += id }
             publish()

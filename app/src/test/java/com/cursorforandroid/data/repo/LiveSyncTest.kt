@@ -56,7 +56,7 @@ class LiveSyncTest {
         val calls = CopyOnWriteArrayList<String>()
         val held = ConcurrentHashMap.newKeySet<String>()
         val loads = ConcurrentHashMap<String, CompletableDeferred<Unit>>()
-        override fun hold(agentId: String) { calls += "hold $agentId"; held += agentId }
+        override fun hold(agentId: String) { if (held.add(agentId)) calls += "hold $agentId" }
         override fun release(agentId: String) { calls += "release $agentId"; held -= agentId }
         override suspend fun settled(agentId: String) {
             if (!autoSettle) loads.getOrPut(agentId) { CompletableDeferred() }.await()
