@@ -110,12 +110,25 @@ class NewChatHomeBlocksTest {
     }
 
     @Test
-    fun `a shortcut says what is working in its Project, else how many chats it holds`() {
+    fun `a shortcut counts its working chats beside the glyph from two on, the glyph alone meaning one`() {
+        assertThat(NewChatHomeCopy.workingCount(0)).isNull()
+        assertThat(NewChatHomeCopy.workingCount(1)).isNull()
+        assertThat(NewChatHomeCopy.workingCount(2)).isEqualTo("2")
+        assertThat(NewChatHomeCopy.workingCount(12)).isEqualTo("12")
+    }
+
+    @Test
+    fun `a shortcut's working glyph tells accessibility services how many agents are working`() {
+        assertThat(NewChatHomeCopy.workingLabel(1)).isEqualTo("1 agent working")
+        assertThat(NewChatHomeCopy.workingLabel(3)).isEqualTo("3 agents working")
+    }
+
+    @Test
+    fun `what a shortcut counts is every chat at work under its Project, the coordinator's own turn included`() {
         val worker = AgentParent("billing", AgentParentKind.PROJECT_WORKER)
-        fun project(vararg children: AgentRow) = row(agent("billing", appearance = ProjectAppearance("rocket", "purple")), children.toList())
-        assertThat(NewChatHomeCopy.status(project(row(agent("w1", running = true, parent = worker)), row(agent("w2", running = true, parent = worker))))).isEqualTo("2 working")
-        assertThat(NewChatHomeCopy.status(project(row(agent("w1", parent = worker))))).isEqualTo("1 chat")
-        assertThat(NewChatHomeCopy.status(project(row(agent("w1", parent = worker)), row(agent("w2", parent = worker)), row(agent("w3", parent = worker))))).isEqualTo("3 chats")
-        assertThat(NewChatHomeCopy.status(project())).isEqualTo("Idle")
+        fun project(running: Boolean, vararg children: AgentRow) = row(agent("billing", running = running, appearance = ProjectAppearance("rocket", "purple")), children.toList())
+        assertThat(project(false, row(agent("w1", running = true, parent = worker)), row(agent("w2", running = true, parent = worker))).workingCount).isEqualTo(2)
+        assertThat(project(true, row(agent("w1", running = true, parent = worker)), row(agent("w2", parent = worker))).workingCount).isEqualTo(2)
+        assertThat(project(false, row(agent("w1", parent = worker))).workingCount).isEqualTo(0)
     }
 }
