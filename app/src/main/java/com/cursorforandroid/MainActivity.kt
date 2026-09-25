@@ -19,6 +19,8 @@ import com.cursorforandroid.data.repo.LoginProgress
 import com.cursorforandroid.data.repo.SessionState
 import com.cursorforandroid.share.ShareIntent
 import com.cursorforandroid.ui.CursorRoot
+import com.cursorforandroid.ui.components.CaptionBarAppearance
+import com.cursorforandroid.ui.components.CaptionBarHost
 import com.cursorforandroid.ui.shortcuts.KeyboardShortcuts
 import com.cursorforandroid.ui.shortcuts.LocalKeyboardShortcuts
 import com.cursorforandroid.ui.theme.AppNightMode
@@ -61,25 +63,28 @@ class MainActivity : ComponentActivity() {
             val themeMode by graph.prefs.themeMode.collectAsStateWithLifecycle(initialValue = ThemeMode.System)
             val oledBlack by graph.prefs.oledBlack.collectAsStateWithLifecycle(initialValue = false)
             CursorTheme(mode = themeMode, oledBlack = oledBlack) {
+                CaptionBarAppearance(this, dark = CursorTheme.colors.isDark)
                 CompositionLocalProvider(LocalKeyboardShortcuts provides shortcuts) {
-                    CursorRoot(
-                        graph = graph,
-                        deepLinkAgentId = pendingAgentId,
-                        onDeepLinkConsumed = {
-                            pendingAgentId = null
-                            DeepLinks.clearAgentLink(intent)
-                        },
-                        newChatRequested = pendingNewChat,
-                        onNewChatConsumed = {
-                            pendingNewChat = false
-                            DeepLinks.clearAction(intent, ACTION_NEW_CHAT)
-                        },
-                        searchRequested = pendingSearch,
-                        onSearchConsumed = {
-                            pendingSearch = false
-                            DeepLinks.clearAction(intent, ACTION_SEARCH)
-                        },
-                    )
+                    CaptionBarHost {
+                        CursorRoot(
+                            graph = graph,
+                            deepLinkAgentId = pendingAgentId,
+                            onDeepLinkConsumed = {
+                                pendingAgentId = null
+                                DeepLinks.clearAgentLink(intent)
+                            },
+                            newChatRequested = pendingNewChat,
+                            onNewChatConsumed = {
+                                pendingNewChat = false
+                                DeepLinks.clearAction(intent, ACTION_NEW_CHAT)
+                            },
+                            searchRequested = pendingSearch,
+                            onSearchConsumed = {
+                                pendingSearch = false
+                                DeepLinks.clearAction(intent, ACTION_SEARCH)
+                            },
+                        )
+                    }
                 }
             }
         }

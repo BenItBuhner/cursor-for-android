@@ -65,6 +65,7 @@ import com.cursorforandroid.ui.components.ComposerBox
 import com.cursorforandroid.ui.components.LocalSendMotion
 import com.cursorforandroid.ui.components.SendMotion
 import com.cursorforandroid.ui.components.CursorCard
+import com.cursorforandroid.ui.components.CaptionBarSpacer
 import com.cursorforandroid.ui.components.CursorHeader
 import com.cursorforandroid.ui.components.FadingLazyColumn
 import com.cursorforandroid.ui.components.CursorIcons
@@ -185,6 +186,10 @@ fun HomeScreen(
     Column(modifier.fillMaxSize().background(colors.canvas).endsArrangingOnTap(projectGrid)) {
         if (onOpenSidebar != null) {
             CursorHeader(leading = { FlatIconButton(CursorIcons.Sidebar, "Open sidebar", onClick = onOpenSidebar) })
+        } else {
+            // Beside the rail there is no header; in a desktop window the pane still leaves the caption bar's row to
+            // the window's controls, and to the window being dragged by it.
+            CaptionBarSpacer()
         }
         // The list scrolls edge to edge; the last row must still clear the navigation bar (48dp with three buttons).
         val navigationBar = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
