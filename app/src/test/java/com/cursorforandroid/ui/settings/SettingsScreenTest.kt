@@ -252,10 +252,10 @@ class SettingsScreenTest {
         composeSettings(isDemo = false)
 
         compose.onNodeWithText(RunStopCopy.SETTING_DETAIL).assertExists()
-        compose.waitUntil(10_000) { compose.onAllNodes(isOn() and hasAnyAncestor(hasTestTag(SettingsTags.CONFIRM_STOP))).fetchSemanticsNodes().isNotEmpty() }
+        // The earlier build's own values were read from the same file. On is also what the switch shows before the
+        // file is read, so it is the Live notifications switch going off that says the read has landed.
+        compose.waitUntil(10_000) { compose.onAllNodes(isToggleable() and isOff() and hasAnyAncestor(hasText("Live notifications"))).fetchSemanticsNodes().isNotEmpty() }
         confirmStopSwitch().assertIsOn()
-        // The earlier build's own values were read from the same file.
-        compose.onNode(isToggleable() and hasAnyAncestor(hasText("Live notifications"))).assertIsOff()
 
         compose.onNodeWithTag(SettingsTags.CONFIRM_STOP).performScrollTo().performClick()
         compose.waitUntil(10_000) { compose.onAllNodes(isOff() and hasAnyAncestor(hasTestTag(SettingsTags.CONFIRM_STOP))).fetchSemanticsNodes().isNotEmpty() }

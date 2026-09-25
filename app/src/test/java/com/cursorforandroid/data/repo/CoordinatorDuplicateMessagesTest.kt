@@ -98,6 +98,8 @@ class CoordinatorDuplicateMessagesTest {
     private lateinit var traces: TraceCache
     private val agentId = SevenRunCoordinator.AGENT_ID
     private lateinit var runs: List<SevenRunCoordinator.Run>
+    /** The running run's calls as [seed] put them on its stream, each by the status its last event gave it. */
+    private var liveCalls: Map<String, String> = emptyMap()
 
     @Before
     fun setUp() {
@@ -196,6 +198,7 @@ class CoordinatorDuplicateMessagesTest {
             val events = if (run.durationMs == null) run.events.take(liveEvents) else run.events
             events.forEach { streamer.emit(run.id, it) }
         }
+        liveCalls = newest.events.take(liveEvents).filterIsInstance<RunStreamEvent.ToolCall>().associate { it.call.callId to it.call.status }
     }
 
     private fun present(state: ConversationState): List<TranscriptRow> =
@@ -250,8 +253,12 @@ class CoordinatorDuplicateMessagesTest {
             val load = conversations.loadDiagnostics(agentId)!!
             load.source != "record" || load.runs.filter { line -> SevenRunCoordinator.SILENT_RUNS.any { line.idTail.endsWith(it) } }.let { it.size == 3 && it.all { line -> line.trace == "shown" } }
         }
-        // The running run's stream is being followed: its calls are on screen.
-        awaitUntil { conversations.state(agentId).value.items.filterIsInstance<ActivityGroup>().flatMap { it.calls }.any { it.callId.startsWith("turn-6:") } }
+        // The running run's stream is being followed: every call it has sent so far is on screen as its last event left it.
+        // The stream's events land one publication at a time, so its first call on screen is not the rest of them.
+        awaitUntil {
+            val onScreen = conversations.state(agentId).value.items.filterIsInstance<ActivityGroup>().flatMap { it.calls }.associate { it.callId to it.status }
+            liveCalls.all { (id, status) -> onScreen[id] == status }
+        }
     }
 
     /**
