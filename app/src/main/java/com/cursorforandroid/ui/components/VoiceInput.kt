@@ -481,6 +481,9 @@ internal fun glyphSwap(): ContentTransform = ContentTransform(
 /** The composer buttons' motion: fast enough not to hold anyone up, slow enough to follow. */
 internal const val MicMotionMillis = 200
 
+/** The footer making room for the mic, or closing up after it: a longer travel than a glyph swap, so a longer tween. */
+internal const val MicSlideMillis = 250
+
 private val MicPressRadius = 16.dp
 
 /**

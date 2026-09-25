@@ -500,7 +500,7 @@ fun ComposerBox(
             val dictating = voice != null && micTap != null && voice.state != VoiceState.Idle
             // The bare mic slides in and out beside the main button rather than popping: its slot widens from nothing
             // while the chip's end padding and the spacer before it give their room up at the same pace.
-            val micShown by animateFloatAsState(if (micBeside) 1f else 0f, tween(MicMotionMillis, easing = FastOutSlowInEasing), label = "micShown")
+            val micShown by animateFloatAsState(if (micBeside) 1f else 0f, tween(MicSlideMillis, easing = FastOutSlowInEasing), label = "micShown")
             val chipEnd = lerp(FooterSpacing.ChipEndPadding, FooterSpacing.ChipEndBesideMic, micShown)
             val gapTarget = when {
                 micBeside && dictating -> FooterSpacing.CancelToMic
@@ -509,7 +509,7 @@ fun ComposerBox(
                 dictating -> CursorDimens.roundButtonGap
                 else -> FooterSpacing.ChipToMain
             }
-            val gap by animateDpAsState(gapTarget, tween(MicMotionMillis, easing = FastOutSlowInEasing), label = "footerGap")
+            val gap by animateDpAsState(gapTarget, tween(MicSlideMillis, easing = FastOutSlowInEasing), label = "footerGap")
             AnimatedContent(
                 targetState = dictating,
                 transitionSpec = { fadeIn(tween(MicMotionMillis, easing = FastOutSlowInEasing)) togetherWith fadeOut(tween(MicMotionMillis * 2 / 3)) using SizeTransform(clip = false) },
