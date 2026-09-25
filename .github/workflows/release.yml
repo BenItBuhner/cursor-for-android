@@ -359,9 +359,9 @@ jobs:
               echo "| Signing | **Debug key** - release signing secrets were not configured for this build; it will not install over a release-signed build. |"
             fi
             if [[ "$CRASH_REPORTS" == "true" ]]; then
-              echo "| Crash reports | Opt-in, off by default (Settings > Privacy). Anonymous; R8 mapping id \`${MAPPING_UUID}\`. |"
+              echo "| Remote crash reporting | Opt-in, off by default (Settings > Privacy). Anonymous; R8 mapping id \`${MAPPING_UUID}\`. Crash reports are also kept on the device (Settings > Debug). |"
             else
-              echo "| Crash reports | None - this build was made without a project to report to. |"
+              echo "| Remote crash reporting | Off - this build has no project to report to. Crash reports stay on the device; share them from Settings > Debug (long-press the version row). |"
             fi
             if [[ "$CI_PROOF" == "none" ]]; then
               echo "| CI | lint and the unit tests ran in this release run |"
