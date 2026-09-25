@@ -1,11 +1,13 @@
 package com.cursorforandroid.ui.components
 
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBars
@@ -14,11 +16,13 @@ import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.invisibleToUser
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -69,8 +73,10 @@ fun CursorHeader(
 }
 
 /**
- * A chat's header: its controls and nothing else, the buttons laid out as [CursorHeader] lays them. The chat's name
- * is the row's accessibility label ([label]) and, with its repository and branch, the panel's header.
+ * A chat's header: its controls, the buttons laid out as [CursorHeader] lays them, and the chat's [title] on one line
+ * right after the [leading] ones — after [titleIcon] when there is one — ellipsized short of the [trailing] ones. No
+ * repository or branch line: those are the panel's header. The chat's name is also the row's accessibility label
+ * ([label]), so the drawn title is not read a second time.
  *
  * The row is [CursorDimens.chatHeaderHeight] whatever the font: the buttons stand 8dp under the status bar, so a 48dp
  * target centred on each starts at the bar's edge, and the row ends at their bottom edge. The targets reach the
@@ -80,13 +86,16 @@ fun CursorHeader(
  * The row paints nothing: the band it takes, with the transcript's fade beneath it, is what reads as the header. With
  * a [clearance], each end's controls are measured against the transcript's column, and where both ends stand clear
  * of it the row gives its band back: it still draws the buttons in the same place, over the transcript, and takes
- * only the status bar's height from what follows (see [HeaderClearance]).
+ * only the status bar's height from what follows (see [HeaderClearance]). The title is measured with the start's
+ * controls, so a title reaching the column keeps the band.
  */
 @Composable
 fun ChatHeader(
     label: String,
     modifier: Modifier = Modifier,
     clearance: HeaderClearance? = null,
+    title: String? = null,
+    titleIcon: (@Composable () -> Unit)? = null,
     leading: (@Composable RowScope.() -> Unit)? = null,
     trailing: (@Composable RowScope.() -> Unit)? = null,
 ) {
@@ -105,10 +114,43 @@ fun ChatHeader(
                 heading()
             }
             .testTag("chat-header"),
+        horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.Bottom,
     ) {
-        Row(clearance?.controls(HeaderClearance.Side.Start, reach) ?: Modifier, verticalAlignment = Alignment.Bottom) { leading?.invoke(this) }
-        Spacer(Modifier.weight(1f))
+        // Weighted so the end's controls are measured first and the title gets what they leave; not filled, so the
+        // start's span is only as wide as what it draws.
+        Row(Modifier.weight(1f, fill = false).then(clearance?.controls(HeaderClearance.Side.Start, reach) ?: Modifier), verticalAlignment = Alignment.Bottom) {
+            leading?.invoke(this)
+            if (title != null) ChatHeaderTitle(title, titleIcon, Modifier.weight(1f, fill = false))
+        }
         Row(clearance?.controls(HeaderClearance.Side.End, reach) ?: Modifier, verticalAlignment = Alignment.Bottom) { trailing?.invoke(this) }
+    }
+}
+
+/**
+ * The chat's name in its header, on the buttons' line: as tall as an [CursorDimens.iconButton] and centred on it, in
+ * the pane title's type, shrunk only where the font scale would make its line taller than the button so the row
+ * never grows. It stands 12dp short of whatever follows it.
+ */
+@OptIn(ExperimentalComposeUiApi::class)
+@Composable
+private fun ChatHeaderTitle(title: String, icon: (@Composable () -> Unit)?, modifier: Modifier = Modifier) {
+    val colors = CursorTheme.colors
+    val base = CursorTheme.typography.title
+    val line = with(LocalDensity.current) { base.lineHeight.toDp() }
+    val style = if (line <= CursorDimens.iconButton) base else (CursorDimens.iconButton / line).let { k -> base.copy(fontSize = base.fontSize * k, lineHeight = base.lineHeight * k) }
+    Row(
+        modifier
+            .testTag("chat-header-title")
+            .semantics { invisibleToUser() }
+            .height(CursorDimens.iconButton)
+            .padding(start = 4.dp, end = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        if (icon != null) {
+            icon()
+            Spacer(Modifier.width(6.dp))
+        }
+        Text(title, style = style, color = colors.textPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis, softWrap = false)
     }
 }

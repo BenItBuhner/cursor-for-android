@@ -222,14 +222,26 @@ class ChatHeaderClearanceTest {
 
     @Test
     fun `beside wide margins the transcript reads from the status bar's edge, the controls where they were and taking their taps`() {
-        open(REVENUE_ID)
+        open(REVENUE_ID, sidebar = true)
         assertBandReleased()
-        val controls = listOf("Back", "Open pull request", "Open panel", "More")
+        val controls = listOf("Open sidebar", "Open pull request", "Open panel", "More")
         assertHeaderInPlace(controls)
         assertClearOfColumn(controls)
 
-        compose.onNodeWithContentDescription("Back").performClick()
-        assertThat(backs).isEqualTo(1)
+        compose.onNodeWithContentDescription("Open sidebar").performClick()
+        assertThat(sidebarOpens).isEqualTo(1)
+    }
+
+    /** The name beside back is measured with the start's controls: where it reaches the column the band stays, where it fits the margin it goes. */
+    @Test
+    fun `a name beside back that reaches the column keeps the band, one that fits the margin lets it go`() {
+        open(REVENUE_ID)
+        val title = compose.onNode(hasAnyAncestor(hasTestTag("chat-header")) and hasTestTag("chat-header-title")).getUnclippedBoundsInRoot()
+        assertThat(title.right.value).isGreaterThan(columnIn(pane.width.value).start)
+        assertBandKept()
+        assertEases(framesOfResize(DpSize(1280.dp, 800.dp)), from = BAND_BOTTOM, to = STATUS_BAR)
+        val wide = compose.onNode(hasAnyAncestor(hasTestTag("chat-header")) and hasTestTag("chat-header-title")).getUnclippedBoundsInRoot()
+        assertThat(wide.right.value).isLessThan(columnIn(pane.width.value).start)
     }
 
     @Test
@@ -269,14 +281,14 @@ class ChatHeaderClearanceTest {
     @Test
     fun `the band follows the pane as it widens and narrows, easing between the two`() {
         pane = DpSize(700.dp, 800.dp)
-        open(REVENUE_ID)
+        open(REVENUE_ID, sidebar = true)
         assertBandKept()
 
         assertEases(framesOfResize(TABLET_PANE), from = BAND_BOTTOM, to = STATUS_BAR)
-        assertHeaderInPlace(listOf("Back", "Open pull request", "Open panel", "More"))
+        assertHeaderInPlace(listOf("Open sidebar", "Open pull request", "Open panel", "More"))
 
         assertEases(framesOfResize(DpSize(700.dp, 800.dp)), from = STATUS_BAR, to = BAND_BOTTOM)
-        assertHeaderInPlace(listOf("Back", "Open pull request", "Open panel", "More"))
+        assertHeaderInPlace(listOf("Open sidebar", "Open pull request", "Open panel", "More"))
     }
 
     @Test
@@ -291,7 +303,7 @@ class ChatHeaderClearanceTest {
 
     @Test
     fun `the panel opening over the chat leaves the band as it was`() {
-        open(REVENUE_ID)
+        open(REVENUE_ID, sidebar = true)
         assertBandReleased()
         compose.onNodeWithContentDescription("Open panel").performClick()
         compose.waitUntil(10_000) { compose.onAllNodes(hasTestTag("conversation-panel")).fetchSemanticsNodes().isNotEmpty() }
@@ -318,9 +330,9 @@ class ChatHeaderClearanceTest {
     @Test
     @Config(fontScale = 2f)
     fun `at the largest font the tablet's answer is still the one measured`() {
-        open(REVENUE_ID)
+        open(REVENUE_ID, sidebar = true)
         assertBandReleased()
-        assertClearOfColumn(listOf("Back", "Open pull request", "Open panel", "More"))
+        assertClearOfColumn(listOf("Open sidebar", "Open pull request", "Open panel", "More"))
     }
 
     @Test
