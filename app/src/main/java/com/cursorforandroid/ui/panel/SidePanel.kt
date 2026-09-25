@@ -197,7 +197,7 @@ fun SidePanelHost(
                 .then(if (beside) Modifier.besidePanel(state, widthPx, WindowInsets.safeDrawing.only(WindowInsetsSides.End)) else Modifier)
                 .coveredFocus(covered)
                 .nestedScroll(opening)
-                .openDrag(state, scope, edges, enabled = swipes && !state.isOpen, rtl = rtl, flingThreshold = flingThreshold),
+                .openDrag(state, scope, edges, enabled = gesturesEnabled && (beside || !state.isOpen), moves = !beside, rtl = rtl, flingThreshold = flingThreshold),
         ) { content() }
 
         PredictiveBackHandler(enabled = state.isOpen && !beside) { events ->
@@ -560,16 +560,21 @@ private val SidePanelValue.fraction: Float get() = if (this == SidePanelValue.Op
  * read as none at all, leaving it to settle back shut from where the lump of travel put it. A drag taken away before
  * the finger lifts — cancelled, as the system cancels the pointers of a gesture it has taken for itself — has no
  * fling: the sheet settles by where it is, as `draggable` settles a cancelled drag.
+ *
+ * Beside a pinned panel, which doesn't swipe, the same drag is taken just the same and [moves] nothing, open or shut:
+ * left to the chat, the message under the finger would read it as a hold once it outlasts the long-press timeout, and
+ * put its menu up where the finger lifts.
  */
 private fun Modifier.openDrag(
     state: SidePanelState,
     scope: CoroutineScope,
     edges: BackGestureEdges,
     enabled: Boolean,
+    moves: Boolean,
     rtl: Boolean,
     flingThreshold: Float,
 ): Modifier =
-    if (!enabled) this else pointerInput(state, edges, rtl, flingThreshold) {
+    if (!enabled) this else pointerInput(state, edges, moves, rtl, flingThreshold) {
         val tracker = VelocityTracker()
         // Toward the start edge opens: the sheet's travel is the finger's, sign-flipped in LTR.
         val sign = if (rtl) 1f else -1f
@@ -587,9 +592,14 @@ private fun Modifier.openDrag(
                 travel += change.positionChange().x
                 if (abs(travel) < slop) continue
                 val held = change.uptimeMillis - down.uptimeMillis >= viewConfiguration.longPressTimeoutMillis
-                if (sign * travel <= 0f || held || state.isAnimating || state.fraction > 0f) return@awaitEachGesture
+                if (sign * travel <= 0f || held) return@awaitEachGesture
+                if (moves && (state.isAnimating || state.fraction > 0f)) return@awaitEachGesture
                 change.consume()
                 start = change
+            }
+            if (!moves) {
+                horizontalDrag(start.id) { it.consume() }
+                return@awaitEachGesture
             }
             // Raw deltas rather than a held drag: the gesture scope cannot suspend on the state's mutex, and a sheet at
             // rest closed has nothing animating to contend with.
