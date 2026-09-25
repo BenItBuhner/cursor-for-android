@@ -86,6 +86,9 @@ import com.cursorforandroid.ui.components.CursorMenu
 import com.cursorforandroid.ui.components.CursorMenuItem
 import com.cursorforandroid.ui.components.HairlineDivider
 import com.cursorforandroid.ui.components.LocalMarkdownMedia
+import com.cursorforandroid.ui.components.LocalSendMotion
+import com.cursorforandroid.ui.components.SendTargetPart
+import com.cursorforandroid.ui.components.sendTarget
 import com.cursorforandroid.ui.components.MarkdownText
 import com.cursorforandroid.ui.components.ProgressRing
 import com.cursorforandroid.ui.components.ShimmerText
@@ -128,18 +131,28 @@ private fun HumanMessage(item: UserMessage, modifier: Modifier) {
     // A prompt the server has not acknowledged yet is drawn faded — through its colours, the way the rest of the app
     // fades things — and comes up to full strength once its run is filed.
     val alpha by animateFloatAsState(if (item.isPending) PendingMessageAlpha else 1f, tween(240), label = "pending")
+    val sendMotion = LocalSendMotion.current
+    val restingFade = if (item.isPending) PendingMessageAlpha else 1f
     Box(modifier.fillMaxWidth().padding(start = 32.dp), contentAlignment = Alignment.CenterEnd) {
         MessageActions(
             text = item.text,
             enabled = hasText,
-            modifier = Modifier.widthIn(min = 150.dp, max = 640.dp).cursorSurface(colors.fillFaint.faded(alpha), colors.stroke.faded(alpha), CursorTheme.shapes.xl),
+            modifier = Modifier.widthIn(min = 150.dp, max = 640.dp)
+                .sendTarget(sendMotion, item.id, item.text, SendTargetPart.Surface, restingFade)
+                .cursorSurface(colors.fillFaint.faded(alpha), colors.stroke.faded(alpha), CursorTheme.shapes.xl),
         ) {
             Column(Modifier.padding(horizontal = 10.dp, vertical = 8.dp)) {
                 if (item.attachments.isNotEmpty()) {
                     MessageAttachments(item.attachments, Modifier.padding(bottom = if (hasText) 8.dp else 0.dp), alpha = alpha)
                 }
                 if (hasText || item.attachments.isEmpty()) {
-                    MarkdownText(item.text, style = CursorTheme.typography.message, color = colors.textPrimary.faded(alpha), commandColor = commandTint.faded(alpha))
+                    MarkdownText(
+                        item.text,
+                        modifier = Modifier.sendTarget(sendMotion, item.id, item.text, SendTargetPart.Text, restingFade),
+                        style = CursorTheme.typography.message,
+                        color = colors.textPrimary.faded(alpha),
+                        commandColor = commandTint.faded(alpha),
+                    )
                 }
                 // Sent from here and not yet filed: where the send stands, on the bubble — never back in the composer.
                 val controls = LocalTranscriptControls.current
