@@ -33,6 +33,22 @@ data class AppVersion(
 
     val versionCode: Int get() = major * 1_000_000 + minor * 10_000 + patch * 100 + stage(preRelease)
 
+    /**
+     * What a checkout past this release (the highest tag) builds, as `versionFromGit` in `app/build.gradle.kts` names
+     * it before CI's stamp replaces the `-dev`: the next PATCH, rolling over to the next MINOR (then MAJOR) where
+     * PATCH (then MINOR) would reach 100, which [versionCode] has no room for — `0.3.49-dev` after `0.3.48`,
+     * `0.4.0-dev` after `0.3.99`. A pre-release's final build is still to come, so it leads up to its own version.
+     */
+    fun nextDevVersion(): AppVersion {
+        val next = when {
+            isPreRelease -> AppVersion(major, minor, patch)
+            patch + 1 < 100 -> AppVersion(major, minor, patch + 1)
+            minor + 1 < 100 -> AppVersion(major, minor + 1, 0)
+            else -> AppVersion(major + 1, 0, 0)
+        }
+        return next.copy(preRelease = "dev")
+    }
+
     override fun compareTo(other: AppVersion): Int = versionCode.compareTo(other.versionCode)
 
     /** The version without the tag's `v`, e.g. `0.2.0-rc.1+gabc1234`. */

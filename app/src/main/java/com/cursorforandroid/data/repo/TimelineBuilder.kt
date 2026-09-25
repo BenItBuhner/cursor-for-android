@@ -234,7 +234,7 @@ object TimelineBuilder {
      */
     class LiveRun(
         private val runId: String,
-        private val timed: Boolean = true,
+        val timed: Boolean = true,
         /** When the run started, for the footer of a run the stream saw finish without reporting a duration. */
         private val startedAtMillis: Long? = null,
         /** Where the bytes of an image the agent generates are kept; without one only a small image is kept, inline. */
@@ -312,7 +312,7 @@ object TimelineBuilder {
                 is RunStreamEvent.Interaction -> applyInteraction(event.update)
                 is RunStreamEvent.Result -> finish(event)
                 is RunStreamEvent.Error -> if (!event.isExpired) streamError = event
-                RunStreamEvent.Heartbeat, RunStreamEvent.Done -> Unit
+                RunStreamEvent.Heartbeat, RunStreamEvent.Done, is RunStreamEvent.Position -> Unit
             }
         }
 

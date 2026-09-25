@@ -42,6 +42,7 @@ object DeferredStartup {
             LiveNotificationCoordinator.bind(activity, graph)
             UpdateCoordinator.bind(activity, graph)
             CatalogFreshness.bind(activity, graph)
+            LiveSyncBinding.bind(graph)
             // The widget picker's live preview is composed here, once the screen is up; the widgets themselves are
             // followed from the application (see CursorApp), whichever way the process was started.
             WidgetSync.publishPreviews(activity)
