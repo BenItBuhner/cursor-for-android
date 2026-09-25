@@ -17,6 +17,7 @@ import androidx.compose.ui.test.hasScrollToNodeAction
 import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.isSelected
 import androidx.compose.ui.test.junit4.StateRestorationTester
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onFirst
@@ -56,8 +57,9 @@ import org.robolectric.annotation.GraphicsMode
 
 /**
  * Back follows where the reader came from, through the shell on a phone and driven through the demo: a chat opened
- * from another chat — a worker's row in a coordinator's transcript, a side chat in its panel — goes back to that chat
- * as it was left (scroll, draft, open panel), with the predictive gesture previewing it; Settings and What's new,
+ * from another chat — a worker's row in a coordinator's transcript, a side chat opened from its tab in the panel —
+ * goes back to that chat as it was left (scroll, draft, open panel and its tab), with the predictive gesture
+ * previewing it, and back inside the panel walks its tabs before it shuts it; Settings and What's new,
  * reached from a chat, go back to it; a chat picked from the sidebar or handed in from outside (a notification, a
  * widget, a shortcut) sits on the New Chat pane, so back from it is the pane and back from the pane leaves the app;
  * and the trail survives the activity's state being saved and restored.
@@ -115,6 +117,12 @@ class BackNavigationFlowTest {
     private fun onScreen(text: String) = compose.onAllNodes(hasText(text, substring = true)).fetchSemanticsNodes().isNotEmpty()
 
     private fun shown(tag: String) = compose.onAllNodes(hasTestTag(tag)).fetchSemanticsNodes().isNotEmpty()
+
+    /** Whether the panel's strip is on the tab tagged [tag]. */
+    private fun selected(tag: String) = compose.onAllNodes(hasTestTag(tag) and isSelected()).fetchSemanticsNodes().isNotEmpty()
+
+    /** Whether the panel shows the chat named [name] as a tab of its own. */
+    private fun agentTabShown(name: String) = compose.onAllNodes(hasTestTag("agent-tab-title") and hasText(name)).fetchSemanticsNodes().isNotEmpty()
 
     /** Whether the chat named [name] is composed: its header's accessibility label, the header holding no title of its own. */
     private fun chatShown(name: String) = compose.onAllNodes(hasTestTag("chat-header") and hasContentDescription(name)).fetchSemanticsNodes().isNotEmpty()
@@ -240,22 +248,36 @@ class BackNavigationFlowTest {
     }
 
     @Test
-    fun `a side chat opened from the panel goes back to the coordinator with its panel open, which back closes first`() {
+    fun `a side chat opened from the panel is a tab of it, and opened as the chat goes back to the coordinator with the panel on that tab`() {
         launch()
         openCoordinator()
         compose.onNodeWithContentDescription("Open panel").performClick()
-        compose.waitUntil(20_000) { shown("section-SideChats") || shown("section-Project") }
+        // The coordinator's panel opens on its Project tab; the side chats are among the chat's own sections, under Details.
+        compose.waitUntil(20_000) { selected("panel-tab-project") }
+        compose.onNodeWithTag("panel-tab-details").performClick()
+        compose.waitUntil(20_000) { shown("panel-sections") }
         compose.onNodeWithTag("panel-sections").performScrollToNode(hasTestTag("section-SideChats"))
         if (!shown("side-chat")) compose.onNodeWithTag("section-SideChats").performClick()
         compose.waitUntil(20_000) { compose.onAllNodes(hasTestTag("side-chat") and hasText(SIDE_CHAT, substring = true)).fetchSemanticsNodes().isNotEmpty() }
         compose.onNodeWithTag("panel-sections").performScrollToNode(hasTestTag("side-chat"))
         compose.onNode(hasTestTag("side-chat") and hasText(SIDE_CHAT, substring = true)).performClick()
+        // A tab of the panel, beside the coordinator's own: the coordinator is still the chat.
+        compose.waitUntil(20_000) { agentTabShown(SIDE_CHAT) }
+        assertThat(chatShown(COORDINATOR)).isTrue()
+        assertThat(chatShown(SIDE_CHAT)).isFalse()
+
+        // Opened from its tab as the chat, it goes back to the coordinator as it was left: the panel open, on its tab.
+        compose.onNodeWithTag("agent-tab-open").performClick()
         waitForOnly(SIDE_CHAT, COORDINATOR)
         assertThat(shown("conversation-panel")).isFalse()
-
         back()
         waitForOnly(COORDINATOR, SIDE_CHAT)
+        compose.waitUntil(20_000) { agentTabShown(SIDE_CHAT) }
+        // Back walks the panel's tabs the way they were opened, Details then the Project, and from there shuts it.
+        back()
         compose.waitUntil(20_000) { shown("side-chats-section") }
+        back()
+        compose.waitUntil(20_000) { selected("panel-tab-project") }
         back()
         compose.waitUntil(20_000) { !shown("conversation-panel") }
         assertThat(chatShown(COORDINATOR)).isTrue()

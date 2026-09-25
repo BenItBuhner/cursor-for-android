@@ -75,8 +75,6 @@ import java.io.File
  */
 @Composable
 internal fun FileViewerScreen(view: FileView, onBack: () -> Unit, onOpenUrl: (String) -> Unit, modifier: Modifier = Modifier, onRetry: ((wake: Boolean) -> Unit)? = null, onAskToCopy: ((path: String) -> Unit)? = null) {
-    val colors = CursorTheme.colors
-    val type = CursorTheme.typography
     Column(modifier.fillMaxSize().testTag("file-viewer")) {
         // The pane header every screen wears, so the file's name sits under the status bar wherever the viewer is
         // composed: here inside the panel, whose root has consumed that inset already, and the header adds nothing.
@@ -91,47 +89,55 @@ internal fun FileViewerScreen(view: FileView, onBack: () -> Unit, onOpenUrl: (St
             },
         )
         HairlineDivider()
-        when (view) {
-            is FileView.Loading -> Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                SpinnerRing(size = 13.dp)
-                Spacer(Modifier.width(9.dp))
-                Text("Loading…", style = type.base, color = colors.textQuaternary)
-            }
-            is FileView.Failed -> LoadNoticeCard(
-                title = view.title,
-                detail = listOfNotNull(view.message, view.asked?.let { "Asked: $it" }).joinToString("\n"),
-                tone = if (view.wakeable) NoticeTone.Warning else NoticeTone.Error,
-                docked = false,
-                titleTag = "file-viewer-failed-title",
-                modifier = Modifier.padding(12.dp).testTag("file-viewer-failed"),
-            ) {
-                if (onRetry != null && view.wakeable) NoticeAction("Wake the machine", { onRetry(true) }, Modifier.testTag("file-viewer-wake"))
-                if (onRetry != null && view.retryable) NoticeAction("Retry", { onRetry(false) }, Modifier.testTag("file-viewer-retry"))
-                view.copyablePath?.let { path -> if (onAskToCopy != null) NoticeAction("Ask the agent to copy it into the workspace", { onAskToCopy(path) }, Modifier.testTag("file-viewer-ask-copy")) }
-            }
-            is FileView.Transcript -> TextFile(view.content.content, view.content.truncated)
-            is FileView.Changes -> FadingLazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                items(view.change.diffs) { diff -> DiffBlock(diff, showHeader = false) }
-            }
-            is FileView.Repository -> RepoFileBody(view.file, view.file.downloadUrl, onOpenUrl)
-            is FileView.Workspace -> RepoFileBody(view.file, null, onOpenUrl)
-            is FileView.BranchDiff -> {
-                val file = view.file
-                val patch = file.patch
-                when {
-                    patch != null -> FadingLazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(12.dp)) {
-                        item { DiffBlock(ToolPayload.FileDiff(file.path, patch, file.additions, file.deletions), showHeader = false) }
-                    }
-                    file.modifiedContent != null -> TextFile(file.modifiedContent, truncated = false)
-                    file.originalContent != null -> TextFile(file.originalContent, truncated = false)
-                    else -> StateRow(CursorIcons.File, "Nothing to show", "${file.status.label}; the account sent no hunks for this file.")
+        FileViewerBody(view, onOpenUrl, onRetry, onAskToCopy)
+    }
+}
+
+/** The file itself under [FileViewerScreen]'s header, or the reason it could not be shown; a panel's file tab draws it under its own. */
+@Composable
+internal fun FileViewerBody(view: FileView, onOpenUrl: (String) -> Unit, onRetry: ((wake: Boolean) -> Unit)? = null, onAskToCopy: ((path: String) -> Unit)? = null) {
+    val colors = CursorTheme.colors
+    val type = CursorTheme.typography
+    when (view) {
+        is FileView.Loading -> Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+            SpinnerRing(size = 13.dp)
+            Spacer(Modifier.width(9.dp))
+            Text("Loading…", style = type.base, color = colors.textQuaternary)
+        }
+        is FileView.Failed -> LoadNoticeCard(
+            title = view.title,
+            detail = listOfNotNull(view.message, view.asked?.let { "Asked: $it" }).joinToString("\n"),
+            tone = if (view.wakeable) NoticeTone.Warning else NoticeTone.Error,
+            docked = false,
+            titleTag = "file-viewer-failed-title",
+            modifier = Modifier.padding(12.dp).testTag("file-viewer-failed"),
+        ) {
+            if (onRetry != null && view.wakeable) NoticeAction("Wake the machine", { onRetry(true) }, Modifier.testTag("file-viewer-wake"))
+            if (onRetry != null && view.retryable) NoticeAction("Retry", { onRetry(false) }, Modifier.testTag("file-viewer-retry"))
+            view.copyablePath?.let { path -> if (onAskToCopy != null) NoticeAction("Ask the agent to copy it into the workspace", { onAskToCopy(path) }, Modifier.testTag("file-viewer-ask-copy")) }
+        }
+        is FileView.Transcript -> TextFile(view.content.content, view.content.truncated)
+        is FileView.Changes -> FadingLazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            items(view.change.diffs) { diff -> DiffBlock(diff, showHeader = false) }
+        }
+        is FileView.Repository -> RepoFileBody(view.file, view.file.downloadUrl, onOpenUrl)
+        is FileView.Workspace -> RepoFileBody(view.file, null, onOpenUrl)
+        is FileView.BranchDiff -> {
+            val file = view.file
+            val patch = file.patch
+            when {
+                patch != null -> FadingLazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(12.dp)) {
+                    item { DiffBlock(ToolPayload.FileDiff(file.path, patch, file.additions, file.deletions), showHeader = false) }
                 }
+                file.modifiedContent != null -> TextFile(file.modifiedContent, truncated = false)
+                file.originalContent != null -> TextFile(file.originalContent, truncated = false)
+                else -> StateRow(CursorIcons.File, "Nothing to show", "${file.status.label}; the account sent no hunks for this file.")
             }
         }
     }
 }
 
-private fun subtitleOf(view: FileView): String = when (view) {
+internal fun subtitleOf(view: FileView): String = when (view) {
     is FileView.Loading -> view.path
     is FileView.Failed -> view.path
     is FileView.Transcript -> listOfNotNull(

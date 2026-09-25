@@ -45,8 +45,8 @@ import org.robolectric.annotation.Config
  * ways the app composes it: as the sheet its host slides in over the chat, on a phone and on a wide window, and as a
  * column beside the chat inside a shell that has consumed the status bar already, the shape the pane takes.
  *
- * What is held: the header's top edge (the title row with the close button, or the file viewer's row with its back
- * button) is never above the status bar's bottom edge, the sections never run under the navigation bar, the host's
+ * What is held: the header's top edge (the tab strip, with the close button, over every tab) is never above the
+ * status bar's bottom edge, the sections never run under the navigation bar, the host's
  * surface still runs edge to edge behind both, and where the shell has consumed the status bar first the header sits
  * exactly one bar down, not two.
  */
@@ -113,7 +113,7 @@ class PanelInsetsTest {
 
     private fun bounds(tag: String): Rect = compose.onNodeWithTag(tag).fetchSemanticsNode().boundsInRoot
 
-    private fun header(): Rect = compose.onAllNodes(hasTestTag("cursor-header")).onFirst().fetchSemanticsNode().boundsInRoot
+    private fun header(): Rect = compose.onAllNodes(hasTestTag("panel-tabs")).onFirst().fetchSemanticsNode().boundsInRoot
 
     private fun rootBottom(): Float = compose.onRoot().fetchSemanticsNode().boundsInRoot.bottom
 
@@ -152,12 +152,12 @@ class PanelInsetsTest {
     }
 
     @Test
-    fun `sheet showing a file - the viewer's header sits under the status bar too`() {
+    fun `sheet showing a file tab - the strip sits under the status bar and the file above the navigation bar`() {
         val file = RepoFile("app/src/main/java/com/cursorforandroid/ui/settings/ThemeToggle.kt", "fun ThemeToggle() = Unit\n".toByteArray(), 25L, sha = "abc", downloadUrl = "https://raw.githubusercontent.com/x")
-        val state = PanelFixtures.loaded().let { it.copy(browser = it.browser.copy(file = FileView.Repository(file))) }
+        val state = PanelFixtures.withFile(PanelFixtures.loaded(), FileView.Repository(file))
         compose.setContent { Sheet(state) }
         dispatchInsets()
-        assertThat(compose.onNodeWithContentDescription("Back to the panel").fetchSemanticsNode().boundsInRoot.top).isAtLeast(statusBarPx.toFloat())
+        assertThat(bounds("panel-back").top).isAtLeast(statusBarPx.toFloat())
         assertThat(header().top).isWithin(0.5f).of(statusBarPx.toFloat())
         assertThat(bounds("text-file").bottom).isWithin(0.5f).of(rootBottom() - navigationBarPx)
     }
