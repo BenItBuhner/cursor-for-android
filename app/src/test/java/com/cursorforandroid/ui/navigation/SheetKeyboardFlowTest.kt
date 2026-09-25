@@ -44,9 +44,9 @@ import org.robolectric.annotation.Config
  * The sheets and the keyboard in the running shell, on the demo: opening the phone's sidebar drawer or a chat's side
  * panel by its button lets the composer go and puts the keyboard away with its draft kept, and the sidebar's search
  * takes the keyboard as usual once the drawer is in. On a wide window the rail comes back beside the chat rather than
- * over it, so a composer holding the keyboard keeps both; the side panel still covers the chat there, and takes them.
- * Shutting the drawer, or collapsing the rail, takes the keyboard from the sidebar's search, while a composer beside
- * the collapsing rail keeps it. The swipes themselves, and the ones that must leave the keyboard be, are
+ * over it, and the side panel is pinned beside the chat as well, so a composer holding the keyboard keeps both through
+ * either. Shutting the drawer, or collapsing the rail, takes the keyboard from the sidebar's search, while a composer
+ * beside the collapsing rail keeps it. The swipes themselves, and the ones that must leave the keyboard be, are
  * [com.cursorforandroid.ui.panel.SheetKeyboardTest]'s.
  */
 @RunWith(AndroidJUnit4::class)
@@ -144,7 +144,7 @@ class SheetKeyboardFlowTest {
 
     @Test
     @Config(qualifiers = "w1024dp-h768dp-night-mdpi")
-    fun `on a wide window the rail comes back beside the chat and leaves the keyboard be, and the panel over it takes it`() {
+    fun `on a wide window the rail and the panel both come back beside the chat and leave the keyboard be`() {
         compose.runOnIdle { wide = true }
         openChat(IDLE_CHAT)
         compose.onNodeWithContentDescription("Toggle sidebar").performClick()
@@ -159,8 +159,12 @@ class SheetKeyboardFlowTest {
         assertThat(fieldText(written)).isEqualTo(Draft)
 
         compose.onNodeWithContentDescription("Open panel").performClick()
-        compose.waitUntil(10_000) { described(DISMISS_PANEL) }
-        assertComposerReleased()
+        compose.waitUntil(10_000) { described(HIDE_PANEL) }
+        compose.waitForIdle()
+        assertThat(described(DISMISS_PANEL)).isFalse()
+        written.assertIsFocused()
+        assertThat(softInputVisible()).isTrue()
+        assertThat(fieldText(written)).isEqualTo(Draft)
     }
 
     private val search: SemanticsNodeInteraction get() = compose.onNode(hasSetTextAction() and hasAnyAncestor(hasTestTag("sidebar-search")))
@@ -240,6 +244,7 @@ class SheetKeyboardFlowTest {
         const val CHAT_PLACEHOLDER = "Follow up"
         const val IDLE_CHAT = "Cli exploration"
         const val DISMISS_PANEL = "Dismiss panel"
+        const val HIDE_PANEL = "Hide panel"
         const val CLOSE_DRAWER = "Close navigation menu"
         const val Draft = "Half a thought about the"
     }

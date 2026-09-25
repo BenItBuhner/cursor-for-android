@@ -4,6 +4,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.hasAnyAncestor
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createComposeRule
@@ -152,12 +153,12 @@ class VmSectionsTest {
     }
 
     @Test
-    fun `a workspace file takes the sections' place in the viewer, named as the VM's`() {
+    fun `a workspace file opens in a tab of its own, named as the VM's`() {
         val text = "plugins { id(\"com.android.application\") }\n"
-        state = state.copy(browser = state.browser.copy(file = FileView.Workspace(RepoFile("app/build.gradle.kts", text.toByteArray(), text.length.toLong()))))
+        state = PanelFixtures.withFile(state, FileView.Workspace(RepoFile("app/build.gradle.kts", text.toByteArray(), text.length.toLong())))
         show()
         compose.onNodeWithTag("file-viewer").assertIsDisplayed()
-        compose.onNodeWithText("build.gradle.kts").assertIsDisplayed()
+        compose.onNode(hasText("build.gradle.kts") and hasAnyAncestor(hasTestTag("breadcrumb"))).assertIsDisplayed()
         assertThat(shown("From the agent's workspace")).isTrue()
         assertThat(shown("com.android.application")).isTrue()
     }
@@ -197,17 +198,17 @@ class VmSectionsTest {
 
     @Test
     fun `a branch diff file opens in the viewer as a diff, as its new text, or as nothing to show`() {
-        state = state.copy(browser = state.browser.copy(file = FileView.BranchDiff(PanelFixtures.branchDiff.files[0])))
+        state = PanelFixtures.withFile(state, FileView.BranchDiff(PanelFixtures.branchDiff.files[0]))
         show()
         compose.onNodeWithTag("diff-block").assertIsDisplayed()
         assertThat(shown("The branch's diff · +5 -2")).isTrue()
 
-        state = state.copy(browser = state.browser.copy(file = FileView.BranchDiff(PanelFixtures.branchDiff.files[2])))
+        state = PanelFixtures.withFile(state, FileView.BranchDiff(PanelFixtures.branchDiff.files[2]))
         compose.waitForIdle()
         assertThat(shown("As it was on the base")).isTrue()
         assertThat(shown("// gone")).isTrue()
 
-        state = state.copy(browser = state.browser.copy(file = FileView.BranchDiff(PanelFixtures.branchDiff.files[3])))
+        state = PanelFixtures.withFile(state, FileView.BranchDiff(PanelFixtures.branchDiff.files[3]))
         compose.waitForIdle()
         assertThat(shown("Nothing to show")).isTrue()
     }
