@@ -40,6 +40,8 @@ internal fun ChatKeyboardShortcuts(agentId: String, viewModel: ConversationViewM
                 return true
             }
 
+            override val sheetOpen: Boolean get() = panelState.isOpen && !panelState.isPinned
+
             override fun catchUp() = viewModel.catchUp()
 
             override fun reloadTranscript() = viewModel.reloadTranscriptWithWord()

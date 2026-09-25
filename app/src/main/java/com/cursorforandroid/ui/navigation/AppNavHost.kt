@@ -168,8 +168,10 @@ internal fun AppShell(
     val panes = remember { ShellPanes(graph.prefs, scope, railExpanded = { !sidebarCollapsed }, chatOnTop = { stack.top.screen is Screen.Agent }) }
     // A fold, an unfold or a turn lays the whole window out again in one frame, so the rail is where the new window has
     // it in that frame, as a key leaves it: a rail still sliding once the window has changed would drag the chat and a
-    // pinned panel through widths of their own after it.
-    if (panes.configure(LocalConfiguration.current.screenWidthDp.dp)) railKeyed = panes.widths.railShown
+    // pinned panel through widths of their own after it. That includes making way for the chat's sheet, pinned open
+    // as the window widens into room for it.
+    val sheetOpen = { (stack.top.screen as? Screen.Agent)?.let { shortcuts.chats.target(it.id) }?.sheetOpen == true }
+    if (panes.configure(LocalConfiguration.current.screenWidthDp.dp, sheetOpen)) railKeyed = panes.widths.railShown
     LaunchedEffect(panes) { panes.load() }
     // Read coarse, so a drag at either edge resizes the panes without recomposing the shell.
     val railShown by remember(panes) { derivedStateOf { panes.widths.railShown } }

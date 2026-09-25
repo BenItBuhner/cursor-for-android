@@ -154,7 +154,7 @@ class FoldingPanelTest {
 
     /** A quick swipe toward the start across the chat's transcript, as a thumb opens the panel over it. */
     private fun flickOpen() {
-        compose.onNode(hasTestTag("transcript")).performTouchInput {
+        compose.onNode(hasTestTag(TRANSCRIPT)).performTouchInput {
             down(Offset(width * 0.85f, centerY))
             repeat(4) { moveBy(Offset(-25f, 0f), delayMillis = 16) }
             up()
@@ -231,6 +231,33 @@ class FoldingPanelTest {
         assertThat(HapticLog.played).containsExactly(landed, landed, landed, stop)
     }
 
+    /** The chat's column: it starts where the rail ends, at the window's edge with the rail away. */
+    private fun chatBounds(): Rect = compose.onNode(hasTestTag(TRANSCRIPT)).fetchSemanticsNode().boundsInRoot
+
+    @Test
+    @Config(qualifiers = COVER)
+    fun `a sheet open on the cover stands pinned at its width from the first frame of the unfold, the rail away and the notes where they were`() {
+        launchOnProject()
+        compose.onNodeWithContentDescription(OPEN_PANEL).performClick()
+        compose.waitUntil(10_000) { panelShown() && described(DISMISS_PANEL) }
+        waitForNotes()
+        scrollNotes(200f)
+        val scrolled = notesScrolled()
+        assertThat(scrolled).isGreaterThan(0f)
+
+        // The chat at its least beside the panel at its width leaves the rail no room: it is away as the window first
+        // stands, not beside the chat a frame and then sliding off with the panel widening after it.
+        val unfolded = {
+            assertThat(pinned()).isTrue()
+            assertThat(panelBounds().width).isWithin(0.5f).of(400f)
+            assertThat(chatBounds().left).isWithin(0.5f).of(0f)
+            assertThat(chatBounds().width).isWithin(0.5f).of(841f - 400f)
+        }
+        window(INNER) { unfolded() }
+        unfolded()
+        assertThat(notesScrolled()).isEqualTo(scrolled)
+    }
+
     private fun composerFocused() = exists(hasSetTextAction() and isFocused() and hasAnyAncestor(hasTestTag(COMPOSER)))
 
     @Test
@@ -287,6 +314,7 @@ class FoldingPanelTest {
         const val DRAFT = "Bill the upgrade from the next cycle"
         const val PANEL = "conversation-panel"
         const val PANEL_CLOSE = "panel-close"
+        const val TRANSCRIPT = "transcript"
         const val NOTES = "project-notes-tab"
         const val NOTES_BODY = "project-notes-body"
         const val OPEN_PANEL = "Open panel"

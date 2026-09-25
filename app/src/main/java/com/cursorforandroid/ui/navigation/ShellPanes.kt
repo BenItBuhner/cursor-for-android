@@ -16,6 +16,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshots.Snapshot
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.layout.layout
@@ -116,12 +117,16 @@ internal class ShellPanes(
 
     /**
      * The configuration's screen width, read in composition: a change drops the old measurement until the next. True
-     * where [width] is a change, the window folded, unfolded, turned or resized under the shell.
+     * where [width] is a change, the window folded, unfolded, turned or resized under the shell. A panel open over the
+     * chat as a sheet ([sheetOpen], read once here) as the window widens into room to pin it stays open, pinned, from
+     * this frame: the rail is laid out as the panel leaves it room, rather than standing beside the chat a frame and
+     * then sliding away with the panel widening after it.
      */
-    fun configure(width: Dp): Boolean {
+    fun configure(width: Dp, sheetOpen: () -> Boolean): Boolean {
         if (width == configured) return false
         configured = width
         measured = null
+        if (chatOnTop() && PaneWidths.pinnable(width) && Snapshot.withoutReadObservation(sheetOpen)) setOpen(true)
         return true
     }
 
