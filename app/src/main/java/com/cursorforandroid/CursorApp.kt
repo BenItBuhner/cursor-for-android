@@ -1,11 +1,15 @@
 package com.cursorforandroid
 
+import android.app.ActivityManager
 import android.app.Application
 import android.content.Context
 import androidx.work.Configuration
+import com.cursorforandroid.crash.CrashContext
+import com.cursorforandroid.crash.CrashLog
 import com.cursorforandroid.data.api.DeviceNetwork
 import com.cursorforandroid.update.UpdateJobService
 import com.cursorforandroid.widget.WidgetSync
+import java.io.File
 
 class CursorApp : Application(), Configuration.Provider {
     lateinit var graph: AppGraph
@@ -24,8 +28,20 @@ class CursorApp : Application(), Configuration.Provider {
 
     override fun onCreate() {
         super.onCreate()
+        // First, so a crash while the graph is being built is kept too; the graph's fuller account replaces the
+        // runtime-only one as soon as there is a graph to read.
+        val crashLog = CrashLog(File(filesDir, CrashLog.DIRECTORY), BuildConfig.VERSION_NAME)
+        val activityManager = getSystemService(ActivityManager::class.java)
+        crashLog.install { CrashContext.runtime(activityManager) }
         DeviceNetwork.install(this)
-        graph = AppGraph(this)
+        graph = AppGraph(this, crashLog = crashLog)
+        crashLog.install { graph.crashContext() }
+        // How the last processes ended, by Android's own record: the deaths no handler sees (the low-memory killer,
+        // an ANR, a native crash), then the card for whatever was not dismissed yet. Off the main thread: disk reads.
+        Thread({
+            crashLog.recordExitReasons(activityManager, packageName)
+            crashLog.load()
+        }, "crash-log-startup").apply { isDaemon = true }.start()
         // Placed home-screen widgets follow the list, pins, filters, theme and session for as long as this process
         // lives — whichever way it was started: the app, the live notification's service, the finish watchdog's job
         // or a widget render. One question to the launcher off the main thread; nothing more without a widget.

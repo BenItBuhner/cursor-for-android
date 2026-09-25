@@ -57,6 +57,9 @@ class LiveSync(
     /** The chats held right now, for Settings' diagnostics and the tests. */
     val heldIds: StateFlow<Set<String>> = _heldIds.asStateFlow()
     private var job: Job? = null
+    /** What sync is doing, for a crash report: not started, off, on, or in the background. */
+    @Volatile var mode: String = "not started"
+        private set
 
     /** A screen opened [agentId]: it is among the recent chats kept current after it is left. */
     fun opened(agentId: String) = synchronized(this) {
@@ -75,6 +78,7 @@ class LiveSync(
             val active = combine(enabled.distinctUntilChanged(), foreground.distinctUntilChanged()) { on, fore -> on to fore }
             combine(active, agents) { mode, list -> mode to list }.collectLatest { (mode, list) ->
                 val (on, fore) = mode
+                this@LiveSync.mode = if (!on) "off" else if (fore) "on" else "background"
                 when {
                     !on -> apply(emptyList())
                     !fore -> {

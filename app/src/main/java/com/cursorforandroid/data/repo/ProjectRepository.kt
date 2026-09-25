@@ -1,5 +1,6 @@
 package com.cursorforandroid.data.repo
 
+import com.cursorforandroid.crash.Breadcrumbs
 import com.cursorforandroid.data.api.AgentStoreApi
 import com.cursorforandroid.data.api.ConnectRpcException
 import com.cursorforandroid.data.api.ProjectActionsApi
@@ -639,6 +640,7 @@ class ProjectRepository(
      * poll once a Connect streaming client exists). Balanced by [detach].
      */
     fun attach(projectId: String) {
+        Breadcrumbs.add("project open ${Breadcrumbs.tail(projectId)}")
         val count = attached.merge(projectId, 1, Int::plus) ?: 1
         if (count > 1) return
         pollers[projectId]?.cancel()
@@ -653,6 +655,7 @@ class ProjectRepository(
     }
 
     fun detach(projectId: String) {
+        Breadcrumbs.add("project leave ${Breadcrumbs.tail(projectId)}")
         val count = attached.merge(projectId, -1, Int::plus) ?: 0
         if (count > 0) return
         attached.remove(projectId)

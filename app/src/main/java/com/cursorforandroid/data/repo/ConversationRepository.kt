@@ -1,5 +1,6 @@
 package com.cursorforandroid.data.repo
 
+import com.cursorforandroid.crash.Breadcrumbs
 import com.cursorforandroid.data.api.BlobCache
 import com.cursorforandroid.data.api.ComposerSnapshot
 import com.cursorforandroid.data.api.ConnectRpc
@@ -1739,6 +1740,14 @@ class ConversationRepository(
     /** Whether [hold] keeps the chat current in the background. */
     fun isHeld(agentId: String): Boolean = synchronized(entries) { entries[agentId]?.held == true }
 
+    /** For a crash report: the chats in memory, how many a screen or a hold keeps, and their items and live streams. */
+    fun stats(): String {
+        val all = synchronized(entries) { entries.values.toList() }
+        val items = all.sumOf { it.state.value.items.size }
+        return "chats=${all.size} screens=${all.count { it.screens > 0 }} held=${all.count { it.held }} " +
+            "streams=${all.count { it.streamJob?.isActive == true }} loading=${all.count { it.loadJob?.isActive == true }} items=$items"
+    }
+
     /**
      * Why the chat, or its newest run, reads as failed — for the diagnostics' `status:` line. The newest run's
      * footer among the items shown, when the server's status for that run is a failure: the run, the reason as
@@ -1954,6 +1963,7 @@ class ConversationRepository(
      * launch starts the stream when the server answers.
      */
     fun attach(agentId: String) {
+        Breadcrumbs.add("chat open ${Breadcrumbs.tail(agentId)}")
         val e = entry(agentId)
         lastOpened.value = agentId
         val firstScreen = synchronized(e) {
@@ -2031,6 +2041,7 @@ class ConversationRepository(
      * replays of finished turns' traces and no older pages until a screen asks. Idempotent; undone by [release].
      */
     fun hold(agentId: String) {
+        Breadcrumbs.add("chat hold ${Breadcrumbs.tail(agentId)}")
         val e = entry(agentId)
         synchronized(e) {
             if (e.held) return
@@ -2054,6 +2065,7 @@ class ConversationRepository(
 
     /** Ends [hold]: a chat with no screen on it either stops as a detached chat does. */
     fun release(agentId: String) {
+        Breadcrumbs.add("chat release ${Breadcrumbs.tail(agentId)}")
         val e = synchronized(entries) { entries[agentId] } ?: return
         synchronized(e) {
             if (!e.held) return
@@ -2087,6 +2099,7 @@ class ConversationRepository(
      * afresh, and the hub still holds the story of a run that is followed again within its grace period.
      */
     fun detach(agentId: String) {
+        Breadcrumbs.add("chat leave ${Breadcrumbs.tail(agentId)}")
         val e = entry(agentId)
         synchronized(e) {
             if (e.screens == 0) return

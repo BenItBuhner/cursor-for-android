@@ -188,6 +188,13 @@ class LiveRunHub(
 
     fun current(agentId: String, runId: String): Snapshot? = synchronized(entries) { entries[key(agentId, runId)]?.state?.value }
 
+    /** For a crash report: the runs kept, those with a connection of their own, and the live subscribers on them. */
+    fun stats(): String = synchronized(entries) {
+        val streaming = entries.values.count { it.job?.isActive == true }
+        val subscribers = entries.values.sumOf { it.subscribers }
+        "runs=${entries.size} streaming=$streaming subscribers=$subscribers"
+    }
+
     fun resetAll() {
         // Detached under the lock, before the map is cleared: cancellation is cooperative, so a collector already
         // inside an event callback is stopped by losing ownership, not by the cancel that follows it.
