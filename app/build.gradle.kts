@@ -20,8 +20,10 @@ plugins {
 //   * A checkout at a release tag `vX.Y.Z` builds X.Y.Z.
 //   * Anything else is a dev build of the release that comes next: the highest `v*` tag's PATCH + 1 - or the tag's own
 //     version while that tag is a pre-release such as v0.4.0-rc.1 - with `-dev` appended, e.g. `0.3.49-dev` after
-//     v0.3.48. CI replaces the `-dev` with its stamp (below). A checkout without git or without any release tag builds
-//     0.0.0-dev and says so; fetch the tags (`git fetch --tags`) to get the real version.
+//     v0.3.48. A PATCH (then MINOR) that would reach 100 rolls over to the next MINOR (then MAJOR) instead, since the
+//     versionCode below has room for 0..99 only: `0.4.0-dev` after v0.3.99. CI replaces the `-dev` with its stamp
+//     (below). A checkout without git or without any release tag builds 0.0.0-dev and says so; fetch the tags
+//     (`git fetch --tags`) to get the real version.
 //
 // versionCode is computed from the resolved name, so the tag is the only input a release needs:
 //
@@ -66,7 +68,14 @@ fun versionFromGit(): Pair<String, Boolean> {
         return "0.0.0" to true
     }
     val (major, minor, patch, preRelease) = releaseTagVersion.matchEntire("v$latest")!!.destructured
-    return (if (preRelease.isEmpty()) "$major.$minor.${patch.toInt() + 1}" else "$major.$minor.$patch") to true
+    return (if (preRelease.isEmpty()) nextReleaseAfter(major.toInt(), minor.toInt(), patch.toInt()) else "$major.$minor.$patch") to true
+}
+
+/** The release after stable [major].[minor].[patch]; mirrored by AppVersion.nextDevVersion (see Versioning above). */
+fun nextReleaseAfter(major: Int, minor: Int, patch: Int): String = when {
+    patch + 1 < 100 -> "$major.$minor.${patch + 1}"
+    minor + 1 < 100 -> "$major.${minor + 1}.0"
+    else -> "${major + 1}.0.0"
 }
 
 val appVersionNameSuffix: String? = providers.gradleProperty("app.versionNameSuffix").orNull?.takeIf { it.isNotBlank() }
