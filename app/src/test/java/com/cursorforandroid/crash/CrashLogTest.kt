@@ -51,6 +51,35 @@ class CrashLogTest {
     }
 
     @Test
+    fun `the heap past its mark leaves a snapshot of the state, which the crash that follows carries`() {
+        val dir = folder.newFolder("crash")
+        val log = log(dir)
+        var state = "chats=24 held=20 traces=400"
+        log.install { state }
+        var used = 100L shl 20
+        log.watchMemory(periodMs = 20L, heap = { used to (256L shl 20) })
+        Thread.sleep(150)
+        assertThat(File(dir, CrashLog.SNAPSHOT).exists()).isFalse()
+
+        used = 230L shl 20
+        val deadline = System.currentTimeMillis() + 5_000
+        while (!File(dir, CrashLog.SNAPSHOT).exists() && System.currentTimeMillis() < deadline) Thread.sleep(20)
+        assertThat(File(dir, CrashLog.SNAPSHOT).readText()).contains("heap 230 of 256 MB")
+
+        // Memory gone: the state can no longer be read at the crash, but the snapshot taken on the way there can.
+        state = "never read"
+        log.install { throw OutOfMemoryError("Failed to allocate a 8208 byte allocation") }
+        now += 60_000L
+        log.record("OkHttp TaskRunner", OutOfMemoryError("Failed to allocate a 8208 byte allocation"))
+        val report = log(dir).also { it.load() }.pending.value!!
+        assertThat(report.headline).contains("OutOfMemoryError")
+        assertThat(report.text).contains("---- Last memory snapshot ----")
+        assertThat(report.text).contains("chats=24 held=20 traces=400")
+        // The snapshot is not a report of its own.
+        assertThat(log(dir).reports()).hasSize(1)
+    }
+
+    @Test
     fun `the installed handler records and still hands the exception on`() {
         val dir = folder.newFolder("crash")
         val handed = mutableListOf<Throwable>()

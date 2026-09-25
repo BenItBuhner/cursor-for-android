@@ -2,6 +2,7 @@ package com.cursorforandroid
 
 import android.app.ActivityManager
 import android.app.Application
+import android.content.ComponentCallbacks2
 import android.content.Context
 import androidx.work.Configuration
 import com.cursorforandroid.crash.CrashContext
@@ -36,6 +37,7 @@ class CursorApp : Application(), Configuration.Provider {
         DeviceNetwork.install(this)
         graph = AppGraph(this, crashLog = crashLog)
         crashLog.install { graph.crashContext() }
+        crashLog.watchMemory()
         // How the last processes ended, by Android's own record: the deaths no handler sees (the low-memory killer,
         // an ANR, a native crash), then the card for whatever was not dismissed yet. Off the main thread: disk reads.
         Thread({
@@ -46,6 +48,15 @@ class CursorApp : Application(), Configuration.Provider {
         // lives — whichever way it was started: the app, the live notification's service, the finish watchdog's job
         // or a widget render. One question to the launcher off the main thread; nothing more without a widget.
         WidgetSync.start(this, graph)
+    }
+
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        // The system is short and asking for memory back: what is held right now goes into the next crash's report.
+        @Suppress("DEPRECATION")
+        if ((level == ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW || level == ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL) && ::graph.isInitialized) {
+            graph.crashLog.snapshot("trim memory $level", force = level == ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL)
+        }
     }
 
     private companion object {
