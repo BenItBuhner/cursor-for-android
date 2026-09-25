@@ -466,7 +466,8 @@ fun ComposerBox(
             // Pills right of "+", the model chip next to send, and the leftover width between them. The children are
             // measured in order, so the pills take what their words need and the chip is left the rest: it ellipsises
             // before a pill would, and send is never pushed out. A dictation under way has the middle to itself.
-            if (voice != null && micTap != null && voice.state != VoiceState.Idle) VoiceStatus(voice, onTap = micTap)
+            val dictating = voice != null && micTap != null && voice.state != VoiceState.Idle
+            if (dictating) VoiceStatus(voice, onTap = micTap)
             else Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
                 if (wornMode != null) {
                     ModePill(wornMode, onClear = { haptics.perform(Haptic.ToggleOff); onModePill?.invoke(null) })
@@ -492,7 +493,8 @@ fun ComposerBox(
                     SelectorChip(modelLabel, onClick = onModel ?: {}, enabled = onModel != null, showChevron = onModel != null)
                 }
             }
-            Spacer(Modifier.width(8.dp))
+            // A dictation's status ends in its round cancel button, which needs the same clearance as the mic from send.
+            Spacer(Modifier.width(if (dictating) CursorDimens.roundButtonGap else 8.dp))
             val buttons = composerButtons(
                 isSending = isSending,
                 cancelOffered = cancelOffered && onCancelSend != null,
@@ -503,15 +505,17 @@ fun ComposerBox(
             )
             if (buttons.micBeside && voice != null && micTap != null) {
                 VoiceMicButton(voice, prominent = false, onClick = micTap)
-                Spacer(Modifier.width(10.dp))
+                Spacer(Modifier.width(CursorDimens.roundButtonGap))
             }
-            when (buttons.main) {
-                SendSlot.CancelSend -> ComposerRoundButton(CursorIcons.Stop, "Cancel sending", onClick = { onCancelSend?.invoke() }, prominent = true)
-                SendSlot.Busy -> ComposerBusyButton()
-                SendSlot.Stop -> ComposerRoundButton(CursorIcons.Stop, "Stop", onClick = { onStop?.invoke() }, prominent = true)
-                SendSlot.Mic -> if (voice != null && micTap != null) VoiceMicButton(voice, prominent = true, onClick = micTap)
-                // The tap is felt, not a hardware Enter: a physical keyboard's keys are their own feedback.
-                SendSlot.Send -> ComposerRoundButton(CursorIcons.ArrowUp, "Send", onClick = { haptics.perform(Haptic.Confirm); onSend() }, prominent = canSend, enabled = sendsNow)
+            Box(Modifier.testTag("composer-main")) {
+                when (buttons.main) {
+                    SendSlot.CancelSend -> ComposerRoundButton(CursorIcons.Stop, "Cancel sending", onClick = { onCancelSend?.invoke() }, prominent = true)
+                    SendSlot.Busy -> ComposerBusyButton()
+                    SendSlot.Stop -> ComposerRoundButton(CursorIcons.Stop, "Stop", onClick = { onStop?.invoke() }, prominent = true)
+                    SendSlot.Mic -> if (voice != null && micTap != null) VoiceMicButton(voice, prominent = true, onClick = micTap)
+                    // The tap is felt, not a hardware Enter: a physical keyboard's keys are their own feedback.
+                    SendSlot.Send -> ComposerRoundButton(CursorIcons.ArrowUp, "Send", onClick = { haptics.perform(Haptic.Confirm); onSend() }, prominent = canSend, enabled = sendsNow)
+                }
             }
         }
     }

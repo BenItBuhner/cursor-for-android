@@ -161,14 +161,21 @@ object CursorIcons {
         }
     }
 
-    /** Lucide `mic`: voice input in the composer's send slot. */
+    /**
+     * Lucide `mic`: voice input in the composer's send slot. Drawn at three quarters about the centre, strokes kept at
+     * 2: at full size its 20-unit height all but fills the disc beside the arrow's 14, and the disc reads smaller.
+     */
     val Mic: ImageVector by lazy {
         icon("Mic") {
-            path("M12 19v3", 2f)
-            path("M19 10v2a7 7 0 0 1-14 0v-2", 2f)
-            rect(9f, 2f, 6f, 13f, 3f, 2f)
+            group(scaleX = MicScale, scaleY = MicScale, pivotX = 12f, pivotY = 12f) {
+                path("M12 19v3", 2f / MicScale)
+                path("M19 10v2a7 7 0 0 1-14 0v-2", 2f / MicScale)
+                rect(9f, 2f, 6f, 13f, 3f, 2f / MicScale)
+            }
         }
     }
+
+    private const val MicScale = 0.75f
 
     val Plus: ImageVector by lazy {
         icon("Plus") {

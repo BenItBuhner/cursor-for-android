@@ -83,9 +83,17 @@ object CursorDimens {
      * dwarf the 13sp text before.
      */
     val roundButton = 24.dp
+    /** The square a [roundButton] takes touches over, the disc in its middle. */
+    val roundButtonTouch = 40.dp
+    /**
+     * Between two round buttons side by side (the microphone and send): their [roundButtonTouch] squares meet without
+     * overlapping, so neither takes the other's taps and each keeps the whole of its own.
+     */
+    val roundButtonGap = roundButtonTouch - roundButton
     /**
      * Icon box inside the disc. The 24-unit "+" and arrow span 14 units plus their round caps, the stop square 12,
-     * so a 17dp box shows a ~11dp "+": a little under half the disc, like the web's.
+     * so a 17dp box shows a ~11dp "+": a little under half the disc, like the web's. Taller marks are drawn smaller
+     * on the grid to look the same size (the composer's microphone).
      */
     val roundButtonGlyph = 17.dp
     /** Composer box: 640px max, 12px padding. */

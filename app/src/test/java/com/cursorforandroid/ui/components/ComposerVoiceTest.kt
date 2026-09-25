@@ -32,6 +32,7 @@ import com.cursorforandroid.data.api.Transcription
 import com.cursorforandroid.data.api.TranscriptionApi
 import com.cursorforandroid.data.media.AudioCapture
 import com.cursorforandroid.data.media.RecordedClip
+import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.ui.theme.ThemeMode
 import com.google.common.truth.Truth.assertThat
@@ -142,8 +143,9 @@ class ComposerVoiceTest {
         val mic = bounds("Voice input")
         val send = bounds("Send")
         assertThat(mic.right).isAtMost(send.left)
-        // The descriptions sit on the 17dp glyphs: the 10dp gap between the discs plus each disc's 3.5dp inset.
-        assertThat(send.left - mic.right).isWithin(2f).of(17f * 2.625f)
+        // The descriptions sit on the 17dp glyphs: the gap between the discs plus each disc's 3.5dp inset.
+        val inset = (CursorDimens.roundButton.value - CursorDimens.roundButtonGlyph.value) / 2
+        assertThat(send.left - mic.right).isWithin(2f).of((CursorDimens.roundButtonGap.value + 2 * inset) * 2.625f)
         assertThat(mic.center.y).isWithin(1f).of(send.center.y)
     }
 

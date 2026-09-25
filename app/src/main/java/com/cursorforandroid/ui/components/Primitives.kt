@@ -197,7 +197,7 @@ fun ComposerRoundButton(
     }
     val fill by animateColorAsState(targetFill, tween(160), label = "fill")
     val tint by animateColorAsState(targetTint, tween(160), label = "tint")
-    TouchTarget(size = size, touchSize = 40.dp, shape = CircleShape, onClick = onClick, enabled = enabled, modifier = modifier) {
+    TouchTarget(size = size, touchSize = CursorDimens.roundButtonTouch, shape = CircleShape, onClick = onClick, enabled = enabled, modifier = modifier) {
         Box(Modifier.size(size).background(fill, CircleShape), contentAlignment = Alignment.Center) {
             // The name is on the glyph rather than the hit layer (the composer's insets line up with the glyph), so
             // the glyph says when the button takes no tap too: a "Send" that cannot send yet must not read as ready.
