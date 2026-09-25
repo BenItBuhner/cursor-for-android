@@ -38,12 +38,6 @@ class CrashLog(
     val pending: StateFlow<Report?> = _pending.asStateFlow()
 
     @Volatile private var context: () -> String = { "" }
-
-    /**
-     * Memory set aside for the report of an out-of-memory crash: let go first thing, so the state can still be read
-     * and written (0.4.1's reports of Bennett's crashes said only "state unreadable: OutOfMemoryError").
-     */
-    @Volatile private var reserve: ByteArray? = null
     @Volatile private var lastSnapshotAt = 0L
 
     /**
@@ -54,9 +48,12 @@ class CrashLog(
      */
     fun install(context: () -> String) {
         this.context = context
-        if (reserve == null) reserve = ByteArray(RESERVE_BYTES)
         active = this
         synchronized(CrashLog) {
+            if (!reserved) {
+                reserved = true
+                reserve = ByteArray(RESERVE_BYTES)
+            }
             if (handlerInstalled) return
             handlerInstalled = true
             val previous = Thread.getDefaultUncaughtExceptionHandler()
@@ -118,22 +115,27 @@ class CrashLog(
     }
 
     /**
-     * Looks at the heap every [periodMs] on a thread of its own, and takes a [snapshot] when more than [PRESSURE] of
-     * it is in use after the last collection: the state that led to an out-of-memory crash, kept before there is no
-     * memory left to read it with. Call once.
+     * Looks at the heap every [periodMs] on a thread of its own, and has the [install]ed log take a [snapshot] when
+     * more than [PRESSURE] of it is in use: the state that led to an out-of-memory crash, kept before there is no
+     * memory left to read it with. One watcher for the process, like the handler; a later call only restarts it with
+     * the new [periodMs] and [heap] reading.
      */
     fun watchMemory(periodMs: Long = WATCH_PERIOD_MS, heap: () -> Pair<Long, Long> = ::heapUsedAndMax) {
         val watcher = Thread({
             while (true) {
                 runCatching {
                     val (used, max) = heap()
-                    if (max > 0 && used > max * PRESSURE) snapshot("heap ${used shr 20} of ${max shr 20} MB")
+                    if (max > 0 && used > max * PRESSURE) active?.snapshot("heap ${used shr 20} of ${max shr 20} MB")
                 }
                 try { Thread.sleep(periodMs) } catch (_: InterruptedException) { return@Thread }
             }
         }, "crash-memory-watch")
         watcher.isDaemon = true
         watcher.priority = Thread.MIN_PRIORITY
+        synchronized(CrashLog) {
+            memoryWatcher?.interrupt()
+            memoryWatcher = watcher
+        }
         watcher.start()
     }
 
@@ -292,6 +294,13 @@ class CrashLog(
 
         @Volatile private var active: CrashLog? = null
         private var handlerInstalled = false
+        /**
+         * Memory set aside for the report of an out-of-memory crash, once for the process: let go first thing, so the
+         * state can still be read and written (0.4.1's reports of Bennett's crashes said "state unreadable").
+         */
+        @Volatile private var reserve: ByteArray? = null
+        private var reserved = false
+        private var memoryWatcher: Thread? = null
 
         /** Lets a test put its own default handler under the next [install]. */
         @androidx.annotation.VisibleForTesting
