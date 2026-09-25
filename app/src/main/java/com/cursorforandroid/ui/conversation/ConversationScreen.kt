@@ -68,6 +68,7 @@ import com.cursorforandroid.domain.AssistantMessage
 import com.cursorforandroid.domain.CarriedFile
 import com.cursorforandroid.domain.FileOpenRequest
 import com.cursorforandroid.domain.NoticeCard
+import com.cursorforandroid.domain.StretchSteps
 import com.cursorforandroid.domain.TranscriptRow
 import com.cursorforandroid.domain.DesktopEligibility
 import com.cursorforandroid.domain.EnvType
@@ -318,6 +319,13 @@ fun ConversationScreen(
         val closed = NoticeDismissals.inlineKeys(hiddenNotices)
         if (closed.isEmpty()) presentedTranscript.rows else presentedTranscript.rows.filterNot { row -> row is TranscriptRow.Item && (row.item as? NoticeCard)?.dismissKey in closed }
     }
+    // The steps of the stretches the reader has opened, listed after them as rows of their own (see StretchSteps):
+    // the list lays out what is on screen of a stretch of hundreds of calls, not the whole of it on the tap.
+    val openStretches = rememberOpenStretches(agentId)
+    val stepCache = remember(agentId) { arrayOf<Map<String, TranscriptRow.Step>>(emptyMap()) }
+    val listedRows by remember(rows, openStretches) {
+        derivedStateOf { StretchSteps.list(rows, openStretches::of, stepCache[0]).also { stepCache[0] = it.steps }.rows }
+    }
     // A live stretch says "Working" itself; the caption below the list is for a run with nothing on screen yet, and
     // for a connection being re-established, which only it can say.
     val showWorking = conversation.showsWorkingRow() && (conversation.isReconnecting || (rows.lastOrNull() as? TranscriptRow.Stretch)?.live != true)
@@ -330,7 +338,7 @@ fun ConversationScreen(
     val loadingRow = conversation.isLoading && items.isEmpty()
     val emptyRow = !conversation.isLoading && items.isEmpty()
     // Everything the list holds, top to bottom: the rows between the items above them and the working caption below.
-    val order = remember(rows, showWorking, showTraces, hasOlder, loadingRow, emptyRow) {
+    val order = remember(listedRows, showWorking, showTraces, hasOlder, loadingRow, emptyRow) {
         TranscriptOrder(
             above = listOfNotNull(
                 LOADING_KEY.takeIf { loadingRow },
@@ -338,7 +346,7 @@ fun ConversationScreen(
                 OLDER_KEY.takeIf { hasOlder && items.isNotEmpty() },
                 TRACES_KEY.takeIf { showTraces },
             ),
-            rows = rows,
+            rows = listedRows,
             below = listOfNotNull(WORKING_KEY.takeIf { showWorking }),
         )
     }
@@ -347,7 +355,7 @@ fun ConversationScreen(
     val listReversed by remember(listState) { derivedStateOf { listState.layoutInfo.reverseLayout } }
     // Following, a new row lands past the bottom edge, where the list's keyed anchoring leaves it; the list is taken
     // back to it. Pinned, it stays there.
-    LaunchedEffect(rows.size, rows.lastOrNull()?.key, showWorking) {
+    LaunchedEffect(listedRows.size, listedRows.lastOrNull()?.key, showWorking) {
         if (transcriptScroll.following) listState.requestScrollToItem(0)
     }
     // The chat opens on its newest turns; the ones before them are paged in when the reader scrolls up to them:
@@ -556,6 +564,7 @@ fun ConversationScreen(
                 LocalMarkdownMedia provides markdownMedia,
                 LocalTranscriptControls provides transcriptControls,
                 LocalDisclosureTaps provides transcriptScroll,
+                LocalOpenStretches provides openStretches,
             ) {
                 LazyColumn(
                     state = listState,
@@ -575,7 +584,7 @@ fun ConversationScreen(
                         .readerScrolling(readerScroll)
                         .testTag("transcript"),
                     contentPadding = PaddingValues(start = TranscriptGutter, end = TranscriptGutter, top = 6.dp, bottom = 12.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                    verticalArrangement = Arrangement.spacedBy(TranscriptItemSpacing),
                     horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
                     // A following list is declared bottom-up, the newest row first (see TranscriptScroll). Each kind of
@@ -586,7 +595,7 @@ fun ConversationScreen(
                     before.forEach(::edge)
                     // Without a content type the lazy layout offers a scrolled-off user bubble's slot to an activity
                     // group, whose subtree shares nothing with it: the reuse always fails and costs more than it saves.
-                    items(if (following) rows.asReversed() else rows, key = { it.key }, contentType = { it::class }) { row -> TranscriptRowView(row, paneWidth) }
+                    items(if (following) listedRows.asReversed() else listedRows, key = { it.key }, contentType = ::transcriptContentType) { row -> TranscriptRowView(row, paneWidth.then(stepAppearance(row))) }
                     after.forEach(::edge)
                 }
                 SideEffect { transcriptScroll.orient(following, order) }

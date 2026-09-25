@@ -28,6 +28,7 @@ import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.swipe
 import androidx.compose.ui.test.swipeUp
+import androidx.lifecycle.ViewModelProvider
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.cursorforandroid.AppGraph
@@ -40,6 +41,7 @@ import com.cursorforandroid.data.repo.CursorBackend
 import com.cursorforandroid.domain.ActivityGroup
 import com.cursorforandroid.domain.RunStatus
 import com.cursorforandroid.domain.ThinkingBlock
+import com.cursorforandroid.domain.TimelineItem
 import com.cursorforandroid.domain.ToolCall
 import com.cursorforandroid.domain.UserMessage
 import com.cursorforandroid.ui.theme.CursorTheme
@@ -188,27 +190,33 @@ class TranscriptScrollPinningTest {
         }
     }
 
-    /** The live stretch is one item of the list, so its newest line is composed whether or not it is on screen. */
+    /**
+     * [text] has reached the screen: the transcript it was last given holds it, and the frame after is drawn. An open
+     * stretch's steps are items of the list, so a line landing off screen is not composed; the presented transcript
+     * is what says it has been drawn.
+     */
     private fun awaitDrawn(text: String) {
-        compose.waitUntil(20_000) { nodeWithText(text) != null }
+        compose.waitUntil(20_000) {
+            steps(presentedNow().items).any { (it as? ThinkingBlock)?.text?.contains(text) == true || (it as? ToolCall)?.summary?.contains(text) == true }
+        }
         compose.waitForIdle()
     }
 
-    /** The live stretch's line has caught up with the stream: the rows on screen are the newest the screen was given. */
+    /** The screen has caught up with the stream: the live stretch it was last given counts what the stream has sent. */
     private fun awaitLiveSummary() {
-        compose.waitUntil(20_000) { compose.onAllNodes(hasText(liveLine(), substring = true), useUnmergedTree = true).fetchSemanticsNodes().isNotEmpty() }
+        compose.waitUntil(20_000) { counts(steps(presentedNow().items)) == counts(liveSteps()) }
         compose.waitForIdle()
     }
 
-    /** The live stretch's counts as the stream has them now, which is what its line will say once drawn. */
-    private fun liveLine(): String {
-        val turn = liveSteps()
-        return "${turn.count { it is ToolCall }} files · ${turn.count { it is ThinkingBlock && it.text.isNotBlank() }} thought"
-    }
+    private fun counts(steps: List<Any>) = steps.count { it is ToolCall } to steps.count { it is ThinkingBlock && it.text.isNotBlank() }
 
-    private fun liveSteps() = graph.conversations.state(agentId).value.items.let { items ->
+    private fun presentedNow(): PresentedTranscript =
+        ViewModelProvider(compose.activity)["conversation-$agentId", ConversationViewModel::class.java].presented.value
+
+    private fun liveSteps() = steps(graph.conversations.state(agentId).value.items)
+
+    private fun steps(items: List<TimelineItem>) =
         items.subList(items.indexOfLast { it is UserMessage } + 1, items.size).filterIsInstance<ActivityGroup>().flatMap { it.steps }
-    }
 
     /** A finished turn's stretch line, which starts with its count of files. */
     private fun stretchOf(turn: Int) = "${10 + turn} files"
@@ -238,7 +246,17 @@ class TranscriptScrollPinningTest {
     private fun nodeWithText(text: String): SemanticsNode? =
         compose.onAllNodes(hasAnyAncestor(transcript) and hasText(text, substring = true), useUnmergedTree = true).fetchSemanticsNodes().lastOrNull()
 
-    private fun top(text: String): Float = checkNotNull(nodeWithText(text)) { "\"$text\" is not composed" }.positionInRoot.y
+    /** The stretch line that is exactly [text], just scrolled up past the top edge: above it, or no longer composed. */
+    private fun assertAbove(text: String, what: String) {
+        val node = compose.onAllNodes(hasAnyAncestor(transcript) and hasText(text, substring = false), useUnmergedTree = true).fetchSemanticsNodes().singleOrNull() ?: return
+        assertWithMessage(what).that(node.positionInRoot.y).isLessThan(listBounds().top)
+    }
+
+    /** The newest line of the live stretch, streamed below the bottom edge: below it, or not composed yet. */
+    private fun assertBelow(text: String, what: String) {
+        val node = nodeWithText(text) ?: return
+        assertWithMessage(what).that(node.positionInRoot.y).isGreaterThan(listBounds().bottom)
+    }
 
     /** The newest [text] is wholly inside the transcript's viewport. */
     private fun assertOnScreen(text: String, event: Int) {
@@ -324,10 +342,9 @@ class TranscriptScrollPinningTest {
         tap(summary("Working"))
         // The older stretch's line past the top edge, the live one's on screen with its end below the bottom edge.
         scrollTopTo("Working", listBounds().top + listBounds().height * 0.62f)
-        val list = listBounds()
-        assertWithMessage("the older stretch reaches above the viewport").that(summary(older).positionInRoot.y).isLessThan(list.top)
-        assertWithMessage("the live stretch starts on screen").that(summary("Working").positionInRoot.y).isLessThan(list.bottom)
-        assertWithMessage("the live stretch ends below the viewport").that(top(file(TURNS, liveCalls))).isGreaterThan(list.bottom)
+        assertAbove(older, "the older stretch reaches above the viewport")
+        assertWithMessage("the live stretch starts on screen").that(summary("Working").positionInRoot.y).isLessThan(listBounds().bottom)
+        assertBelow(file(TURNS, liveCalls), "the live stretch ends below the viewport")
         assertThat(following()).isFalse()
         val before = visibleTexts()
         val first = before.first()
@@ -349,9 +366,8 @@ class TranscriptScrollPinningTest {
         tap(summary("Working"))
         // Inside the open live stretch: its line above the top edge, its newest call below the bottom one.
         scrollTopTo("Working", listBounds().top - 300f)
-        val list = listBounds()
-        assertWithMessage("the live stretch's line is above the viewport").that(summary("Working").positionInRoot.y).isLessThan(list.top)
-        assertWithMessage("the live stretch ends below the viewport").that(top(file(TURNS, liveCalls))).isGreaterThan(list.bottom)
+        assertAbove("Working", "the live stretch's line is above the viewport")
+        assertBelow(file(TURNS, liveCalls), "the live stretch ends below the viewport")
         val before = visibleTexts()
 
         burst { event, text -> assertUnmoved(before, event, text) }
