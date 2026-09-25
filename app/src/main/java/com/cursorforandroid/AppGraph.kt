@@ -4,6 +4,9 @@ import android.content.Context
 import android.os.Build
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.ProcessLifecycleOwner
+import com.cursorforandroid.crash.Breadcrumbs
+import com.cursorforandroid.crash.CrashContext
+import com.cursorforandroid.crash.CrashLog
 import com.cursorforandroid.crash.CrashReporting
 import com.cursorforandroid.data.api.AccountApi
 import com.cursorforandroid.data.api.AccountTranscriptionApi
@@ -207,6 +210,8 @@ class AppGraph(
      * Injectable for tests only: the screenshot tests render a fixed version, so cutting a release re-records nothing.
      */
     val appVersion: String = BuildConfig.VERSION_NAME,
+    /** Crashes kept on the device (see [CrashLog]); the application installs its handler before building the graph. */
+    val crashLog: CrashLog = CrashLog(File(context.applicationContext.filesDir, CrashLog.DIRECTORY), appVersion),
     /**
      * Injectable for tests only: the account's follow-up queue and prompt-upload services, so a send that carries
      * files can be driven end to end — the composer, the bubble, the retry — against a scripted account (latency,
@@ -1236,8 +1241,39 @@ class AppGraph(
     suspend fun sendDiagnosticsToProject(): String {
         if (session.isDemo) throw java.io.IOException(DiagnosticsInbox.DEMO_HAS_NO_ACCOUNT)
         val now = AppClock.now()
-        val text = DiagnosticsInbox.compose(appVersion, now, projectDiagnosticsReport(), transcriptDiagnosticsReport())
+        val crashes = withContext(Dispatchers.IO) { crashLog.reports().takeIf { it.isNotEmpty() }?.let { crashLog.export() } }
+        val text = DiagnosticsInbox.compose(appVersion, now, projectDiagnosticsReport(), transcriptDiagnosticsReport(), crashes)
         return storeFiles.writeText(DiagnosticsInbox.PROJECT_ID, DiagnosticsInbox.path(now), text)
+    }
+
+    /** The crash card's Send: the kept crash reports and the Project diagnostics, into the same inbox (see [DiagnosticsInbox]). */
+    suspend fun sendCrashReportsToProject(): String {
+        if (session.isDemo) throw java.io.IOException(DiagnosticsInbox.DEMO_HAS_NO_ACCOUNT)
+        val now = AppClock.now()
+        val crashes = withContext(Dispatchers.IO) { crashLog.export() }
+        val text = DiagnosticsInbox.composeCrash(appVersion, now, crashes, projectDiagnosticsReport())
+        return storeFiles.writeText(DiagnosticsInbox.PROJECT_ID, DiagnosticsInbox.crashPath(now), text)
+    }
+
+    /**
+     * The app's account of the moment, for a crash report (see [CrashLog.install]): the build and device, background
+     * live sync, the chats in memory and the run streams, memory and threads by pool, and the last things done. Reads
+     * only what is already built — nothing is created to describe it.
+     */
+    fun crashContext(): String = buildString {
+        appendLine("version: $appVersion (${BuildConfig.VERSION_CODE}) android=${Build.VERSION.SDK_INT} device=${Build.MANUFACTURER} ${Build.MODEL}")
+        appendLine("process up: ${(android.os.SystemClock.elapsedRealtime() - android.os.Process.getStartElapsedRealtime()) / 1000} s")
+        val sync = if (lazyLiveSync.isInitialized()) liveSync else null
+        appendLine("live sync: ${sync?.mode ?: "not started"} held=${sync?.heldIds?.value?.size ?: 0}")
+        if (lazyAgents.isInitialized()) appendLine("agents listed: ${agents.state.value.agents.size} running=${agents.state.value.agents.count { it.isRunning }}")
+        if (lazyConversations.isInitialized()) appendLine("conversations: ${conversations.stats()}")
+        if (lazyLiveRuns.isInitialized()) appendLine("run streams: ${liveRuns.stats()}")
+        append(CrashContext.runtime(app.getSystemService(android.app.ActivityManager::class.java)))
+        val recent = Breadcrumbs.lines()
+        if (recent.isNotEmpty()) {
+            appendLine("recent:")
+            recent.forEach { appendLine("  $it") }
+        }
     }
 
     suspend fun signOut() = session.signOut()

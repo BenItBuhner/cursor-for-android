@@ -24,8 +24,11 @@ object DiagnosticsInbox {
     /** `inbox/diagnostics/20260918T183012Z.txt`: sortable, unique to the second, safe as a store path. */
     fun path(nowMillis: Long): String = "$DIRECTORY/${STAMP.format(Instant.ofEpochMilli(nowMillis))}.txt"
 
-    /** The file's text: a header, then the two exports as Settings shares them. */
-    fun compose(appVersion: String, nowMillis: Long, projectReport: String, transcriptReport: String): String = buildString {
+    /** `inbox/diagnostics/20260925T183012Z-crash.txt`: the crash card's send, beside the exports. */
+    fun crashPath(nowMillis: Long): String = "$DIRECTORY/${STAMP.format(Instant.ofEpochMilli(nowMillis))}-crash.txt"
+
+    /** The file's text: a header, then the two exports as Settings shares them, and the crash reports kept, when there are any. */
+    fun compose(appVersion: String, nowMillis: Long, projectReport: String, transcriptReport: String, crashReports: String? = null): String = buildString {
         appendLine("Cursor for Android $appVersion · diagnostics sent from Settings › Debug · ${Instant.ofEpochMilli(nowMillis)}")
         appendLine("Two exports follow, redacted as the share sheet gets them: ids are tails, no names, prompts, messages or argument text.")
         appendLine()
@@ -34,5 +37,21 @@ object DiagnosticsInbox {
         appendLine()
         appendLine("########## Transcript diagnostics ##########")
         appendLine(transcriptReport.trimEnd())
+        crashReports?.let {
+            appendLine()
+            appendLine("########## Crash reports ##########")
+            appendLine(it.trimEnd())
+        }
+    }
+
+    /** The crash card's file: a header, the crash reports kept, then the Project diagnostics for the account's shape. */
+    fun composeCrash(appVersion: String, nowMillis: Long, crashReports: String, projectReport: String): String = buildString {
+        appendLine("Cursor for Android $appVersion · crash reports sent from the crash card · ${Instant.ofEpochMilli(nowMillis)}")
+        appendLine()
+        appendLine("########## Crash reports ##########")
+        appendLine(crashReports.trimEnd())
+        appendLine()
+        appendLine("########## Project diagnostics ##########")
+        appendLine(projectReport.trimEnd())
     }
 }

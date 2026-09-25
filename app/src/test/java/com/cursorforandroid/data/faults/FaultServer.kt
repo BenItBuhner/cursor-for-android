@@ -205,6 +205,12 @@ class FaultServer(
     val composers: MutableMap<String, Composer> = ConcurrentHashMap()
     /** `ListWorkersForManager`: each coordinator's workers, as (workerId, spawnKind). */
     val workers: MutableMap<String, List<Pair<String, String>>> = ConcurrentHashMap()
+    /**
+     * While above zero, a running run's stream is held open about this long after what its log has so far, a
+     * keep-alive at a time, as the API holds a turn under way, rather than answered whole and closed: each running
+     * chat followed costs a connection's worth of the client's resources, which is what a load test has to see.
+     */
+    @Volatile var holdRunningStreamsMs: Long = 0L
     /** The account's pinned ids, as the first page of the list reports them. */
     val pinned: MutableSet<String> = ConcurrentHashMap.newKeySet()
     /** How many rows one account page carries whatever `n` asks (the service's window is 200; a small account still pages when this is small). */
@@ -984,8 +990,17 @@ class FaultServer(
             body.append("id: ").append(runId).append('#').append(skip + i + 1).append('\n')
             body.append("data: ").append(data).append("\n\n")
         }
-        if (cutAfter == null) body.append("event: done\ndata: {}\n\n")
+        val holding = cutAfter == null && holdRunningStreamsMs > 0 && runs[runId]?.status == "RUNNING"
+        if (holding) {
+            // As the API holds a turn under way: what the log has so far, then its keep-alive comments for as long as
+            // the turn goes on here, trickled so the connection (and the client's thread on it) stays taken.
+            val beats = (holdRunningStreamsMs / HELD_BEAT_MS).toInt().coerceAtLeast(1)
+            repeat(beats) { body.append(": keep-alive ").append("-".repeat(HELD_BEAT_BYTES - 15)).append("\n\n") }
+        } else if (cutAfter == null) {
+            body.append("event: done\ndata: {}\n\n")
+        }
         val response = MockResponse().setResponseCode(200).setHeader("Content-Type", "text/event-stream").setBody(body.toString())
+        if (holding) response.throttleBody(HELD_BEAT_BYTES.toLong(), HELD_BEAT_MS, TimeUnit.MILLISECONDS)
         if (cutAfter != null) response.setSocketPolicy(SocketPolicy.DISCONNECT_AT_END)
         return response
     }
@@ -1025,6 +1040,9 @@ class FaultServer(
     companion object {
         /** The longest a [Fault.Held] reply waits for its release: past any test's own wait, short of wedging the run. */
         const val HOLD_CEILING_S = 60L
+        /** A held stream's keep-alive: its size, and how often one goes out (see [holdRunningStreamsMs]). */
+        private const val HELD_BEAT_BYTES = 64
+        private const val HELD_BEAT_MS = 500L
         /** A string of a prefetched step longer than this is heavy data `filter_heavy_step_data` leaves out. */
         const val HEAVY_CHARS = 2_000
         /** The account service the record RPCs belong to (see `HeadlessConversationApi.SERVICE`). */

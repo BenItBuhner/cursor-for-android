@@ -1,5 +1,6 @@
 package com.cursorforandroid.data.repo
 
+import com.cursorforandroid.crash.Breadcrumbs
 import com.cursorforandroid.data.api.BlobCache
 import com.cursorforandroid.data.api.ComposerSnapshot
 import com.cursorforandroid.data.api.ConnectRpc
@@ -99,6 +100,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.withContext
+import java.lang.ref.WeakReference
 import java.time.Instant
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
@@ -482,9 +484,9 @@ class ConversationRepository(
      * Everything shown for one agent is derived from a few inputs, so a trace that lands, a follow-up that is sent
      * or a live snapshot that arrives all rebuild the same way. Mutations happen under the entry's monitor.
      */
-    private inner class Entry(val agentId: String) {
+    private inner class Entry(val agentId: String, observed: MutableStateFlow<ConversationState>? = null) {
         val scope = CoroutineScope(SupervisorJob() + entryDispatcher)
-        val state = MutableStateFlow(ConversationState(agentId))
+        val state = observed?.also { it.value = ConversationState(agentId) } ?: MutableStateFlow(ConversationState(agentId))
         /** The legacy transcript as the server returned it (or as the disk remembered it). */
         var messages: List<V0ConversationMessageDto> = emptyList()
         /**
@@ -836,6 +838,11 @@ class ConversationRepository(
         var attached = 0
         /** Screens attached: what the watch, the trace replays and the older pages are for (see [hold]). */
         var screens = 0
+        /**
+         * Callers between finding this entry and counting themselves in [attached] (see [claim]); guarded by the
+         * entries map, not the entry, so eviction sees it without taking the entry's lock.
+         */
+        var claims = 0
         /** Kept current with no screen on it (see [hold]). */
         var held = false
         /** The list row's `updatedAt` a held chat last answered (see [syncHeld]). */
@@ -1005,7 +1012,7 @@ class ConversationRepository(
         private var orderedRuns: List<RunDto> = emptyList()
 
         val hasInputs: Boolean get() = messages.isNotEmpty() || runs.isNotEmpty() || recordWindow != null
-        val isIdle: Boolean get() = attached == 0 && streamJob == null && traceJob?.isActive != true && loadJob?.isActive != true && runPagingJob?.isActive != true && !launching
+        val isIdle: Boolean get() = claims == 0 && attached == 0 && streamJob == null && traceJob?.isActive != true && loadJob?.isActive != true && runPagingJob?.isActive != true && !launching
 
         /**
          * The server's view joined with the prompts sent from here. `/v0/agents/{id}/conversation` carries the
@@ -1679,6 +1686,14 @@ class ConversationRepository(
     }
 
     private val entries = LinkedHashMap<String, Entry>()
+    /**
+     * The state of each chat evicted while something may still watch it: a screen that read [state] before it
+     * attached, a panel composed before its effect ran. The entry built for the chat next carries the same flow on,
+     * so they see the chat load instead of watching an entry nothing will ever update again. Held weakly: a flow
+     * nobody watches is collected, and its key goes at the next prune (see [rememberEvicted]). Guarded by [entries].
+     */
+    private val evictedStates = HashMap<String, WeakReference<MutableStateFlow<ConversationState>>>()
+    private var pruneEvictedAt = MIN_EVICTED_PRUNE
     /** agentId -> the `agentUpdatedAtMillis` of its entry on disk ([ABSENT] when known to be missing). */
     private val diskIndex = ConcurrentHashMap<String, Long>()
     private var prefetchJob: Job? = null
@@ -1711,9 +1726,19 @@ class ConversationRepository(
     private fun entry(agentId: String): Entry = synchronized(entries) {
         entries[agentId]?.also { it.lastUsedAt = AppClock.now() } ?: run {
             evictIdleEntries()
-            Entry(agentId).also { entries[agentId] = it }
+            Entry(agentId, evictedStates.remove(agentId)?.get()).also { entries[agentId] = it }
         }
     }
+
+    /**
+     * [entry], kept from eviction until [unclaim]: a screen or a hold that found the chat idle, and has yet to count
+     * itself in, must not be left on an entry another chat's lookup dropped a moment later — its scope cancelled, the
+     * chat would never load or stream, and a later lookup would answer a fresh entry nobody holds. Under Project
+     * switching with live sync on, twenty holds and the screens' lookups churn through the 24 kept at once.
+     */
+    private fun claim(agentId: String): Entry = synchronized(entries) { entry(agentId).also { it.claims++ } }
+
+    private fun unclaim(e: Entry) = synchronized(entries) { e.claims = (e.claims - 1).coerceAtLeast(0) }
 
     /** Keeps memory bounded: the least recently used transcripts nobody is looking at are dropped (the disk keeps them). */
     private fun evictIdleEntries() {
@@ -1723,7 +1748,16 @@ class ConversationRepository(
             .forEach { victim ->
                 entries.values.remove(victim)
                 victim.scope.cancel()
+                rememberEvicted(victim)
             }
+    }
+
+    /** Under the lock of [entries]. Pruned only as the map doubles, so eviction stays cheap however fast chats churn. */
+    private fun rememberEvicted(victim: Entry) {
+        evictedStates[victim.agentId] = WeakReference(victim.state)
+        if (evictedStates.size < pruneEvictedAt) return
+        evictedStates.values.removeAll { it.get() == null }
+        pruneEvictedAt = maxOf(MIN_EVICTED_PRUNE, evictedStates.size * 2)
     }
 
     fun state(agentId: String): StateFlow<ConversationState> = entry(agentId).state.asStateFlow()
@@ -1738,6 +1772,14 @@ class ConversationRepository(
 
     /** Whether [hold] keeps the chat current in the background. */
     fun isHeld(agentId: String): Boolean = synchronized(entries) { entries[agentId]?.held == true }
+
+    /** For a crash report: the chats in memory, how many a screen or a hold keeps, and their items and live streams. */
+    fun stats(): String {
+        val all = synchronized(entries) { entries.values.toList() }
+        val items = all.sumOf { it.state.value.items.size }
+        return "chats=${all.size} screens=${all.count { it.screens > 0 }} held=${all.count { it.held }} " +
+            "streams=${all.count { it.streamJob?.isActive == true }} loading=${all.count { it.loadJob?.isActive == true }} items=$items"
+    }
 
     /**
      * Why the chat, or its newest run, reads as failed — for the diagnostics' `status:` line. The newest run's
@@ -1954,29 +1996,34 @@ class ConversationRepository(
      * launch starts the stream when the server answers.
      */
     fun attach(agentId: String) {
-        val e = entry(agentId)
+        Breadcrumbs.add("chat open ${Breadcrumbs.tail(agentId)}")
+        val e = claim(agentId)
         lastOpened.value = agentId
-        val firstScreen = synchronized(e) {
-            if (e.screens == 0) TranscriptPerf.opened(agentId)
-            e.screens++
-            e.attached++
-            // A screen attaching can see the chat, whatever the last one that left had done.
-            e.paused = false
-            e.trimJob?.cancel()
-            e.trimJob = null
-            if (e.attached == 1 && !e.launching) {
-                startLoad(e, agentId, read = true, reread = false)
-            } else if (e.screens == 1 && !e.launching) {
-                // Held until now (see [hold]): the chat is as current as the account has said, and the screen adds
-                // what a hold leaves out — the finished turns' traces, the blob work — once the hold's load is done.
-                val holding = e.loadJob
-                e.loadJob = e.scope.launch {
-                    holding?.join()
-                    agents.agent(agentId)?.let { prefs.markRead(agentId, it.listedAtMillis) }
-                    reopen(e, agentId)
+        val firstScreen = try {
+            synchronized(e) {
+                if (e.screens == 0) TranscriptPerf.opened(agentId)
+                e.screens++
+                e.attached++
+                // A screen attaching can see the chat, whatever the last one that left had done.
+                e.paused = false
+                e.trimJob?.cancel()
+                e.trimJob = null
+                if (e.attached == 1 && !e.launching) {
+                    startLoad(e, agentId, read = true, reread = false)
+                } else if (e.screens == 1 && !e.launching) {
+                    // Held until now (see [hold]): the chat is as current as the account has said, and the screen adds
+                    // what a hold leaves out — the finished turns' traces, the blob work — once the hold's load is done.
+                    val holding = e.loadJob
+                    e.loadJob = e.scope.launch {
+                        holding?.join()
+                        agents.agent(agentId)?.let { prefs.markRead(agentId, it.listedAtMillis) }
+                        reopen(e, agentId)
+                    }
                 }
+                e.screens == 1
             }
-            e.screens == 1
+        } finally {
+            unclaim(e)
         }
         if (firstScreen) onOpened(agentId)
         watchWhileOpen(e)
@@ -2031,18 +2078,23 @@ class ConversationRepository(
      * replays of finished turns' traces and no older pages until a screen asks. Idempotent; undone by [release].
      */
     fun hold(agentId: String) {
-        val e = entry(agentId)
-        synchronized(e) {
-            if (e.held) return
-            e.held = true
-            e.attached++
-            e.trimJob?.cancel()
-            e.trimJob = null
-            val row = agents.agent(agentId)
-            e.heldRowAt = row?.updatedAtMillis ?: 0L
-            // Held because the list says it runs: a run this copy does not know is read, however fresh the copy.
-            val unknownRun = row?.latestRunId?.let { !it.startsWith(LOCAL_RUN_PREFIX) && e.runById(it) == null } == true
-            if (e.attached == 1 && !e.launching) startLoad(e, agentId, read = false, reread = e.fetched && unknownRun)
+        Breadcrumbs.add("chat hold ${Breadcrumbs.tail(agentId)}")
+        val e = claim(agentId)
+        try {
+            synchronized(e) {
+                if (e.held) return
+                e.held = true
+                e.attached++
+                e.trimJob?.cancel()
+                e.trimJob = null
+                val row = agents.agent(agentId)
+                e.heldRowAt = row?.updatedAtMillis ?: 0L
+                // Held because the list says it runs: a run this copy does not know is read, however fresh the copy.
+                val unknownRun = row?.latestRunId?.let { !it.startsWith(LOCAL_RUN_PREFIX) && e.runById(it) == null } == true
+                if (e.attached == 1 && !e.launching) startLoad(e, agentId, read = false, reread = e.fetched && unknownRun)
+            }
+        } finally {
+            unclaim(e)
         }
     }
 
@@ -2054,6 +2106,7 @@ class ConversationRepository(
 
     /** Ends [hold]: a chat with no screen on it either stops as a detached chat does. */
     fun release(agentId: String) {
+        Breadcrumbs.add("chat release ${Breadcrumbs.tail(agentId)}")
         val e = synchronized(entries) { entries[agentId] } ?: return
         synchronized(e) {
             if (!e.held) return
@@ -2087,6 +2140,7 @@ class ConversationRepository(
      * afresh, and the hub still holds the story of a run that is followed again within its grace period.
      */
     fun detach(agentId: String) {
+        Breadcrumbs.add("chat leave ${Breadcrumbs.tail(agentId)}")
         val e = entry(agentId)
         synchronized(e) {
             if (e.screens == 0) return
@@ -5648,6 +5702,8 @@ class ConversationRepository(
 
     private companion object {
         const val MAX_ENTRIES = 24
+        /** Evicted chats remembered before the first prune of the ones nobody watches (see [evictedStates]). */
+        const val MIN_EVICTED_PRUNE = 64
         /** How far behind the window's first turn an echo's run is remembered (see `Entry.recordEchoes`): a page of older turns brought back keeps its evidence. */
         const val RECORD_ECHOES_BEHIND = 400
         const val PREFETCH_LIMIT = 6

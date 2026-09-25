@@ -60,6 +60,8 @@ fun SettingsDebugSheet(graph: AppGraph, isDemo: Boolean, extendedMode: Boolean, 
                 HairlineDivider()
                 SendDiagnosticsRow(graph, enabled = extendedMode && !isDemo)
                 HairlineDivider()
+                CrashReportsRow(graph)
+                HairlineDivider()
                 DeepRefreshRow(graph)
             }
 
