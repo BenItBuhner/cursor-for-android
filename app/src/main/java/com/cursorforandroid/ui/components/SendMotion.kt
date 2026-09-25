@@ -175,7 +175,7 @@ class SendFlight internal constructor(
     var agentId by mutableStateOf<String?>(null)
         internal set
 
-    /** 0 at the composer, 1 in the bubble. */
+    /** 0 at the composer, 1 in the bubble: the flight's time, not yet eased. */
     val progress = Animatable(0f)
 
     /** 0 while the text stands, 1 once a flight that found no bubble has faded out. */
@@ -259,10 +259,21 @@ internal fun Modifier.sendSource(motion: SendMotion?, anchor: ComposerAnchor?): 
 
 /**
  * Provides [LocalSendMotion] to [content] and draws the flight over it: the whole window's width and height, so the
- * text crosses from one screen to the next and past the panes of a wide window. Nothing here takes a touch.
+ * text crosses from one screen to the next and past the panes of a wide window. Nothing here takes a touch. Inside
+ * another host, and given no [motion] of its own, it leaves the flight to that one.
  */
 @Composable
-fun SendMotionHost(motion: SendMotion = remember { SendMotion() }, content: @Composable () -> Unit) {
+fun SendMotionHost(motion: SendMotion? = null, content: @Composable () -> Unit) {
+    val outer = LocalSendMotion.current
+    if (motion == null && outer != null) {
+        content()
+        return
+    }
+    FlightHost(motion ?: remember { SendMotion() }, content)
+}
+
+@Composable
+private fun FlightHost(motion: SendMotion, content: @Composable () -> Unit) {
     val flight = motion.flight
     LaunchedEffect(flight) {
         val f = flight ?: return@LaunchedEffect
@@ -272,7 +283,8 @@ fun SendMotionHost(motion: SendMotion = remember { SendMotion() }, content: @Com
             f.fade.animateTo(1f, tween(SendMotion.FadeMillis))
         } else {
             f.phase = SendFlight.Phase.Flying
-            f.progress.animateTo(1f, tween(SendMotion.FlightMillis, easing = SendMotion.Emphasized))
+            // Linear in time: the drawing eases it (Emphasized), and the hand-over is a point in time.
+            f.progress.animateTo(1f, tween(SendMotion.FlightMillis, easing = LinearEasing))
         }
         motion.finish(f)
     }
@@ -280,18 +292,21 @@ fun SendMotionHost(motion: SendMotion = remember { SendMotion() }, content: @Com
     CompositionLocalProvider(LocalSendMotion provides motion) {
         Box(Modifier.fillMaxSize()) {
             content()
-            if (flight != null) FlightOverlay(flight)
+            // Always there, reading the flight as it draws: composed only with a flight, it would first draw a frame
+            // after the composer had let the text go.
+            FlightOverlay(motion)
         }
     }
 }
 
 @Composable
-private fun FlightOverlay(flight: SendFlight) {
+private fun FlightOverlay(motion: SendMotion) {
     val colors = CursorTheme.colors
     val style = CursorTheme.typography.message
     val measurer = rememberTextMeasurer(cacheSize = 4)
     val holder = remember { arrayOfNulls<LayoutCoordinates>(1) }
     Canvas(Modifier.fillMaxSize().onPlaced { holder[0] = it }) {
+        val flight = motion.flight ?: return@Canvas
         val own = holder[0]?.takeIf { it.isAttached } ?: return@Canvas
         val shift = -own.positionInWindow()
         val takeoff = flight.takeoff
