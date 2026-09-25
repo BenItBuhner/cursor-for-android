@@ -2,6 +2,7 @@ package com.cursorforandroid.ui.components
 
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.SizeTransform
+import androidx.compose.animation.core.keyframes
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -20,6 +21,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntSize
 import com.cursorforandroid.ui.theme.CursorTheme
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.conflate
@@ -47,7 +49,17 @@ fun RollingText(
         targetState = shown,
         transitionSpec = {
             (slideInVertically(tween(RollingText.RollMillis)) { it / 2 } + fadeIn(tween(RollingText.RollMillis))) togetherWith
-                (slideOutVertically(tween(RollingText.RollMillis)) { -it / 2 } + fadeOut(tween(RollingText.RollMillis))) using SizeTransform(clip = true)
+                (slideOutVertically(tween(RollingText.RollMillis)) { -it / 2 } + fadeOut(tween(RollingText.RollMillis))) using
+                // Clipped to the line, so the words rise out of it; as wide as the wider wording for the whole roll, so
+                // neither is cut short at its end while the other comes or goes.
+                SizeTransform(clip = true) { initial, target ->
+                    val wider = IntSize(maxOf(initial.width, target.width), maxOf(initial.height, target.height))
+                    keyframes {
+                        durationMillis = RollingText.RollMillis
+                        wider at 0
+                        wider at RollingText.RollMillis - 1
+                    }
+                }
         },
         label = label,
         modifier = modifier,
