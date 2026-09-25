@@ -372,7 +372,7 @@ internal fun VoiceMicButton(voice: VoiceInput, prominent: Boolean, onClick: () -
         is VoiceState.Recording -> {
             val level by animateFloatAsState(voice.levels.lastOrNull() ?: 0f, tween(90), label = "micLevel")
             val halo = colors.red
-            TouchTarget(size = CursorDimens.roundButton, touchSize = 40.dp, shape = CircleShape, onClick = onClick, modifier = modifier.testTag("voice-mic")) {
+            TouchTarget(size = CursorDimens.roundButton, touchSize = CursorDimens.roundButtonTouch, shape = CircleShape, onClick = onClick, modifier = modifier.testTag("voice-mic")) {
                 Box(
                     Modifier
                         .size(CursorDimens.roundButton)
