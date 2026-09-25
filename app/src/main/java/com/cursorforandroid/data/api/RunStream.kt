@@ -79,6 +79,12 @@ sealed interface RunStreamEvent {
         }
     }
     data object Done : RunStreamEvent
+    /**
+     * The stream's resume position once everything before it has been handed over: the SSE id of the frame just
+     * delivered (or deliberately skipped). A collector that keeps what it applied can come back later with this as
+     * `lastEventId` and be sent only what followed, instead of the run from its first event.
+     */
+    data class Position(val id: String) : RunStreamEvent
 }
 
 /**
@@ -305,10 +311,14 @@ class SseRunStreamer(
                 when (parsed) {
                     is SseParser.Parsed.Delivered -> {
                         frame.id?.let { lastId = it }
-                        parsed.event.takeUnless { it is RunStreamEvent.Error }?.let { delivered = true; emit(it) }
+                        parsed.event.takeUnless { it is RunStreamEvent.Error }?.let {
+                            delivered = true
+                            emit(it)
+                            frame.id?.takeIf { it.isNotBlank() && !frame.resetId }?.let { id -> emit(RunStreamEvent.Position(id)) }
+                        }
                     }
                     // Skipped on purpose, either way: resuming past them is right, since asking again brings the same frame.
-                    SseParser.Parsed.Ignored, SseParser.Parsed.Oversized -> frame.id?.let { lastId = it }
+                    SseParser.Parsed.Ignored, SseParser.Parsed.Oversized -> frame.id?.let { lastId = it; if (it.isNotBlank() && !frame.resetId) emit(RunStreamEvent.Position(it)) }
                     SseParser.Parsed.Undecodable -> Unit
                 }
                 parsed
@@ -342,7 +352,7 @@ class SseRunStreamer(
                 }
             }
         }
-    }.flowOn(Dispatchers.IO)
+    }.flowOn(STREAM_IO)
 
     private sealed interface Outcome {
         /** The run's `result` (and `done`) came through. */
@@ -460,5 +470,13 @@ class SseRunStreamer(
 
         /** A `Retry-After` beyond this is honoured only this far; the caller decides what to do about the rest. */
         const val MAX_RETRY_AFTER_MS = 60_000L
+
+        /**
+         * A stream holds its thread for as long as the run goes on (`execute()` blocks on the socket). Streams get
+         * threads of their own, beside the shared IO pool's 64: background live sync holds one per running chat, and
+         * thirty of them in the shared pool left the rest of the app's reads queueing for a thread.
+         */
+        @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+        val STREAM_IO = Dispatchers.IO.limitedParallelism(64)
     }
 }

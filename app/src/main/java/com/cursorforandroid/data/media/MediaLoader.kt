@@ -464,7 +464,7 @@ class MediaLoader(
         imageLoader.memoryCache?.clear()
         withContext(Dispatchers.IO) {
             imageLoader.diskCache?.clear()
-            File(context.cacheDir, MEDIA_DIR).deleteRecursively()
+            DiskSweep.deleteTree(File(context.cacheDir, MEDIA_DIR))
         }
     }
 

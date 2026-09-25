@@ -53,19 +53,24 @@ import java.util.Locale
 import java.util.TimeZone
 
 /**
- * The conversation panel pinned beside a chat in the running shell, under a 24dp status bar, at the narrowest and the
- * widest it drags to on each wide window. It comes up as a restart brings it back: left open for the window's size
- * class at the width it was dragged to. The chat keeps its least, 320dp, and the rail gives way before it does,
- * narrowing to 200dp and then stepping aside.
+ * The conversation panel pinned beside a chat in the running shell, under a 24dp status bar, as it opens and at the
+ * narrowest and the widest it drags to on each wide window. It comes up as a restart brings it back: left open for the
+ * window's size class, at the share of the window it was dragged to. Until it is dragged, it and the chat share half
+ * and half what the rail leaves of the window, or, where the rail has no room beside that, the whole window. The chat
+ * keeps its least, 320dp, and the rail gives way before it does, narrowing to 200dp and then stepping aside.
  *
- * - `507`/`508`: a 1280dp tablet on its side, the panel at 280dp and at 640dp; the rail keeps its 278dp either way.
+ * - `507`/`508`: a 1280dp tablet on its side, the panel at 280dp beside the rail's 278dp, and at its widest, 960dp,
+ *   the rail stepped aside and the chat at its 320dp.
  * - `509`/`510`: the tablet upright, 800dp: at 280dp the rail narrows to 200dp; at the panel's widest there, 480dp,
  *   the rail steps aside and its button comes to the chat's header.
  * - `511`/`512`: an 840dp foldable with the rail open: the panel at 280dp beside a 240dp rail, and at 320dp, the widest
  *   it goes with the rail still beside the chat, at 200dp.
  * - `513`/`514`: the foldable with the rail put away: the panel at 280dp and at its widest there, 520dp.
- * - `515`: the foldable with the panel at the 400dp it opens at, the rail asked for and come over the chat.
- * - `516`: the tablet in the light theme, the panel at 400dp.
+ * - `515`: the foldable with the panel as it opens, half the window, the rail asked for and come over the chat.
+ * - `516`: the tablet in the light theme as the panel opens, it and the chat 501dp each beside the rail.
+ * - `517`: the tablet with the rail put away as the panel opens, it and the chat 640dp each.
+ * - `518`: the foldable as the panel opens: the rail steps aside and the panel and the chat have 420dp each.
+ * - `519`: the tablet upright as the panel opens, it and the chat 400dp each.
  *
  * Written to `screenshots/` and compared pixel for pixel in CI.
  */
@@ -94,16 +99,17 @@ class PinnedPanelScreenshotTest {
     /** The chat a notification hands the running shell, once it is up (see [HeaderClearanceScreenshotTest]). */
     private var deepLink by mutableStateOf<String?>(null)
 
-    /** The Revenue chat, its panel left pinned open for [widthClass] at [panelWidth]dp (null: never dragged). */
+    /** The Revenue chat, its panel left pinned open for [widthClass], dragged to [panelWidth]dp of this window (null: never dragged). */
     @OptIn(ExperimentalMaterial3Api::class)
     private fun show(widthClass: PaneWidthClass, panelWidth: Int?, mode: ThemeMode = ThemeMode.Dark) {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val graph = AppGraph(context, SecureKeyStore(context) { context.getSharedPreferences("stand-in-secure", Context.MODE_PRIVATE) }, appVersion = SCREENSHOT_APP_VERSION)
+        val window = compose.activity.resources.configuration.screenWidthDp.toFloat()
         runBlocking {
             graph.session.enterDemo()
             graph.agents.refresh()
             graph.prefs.setPanelOpen(widthClass, true)
-            panelWidth?.let { graph.prefs.setPanelWidthDp(it) }
+            panelWidth?.let { graph.prefs.setPanelWidthFraction(it / window) }
         }
         compose.setContent {
             CursorTheme(mode = mode) {
@@ -200,7 +206,7 @@ class PinnedPanelScreenshotTest {
     fun tabletNarrowest() = pinned(PaneWidthClass.Expanded, 280, "507_pinned_panel_tablet_min")
 
     @Test
-    fun tabletWidest() = pinned(PaneWidthClass.Expanded, 640, "508_pinned_panel_tablet_max")
+    fun tabletWidest() = pinned(PaneWidthClass.Expanded, 960, "508_pinned_panel_tablet_max", rail = false)
 
     @Test
     @Config(qualifiers = TABLET_PORTRAIT)
@@ -245,6 +251,23 @@ class PinnedPanelScreenshotTest {
 
     @Test
     fun tabletLight() = pinned(PaneWidthClass.Expanded, panelWidth = null, name = "516_pinned_panel_tablet_light", mode = ThemeMode.Light)
+
+    @Test
+    fun tabletRailClosedHalves() {
+        show(PaneWidthClass.Expanded, panelWidth = null)
+        waitForRail()
+        compose.onNodeWithContentDescription("Toggle sidebar").performClick()
+        compose.waitUntil(10_000) { described("Open sidebar") }
+        capture("517_pinned_panel_tablet_rail_closed_halves")
+    }
+
+    @Test
+    @Config(qualifiers = FOLDABLE)
+    fun foldableHalves() = pinned(PaneWidthClass.Expanded, panelWidth = null, name = "518_pinned_panel_foldable_halves", rail = false)
+
+    @Test
+    @Config(qualifiers = TABLET_PORTRAIT)
+    fun tabletUprightHalves() = pinned(PaneWidthClass.Medium, panelWidth = null, name = "519_pinned_panel_tablet_portrait_halves", rail = false)
 
     private companion object {
         const val STATUS_BAR_DP = 24

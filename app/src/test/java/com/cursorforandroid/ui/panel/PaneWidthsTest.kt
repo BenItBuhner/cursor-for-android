@@ -8,73 +8,132 @@ import org.junit.Test
 
 class PaneWidthsTest {
 
-    private fun widths(window: Dp, railExpanded: Boolean = true, rail: Dp = CursorDimens.sidebarWidth, panelOpen: Boolean = true, panel: Dp = PinnedPanelDefaultWidth) =
-        PaneWidths.of(window, railExpanded, rail, panelOpen, panel)
+    private fun widths(window: Dp, railExpanded: Boolean = true, rail: Dp = CursorDimens.sidebarWidth, panelOpen: Boolean = true, fraction: Float? = null) =
+        PaneWidths.of(window, railExpanded, rail, panelOpen, fraction)
 
     private fun PaneWidths.chat(window: Dp): Dp = window - (if (railShown) rail else 0.dp) - (if (panelShown) panel else 0.dp)
 
     @Test
-    fun `a tablet on its side has the rail, the chat and the panel side by side at their own widths`() {
+    fun `until it is dragged the panel shares what the rail leaves of a tablet on its side half and half with the chat`() {
         val w = widths(1280.dp)
+        assertThat(w.splits).isTrue()
         assertThat(w.railShown).isTrue()
         assertThat(w.rail).isEqualTo(CursorDimens.sidebarWidth)
         assertThat(w.panelShown).isTrue()
-        assertThat(w.panel).isEqualTo(400.dp)
-        assertThat(w.chat(1280.dp)).isEqualTo(602.dp)
+        assertThat(w.panel).isEqualTo(501.dp)
+        assertThat(w.chat(1280.dp)).isEqualTo(501.dp)
+        // The rail put away, the two share the whole window...
+        val collapsed = widths(1280.dp, railExpanded = false)
+        assertThat(collapsed.splits).isTrue()
+        assertThat(collapsed.panel).isEqualTo(640.dp)
+        assertThat(collapsed.chat(1280.dp)).isEqualTo(640.dp)
+        // ...and the rail dragged wider, what is left of it.
+        val wideRail = widths(1280.dp, rail = RailMaxWidth)
+        assertThat(wideRail.rail).isEqualTo(RailMaxWidth)
+        assertThat(wideRail.panel).isEqualTo(440.dp)
+        assertThat(wideRail.chat(1280.dp)).isEqualTo(440.dp)
+    }
+
+    @Test
+    fun `a window with no room for the rail beside half and half puts the rail out of the way and shares the rest`() {
+        // A foldable's inner screen.
+        val foldable = widths(840.dp)
+        assertThat(foldable.splits).isFalse()
+        assertThat(foldable.railShown).isFalse()
+        assertThat(foldable.railFits).isFalse()
+        assertThat(foldable.panel).isEqualTo(420.dp)
+        assertThat(foldable.chat(840.dp)).isEqualTo(420.dp)
+        // A tablet held upright.
+        val upright = widths(800.dp)
+        assertThat(upright.pinnable).isTrue()
+        assertThat(upright.railShown).isFalse()
+        assertThat(upright.panel).isEqualTo(400.dp)
+        assertThat(upright.chat(800.dp)).isEqualTo(400.dp)
+    }
+
+    @Test
+    fun `half and half keeps the rail from the width where its narrowest fits beside half the window and the chat`() {
+        val first = widths(1040.dp)
+        assertThat(first.splits).isTrue()
+        assertThat(first.railShown).isTrue()
+        assertThat(first.panel).isEqualTo(381.dp)
+        assertThat(first.chat(1040.dp)).isEqualTo(381.dp)
+        // As wide as the rail can be dragged, the chat and the panel are still their own.
+        val wideRail = widths(1040.dp, rail = RailMaxWidth)
+        assertThat(wideRail.rail).isEqualTo(RailMaxWidth)
+        assertThat(wideRail.panel).isEqualTo(ChatMinWidth)
+        assertThat(wideRail.chat(1040.dp)).isEqualTo(ChatMinWidth)
+        val short = widths(1039.dp)
+        assertThat(short.splits).isFalse()
+        assertThat(short.railShown).isFalse()
+        assertThat(short.panel).isEqualTo(519.5.dp)
+        assertThat(short.chat(1039.dp)).isEqualTo(519.5.dp)
+    }
+
+    @Test
+    fun `dragged, the panel keeps its share of the window from one window to another`() {
+        val tablet = widths(1280.dp, fraction = 0.375f)
+        assertThat(tablet.splits).isFalse()
+        assertThat(tablet.panel).isEqualTo(480.dp)
+        assertThat(tablet.railShown).isTrue()
+        assertThat(tablet.chat(1280.dp)).isEqualTo(522.dp)
+        assertThat(widths(1600.dp, fraction = 0.375f).panel).isEqualTo(600.dp)
+        assertThat(widths(1024.dp, fraction = 0.375f).panel).isEqualTo(384.dp)
+        // No longer half and half, it stays as wide as the rail comes and goes.
+        val collapsed = widths(1280.dp, railExpanded = false, fraction = 0.375f)
+        assertThat(collapsed.panel).isEqualTo(480.dp)
+        assertThat(collapsed.chat(1280.dp)).isEqualTo(800.dp)
+    }
+
+    @Test
+    fun `the panel is dragged between its minimum and all the chat leaves at its narrowest`() {
+        assertThat(widths(1280.dp, fraction = 0.0625f).panel).isEqualTo(PinnedPanelMinWidth)
+        assertThat(widths(1280.dp).panelMax).isEqualTo(960.dp)
+        assertThat(widths(840.dp).panelMax).isEqualTo(520.dp)
+        assertThat(widths(800.dp).panelMax).isEqualTo(480.dp)
+        val widest = widths(1280.dp, fraction = 1f)
+        assertThat(widest.panel).isEqualTo(960.dp)
+        assertThat(widest.railShown).isFalse()
+        assertThat(widest.chat(1280.dp)).isEqualTo(ChatMinWidth)
+        // Past half a tablet, where it used to stop.
+        assertThat(widths(1280.dp, fraction = 0.625f).panel).isEqualTo(800.dp)
     }
 
     @Test
     fun `the rail comes in narrower before it gives way, and gives way before the panel does`() {
-        // A foldable's inner screen: the panel at its narrowest leaves the rail 240dp beside a chat at its minimum.
-        val narrow = widths(840.dp, panel = PinnedPanelMinWidth)
-        assertThat(narrow.railShown).isTrue()
-        assertThat(narrow.rail).isEqualTo(240.dp)
-        assertThat(narrow.chat(840.dp)).isEqualTo(ChatMinWidth)
+        val narrower = widths(1280.dp, fraction = 0.546875f)
+        assertThat(narrower.panel).isEqualTo(700.dp)
+        assertThat(narrower.railShown).isTrue()
+        assertThat(narrower.rail).isEqualTo(260.dp)
+        assertThat(narrower.chat(1280.dp)).isEqualTo(ChatMinWidth)
         // Wider, until the rail is down to its minimum...
-        val tight = widths(840.dp, panel = 320.dp)
+        val tight = widths(1280.dp, fraction = 0.59375f)
+        assertThat(tight.panel).isEqualTo(760.dp)
         assertThat(tight.railShown).isTrue()
         assertThat(tight.rail).isEqualTo(RailMinWidth)
         // ...and past that it is out of the way, rather than the chat going under its minimum.
-        val past = widths(840.dp, panel = 321.dp)
+        val past = widths(1280.dp, fraction = 0.625f)
         assertThat(past.railShown).isFalse()
         assertThat(past.railFits).isFalse()
-        assertThat(past.panel).isEqualTo(321.dp)
-        assertThat(past.chat(840.dp)).isEqualTo(519.dp)
+        assertThat(past.panel).isEqualTo(800.dp)
+        assertThat(past.chat(1280.dp)).isEqualTo(480.dp)
     }
 
     @Test
-    fun `with the rail out of the way the panel comes in narrower, never the chat`() {
-        val w = widths(840.dp, panel = 900.dp)
-        assertThat(w.railShown).isFalse()
-        assertThat(w.panel).isEqualTo(520.dp)
-        assertThat(w.panelMax).isEqualTo(520.dp)
+    fun `dragged down on a foldable the panel leaves the rail room beside the chat again`() {
+        val w = widths(840.dp, fraction = 0.25f)
+        assertThat(w.panel).isEqualTo(PinnedPanelMinWidth)
+        assertThat(w.railShown).isTrue()
+        assertThat(w.rail).isEqualTo(240.dp)
         assertThat(w.chat(840.dp)).isEqualTo(ChatMinWidth)
     }
 
     @Test
-    fun `a tablet held upright pins the panel with the rail out of the way at the default width`() {
-        val w = widths(800.dp)
-        assertThat(w.pinnable).isTrue()
-        assertThat(w.panelShown).isTrue()
+    fun `with the rail out of the way the panel comes in narrower, never the chat`() {
+        val w = widths(840.dp, fraction = 0.875f)
         assertThat(w.railShown).isFalse()
-        assertThat(w.chat(800.dp)).isEqualTo(400.dp)
-        // At its narrowest it leaves the rail exactly its minimum.
-        val narrow = widths(800.dp, panel = PinnedPanelMinWidth)
-        assertThat(narrow.railShown).isTrue()
-        assertThat(narrow.rail).isEqualTo(RailMinWidth)
-    }
-
-    @Test
-    fun `the panel is dragged between its minimum and the lesser of its maximum and what leaves the chat its own`() {
-        assertThat(widths(1280.dp, panel = 100.dp).panel).isEqualTo(PinnedPanelMinWidth)
-        assertThat(widths(1280.dp, panel = 900.dp).panel).isEqualTo(PinnedPanelMaxWidth)
-        assertThat(widths(1280.dp).panelMax).isEqualTo(PinnedPanelMaxWidth)
-        assertThat(widths(800.dp).panelMax).isEqualTo(480.dp)
-        // At its widest on a tablet on its side there is still room for the rail as it was.
-        val widest = widths(1280.dp, panel = PinnedPanelMaxWidth)
-        assertThat(widest.railShown).isTrue()
-        assertThat(widest.rail).isEqualTo(CursorDimens.sidebarWidth)
-        assertThat(widest.railMax).isEqualTo(320.dp)
+        assertThat(w.panel).isEqualTo(520.dp)
+        assertThat(w.chat(840.dp)).isEqualTo(ChatMinWidth)
     }
 
     @Test
@@ -82,8 +141,12 @@ class PaneWidthsTest {
         val w = widths(599.dp)
         assertThat(w.pinnable).isFalse()
         assertThat(w.panelShown).isFalse()
+        assertThat(w.splits).isFalse()
         assertThat(w.railShown).isTrue()
-        assertThat(widths(600.dp).pinnable).isTrue()
+        val first = widths(600.dp)
+        assertThat(first.pinnable).isTrue()
+        assertThat(first.panel).isEqualTo(PinnedPanelMinWidth)
+        assertThat(first.chat(600.dp)).isEqualTo(ChatMinWidth)
     }
 
     @Test
@@ -99,8 +162,10 @@ class PaneWidthsTest {
     }
 
     @Test
-    fun `a rail asked wider than the pinned panel leaves room for comes in to fit`() {
-        val w = widths(1280.dp, rail = RailMaxWidth, panel = PinnedPanelMaxWidth)
+    fun `a rail asked wider than the dragged panel leaves room for comes in to fit`() {
+        val w = widths(1280.dp, rail = RailMaxWidth, fraction = 0.5f)
+        assertThat(w.splits).isFalse()
+        assertThat(w.panel).isEqualTo(640.dp)
         assertThat(w.railShown).isTrue()
         assertThat(w.rail).isEqualTo(320.dp)
         assertThat(w.chat(1280.dp)).isEqualTo(ChatMinWidth)

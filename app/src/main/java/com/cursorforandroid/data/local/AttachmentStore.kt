@@ -64,7 +64,7 @@ class AttachmentStore(context: Context) {
                 preview ?: runCatching { writeFile(file, dir, index) }.getOrNull()
             }
         if (written.isEmpty()) {
-            dir.deleteRecursively()
+            DiskSweep.deleteTree(dir)
             return@withContext StagedAttachments.EMPTY
         }
         StagedAttachments(dir, written)
@@ -78,10 +78,10 @@ class AttachmentStore(context: Context) {
         // The metadata goes in before the move so the run directory is complete the instant it appears.
         writeMeta(from, runId, moved)
         to.parentFile?.mkdirs()
-        if (to.exists()) to.deleteRecursively()
+        if (to.exists()) DiskSweep.deleteTree(to)
         if (!from.renameTo(to)) {
             from.copyRecursively(to, overwrite = true)
-            from.deleteRecursively()
+            DiskSweep.deleteTree(from)
         }
         moved
     }
@@ -105,7 +105,7 @@ class AttachmentStore(context: Context) {
     }
 
     suspend fun discard(staged: StagedAttachments) = withContext(Dispatchers.IO) {
-        staged.dir?.deleteRecursively()
+        staged.dir?.let(DiskSweep::deleteTree)
         Unit
     }
 
@@ -115,7 +115,7 @@ class AttachmentStore(context: Context) {
      * reads its set back by [staged], and a week is past any wait that still delivers.
      */
     suspend fun sweepStaging(nowMillis: Long = System.currentTimeMillis(), maxAgeMs: Long = STAGING_MAX_AGE_MS) = withContext(Dispatchers.IO) {
-        staging.listFiles { f -> f.isDirectory }?.forEach { if (it.lastModified() < nowMillis - maxAgeMs) it.deleteRecursively() }
+        staging.listFiles { f -> f.isDirectory }?.forEach { if (it.lastModified() < nowMillis - maxAgeMs) DiskSweep.deleteTree(it) }
         Unit
     }
 
@@ -136,12 +136,12 @@ class AttachmentStore(context: Context) {
     }
 
     suspend fun delete(agentId: String) = withContext(Dispatchers.IO) {
-        agentDir(agentId).deleteRecursively()
+        DiskSweep.deleteTree(agentDir(agentId))
         Unit
     }
 
     suspend fun clear() = withContext(Dispatchers.IO) {
-        root.deleteRecursively()
+        DiskSweep.deleteTree(root)
         Unit
     }
 

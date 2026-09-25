@@ -81,6 +81,7 @@ import com.cursorforandroid.ui.shortcuts.ShortcutHandler
 import com.cursorforandroid.ui.shortcuts.shortcutsBeforeIme
 import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.launch
 
 /** The hosting activity through any number of wrappers (a themed context, a display context); null outside one. */
@@ -152,7 +153,8 @@ internal fun AppShell(
     var projectEditor by rememberSaveable { mutableStateOf<ProjectEditorTarget?>(null) }
     // Wide layout: the sidebar collapses like on the web, and the toggle moves into the detail pane header.
     var sidebarCollapsed by rememberSaveable { mutableStateOf(false) }
-    // Where a key or the window last left the rail, beside the chat or away (see byKey), until anything else moves it.
+    // Where the window or a key's new screen last left the rail, beside the chat or away (see byKey), until anything
+    // else moves it.
     var railKeyed by remember { mutableStateOf<Boolean?>(null) }
     // The long groups the reader listed in full, for this visit to the sidebar: not saved, cut back on leaving.
     val shortLists = remember { SidebarShortLists() }
@@ -167,9 +169,9 @@ internal fun AppShell(
     // How the wide window shares its width between the rail, the chat and a panel pinned beside it (see ShellPanes).
     val panes = remember { ShellPanes(graph.prefs, scope, railExpanded = { !sidebarCollapsed }, chatOnTop = { stack.top.screen is Screen.Agent }) }
     // A fold, an unfold or a turn lays the whole window out again in one frame, so the rail is where the new window has
-    // it in that frame, as a key leaves it: a rail still sliding once the window has changed would drag the chat and a
-    // pinned panel through widths of their own after it. That includes making way for the chat's sheet, pinned open
-    // as the window widens into room for it.
+    // it in that frame: a rail still sliding once the window has changed would drag the chat and a pinned panel
+    // through widths of their own after it. That includes making way for the chat's sheet, pinned open as the window
+    // widens into room for it.
     val sheetOpen = { (stack.top.screen as? Screen.Agent)?.let { shortcuts.chats.target(it.id) }?.sheetOpen == true }
     if (panes.configure(LocalConfiguration.current.screenWidthDp.dp, sheetOpen)) railKeyed = panes.widths.railShown
     LaunchedEffect(panes) { panes.load() }
@@ -179,20 +181,37 @@ internal fun AppShell(
     // The drawer on a wide window: the rail over the chat, where the window has no room for it beside the chat.
     val flyoutOpen by remember(drawerState) { derivedStateOf { drawerState.isOpen || drawerState.fraction > 0f } }
 
+    /**
+     * Slides the drawer to [value]. A key's slide ([ShellShortcuts.keyed]) is set off before the next frame is drawn,
+     * and a frame ahead, so it is already moving in that frame.
+     */
+    fun slideDrawer(value: DrawerValue) {
+        val keyed = shortcuts.keyed
+        scope.launch(start = if (keyed) CoroutineStart.UNDISPATCHED else CoroutineStart.DEFAULT) {
+            if (value == DrawerValue.Open) drawerState.open(keyed) else drawerState.close(keyed)
+        }
+    }
+
     fun closeDrawer() {
-        if (!drawerState.isOpen) return
-        if (shortcuts.keyed) drawerState.jumpTo(DrawerValue.Closed, scope) else scope.launch { drawerState.close() }
+        if (drawerState.isOpen) slideDrawer(DrawerValue.Closed)
     }
 
     /**
-     * A key's action, taken as the keyboard takes it everywhere on desktop: the screen it opens, the rail and the
-     * drawer are where it puts them in the frame the key lands, with no slide (see [NavStack.instantly]). The rail
-     * lands with whatever the key moved it by: Ctrl+B, or a panel pinned open or shut, or a screen opened, that takes
-     * or gives back its room.
+     * A key's action, taken as the keyboard takes it everywhere on desktop: a screen it opens is on top in the frame
+     * the key lands, with no transition (see [NavStack.instantly]), and a rail that screen takes or gives back room to
+     * lands with it. What the key slides — the rail (Ctrl+B), the drawer, the chat's panel (Ctrl+Shift+B, Esc) — slides
+     * as a finger would have it, set off before the next frame and a frame ahead, so it is already moving in that frame.
      */
     fun <T> byKey(action: () -> T): T = shortcuts.fromKeyboard {
         val railBefore = panes.widths.railShown
-        stack.instantly(action).also { if (panes.widths.railShown != railBefore) railKeyed = panes.widths.railShown }
+        val top = stack.top
+        stack.instantly(action).also {
+            when {
+                panes.widths.railShown == railBefore -> Unit
+                stack.top != top -> railKeyed = panes.widths.railShown
+                else -> panes.slideRail(keyed = true)
+            }
+        }
     }
     // Anything else that moves the rail after it, a tap or a drag, slides it again.
     val railSlides = railKeyed != railShown
@@ -212,11 +231,7 @@ internal fun AppShell(
      * drawer comes, until it is put away or there is room for it again.
      */
     fun revealSidebar() {
-        when {
-            panes.widths.railFits -> sidebarCollapsed = false
-            shortcuts.keyed -> drawerState.jumpTo(DrawerValue.Open, scope)
-            else -> scope.launch { drawerState.open() }
-        }
+        if (panes.widths.railFits) sidebarCollapsed = false else slideDrawer(DrawerValue.Open)
     }
     LaunchedEffect(drawerState) {
         snapshotFlow { !drawerState.isOpen && drawerState.fraction == 0f }.collect { shut -> if (shut) shortLists.reset() }
@@ -241,9 +256,13 @@ internal fun AppShell(
         // Folding back puts the rail away behind a shut drawer.
         if (!wide) shortLists.reset()
     }
-    // Room for the rail again — the panel put away, the window widened: the rail takes over from the drawer over the chat.
+    // Room for the rail again — the panel put away, the window widened: the rail takes over from the drawer over the
+    // chat, standing where the drawer stood rather than sliding in behind it.
     LaunchedEffect(wide, railShown) {
-        if (wide && railShown && drawerState.targetValue == DrawerValue.Open) drawerState.snapTo(DrawerValue.Closed)
+        if (wide && railShown && drawerState.targetValue == DrawerValue.Open) {
+            panes.railSlide?.snapTo(1f)
+            drawerState.snapTo(DrawerValue.Closed)
+        }
     }
 
     // The navigation callbacks below read the stack when they run, never `topScreen` / `selectedAgentId` as they were
@@ -560,7 +579,7 @@ internal fun AppShell(
 
     fun toggleSidebar() {
         when {
-            !wide -> drawerState.jumpTo(if (drawerState.targetValue == DrawerValue.Open) DrawerValue.Closed else DrawerValue.Open, scope)
+            !wide -> slideDrawer(if (drawerState.targetValue == DrawerValue.Open) DrawerValue.Closed else DrawerValue.Open)
             drawerState.targetValue == DrawerValue.Open -> closeDrawer()
             railShown -> {
                 sidebarCollapsed = true

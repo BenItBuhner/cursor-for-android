@@ -163,13 +163,13 @@ class SettingsScreenshotTest {
 
     /** The whole list at once, on a canvas tall enough to hold it: the account first and the disclaimer last. */
     @Test
-    @Config(sdk = [35], qualifiers = "w411dp-h1900dp-night-420dpi")
+    @Config(sdk = [35], qualifiers = "w411dp-h2050dp-night-420dpi")
     fun settingsEssentials() {
         essentials(ThemeMode.Dark, "65_settings_essentials")
     }
 
     @Test
-    @Config(sdk = [35], qualifiers = "w411dp-h1900dp-notnight-420dpi")
+    @Config(sdk = [35], qualifiers = "w411dp-h2050dp-notnight-420dpi")
     fun settingsEssentialsLight() {
         essentials(ThemeMode.Light, "160_settings_essentials_light")
     }
@@ -245,7 +245,9 @@ class SettingsScreenshotTest {
         // was. Voice input is no switch of its own, so nothing else waits on the mode here.
         compose.onAllNodesWithText(ExtendedModeCopy.NEEDS_MODE).assertCountEquals(1)
         compose.onNodeWithTag(ExtendedModeTags.ENGINE_TOGGLE).assertIsNotEnabled().assertIsOff()
-        compose.onAllNodesWithText("Experimental").assertCountEquals(0)
+        // The one Experimental switch left is background live sync; voice input has none.
+        compose.onAllNodesWithText("Experimental").assertCountEquals(1)
+        compose.onAllNodesWithText(SettingsCopy.LIVE_SYNC).assertCountEquals(1)
         compose.onAllNodesWithText("Voice input").assertCountEquals(0)
         capture("66_settings_extended_off")
     }
@@ -261,8 +263,10 @@ class SettingsScreenshotTest {
         compose.onNodeWithText(ExtendedModeCopy.ENGINE_DETAIL).assertIsDisplayed()
         compose.onNodeWithTag(ExtendedModeTags.ENGINE_TOGGLE).assertIsEnabled()
         assertThat(runBlocking { graph.extendedMode.engine() }).isEqualTo(TranscriptEngine.BETA)
-        // Voice input comes with the mode, in the composers; there is no Experimental switch for it.
-        compose.onAllNodesWithText("Experimental").assertCountEquals(0)
+        // Voice input comes with the mode, in the composers.
+        // The one Experimental switch left is background live sync; voice input has none.
+        compose.onAllNodesWithText("Experimental").assertCountEquals(1)
+        compose.onAllNodesWithText(SettingsCopy.LIVE_SYNC).assertCountEquals(1)
         compose.onAllNodesWithText("Voice input").assertCountEquals(0)
         capture("67_settings_extended_on")
     }

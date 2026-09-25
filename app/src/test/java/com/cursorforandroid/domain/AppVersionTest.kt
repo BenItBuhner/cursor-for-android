@@ -61,6 +61,32 @@ class AppVersionTest {
         listOf("0.3.49", "0.3.49-rc.1", "0.3.49-beta.2", "0.3.49-alpha.1").forEach { assertThat(AppVersion.parse(it)!!.isDevBuild).isFalse() }
     }
 
+    /**
+     * What `versionFromGit` in app/build.gradle.kts names a checkout past the highest tag; the same names come out of
+     * `./gradlew -q :app:printAppVersion` on an untagged commit with that tag the highest.
+     */
+    @Test
+    fun `a dev build leads up to the next patch`() {
+        assertThat(AppVersion.parse("v0.3.48")!!.nextDevVersion().toString()).isEqualTo("0.3.49-dev")
+        assertThat(AppVersion.parse("v0.3.98")!!.nextDevVersion().toString()).isEqualTo("0.3.99-dev")
+        assertThat(AppVersion.parse("v1.12.34")!!.nextDevVersion().toString()).isEqualTo("1.12.35-dev")
+        assertThat(AppVersion.parse("v0.4.0-rc.1")!!.nextDevVersion().toString()).isEqualTo("0.4.0-dev")
+    }
+
+    /** PATCH and MINOR are two digits each in the versionCode: a 0.3.100 could neither be built nor offered. */
+    @Test
+    fun `a dev build rolls over to the next minor where the patch would reach 100`() {
+        assertThat(AppVersion.parse("v0.3.99")!!.nextDevVersion().toString()).isEqualTo("0.4.0-dev")
+        assertThat(AppVersion.parse("v0.99.99")!!.nextDevVersion().toString()).isEqualTo("1.0.0-dev")
+        assertThat(AppVersion.parse("0.3.100")).isNull()
+
+        val ci = AppVersion.parse("${AppVersion.parse("v0.3.99")!!.nextDevVersion()}.3412+gabc1234")!!
+        assertThat(ci.versionCode).isEqualTo(40024)
+        assertThat(ci).isGreaterThan(AppVersion.parse("0.3.99")!!)
+        assertThat(ci).isLessThan(AppVersion.parse("0.4.0-rc.1")!!)
+        assertThat(ci).isLessThan(AppVersion.parse("0.4.0")!!)
+    }
+
     @Test
     fun `stage iterations are capped so a runaway counter cannot cross into the next stage`() {
         assertThat(AppVersion.stage("alpha.99")).isEqualTo(24)

@@ -31,11 +31,11 @@ class GeneratedMediaStore(context: Context) {
         File(root, safeName(agentId)).listFiles { file -> file.isFile }?.let { DiskSweep.byModified(it) }.orEmpty()
 
     fun delete(agentId: String) {
-        File(root, safeName(agentId)).deleteRecursively()
+        DiskSweep.deleteTree(File(root, safeName(agentId)))
     }
 
     fun clear() {
-        root.deleteRecursively()
+        DiskSweep.deleteTree(root)
     }
 
     private fun extensionFor(mimeType: String?): String = when (mimeType?.lowercase()) {

@@ -90,11 +90,13 @@ import com.cursorforandroid.ui.components.CursorMenuItem
 import com.cursorforandroid.ui.components.FlatIconButton
 import com.cursorforandroid.ui.components.Haptic
 import com.cursorforandroid.ui.components.HeaderClearance
+import com.cursorforandroid.ui.components.LocalAgentLinkStatuses
 import com.cursorforandroid.ui.components.LocalMarkdownMedia
 import com.cursorforandroid.ui.components.LocalRunStopConfirmation
 import com.cursorforandroid.ui.components.MarkdownMediaContext
 import com.cursorforandroid.ui.components.RunInterruption
 import com.cursorforandroid.ui.components.RunStopDialog
+import com.cursorforandroid.ui.components.rememberAgentLinkStatuses
 import com.cursorforandroid.ui.components.rememberHaptics
 import com.cursorforandroid.ui.components.rememberRunStopConfirmation
 import com.cursorforandroid.ui.components.ShimmerText
@@ -420,6 +422,8 @@ fun ConversationScreen(
             onOpenAgentLink = agentLinks::open,
         )
     }
+    // The status icon each link to an agent opens with, working or at rest, off the list as it follows the runs.
+    val agentLinkStatuses = rememberAgentLinkStatuses(graph.agents)
     // The agent's VM desktop is reached from the header menu (Extended mode, `GetMachine` then noVNC), for the chats
     // that have one to show — the Agents Window's rule, a cloud composer, narrowed to the chats GetMachine would not
     // refuse (DesktopEligibility). It opens over the whole screen for the whole of the way there: the steps while the
@@ -441,7 +445,7 @@ fun ConversationScreen(
         panelContent = {
             // The panel's figures — generated images, recordings, artifacts — resolve through the same media context and
             // open into the same viewer as the transcript's, among the same pages.
-            CompositionLocalProvider(LocalMarkdownMedia provides markdownMedia, LocalPanelGraph provides graph, LocalRunStopConfirmation provides stopConfirmation) {
+            CompositionLocalProvider(LocalMarkdownMedia provides markdownMedia, LocalAgentLinkStatuses provides agentLinkStatuses, LocalPanelGraph provides graph, LocalRunStopConfirmation provides stopConfirmation) {
                 ConversationPanel(panel, panelActions, onClose = { scope.launch { panelState.close() } }, tabStates = panelTabs)
             }
         },
@@ -572,6 +576,7 @@ fun ConversationScreen(
             // opening a provider scope per item.
             CompositionLocalProvider(
                 LocalMarkdownMedia provides markdownMedia,
+                LocalAgentLinkStatuses provides agentLinkStatuses,
                 LocalTranscriptControls provides transcriptControls,
                 LocalDisclosureTaps provides transcriptScroll,
             ) {

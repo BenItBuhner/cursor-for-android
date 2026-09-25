@@ -14,13 +14,22 @@ import com.cursorforandroid.domain.PromptImage
 import com.cursorforandroid.domain.QueuedFollowUp
 import com.cursorforandroid.domain.UploadRef
 import com.google.common.truth.Truth.assertThat
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.joinAll
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import org.junit.After
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
 import java.io.File
+import java.util.concurrent.atomic.AtomicBoolean
 
 @RunWith(AndroidJUnit4::class)
 @Config(sdk = [35])
@@ -215,5 +224,51 @@ class FollowUpStoreTest {
         store.write("../../escape", FollowUpDraft("a"), emptyList())
         assertThat(File(context.filesDir, "followups").listFiles()!!.map { it.name }).containsExactly("_.._.._escape")
         assertThat(File(context.filesDir, "escape").exists()).isFalse()
+    }
+
+    @Test
+    fun `a clear through another instance waits for the chat's work under way, and a write asked for before it lands nowhere`() = runBlocking<Unit> {
+        store.write("bc-1", FollowUpDraft("Typed on the screen"), emptyList())
+        // Another instance over the same directory, as the tests' teardown makes one while the screen's is still saving.
+        val other = FollowUpStore(context)
+        val holding = CompletableDeferred<Unit>()
+        val release = CompletableDeferred<Unit>()
+        val underWay = launch(Dispatchers.IO) { store.whileStopped { holding.complete(Unit); release.await() } }
+        holding.await()
+
+        // Each started in place, so it has taken its generation and is waiting for the lock before the next begins.
+        val lateSave = launch(Dispatchers.IO, CoroutineStart.UNDISPATCHED) { store.write("bc-1", FollowUpDraft("Saved after the debounce"), emptyList()) }
+        val cleared = async(Dispatchers.IO, CoroutineStart.UNDISPATCHED) { other.clear() }
+        delay(200)
+        assertThat(cleared.isCompleted).isFalse()
+
+        release.complete(Unit)
+        withTimeout(5_000) { joinAll(underWay, lateSave, cleared) }
+        assertThat(File(context.filesDir, "followups").exists()).isFalse()
+        assertThat(store.read("bc-1")).isNull()
+
+        // Asked for after the clear, a write is kept.
+        store.write("bc-1", FollowUpDraft("Next account"), emptyList())
+        assertThat(other.read("bc-1")!!.draft.text).isEqualTo("Next account")
+    }
+
+    @Test
+    fun `saves and clears racing through two instances never fail and leave no directory behind the last clear`() = runBlocking<Unit> {
+        val other = FollowUpStore(context)
+        val image = image("content://photos/1@42", 1, 2, 3)
+        val stop = AtomicBoolean(false)
+        val savers = (0 until 16).map { chat ->
+            launch(Dispatchers.IO) {
+                while (!stop.get()) {
+                    store.write("bc-$chat", FollowUpDraft("typing", listOf(image)), emptyList())
+                    store.write("bc-$chat", FollowUpDraft(), emptyList())
+                }
+            }
+        }
+        repeat(2_000) { other.clear() }
+        stop.set(true)
+        savers.joinAll()
+        other.clear()
+        assertThat(File(context.filesDir, "followups").exists()).isFalse()
     }
 }

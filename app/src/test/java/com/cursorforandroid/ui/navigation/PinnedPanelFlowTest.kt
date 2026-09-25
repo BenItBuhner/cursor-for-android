@@ -59,10 +59,10 @@ import org.robolectric.annotation.GraphicsMode
 
 /**
  * The conversation panel pinned beside the chat on wide windows, in the running shell on the demo, at mdpi so that a
- * pixel is a dp: the chat narrows for it and keeps its composer's keyboard, back and Esc stay the chat's, it stands
- * open for every chat and across restarts for its window size class, its edge and the rail's drag to resize them
- * within their ranges and the widths are kept, and where it leaves the rail no room the rail makes way and comes
- * over the chat on asking.
+ * pixel is a dp: it opens sharing what the rail leaves half and half with the chat, which keeps its composer's
+ * keyboard, and the two follow the rail as it comes and goes; back and Esc stay the chat's, it stands open for every
+ * chat and across restarts for its window size class, its edge and the rail's drag to resize them within their ranges
+ * and the widths are kept, and where it leaves the rail no room the rail makes way and comes over the chat on asking.
  */
 @RunWith(AndroidJUnit4::class)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
@@ -150,6 +150,11 @@ class PinnedPanelFlowTest {
         compose.waitUntil(5_000) { kept(read) == expected }
     }
 
+    /** The panel's width the device keeps, as the share of this 1280dp window it is kept as. */
+    private fun assertKeptPanel(width: Float) {
+        compose.waitUntil(5_000) { kept { prefs.panelWidthFraction.first() }?.let { abs(it * 1280f - width) < 0.5f } == true }
+    }
+
     private fun softInputVisible(): Boolean =
         shadowOf(compose.activity.getSystemService(InputMethodManager::class.java)).isSoftInputVisible
 
@@ -224,7 +229,7 @@ class PinnedPanelFlowTest {
     }
 
     @Test
-    fun `the panel opens pinned beside the chat, which narrows for it and keeps its composer's keyboard`() {
+    fun `the panel opens pinned beside the chat, the two sharing what the rail leaves half and half, and the chat keeps its composer's keyboard`() {
         showShell()
         openChat(CLI)
         startWriting()
@@ -235,13 +240,14 @@ class PinnedPanelFlowTest {
         written.assertIsFocused()
         assertThat(softInputVisible()).isTrue()
         val panel = panelBounds()
-        assertThat(panel.width).isWithin(0.5f).of(400f)
+        assertThat(panel.width).isWithin(0.5f).of(501f)
         assertThat(panel.right).isWithin(0.5f).of(1280f)
-        // The chat, composer and all, ends where the panel begins, beside the rail at its own width.
+        // The chat, composer and all, ends where the panel begins, beside the rail at its own width, as wide as the panel.
         val chat = chatBounds()
         assertThat(chatOpen(CLI)).isTrue()
         assertThat(chat.left).isWithin(0.5f).of(278f)
         assertThat(chat.right).isWithin(0.5f).of(panel.left)
+        assertThat(chat.width).isWithin(0.5f).of(501f)
         assertThat(written.fetchSemanticsNode().boundsInRoot.right).isAtMost(panel.left + 0.5f)
         assertThat(railShown()).isTrue()
         assertKept(true) { prefs.panelOpen(PaneWidthClass.Expanded).first() }
@@ -256,17 +262,17 @@ class PinnedPanelFlowTest {
         compose.onNodeWithContentDescription(OPEN_PANEL).performClick()
         compose.mainClock.advanceTimeBy(SLIDE_MS / 2)
         val opening = chatBounds().right
-        assertThat(opening).isGreaterThan(880.5f)
+        assertThat(opening).isGreaterThan(779.5f)
         assertThat(opening).isLessThan(1279.5f)
         assertThat(panelBounds().left).isWithin(1f).of(opening)
         compose.mainClock.advanceTimeBy(SLIDE_MS)
-        assertThat(chatBounds().right).isWithin(0.5f).of(880f)
-        assertThat(panelBounds().left).isWithin(0.5f).of(880f)
+        assertThat(chatBounds().right).isWithin(0.5f).of(779f)
+        assertThat(panelBounds().left).isWithin(0.5f).of(779f)
 
         compose.onNodeWithContentDescription(HIDE_PANEL).performClick()
         compose.mainClock.advanceTimeBy(SLIDE_MS / 2)
         val shutting = chatBounds().right
-        assertThat(shutting).isGreaterThan(880.5f)
+        assertThat(shutting).isGreaterThan(779.5f)
         assertThat(shutting).isLessThan(1279.5f)
         assertThat(panelBounds().left).isWithin(1f).of(shutting)
         compose.mainClock.advanceTimeBy(SLIDE_MS)
@@ -294,7 +300,7 @@ class PinnedPanelFlowTest {
         openChat(HOUSE)
         assertThat(described(HIDE_PANEL)).isTrue()
         assertThat(panelShown()).isTrue()
-        assertThat(panelBounds().width).isWithin(0.5f).of(400f)
+        assertThat(panelBounds().width).isWithin(0.5f).of(501f)
 
         compose.onNodeWithContentDescription(HIDE_PANEL).performClick()
         compose.waitUntil(10_000) { !panelShown() && described(OPEN_PANEL) }
@@ -314,15 +320,24 @@ class PinnedPanelFlowTest {
 
         chord(KeyEvent.KEYCODE_B, shift = true)
         compose.waitUntil(10_000) { panelShown() && described(HIDE_PANEL) }
+        compose.waitForIdle()
+        assertThat(panelBounds().width).isWithin(0.5f).of(501f)
         assertKept(true) { prefs.panelOpen(PaneWidthClass.Expanded).first() }
 
+        // The rail put away, the chat and the panel share the whole window half and half; back, what it leaves.
         chord(KeyEvent.KEYCODE_B)
         compose.waitUntil(10_000) { !railShown() }
+        compose.waitForIdle()
         assertThat(panelShown()).isTrue()
         assertThat(chatBounds().left).isWithin(0.5f).of(0f)
+        assertThat(chatBounds().width).isWithin(0.5f).of(640f)
+        assertThat(panelBounds().width).isWithin(0.5f).of(640f)
         chord(KeyEvent.KEYCODE_B)
         compose.waitUntil(10_000) { railShown() }
+        compose.waitForIdle()
         assertThat(panelShown()).isTrue()
+        assertThat(chatBounds().width).isWithin(0.5f).of(501f)
+        assertThat(panelBounds().width).isWithin(0.5f).of(501f)
 
         startWriting()
         press(KeyEvent.KEYCODE_ESCAPE)
@@ -336,22 +351,50 @@ class PinnedPanelFlowTest {
     }
 
     @Test
+    fun `half and half, the chat and the panel follow the rail as it slides, each half of what it leaves in every frame`() {
+        showShell()
+        openChat(CLI)
+        openPanel()
+        compose.mainClock.autoAdvance = false
+
+        chord(KeyEvent.KEYCODE_B)
+        val chats = List(20) {
+            compose.mainClock.advanceTimeByFrame()
+            val chat = chatBounds()
+            val panel = panelBounds()
+            assertThat(chat.width).isWithin(1f).of(panel.width)
+            assertThat(chat.right).isWithin(1f).of(panel.left)
+            chat.width
+        }
+        assertThat(chats.any { it in 502f..639f }).isTrue()
+        compose.mainClock.autoAdvance = true
+        compose.waitForIdle()
+        assertThat(panelBounds().width).isWithin(0.5f).of(640f)
+    }
+
+    @Test
     fun `the panel's edge and the rail's drag to resize them within their ranges, the rail giving way first, and the widths are kept`() {
         showShell()
         openChat(CLI)
         openPanel()
-        assertThat(edgeSays(RESIZE_PANEL)).isEqualTo("400 dp wide")
+        assertThat(edgeSays(RESIZE_PANEL)).isEqualTo("501 dp wide")
         assertThat(edgeSays(RESIZE_SIDEBAR)).isEqualTo("278 dp wide")
 
-        // Dragged past its widest it stops there, half the window; past its narrowest, likewise.
-        drag(RESIZE_PANEL, -400f)
-        assertThat(panelBounds().width).isWithin(0.5f).of(640f)
-        assertThat(edgeSays(RESIZE_PANEL)).isEqualTo("640 dp wide")
-        assertThat(chatBounds().right).isWithin(0.5f).of(640f)
-        assertKept(640) { prefs.panelWidthDp.first() }
-        drag(RESIZE_PANEL, 600f)
+        // Dragged past its widest it stops there, the rail stepped aside and the chat at its least; past its
+        // narrowest, likewise, and the rail comes back.
+        drag(RESIZE_PANEL, -600f)
+        compose.waitUntil(10_000) { !railShown() && described(OPEN_SIDEBAR) }
+        compose.waitForIdle()
+        assertThat(panelBounds().width).isWithin(0.5f).of(960f)
+        assertThat(edgeSays(RESIZE_PANEL)).isEqualTo("960 dp wide")
+        assertThat(chatBounds().left).isWithin(0.5f).of(0f)
+        assertThat(chatBounds().right).isWithin(0.5f).of(320f)
+        assertKeptPanel(960f)
+        drag(RESIZE_PANEL, 800f)
+        compose.waitUntil(10_000) { railShown() }
+        compose.waitForIdle()
         assertThat(panelBounds().width).isWithin(0.5f).of(280f)
-        assertKept(280) { prefs.panelWidthDp.first() }
+        assertKeptPanel(280f)
 
         // The rail as wide as it goes, which the narrow panel leaves it room for.
         drag(RESIZE_SIDEBAR, 200f)
@@ -362,11 +405,32 @@ class PinnedPanelFlowTest {
 
         // The panel widened again takes the rail's room before the chat's: the rail narrows, the chat keeps its least.
         drag(RESIZE_PANEL, -400f)
-        assertThat(panelBounds().width).isWithin(0.5f).of(640f)
-        assertThat(edgeSays(RESIZE_SIDEBAR)).isEqualTo("320 dp wide")
+        assertThat(panelBounds().width).isWithin(0.5f).of(680f)
+        assertThat(edgeSays(RESIZE_SIDEBAR)).isEqualTo("280 dp wide")
         assertThat(chatBounds().width).isWithin(0.5f).of(320f)
+        assertKeptPanel(680f)
         // Only for as long as the panel needs it: what the reader dragged the rail to is what is kept.
         assertKept(400) { prefs.railWidthDp.first() }
+    }
+
+    @Test
+    fun `a drag of the panel's edge taken away puts it back half and half, and keeps nothing`() {
+        showShell()
+        openChat(CLI)
+        openPanel()
+        val low = composer.fetchSemanticsNode().boundsInRoot.center.y
+
+        gesture(Offset(edgeX(RESIZE_PANEL) + 5f, low), dx = -100f) { cancel() }
+
+        assertThat(panelBounds().width).isWithin(0.5f).of(501f)
+        assertThat(edgeSays(RESIZE_PANEL)).isEqualTo("501 dp wide")
+        assertThat(kept { prefs.panelWidthFraction.first() }).isNull()
+        // Still half and half: with the rail put away, the two share the whole window.
+        chord(KeyEvent.KEYCODE_B)
+        compose.waitUntil(10_000) { !railShown() }
+        compose.waitForIdle()
+        assertThat(panelBounds().width).isWithin(0.5f).of(640f)
+        assertThat(chatBounds().width).isWithin(0.5f).of(640f)
     }
 
     @Test
@@ -377,11 +441,11 @@ class PinnedPanelFlowTest {
         val low = composer.fetchSemanticsNode().boundsInRoot.center.y
         // At the top, level with the panel's tabs, just inside the panel.
         gesture(Offset(edgeX(RESIZE_PANEL) + 5f, bounds(hasTestTag(PANEL_TABS)).center.y), dx = -100f)
-        assertThat(panelBounds().width).isWithin(0.5f).of(500f)
+        assertThat(panelBounds().width).isWithin(0.5f).of(601f)
         // Low down, level with the composer, just inside the chat.
         gesture(Offset(edgeX(RESIZE_PANEL) - 5f, low), dx = 100f)
-        assertThat(panelBounds().width).isWithin(0.5f).of(400f)
-        assertKept(400) { prefs.panelWidthDp.first() }
+        assertThat(panelBounds().width).isWithin(0.5f).of(501f)
+        assertKeptPanel(501f)
         // The rail's the same: level with its header just inside it, then level with the composer just inside the chat.
         gesture(Offset(edgeX(RESIZE_SIDEBAR) - 5f, 24f), dx = 40f)
         assertThat(edgeSays(RESIZE_SIDEBAR)).isEqualTo("318 dp wide")
@@ -397,7 +461,7 @@ class PinnedPanelFlowTest {
         gesture(Offset(edgeX(RESIZE_SIDEBAR) - 4f, 600f), dx = 12f, dy = -300f)
         assertThat(scrolledBy()).isGreaterThan(before)
         assertThat(edgeSays(RESIZE_SIDEBAR)).isEqualTo("278 dp wide")
-        assertThat(panelBounds().width).isWithin(0.5f).of(400f)
+        assertThat(panelBounds().width).isWithin(0.5f).of(501f)
     }
 
     @Test
@@ -417,9 +481,9 @@ class PinnedPanelFlowTest {
         compose.mainClock.autoAdvance = true
         compose.waitUntil(10_000) { panelShown() }
         compose.waitForIdle()
-        assertThat(panelBounds().width).isWithin(0.5f).of(400f)
-        assertThat(edgeSays(RESIZE_PANEL)).isEqualTo("400 dp wide")
-        assertThat(kept { prefs.panelWidthDp.first() }).isNull()
+        assertThat(panelBounds().width).isWithin(0.5f).of(501f)
+        assertThat(edgeSays(RESIZE_PANEL)).isEqualTo("501 dp wide")
+        assertThat(kept { prefs.panelWidthFraction.first() }).isNull()
     }
 
     @Test
@@ -429,12 +493,13 @@ class PinnedPanelFlowTest {
         openChat(CLI)
         assertThat(railShown()).isTrue()
 
+        // Half the window each: there is no room for the rail beside two halves.
         openPanel()
         compose.waitUntil(10_000) { !railShown() && described(OPEN_SIDEBAR) }
         compose.waitForIdle()
-        assertThat(panelBounds().width).isWithin(0.5f).of(400f)
+        assertThat(panelBounds().width).isWithin(0.5f).of(420f)
         assertThat(chatBounds().left).isWithin(0.5f).of(0f)
-        assertThat(chatBounds().right).isWithin(0.5f).of(440f)
+        assertThat(chatBounds().right).isWithin(0.5f).of(420f)
 
         // Asked for, by its button or Ctrl+B, the rail comes over the chat and the panel stays where it is.
         compose.onNodeWithContentDescription(OPEN_SIDEBAR).performClick()
@@ -508,7 +573,7 @@ class PinnedPanelFlowTest {
         assertThat(setOff.right).isLessThan(shut.right - 0.5f)
         assertThat(turnBack(opening.map { it.width }, narrowing = true)).isAtMost(1f)
         assertThat(opening.last().left).isWithin(0.5f).of(0f)
-        assertThat(opening.last().right).isWithin(0.5f).of(440f)
+        assertThat(opening.last().right).isWithin(0.5f).of(420f)
 
         val open = opening.last()
         compose.onNodeWithContentDescription(HIDE_PANEL).performClick()
@@ -523,34 +588,49 @@ class PinnedPanelFlowTest {
 
     @Test
     @Config(qualifiers = "w840dp-h700dp-night-mdpi")
-    fun `on a foldable a key puts the pinned panel, and the rail it moves, in place in the frame it lands, and a tap after it slides`() {
+    fun `on a foldable a key slides the pinned panel, and the rail it moves, in step from the first frame after it`() {
         showShell()
         openChat(CLI)
         compose.waitForIdle()
         compose.mainClock.autoAdvance = false
 
-        // Ctrl+Shift+B: the panel stands open, and the rail it leaves no room is gone, in the one frame.
+        // Ctrl+Shift+B: in the first frame after the key the panel is on its way and the rail it leaves no room is
+        // going with it, the chat between them narrowing from both sides and never turning back.
+        val shut = chatBounds()
         chord(KeyEvent.KEYCODE_B, shift = true)
-        compose.mainClock.advanceTimeByFrame()
-        assertThat(panelBounds().width).isWithin(0.5f).of(400f)
-        assertThat(chatBounds().left).isWithin(0.5f).of(0f)
-        assertThat(chatBounds().right).isWithin(0.5f).of(440f)
+        val opening = chatFrameByFrame()
+        assertThat(opening.first().left).isLessThan(shut.left - 0.5f)
+        assertThat(opening.first().right).isLessThan(shut.right - 0.5f)
+        assertThat(turnBack(opening.map { it.width }, narrowing = true)).isAtMost(1f)
+        assertThat(opening.last().left).isWithin(0.5f).of(0f)
+        assertThat(opening.last().right).isWithin(0.5f).of(420f)
         assertThat(described(SEARCH_CHATS)).isFalse()
 
-        // Ctrl+B brings the rail over the chat at once, and puts it away the same.
+        // Ctrl+B slides the rail over the chat, on its way in the first frame, and puts it away the same.
         chord(KeyEvent.KEYCODE_B)
-        compose.mainClock.advanceTimeByFrame()
+        val coming = List(30) {
+            compose.mainClock.advanceTimeByFrame()
+            bounds(hasContentDescription(SEARCH_CHATS)).left
+        }
         assertThat(described(CLOSE_DRAWER)).isTrue()
-        assertThat(bounds(hasContentDescription(SEARCH_CHATS)).left).isAtLeast(0f)
+        val over = coming.last()
+        assertThat(coming.first()).isGreaterThan(over - 278f + 0.5f)
+        assertThat(coming.first()).isLessThan(over - 0.5f)
         chord(KeyEvent.KEYCODE_B)
         compose.mainClock.advanceTimeByFrame()
+        assertThat(bounds(hasContentDescription(SEARCH_CHATS)).left).isLessThan(over - 0.5f)
+        compose.mainClock.advanceTimeBy(SLIDE_MS * 2)
         assertThat(described(SEARCH_CHATS)).isFalse()
 
-        // Shut by the key, the rail is back beside the chat as the panel goes.
+        // Shut by the key, the panel gives the rail back its room, the two coming back in step from the first frame.
+        val open = chatBounds()
         chord(KeyEvent.KEYCODE_B, shift = true)
-        compose.mainClock.advanceTimeByFrame()
-        assertThat(chatBounds().left).isWithin(0.5f).of(278f)
-        assertThat(chatBounds().right).isWithin(0.5f).of(840f)
+        val closing = chatFrameByFrame()
+        assertThat(closing.first().left).isGreaterThan(open.left + 0.5f)
+        assertThat(closing.first().right).isGreaterThan(open.right + 0.5f)
+        assertThat(turnBack(closing.map { it.width }, narrowing = false)).isAtMost(1f)
+        assertThat(closing.last().left).isWithin(0.5f).of(278f)
+        assertThat(closing.last().right).isWithin(0.5f).of(840f)
 
         // The panel's button after the keys slides it open, and the rail off with it.
         compose.onNodeWithContentDescription(OPEN_PANEL).performClick()
@@ -566,7 +646,7 @@ class PinnedPanelFlowTest {
     fun `a panel left pinned open comes back open at the widths the rail and it were left at, after a restart`() {
         showShell {
             prefs.setPanelOpen(PaneWidthClass.Expanded, true)
-            prefs.setPanelWidthDp(480)
+            prefs.setPanelWidthFraction(0.375f)
             prefs.setRailWidthDp(240)
         }
         openChat(HOUSE)
@@ -589,9 +669,11 @@ class PinnedPanelFlowTest {
         openPanel()
         assertThat(panelShown()).isTrue()
         assertKept(true) { prefs.panelOpen(PaneWidthClass.Medium).first() }
-        // Upright, the panel at the width it opens at leaves the rail no room beside the chat.
+        // Upright, the panel at the width it opens at, half the window, leaves the rail no room beside the chat.
         compose.waitUntil(10_000) { !railShown() && described(OPEN_SIDEBAR) }
+        compose.waitForIdle()
         assertThat(chatBounds().width).isWithin(0.5f).of(400f)
+        assertThat(panelBounds().width).isWithin(0.5f).of(400f)
     }
 
     private val landed: Int get() = Haptic.GestureEnd.constant()
@@ -600,7 +682,7 @@ class PinnedPanelFlowTest {
 
     @Test
     @Config(shadows = [ShadowHapticLog::class])
-    fun `the pinned panel is felt once each way a button slides it, as it lands, and not as a key puts it in place or the next chat opens on it`() {
+    fun `the pinned panel is felt once each way a button slides it, as it lands, and not as a key slides it or the next chat opens on it`() {
         showShell()
         openChat(CLI)
         HapticLog.clear()
@@ -657,7 +739,7 @@ class PinnedPanelFlowTest {
         // Let run, it is felt as it lands open.
         compose.onNodeWithContentDescription(OPEN_PANEL).performClick()
         compose.mainClock.advanceTimeBy(SLIDE_MS * 2)
-        assertThat(panelBounds().width).isWithin(0.5f).of(400f)
+        assertThat(panelBounds().width).isWithin(0.5f).of(501f)
         assertThat(HapticLog.played).containsExactly(landed, landed, landed)
         compose.mainClock.autoAdvance = true
     }
@@ -670,18 +752,20 @@ class PinnedPanelFlowTest {
         openPanel()
         HapticLog.clear()
 
-        drag(RESIZE_PANEL, -100f)
+        drag(RESIZE_PANEL, 100f)
         drag(RESIZE_SIDEBAR, 100f)
         assertThat(edgeSays(RESIZE_SIDEBAR)).isEqualTo("378 dp wide")
         assertThat(HapticLog.played).isEmpty()
 
-        // Out past its widest, the rail narrowed to make room for it; then in past its narrowest.
-        drag(RESIZE_PANEL, -400f)
-        assertThat(panelBounds().width).isWithin(0.5f).of(640f)
-        assertThat(edgeSays(RESIZE_SIDEBAR)).isEqualTo("320 dp wide")
+        // Out past its widest, the rail making way for it; then in past its narrowest, which brings the rail back.
+        drag(RESIZE_PANEL, -700f)
+        assertThat(panelBounds().width).isWithin(0.5f).of(960f)
+        compose.waitUntil(10_000) { !railShown() }
         assertThat(HapticLog.played).containsExactly(stop)
-        drag(RESIZE_PANEL, 600f)
+        drag(RESIZE_PANEL, 800f)
         assertThat(panelBounds().width).isWithin(0.5f).of(280f)
+        compose.waitUntil(10_000) { railShown() }
+        compose.waitForIdle()
         // The rail out past its widest, and in past its narrowest.
         drag(RESIZE_SIDEBAR, 300f)
         assertThat(edgeSays(RESIZE_SIDEBAR)).isEqualTo("400 dp wide")
