@@ -52,11 +52,20 @@ class CursorApp : Application(), Configuration.Provider {
 
     override fun onTrimMemory(level: Int) {
         super.onTrimMemory(level)
-        // The system is short and asking for memory back: what is held right now goes into the next crash's report.
+        if (!::graph.isInitialized) return
+        // The system is short and asking for memory back: what is held right now goes into the next crash's report,
+        // then everything that can be read again is let go.
         @Suppress("DEPRECATION")
-        if ((level == ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW || level == ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL) && ::graph.isInitialized) {
+        if (level == ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW || level == ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL) {
             graph.crashLog.snapshot("trim memory $level", force = level == ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL)
         }
+        graph.trimMemory(level)
+    }
+
+    @Suppress("DEPRECATION")
+    override fun onLowMemory() {
+        super.onLowMemory()
+        if (::graph.isInitialized) graph.trimMemory(ComponentCallbacks2.TRIM_MEMORY_COMPLETE)
     }
 
     private companion object {
