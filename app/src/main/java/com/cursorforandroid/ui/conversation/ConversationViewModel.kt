@@ -563,6 +563,8 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
      * Puts the repository's draft in the composer: a restored one, or a queued message taken back for editing. The
      * previews are decoded off the main thread first; with [unlessWrittenInto], a composer written into meanwhile —
      * a word typed, a file attached — keeps what it has, and the restored draft stays on disk for the next time.
+     * Nor is a draft that is no longer the repository's put back: [saved] was read before the decode (and the
+     * repository's draft is the composer's own as typed), so an empty composer by now may be one a send emptied.
      */
     private suspend fun adoptDraft(saved: FollowUpDraft, unlessWrittenInto: Boolean = false) {
         val restored = withContext(Dispatchers.Default) {
@@ -570,7 +572,12 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
         }
         // An image file's chip thumbnail is decoded on the way back too, off the main thread.
         val restoredFiles = withContext(Dispatchers.Default) { saved.files.map { PendingFile.of(it.file, it.id) } }
-        if (unlessWrittenInto && !composerIsEmpty()) return
+        if (unlessWrittenInto) {
+            // The composer is read before the repository: a send clears the repository's draft first (see clearComposer).
+            if (!composerIsEmpty()) return
+            val now = graph.followUps.state(agentId).value.draft
+            if (now.text != saved.text || now.images != saved.images || now.files != saved.files) return
+        }
         thumbnails.update { cache -> cache + restored.mapNotNull { a -> a.thumbnail?.let { a.id to it } } }
         draft.value = saved.text
         attachments.value = restored
@@ -669,10 +676,10 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
     }
 
     private fun clearComposer() {
+        graph.followUps.clearDraft(agentId)
         draft.value = ""
         attachments.value = emptyList()
         files.value = emptyList()
-        graph.followUps.clearDraft(agentId)
     }
 
     /** The server has the message: the model override it went out with is spent — unless another was picked meanwhile. */
@@ -715,11 +722,11 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
             files = attached.map { DraftFile(it.id, it.file.withUpload(graph.attachmentUploads.ref(it.id) ?: it.file.upload)) },
             refusedAsBusy = refusedAsBusy,
         )
+        graph.followUps.clearDraft(agentId)
         draft.value = ""
         attachments.value = emptyList()
         files.value = emptyList()
         graph.attachmentUploads.forget(attached.map { it.id })
-        graph.followUps.clearDraft(agentId)
     }
 
     /** Takes a queued follow-up back into the composer; a draft already there is queued in its place, so nothing is lost. */
