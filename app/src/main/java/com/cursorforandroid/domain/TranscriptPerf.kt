@@ -30,6 +30,7 @@ object TranscriptPerf {
         private val rowsBuilt = AtomicInteger(0)
         private val rowsReused = AtomicInteger(0)
         private val rowCompositions = AtomicInteger(0)
+        private val stepCompositions = AtomicInteger(0)
         private val markdownParses = AtomicInteger(0)
         private val markdownHits = AtomicInteger(0)
         private val markdownParseNanos = AtomicLong(0L)
@@ -68,6 +69,9 @@ object TranscriptPerf {
 
         fun rowComposed() { rowCompositions.incrementAndGet() }
 
+        /** One composition, first or again, of a step inside an open stretch: a thought, a tool call, a note. */
+        fun stepComposed() { stepCompositions.incrementAndGet() }
+
         fun markdownParsed(nanos: Long) { markdownParses.incrementAndGet(); markdownParseNanos.addAndGet(nanos) }
         fun markdownHit() { markdownHits.incrementAndGet() }
 
@@ -104,6 +108,7 @@ object TranscriptPerf {
                 rowsBuilt = rowsBuilt.get(),
                 rowsReused = rowsReused.get(),
                 rowCompositions = rowCompositions.get(),
+                stepCompositions = stepCompositions.get(),
                 markdownParses = markdownParses.get(),
                 markdownHits = markdownHits.get(),
                 markdownParseMs = markdownParseNanos.get() / 1_000_000.0,
@@ -134,6 +139,7 @@ object TranscriptPerf {
             rowsBuilt.set(0)
             rowsReused.set(0)
             rowCompositions.set(0)
+            stepCompositions.set(0)
             markdownParses.set(0)
             markdownHits.set(0)
             markdownParseNanos.set(0L)
@@ -166,6 +172,7 @@ object TranscriptPerf {
         val rowsBuilt: Int,
         val rowsReused: Int,
         val rowCompositions: Int,
+        val stepCompositions: Int = 0,
         val markdownParses: Int,
         val markdownHits: Int,
         val markdownParseMs: Double,
@@ -198,7 +205,7 @@ object TranscriptPerf {
             )
             appendLine(
                 "  presenter: runs=$presenterRuns total=${fmt(presenterTotalMs)}ms avg=${fmt(presenterAvgMs)}ms max=${fmt(presenterMaxMs)}ms" +
-                    " rowsMaterialized=$rowsBuilt rowsReused=$rowsReused rowsComposed=$rowCompositions turnsBuilt=$turnsBuilt (${fmt(turnBuildMs)}ms) turnsReused=$turnsReused turnsRendered=$turnsRendered turnRendersReused=$turnRendersReused",
+                    " rowsMaterialized=$rowsBuilt rowsReused=$rowsReused rowsComposed=$rowCompositions stepsComposed=$stepCompositions turnsBuilt=$turnsBuilt (${fmt(turnBuildMs)}ms) turnsReused=$turnsReused turnsRendered=$turnsRendered turnRendersReused=$turnRendersReused",
             )
             appendLine("  markdown: parses=$markdownParses cacheHits=$markdownHits parseTime=${fmt(markdownParseMs)}ms")
             appendLine("  disk: conversationReads=$conversationReads traceFileReads=$traceReads (${fmt(traceReadMs)}ms)")

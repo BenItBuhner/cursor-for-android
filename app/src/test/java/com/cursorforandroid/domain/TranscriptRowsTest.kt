@@ -31,6 +31,7 @@ class TranscriptRowsTest {
             is TranscriptRow.Event -> "event:${row.line.text}" + if (row.count > 1) " ×${row.count}" else ""
             is TranscriptRow.Events -> "events:${row.summary.text}"
             is TranscriptRow.Failure -> "failure:${row.footer.id}" + (row.footer.reason?.let { ":$it" } ?: "")
+            is TranscriptRow.Step -> "step:${row.key}"
         }
     }
 
