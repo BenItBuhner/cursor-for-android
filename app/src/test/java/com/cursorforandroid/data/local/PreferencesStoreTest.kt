@@ -254,7 +254,7 @@ class PreferencesStoreTest {
     }
 
     @Test
-    fun `the pre-release and haptic switches an earlier build stored are deleted, and nothing else is`() = runBlocking<Unit> {
+    fun `the pre-release, haptic and voice input switches an earlier build stored are deleted, and nothing else is`() = runBlocking<Unit> {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val store = PreferenceDataStoreFactory.create(
             scope = CoroutineScope(Dispatchers.IO + SupervisorJob()),
@@ -263,6 +263,7 @@ class PreferencesStoreTest {
         store.edit { p ->
             p[booleanPreferencesKey("update_include_pre_releases")] = true
             p[booleanPreferencesKey("haptic_feedback")] = false
+            p[booleanPreferencesKey("voice_input")] = true
             p[booleanPreferencesKey("auto_update")] = false
             p[stringPreferencesKey("theme_mode")] = ThemeMode.Light.name
         }
