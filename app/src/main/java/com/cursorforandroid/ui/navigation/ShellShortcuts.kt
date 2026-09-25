@@ -50,8 +50,9 @@ internal class ShellShortcuts {
     var composerFocus by mutableStateOf<Screen?>(null)
 
     /**
-     * True while a key's action runs ([fromKeyboard]): whatever it moves — the rail, the drawer — is put where it goes
-     * in the frame the key lands rather than slid there. The finger's changes, made with this false, still slide.
+     * True while a key's action runs ([fromKeyboard]): whatever it slides — the rail, the drawer — sets off before the
+     * next frame and a frame ahead, so it is already moving in the frame the key lands, where the finger's slides,
+     * made with this false, move from the frame after.
      */
     var keyed = false
         private set

@@ -1,5 +1,8 @@
 package com.cursorforandroid.ui.navigation
 
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.AnimationVector1D
+import androidx.compose.animation.core.FiniteAnimationSpec
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
@@ -8,6 +11,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.offset
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.derivedStateOf
@@ -31,6 +35,7 @@ import com.cursorforandroid.ui.components.PaneResizeEdgeWidth
 import com.cursorforandroid.ui.components.PaneSide
 import com.cursorforandroid.ui.components.backGestureEdges
 import com.cursorforandroid.ui.components.rememberBackGestureEdges
+import com.cursorforandroid.ui.components.setOffAhead
 import com.cursorforandroid.ui.panel.LocalPinnedPanel
 import com.cursorforandroid.ui.panel.PaneWidthClass
 import com.cursorforandroid.ui.panel.PaneWidths
@@ -38,10 +43,13 @@ import com.cursorforandroid.ui.panel.PinnedPanel
 import com.cursorforandroid.ui.panel.PinnedPanelMinWidth
 import com.cursorforandroid.ui.panel.RailMaxWidth
 import com.cursorforandroid.ui.panel.RailMinWidth
+import com.cursorforandroid.ui.panel.panelSlide
 import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
+import kotlin.math.abs
 import kotlin.math.roundToInt
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
@@ -90,6 +98,9 @@ internal class ShellPanes(
 
     /** [railYields] as the shell's row was last composed: a plain field, which [WidePanes] writes once a composition is applied. */
     var railYielded: Boolean = false
+
+    /** How much of the rail shows, 0 to 1, while the wide window's row is composed ([WidePanes]); null while it is not. */
+    var railSlide: Animatable<Float, AnimationVector1D>? = null
 
     /** The rail over the chat, where the window has no room for it beside the chat: as wide as it was dragged to. */
     val flyoutWidth: Dp get() = (railWant ?: CursorDimens.sidebarWidth).coerceIn(RailMinWidth, RailMaxWidth)
@@ -152,6 +163,26 @@ internal class ShellPanes(
         scope.launch { prefs.setPanelOpen(widthClass, open) }
     }
 
+    override fun slideOpen(open: Boolean, keyed: Boolean) {
+        setOpen(open)
+        slideRail(keyed, withPanel = true)
+    }
+
+    /**
+     * Sets the rail sliding to where [widths] has it now, from this frame rather than from the next composition, where
+     * its own effect would start it a frame behind what moved it: Ctrl+B's slide, [keyed] a frame ahead as well; or,
+     * [withPanel], the panel's slide as the panel takes the rail's room or gives it back, in step with it. A rail on
+     * its way there already is left to go on.
+     */
+    fun slideRail(keyed: Boolean, withPanel: Boolean = false) {
+        val slide = railSlide ?: return
+        val target = if (widths.railShown) 1f else 0f
+        if (slide.targetValue == target && (slide.isRunning || slide.value == target)) return
+        val distance = abs(target - slide.value)
+        val spec: FiniteAnimationSpec<Float> = if (withPanel) panelSlide(distance) else sidebarRailSlide(distance)
+        scope.launch(start = CoroutineStart.UNDISPATCHED) { slide.animateTo(target, if (keyed) spec.setOffAhead() else spec) }
+    }
+
     /** Kept as a share of the window from the first move on, so the panel comes back in proportion on another window. */
     override fun resize(width: Dp) {
         if (!resizing) {
@@ -198,9 +229,9 @@ internal class ShellPanes(
 /**
  * The wide window's row: the rail, while it stands beside the chat, at the width it was dragged to, its edge draggable
  * to resize it; then the detail pane, which a chat shares with its panel wherever the window has room to pin it
- * ([LocalPinnedPanel]). The rail slides as it goes and comes unless [railSlides] is false, where a key or the window
- * moved it; going for want of room beside the panel, or coming back as the panel gives the room up, it slides as the
- * panel does.
+ * ([LocalPinnedPanel]). The rail slides as it goes and comes unless [railSlides] is false, where the window moved it or
+ * a key opened a screen that did; going for want of room beside the panel, or coming back as the panel gives the room
+ * up, it slides as the panel does. Its slide is [ShellPanes.railSlide] while the row is composed, for a key to set off.
  */
 @Composable
 internal fun WidePanes(
@@ -216,6 +247,11 @@ internal fun WidePanes(
     var railEdge by remember { mutableIntStateOf(0) }
     val railYields by remember(panes) { derivedStateOf { panes.railYields } }
     SideEffect { panes.railYielded = railYields }
+    val railSlide = remember { Animatable(if (railShown) 1f else 0f) }
+    DisposableEffect(panes, railSlide) {
+        panes.railSlide = railSlide
+        onDispose { if (panes.railSlide === railSlide) panes.railSlide = null }
+    }
     Box(
         Modifier
             .fillMaxSize()
@@ -236,6 +272,7 @@ internal fun WidePanes(
                 width = { panes.railColumn() },
                 animate = railSlides,
                 yieldsToPanel = railYields || panes.railYielded,
+                shown = railSlide,
                 modifier = Modifier.onSizeChanged { railEdge = it.width },
                 content = rail,
             )

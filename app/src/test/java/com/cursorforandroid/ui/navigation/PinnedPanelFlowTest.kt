@@ -357,7 +357,7 @@ class PinnedPanelFlowTest {
         openPanel()
         compose.mainClock.autoAdvance = false
 
-        compose.onNodeWithContentDescription("Toggle sidebar").performSemanticsAction(SemanticsActions.OnClick)
+        chord(KeyEvent.KEYCODE_B)
         val chats = List(20) {
             compose.mainClock.advanceTimeByFrame()
             val chat = chatBounds()
@@ -588,34 +588,49 @@ class PinnedPanelFlowTest {
 
     @Test
     @Config(qualifiers = "w840dp-h700dp-night-mdpi")
-    fun `on a foldable a key puts the pinned panel, and the rail it moves, in place in the frame it lands, and a tap after it slides`() {
+    fun `on a foldable a key slides the pinned panel, and the rail it moves, in step from the first frame after it`() {
         showShell()
         openChat(CLI)
         compose.waitForIdle()
         compose.mainClock.autoAdvance = false
 
-        // Ctrl+Shift+B: the panel stands open, and the rail it leaves no room is gone, in the one frame.
+        // Ctrl+Shift+B: in the first frame after the key the panel is on its way and the rail it leaves no room is
+        // going with it, the chat between them narrowing from both sides and never turning back.
+        val shut = chatBounds()
         chord(KeyEvent.KEYCODE_B, shift = true)
-        compose.mainClock.advanceTimeByFrame()
-        assertThat(panelBounds().width).isWithin(0.5f).of(420f)
-        assertThat(chatBounds().left).isWithin(0.5f).of(0f)
-        assertThat(chatBounds().right).isWithin(0.5f).of(420f)
+        val opening = chatFrameByFrame()
+        assertThat(opening.first().left).isLessThan(shut.left - 0.5f)
+        assertThat(opening.first().right).isLessThan(shut.right - 0.5f)
+        assertThat(turnBack(opening.map { it.width }, narrowing = true)).isAtMost(1f)
+        assertThat(opening.last().left).isWithin(0.5f).of(0f)
+        assertThat(opening.last().right).isWithin(0.5f).of(420f)
         assertThat(described(SEARCH_CHATS)).isFalse()
 
-        // Ctrl+B brings the rail over the chat at once, and puts it away the same.
+        // Ctrl+B slides the rail over the chat, on its way in the first frame, and puts it away the same.
         chord(KeyEvent.KEYCODE_B)
-        compose.mainClock.advanceTimeByFrame()
+        val coming = List(30) {
+            compose.mainClock.advanceTimeByFrame()
+            bounds(hasContentDescription(SEARCH_CHATS)).left
+        }
         assertThat(described(CLOSE_DRAWER)).isTrue()
-        assertThat(bounds(hasContentDescription(SEARCH_CHATS)).left).isAtLeast(0f)
+        val over = coming.last()
+        assertThat(coming.first()).isGreaterThan(over - 278f + 0.5f)
+        assertThat(coming.first()).isLessThan(over - 0.5f)
         chord(KeyEvent.KEYCODE_B)
         compose.mainClock.advanceTimeByFrame()
+        assertThat(bounds(hasContentDescription(SEARCH_CHATS)).left).isLessThan(over - 0.5f)
+        compose.mainClock.advanceTimeBy(SLIDE_MS * 2)
         assertThat(described(SEARCH_CHATS)).isFalse()
 
-        // Shut by the key, the rail is back beside the chat as the panel goes.
+        // Shut by the key, the panel gives the rail back its room, the two coming back in step from the first frame.
+        val open = chatBounds()
         chord(KeyEvent.KEYCODE_B, shift = true)
-        compose.mainClock.advanceTimeByFrame()
-        assertThat(chatBounds().left).isWithin(0.5f).of(278f)
-        assertThat(chatBounds().right).isWithin(0.5f).of(840f)
+        val closing = chatFrameByFrame()
+        assertThat(closing.first().left).isGreaterThan(open.left + 0.5f)
+        assertThat(closing.first().right).isGreaterThan(open.right + 0.5f)
+        assertThat(turnBack(closing.map { it.width }, narrowing = false)).isAtMost(1f)
+        assertThat(closing.last().left).isWithin(0.5f).of(278f)
+        assertThat(closing.last().right).isWithin(0.5f).of(840f)
 
         // The panel's button after the keys slides it open, and the rail off with it.
         compose.onNodeWithContentDescription(OPEN_PANEL).performClick()
@@ -667,7 +682,7 @@ class PinnedPanelFlowTest {
 
     @Test
     @Config(shadows = [ShadowHapticLog::class])
-    fun `the pinned panel is felt once each way a button slides it, as it lands, and not as a key puts it in place or the next chat opens on it`() {
+    fun `the pinned panel is felt once each way a button slides it, as it lands, and not as a key slides it or the next chat opens on it`() {
         showShell()
         openChat(CLI)
         HapticLog.clear()

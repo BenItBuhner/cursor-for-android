@@ -123,6 +123,7 @@ class SidePanelChatSwipeTest {
         override fun setOpen(open: Boolean) {
             this.open = open
         }
+        override fun slideOpen(open: Boolean, keyed: Boolean) = setOpen(open)
         override fun resize(width: Dp) = Unit
         override fun resizeDone() = Unit
         override fun resizeCancelled() = Unit

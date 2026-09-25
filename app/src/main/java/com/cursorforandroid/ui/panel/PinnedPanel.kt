@@ -24,7 +24,14 @@ interface PinnedPanel {
      */
     val splits: Boolean
 
+    /** Puts the panel open or shut as the window has it: carried over from a sheet, not a slide of its own. */
     fun setOpen(open: Boolean)
+
+    /**
+     * The panel sets off open or shut on a slide of its own, a button's or a key's ([keyed], a frame ahead): a rail
+     * that makes way for it, or comes back as it goes, sets off with it on the same slide from the same frame.
+     */
+    fun slideOpen(open: Boolean, keyed: Boolean)
 
     /** The panel's edge dragged to make it [width] wide; the shell holds it to the panel's range. */
     fun resize(width: Dp)

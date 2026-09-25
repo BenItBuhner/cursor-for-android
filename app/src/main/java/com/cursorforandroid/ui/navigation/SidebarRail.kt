@@ -1,7 +1,9 @@
 package com.cursorforandroid.ui.navigation
 
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.AnimationVector1D
 import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.TweenSpec
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
@@ -44,13 +46,18 @@ import kotlin.math.roundToInt
  *
  * First composition with [expanded] true shows the rail at once, without a slide: that is what a Fold unfolding or a
  * phone rotating sees when the drawer layout is swapped for this one, and a rail that arrived by sliding in would
- * read as if it had opened on its own. So does a change with [animate] false, a key's (Ctrl+B, or a panel pinned by
- * Ctrl+Shift+B that takes the rail's room): the rail is where the key put it in the frame the key lands, with a slide
- * in flight dropped where it was. Hidden, the content leaves the composition, as it did when the rail was a plain `if`.
+ * read as if it had opened on its own. So does a change with [animate] false, the window's (folded, turned, resized)
+ * or a key's that opened a screen at once which takes or gives back the rail's room: the rail is where the new layout
+ * has it in the frame it lands, with a slide in flight dropped where it was. Hidden, the content leaves the
+ * composition, as it did when the rail was a plain `if`.
  *
  * With [yieldsToPanel], the rail is going for want of room beside a pinned panel, or coming back as the panel gives
  * the room up, and it slides as the panel does ([panelSlide]): the chat between the two narrows or widens without
  * turning back, where the drawer's slide, slower off the mark, would have it squeezed and then let out again.
+ *
+ * [shown] is how much of the column shows, 0 to 1. Hoisted, whoever moved the rail can set its slide off in the same
+ * frame (Ctrl+B, a panel's slide; see [ShellPanes.slideRail]), rather than a frame on, as the change is composed; a
+ * slide already on its way where [expanded] says is left to go on.
  */
 @Composable
 fun SidebarRail(
@@ -59,23 +66,21 @@ fun SidebarRail(
     width: () -> Dp = { CursorDimens.sidebarWidth },
     animate: Boolean = true,
     yieldsToPanel: Boolean = false,
+    shown: Animatable<Float, AnimationVector1D> = remember { Animatable(if (expanded) 1f else 0f) },
     content: @Composable () -> Unit,
 ) {
     val colors = CursorTheme.colors
     val focus = rememberSheetFocus { expanded }
     val target = if (expanded) 1f else 0f
-    // How much of the column shows: read while laying out, so neither the slide nor its end recomposes the content.
-    val shown = remember { Animatable(target) }
-    val onScreen by remember { derivedStateOf { shown.value > 0f } }
-    LaunchedEffect(expanded, animate) {
+    // Read while laying out, so neither the slide nor its end recomposes the content.
+    val onScreen by remember(shown) { derivedStateOf { shown.value > 0f } }
+    LaunchedEffect(shown, expanded, animate) {
         val distance = abs(target - shown.value)
         when {
             !animate -> shown.snapTo(target)
+            shown.targetValue == target && (shown.isRunning || shown.value == target) -> Unit
             yieldsToPanel -> shown.animateTo(target, panelSlide(distance))
-            else -> {
-                val millis = (SidebarRailMillis * distance).roundToInt().coerceAtLeast(MinRailMillis)
-                shown.animateTo(target, tween(millis, easing = FastOutSlowInEasing))
-            }
+            else -> shown.animateTo(target, sidebarRailSlide(distance))
         }
     }
     // Around the slide rather than on it: hidden, the slide composes nothing, so nothing on it would stay to hear a
@@ -106,3 +111,7 @@ internal const val SidebarRailMillis = 256
 
 /** The shortest a slide turned back near its end takes, so it still reads as motion. */
 private const val MinRailMillis = 90
+
+/** The rail's own slide over [distance] of its way, 0 to 1: coming and going by its button or Ctrl+B. */
+internal fun <T> sidebarRailSlide(distance: Float): TweenSpec<T> =
+    tween((SidebarRailMillis * distance).roundToInt().coerceAtLeast(MinRailMillis), easing = FastOutSlowInEasing)

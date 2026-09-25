@@ -433,76 +433,85 @@ class KeyboardShortcutsFlowTest {
     }
 
     @Test
-    fun `beside the pane, Ctrl+B moves the rail within the frame the key lands, and the rail's own toggle still slides it`() {
+    fun `beside the pane, Ctrl+B slides the rail as its own toggle does, already on its way in the first frame after the key`() {
         showShell(wide = true)
         compose.waitUntil(20_000) { displayed(SEARCH_CHATS) }
         val rest = left(SEARCH_CHATS)
         val railWidth = (CursorDimens.sidebarWidth + CursorDimens.hairline).value
         clockHeld {
-            chord(KeyEvent.KEYCODE_B)
-            frame()
-            assertFalse(exists(SEARCH_CHATS))
-            chord(KeyEvent.KEYCODE_B)
-            frame()
-            assertEquals(rest, left(SEARCH_CHATS), 0.5f)
-
+            // The toggle's first frame has the rail where it starts; half-way on it is on its way.
             tap(hasContentDescription("Toggle sidebar"))
             frame()
-            assertTrue(exists(SEARCH_CHATS))
+            assertEquals(rest, left(SEARCH_CHATS), 0.5f)
             compose.mainClock.advanceTimeBy(SidebarRailMillis / 2L)
             assertTrue(left(SEARCH_CHATS) in (rest - railWidth + 1f)..(rest - 1f))
             settle()
             assertFalse(exists(SEARCH_CHATS))
 
-            tap(hasContentDescription("Open sidebar"))
+            // Ctrl+B's first frame already has it coming in, and going out again, rather than where it was.
+            chord(KeyEvent.KEYCODE_B)
             frame()
-            assertTrue(left(SEARCH_CHATS) < rest - 1f)
+            assertTrue(left(SEARCH_CHATS) in (rest - railWidth + 0.5f)..(rest - 1f))
             settle()
             assertEquals(rest, left(SEARCH_CHATS), 0.5f)
+            chord(KeyEvent.KEYCODE_B)
+            frame()
+            assertTrue(left(SEARCH_CHATS) in (rest - railWidth + 1f)..(rest - 0.5f))
+            compose.mainClock.advanceTimeBy(SidebarRailMillis / 2L)
+            assertTrue(left(SEARCH_CHATS) in (rest - railWidth + 1f)..(rest - 1f))
+            settle()
+            assertFalse(exists(SEARCH_CHATS))
         }
     }
 
     @Test
-    fun `on a phone, Ctrl+B opens and shuts the drawer within the frame the key lands, and the header's button still slides it`() {
+    fun `on a phone, Ctrl+B slides the drawer as the header's button does, already on its way in the first frame after the key`() {
         showShell(wide = false)
         clockHeld {
-            chord(KeyEvent.KEYCODE_B)
-            frame()
-            val open = left(SEARCH_CHATS)
-            assertTrue(displayed(SEARCH_CHATS))
-            settle()
-            assertEquals(open, left(SEARCH_CHATS), 0.5f)
-
-            chord(KeyEvent.KEYCODE_B)
-            frame()
-            assertFalse(displayed(SEARCH_CHATS))
-
+            // The button's first frame has the drawer where it starts, off the window.
             tap(hasContentDescription("Open sidebar"))
             frame()
-            assertTrue(left(SEARCH_CHATS) < open - 1f)
+            val shut = left(SEARCH_CHATS)
+            settle()
+            val open = left(SEARCH_CHATS)
+            assertTrue(shut < open - 100f)
+
+            chord(KeyEvent.KEYCODE_B)
+            frame()
+            assertTrue(left(SEARCH_CHATS) in (shut + 1f)..(open - 0.5f))
+            settle()
+            assertFalse(displayed(SEARCH_CHATS))
+
+            chord(KeyEvent.KEYCODE_B)
+            frame()
+            assertTrue(left(SEARCH_CHATS) in (shut + 0.5f)..(open - 1f))
             settle()
             assertEquals(open, left(SEARCH_CHATS), 0.5f)
         }
     }
 
     @Test
-    fun `Ctrl+Shift+B and Esc put the chat's panel in place within the frame the key lands, and its button still slides it`() {
+    fun `Ctrl+Shift+B and Esc slide the chat's panel as its button does, already on its way in the first frame after the key`() {
         showShell(wide = true)
         searchAndOpen("House environment", HOUSE)
         clockHeld {
-            chord(KeyEvent.KEYCODE_B, shift = true)
+            // The button's first frame has the panel where it starts, off the window's edge.
+            tap(hasContentDescription("Open panel"))
             frame()
-            val open = left(PANEL)
+            val shut = left(PANEL)
             settle()
-            assertEquals(open, left(PANEL), 0.5f)
+            val open = left(PANEL)
+            assertTrue(shut > open + 1f)
 
             press(KeyEvent.KEYCODE_ESCAPE)
             frame()
+            assertTrue(left(PANEL) in (open + 0.5f)..(shut - 1f))
+            settle()
             assertFalse(exists(PANEL))
 
-            tap(hasContentDescription("Open panel"))
+            chord(KeyEvent.KEYCODE_B, shift = true)
             frame()
-            assertTrue(left(PANEL) > open + 1f)
+            assertTrue(left(PANEL) in (open + 1f)..(shut - 0.5f))
             settle()
             assertEquals(open, left(PANEL), 0.5f)
         }

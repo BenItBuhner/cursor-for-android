@@ -48,7 +48,6 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.snapshots.Snapshot
-import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -90,6 +89,7 @@ import com.cursorforandroid.ui.components.feltOnCommit
 import com.cursorforandroid.ui.components.rememberBackGestureEdges
 import com.cursorforandroid.ui.components.rememberHaptics
 import com.cursorforandroid.ui.components.rememberSheetFocus
+import com.cursorforandroid.ui.components.setOffAhead
 import com.cursorforandroid.ui.components.sheetFocus
 import com.cursorforandroid.ui.theme.CursorTheme
 import kotlin.coroutines.cancellation.CancellationException
@@ -126,7 +126,7 @@ import kotlinx.coroutines.launch
  * rail, opened and shut by its buttons and the keyboard alone: a swipe across the chat is the chat's, back is the
  * chat's, and a composer holding the keyboard keeps it as the panel opens. Its edge drags to resize it
  * ([PaneResizeEdge]), and the shell keeps it open or shut for every chat ([PinnedPanelSync]). A button's slide is felt
- * once, as the panel lands open or shut; a key's jump, and every chat's panel put where the shell has it, are not felt.
+ * once, as the panel lands open or shut; a key's slide, and every chat's panel put where the shell has it, are not felt.
  */
 @Composable
 fun SidePanelHost(
@@ -395,35 +395,25 @@ class SidePanelState(initialValue: SidePanelValue) {
 
     private val mutex = MutatorMutex()
 
-    /** Counts [jumpTo]s: a slide or fling that began before the latest one no longer moves the sheet. */
-    private var jumps = 0
+    /**
+     * Pinned, the window keeps it open for every chat, as [close] keeps it shut. [keyed]: a key asked for it
+     * (Ctrl+Shift+B, Esc), and the slide is under way in the first frame drawn after the key ([setOffAhead]) where it
+     * is launched undispatched from the key's handler, set off before that frame.
+     */
+    suspend fun open(keyed: Boolean = false) = slideTo(SidePanelValue.Open, keyed) { pin?.slideOpen(true, keyed) }
 
-    /** Pinned, the window keeps it open for every chat, as [close] keeps it shut. */
-    suspend fun open() = slideTo(SidePanelValue.Open) { pin?.setOpen(true) }
+    suspend fun close(keyed: Boolean = false) = slideTo(SidePanelValue.Closed, keyed) { pin?.slideOpen(false, keyed) }
 
-    suspend fun close() = slideTo(SidePanelValue.Closed) { pin?.setOpen(false) }
-
-    suspend fun toggle() = if (isOpen) close() else open()
+    suspend fun toggle(keyed: Boolean = false) = if (isOpen) close(keyed) else open(keyed)
 
     /**
-     * Puts the sheet at [value] in this frame, with no slide: the keyboard's answer (Ctrl+Shift+B, Esc). A slide or a
-     * drag still holding the sheet stops moving it at once, and is cancelled on [scope]. Pinned, the shell is told in
-     * the same frame, as [slideTo]'s heading tells it, or [PinnedPanelSync] would put the panel back where it stood.
+     * [heading] runs once the panel is headed for [value] and before it moves: where a pinned panel tells the shell,
+     * which sets a rail making way for it, or coming back as it goes, off on the same slide from the same frame, so
+     * the two keep step and the chat between them never turns back. Told any sooner, the shell's word can reach
+     * [PinnedPanelSync] while the panel still heads the other way, and the panel is snapped to where it was about to
+     * slide. [keyed], the slide sets off a frame ahead ([setOffAhead]).
      */
-    fun jumpTo(value: SidePanelValue, scope: CoroutineScope) {
-        jumps++
-        targetValue = value
-        fraction = value.fraction
-        pin?.setOpen(value == SidePanelValue.Open)
-        if (!mutex.tryMutate { }) scope.launch { snapTo(value) }
-    }
-
-    /**
-     * [heading] runs once the panel is headed for [value] and before it moves: where a pinned panel tells the shell.
-     * Told any sooner, the shell's word can reach [PinnedPanelSync] while the panel still heads the other way, and the
-     * panel is snapped to where it was about to slide.
-     */
-    internal suspend fun slideTo(value: SidePanelValue, heading: () -> Unit = {}) {
+    internal suspend fun slideTo(value: SidePanelValue, keyed: Boolean = false, heading: () -> Unit = {}) {
         val target = value.fraction
         mutex.mutate {
             val wasOpen = isOpen
@@ -434,19 +424,14 @@ class SidePanelState(initialValue: SidePanelValue) {
                 fraction = target
                 return@mutate
             }
-            // Pinned, the slide is the one way a hand moves the panel (it has no swipe and no back gesture), so it lands as a
-            // swipe's release does, felt once where it comes to rest. A sheet's is not: it can end a back gesture already
-            // felt on its commit.
-            val felt = isPinned
+            // Pinned, a button's slide is the one way a hand moves the panel (it has no swipe and no back gesture), so it
+            // lands as a swipe's release does, felt once where it comes to rest. A key's is not, the hand being on the
+            // keyboard, and nor is a sheet's: it can end a back gesture already felt on its commit.
+            val felt = isPinned && !keyed
             if (felt) landing.released(wasOpen = wasOpen, open = value == SidePanelValue.Open)
-            val jump = jumps
+            val slide = panelSlide<Float>(distance)
             runAnimation {
-                // Pinned, it sets off a frame on: a rail making way for it, or coming back as it goes, hears of it as the
-                // shell is next composed and starts from the frame after, so the two keep step and the chat between them
-                // never turns back.
-                if (isPinned) withFrameNanos { }
-                animate(fraction, target, animationSpec = panelSlide(distance)) { v, _ ->
-                    if (jumps != jump) return@animate
+                animate(fraction, target, animationSpec = if (keyed) slide.setOffAhead() else slide) { v, _ ->
                     fraction = v
                     if (felt) landing.at(v)?.let { haptics?.perform(it) }
                 }
@@ -478,13 +463,10 @@ class SidePanelState(initialValue: SidePanelValue) {
             landing.released(wasOpen = isOpen, open = value == SidePanelValue.Open)
             targetValue = value
             landing.at(fraction)?.let { haptics?.perform(it) }
-            val jump = jumps
             runAnimation {
                 animate(fraction, value.fraction, initialVelocity = velocity, animationSpec = FlingSpec) { v, _ ->
-                    if (jumps == jump) {
-                        fraction = v.coerceIn(0f, 1f)
-                        landing.at(fraction)?.let { haptics?.perform(it) }
-                    }
+                    fraction = v.coerceIn(0f, 1f)
+                    landing.at(fraction)?.let { haptics?.perform(it) }
                 }
             }
         }

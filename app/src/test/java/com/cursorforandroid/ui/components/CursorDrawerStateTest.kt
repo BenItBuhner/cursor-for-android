@@ -17,8 +17,8 @@ import org.junit.Test
 /**
  * Unfolding a foldable mid-drag hands the sidebar from the drawer to the rail, and the drawer is snapped shut on the
  * way out. The snap has to win: the sheet it would otherwise leave half open is drawn again, without a working scrim
- * or back handler, the moment the window folds back. The keyboard's jump (Ctrl+B) wins the same way, and in the call
- * itself, since the frame the key lands in is the one that has to show it.
+ * or back handler, the moment the window folds back. The keyboard's slide (Ctrl+B) sets off a frame ahead, so the
+ * first frame drawn after the key already has the sheet on its way, and turns a slide under way back from where it is.
  */
 class CursorDrawerStateTest {
 
@@ -53,29 +53,38 @@ class CursorDrawerStateTest {
     }
 
     @Test
-    fun `Ctrl+B's jump opens the sheet fully in the call itself`() = runTest {
-        val state = CursorDrawerState(DrawerValue.Closed)
+    fun `Ctrl+B's slide has the sheet moving in its first frame, where a tap's first frame is where it starts`() = runTest {
+        val keyed = CursorDrawerState(DrawerValue.Closed)
+        val tapped = CursorDrawerState(DrawerValue.Closed)
+        launch(VirtualFrames(this)) { keyed.open(keyed = true) }
+        launch(VirtualFrames(this)) { tapped.open() }
 
-        state.jumpTo(DrawerValue.Open, this)
+        advanceTimeBy(17)
 
-        assertThat(state.fraction).isEqualTo(1f)
-        assertThat(state.isOpen).isTrue()
+        assertThat(keyed.fraction).isGreaterThan(0f)
+        assertThat(keyed.fraction).isLessThan(0.1f)
+        assertThat(tapped.fraction).isEqualTo(0f)
+        advanceUntilIdle()
+        assertThat(keyed.fraction).isEqualTo(1f)
+        assertThat(keyed.isOpen).isTrue()
+        assertThat(keyed.isAnimating).isFalse()
     }
 
     @Test
-    fun `a jump lands the sheet at once, and a slide under way moves it no further and is let go of`() = runTest {
+    fun `Ctrl+B turns a slide under way back from where it has got to, without a jump`() = runTest {
         val state = CursorDrawerState(DrawerValue.Closed)
         val slide = launch(VirtualFrames(this)) { state.slideTo(DrawerValue.Open) }
         advanceTimeBy(100)
+        val midway = state.fraction
+        assertThat(midway).isGreaterThan(0f)
+        assertThat(midway).isLessThan(1f)
+
+        launch(VirtualFrames(this)) { state.close(keyed = true) }
+        advanceTimeBy(17)
+
+        assertThat(state.fraction).isLessThan(midway)
         assertThat(state.fraction).isGreaterThan(0f)
-        assertThat(state.fraction).isLessThan(1f)
-
-        state.jumpTo(DrawerValue.Closed, this)
-
-        assertThat(state.fraction).isEqualTo(0f)
         assertThat(state.isOpen).isFalse()
-        advanceTimeBy(48)
-        assertThat(state.fraction).isEqualTo(0f)
         advanceUntilIdle()
         assertThat(slide.isCancelled).isTrue()
         assertThat(state.isAnimating).isFalse()
