@@ -239,6 +239,47 @@ class ManyRunningAgentsStressTest {
     @Test
     fun `two hundred chats, a hundred and twenty running, live sync toggled while switching`() = assertHealthy(scenario(total = 200, running = 120, liveSyncOn = true, toggle = true))
 
+    /**
+     * Live sync's twenty holds and the screens' lookups churn through the 24 chats kept in memory at once. A hold or a
+     * screen that found its chat idle must not land on an entry another lookup evicted before it counted itself in:
+     * that entry's scope is cancelled, so the chat never loads or streams, and the next lookup answers a fresh entry
+     * that nobody holds.
+     */
+    @Test
+    fun `a hold, a screen or a watcher is never left on an entry another lookup just evicted`() {
+        account(total = 40, running = 0, projects = 2)
+        val rig = rig()
+        val ids = (0 until LiveSync.MAX_HELD).map { "bc-load-$it" }
+        val screens = listOf("bc-load-30", "bc-load-31")
+        val stop = java.util.concurrent.atomic.AtomicBoolean(false)
+        val churn = (0 until 4).map { t ->
+            Thread {
+                var k = 0
+                while (!stop.get()) rig.conversations.state("bc-churn-$t-${k++ % 500}")
+            }.apply { start() }
+        }
+        val lost = ArrayList<String>()
+        try {
+            repeat(40) { round ->
+                // A screen reads its chat's state before it attaches, as the conversation screen's view model does; it
+                // watches the chat's own flow when both read the same value (a state is a fresh object at every change).
+                val watched = screens.associateWith { rig.conversations.state(it) }
+                ids.forEach { rig.conversations.hold(it) }
+                screens.forEach { rig.conversations.attach(it) }
+                ids.filterNot { rig.conversations.isHeld(it) }.forEach { lost += "round $round: hold $it" }
+                screens.filterNot { rig.conversations.isAttached(it) }.forEach { lost += "round $round: screen $it" }
+                screens.filterNot { id -> (0 until 5).any { watched.getValue(id).value === rig.conversations.state(id).value } }.forEach { lost += "round $round: watched $it" }
+                ids.forEach { rig.conversations.release(it) }
+                screens.forEach { rig.conversations.detach(it) }
+            }
+        } finally {
+            stop.set(true)
+            churn.forEach { it.join() }
+        }
+        assertThat(lost.take(20)).isEmpty()
+        assertThat(uncaught.map { (thread, e) -> "$thread: ${e.stackTraceToString().take(2_000)}" }).isEmpty()
+    }
+
     private companion object {
         /** The conversations' memory: its LRU of 24, plus what screens and holds keep beyond it. */
         const val MAX_CHATS = 24 + LiveSync.MAX_HELD + 4
