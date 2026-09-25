@@ -174,7 +174,7 @@ class FoldingPanelTest {
         waitForNotes()
         drag(RESIZE_PANEL, -60f)
         val stood = panelBounds()
-        assertThat(stood.width).isWithin(0.5f).of(460f)
+        assertThat(stood.width).isWithin(0.5f).of(841f / 2 + 60f)
         scrollNotes(60f)
         val scrolled = notesScrolled()
         assertThat(scrolled).isGreaterThan(0f)
@@ -245,13 +245,14 @@ class FoldingPanelTest {
         val scrolled = notesScrolled()
         assertThat(scrolled).isGreaterThan(0f)
 
-        // The chat at its least beside the panel at its width leaves the rail no room: it is away as the window first
-        // stands, not beside the chat a frame and then sliding off with the panel widening after it.
+        // The chat at its least beside the panel at half the window leaves the rail no room: it is away as the window
+        // first stands, not beside the chat a frame and then sliding off with the panel widening after it, and the chat
+        // and the panel share the window half and half.
         val unfolded = {
             assertThat(pinned()).isTrue()
-            assertThat(panelBounds().width).isWithin(0.5f).of(400f)
+            assertThat(panelBounds().width).isWithin(0.5f).of(841f / 2)
             assertThat(chatBounds().left).isWithin(0.5f).of(0f)
-            assertThat(chatBounds().width).isWithin(0.5f).of(841f - 400f)
+            assertThat(chatBounds().width).isWithin(0.5f).of(841f / 2)
         }
         window(INNER) { unfolded() }
         unfolded()

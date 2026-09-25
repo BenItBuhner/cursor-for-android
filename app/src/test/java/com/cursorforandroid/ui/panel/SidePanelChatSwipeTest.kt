@@ -119,11 +119,14 @@ class SidePanelChatSwipeTest {
         override var open: Boolean? by mutableStateOf(open)
             private set
         override val width: Dp = PanelWidth
+        override val splits = false
         override fun setOpen(open: Boolean) {
             this.open = open
         }
+        override fun slideOpen(open: Boolean, keyed: Boolean) = setOpen(open)
         override fun resize(width: Dp) = Unit
         override fun resizeDone() = Unit
+        override fun resizeCancelled() = Unit
     }
 
     private var scene by mutableStateOf<Scene?>(null)

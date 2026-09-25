@@ -12,11 +12,11 @@ import androidx.compose.runtime.snapshotFlow
 import com.cursorforandroid.data.repo.ConversationState
 import com.cursorforandroid.domain.TranscriptRow
 import com.cursorforandroid.ui.panel.SidePanelState
-import com.cursorforandroid.ui.panel.SidePanelValue
 import com.cursorforandroid.ui.shortcuts.ChatShortcutTarget
 import com.cursorforandroid.ui.shortcuts.LocalChatShortcuts
 import com.cursorforandroid.ui.shortcuts.LocalTranscriptFocus
 import com.cursorforandroid.ui.shortcuts.TranscriptHitLocator
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
@@ -27,7 +27,8 @@ internal const val HIT_NOT_SHOWN = "The match is further back than this chat has
 
 /**
  * The chat's answers to Ctrl+Shift+B, Ctrl+R, Ctrl+Shift+R and Esc, registered with the shell while it is composed.
- * The panel is put where the key says in the same frame; its slide is the finger's.
+ * The panel slides from its edge as its button slides it, set off before the next frame is drawn and a frame ahead,
+ * so it is already moving in that frame; a pinned panel's rail, making way or coming back, slides with it.
  */
 @Composable
 internal fun ChatKeyboardShortcuts(agentId: String, viewModel: ConversationViewModel, panelState: SidePanelState) {
@@ -36,7 +37,7 @@ internal fun ChatKeyboardShortcuts(agentId: String, viewModel: ConversationViewM
     val target = remember(viewModel, panelState, scope) {
         object : ChatShortcutTarget {
             override fun togglePanel(): Boolean {
-                panelState.jumpTo(if (panelState.isOpen) SidePanelValue.Closed else SidePanelValue.Open, scope)
+                scope.launch(start = CoroutineStart.UNDISPATCHED) { panelState.toggle(keyed = true) }
                 return true
             }
 
@@ -49,7 +50,7 @@ internal fun ChatKeyboardShortcuts(agentId: String, viewModel: ConversationViewM
             // A panel pinned beside the chat is part of the layout, like the rail: Esc leaves the field, not the panel.
             override fun escape(): Boolean {
                 if (!panelState.isOpen || panelState.isPinned) return false
-                panelState.jumpTo(SidePanelValue.Closed, scope)
+                scope.launch(start = CoroutineStart.UNDISPATCHED) { panelState.close(keyed = true) }
                 return true
             }
         }

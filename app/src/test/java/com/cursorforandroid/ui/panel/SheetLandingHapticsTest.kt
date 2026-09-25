@@ -215,10 +215,11 @@ class SheetLandingHapticsTest {
         compose.runOnIdle { scope.launch { drawer.open() } }
         compose.waitForIdle()
         assertRestsAt(drawer, DrawerValue.Open)
-        compose.runOnIdle { drawer.jumpTo(DrawerValue.Closed, scope) }
+        compose.runOnIdle { scope.launch { drawer.close(keyed = true) } }
         compose.waitForIdle()
-        compose.runOnIdle { drawer.jumpTo(DrawerValue.Open, scope) }
+        compose.runOnIdle { scope.launch { drawer.open(keyed = true) } }
         compose.waitForIdle()
+        assertRestsAt(drawer, DrawerValue.Open)
         assertThat(played).isEmpty()
 
         swipe(Offset(windowWidth * 0.9f, replyY), -px(DrawerWidth) * 0.15f, pxPerSecond = 4_000f)
@@ -290,10 +291,11 @@ class SheetLandingHapticsTest {
         compose.waitForIdle()
         compose.runOnIdle { scope.launch { panel.close() } }
         compose.waitForIdle()
-        compose.runOnIdle { panel.jumpTo(SidePanelValue.Open, scope) }
+        compose.runOnIdle { scope.launch { panel.open(keyed = true) } }
         compose.waitForIdle()
-        compose.runOnIdle { panel.jumpTo(SidePanelValue.Closed, scope) }
+        compose.runOnIdle { scope.launch { panel.close(keyed = true) } }
         compose.waitForIdle()
+        assertRestsAt(panel, SidePanelValue.Closed)
         assertThat(played).isEmpty()
 
         swipe(panelStart, -px(PanelWidth) * 0.15f, pxPerSecond = 4_000f)

@@ -13,11 +13,8 @@ internal val ChatMinWidth = 320.dp
 /** The pinned panel's narrowest: about what the sheet is on a small phone, which its sections are laid out for. */
 internal val PinnedPanelMinWidth = 280.dp
 
-/** The pinned panel's widest: half of a tablet on its side, enough to read a file or a document beside the chat. */
-internal val PinnedPanelMaxWidth = 640.dp
-
-/** The width the panel is pinned at until it is dragged: the sheet's column on any window wider than a phone. */
-internal val PinnedPanelDefaultWidth = 400.dp
+/** The share of the window the panel asks for until it is dragged: half, and the chat the other half. */
+private const val HalfWindow = 0.5f
 
 /** The rail's range when dragged: its rows keep a readable title at the narrowest. */
 internal val RailMinWidth = 200.dp
@@ -45,6 +42,12 @@ enum class PaneWidthClass(internal val key: String) {
 /**
  * How a wide window shares its width between the sidebar rail, the chat and the conversation panel pinned beside it.
  *
+ * Until its edge is dragged, the panel asks for half the window. Where that leaves the rail room beside the chat, the
+ * panel and the chat share what the rail leaves of the window half and half instead ([splits]), and follow the rail as
+ * it comes and goes; where it does not, the rail makes way and the two share the whole window. Dragged, the panel
+ * keeps the share of the window it was dragged to, so it comes back in proportion on a window of another size, from
+ * [PinnedPanelMinWidth] up to all the chat leaves at its narrowest.
+ *
  * The chat keeps [ChatMinWidth] at the least, and beyond that takes whatever the rail and the panel leave. When the
  * three do not fit, the rail gives way first: narrower, down to [RailMinWidth], then out of the way altogether (its
  * header button and Ctrl+B bring it over the chat instead); only then does the panel come in narrower, down to
@@ -70,30 +73,41 @@ data class PaneWidths(
     val panelShown: Boolean,
     /** The panel's width while it stands open, and the width it opens at. */
     val panel: Dp,
-    /** The widest the panel can be dragged to on this window. */
+    /** The widest the panel can be dragged to on this window: all the chat leaves at its narrowest. */
     val panelMax: Dp,
+    /** Whether the panel, not yet dragged, shares with the chat, half and half, what the rail leaves of the window. */
+    val splits: Boolean,
 ) {
     companion object {
         /** Whether a window of [window] has room for the panel at its narrowest beside the chat at its narrowest. */
         fun pinnable(window: Dp): Boolean = window - ChatMinWidth >= PinnedPanelMinWidth
 
-        fun of(window: Dp, railExpanded: Boolean, railWidth: Dp, panelOpen: Boolean, panelWidth: Dp): PaneWidths {
+        /** [panelFraction]: the share of the window the panel was last dragged to; null until it has been. */
+        fun of(window: Dp, railExpanded: Boolean, railWidth: Dp, panelOpen: Boolean, panelFraction: Float?): PaneWidths {
             val pinnable = pinnable(window)
-            val panelMax = if (pinnable) (window - ChatMinWidth).coerceAtMost(PinnedPanelMaxWidth) else PinnedPanelMinWidth
-            val panel = panelWidth.coerceIn(PinnedPanelMinWidth, panelMax)
+            val panelMax = if (pinnable) window - ChatMinWidth else PinnedPanelMinWidth
+            val asked = (window * (panelFraction ?: HalfWindow)).coerceIn(PinnedPanelMinWidth, panelMax)
+            val besidePanel = window - ChatMinWidth - asked
+            val splits = pinnable && panelFraction == null && besidePanel >= RailMinWidth
             val panelShown = pinnable && panelOpen
-            val railRoom = if (panelShown) window - ChatMinWidth - panel else maxOf(window - ChatMinWidth, CursorDimens.sidebarWidth)
+            val railRoom = when {
+                !panelShown -> maxOf(window - ChatMinWidth, CursorDimens.sidebarWidth)
+                splits -> window - ChatMinWidth * 2
+                else -> besidePanel
+            }
             val railFits = railRoom >= RailMinWidth
             val railMax = railRoom.coerceAtMost(RailMaxWidth)
+            val rail = railWidth.coerceIn(RailMinWidth, maxOf(railMax, RailMinWidth))
             return PaneWidths(
-                rail = railWidth.coerceIn(RailMinWidth, maxOf(railMax, RailMinWidth)),
+                rail = rail,
                 railShown = railExpanded && railFits,
                 railFits = railFits,
                 railMax = railMax,
                 pinnable = pinnable,
                 panelShown = panelShown,
-                panel = panel,
+                panel = if (splits && railExpanded) (window - rail) / 2 else asked,
                 panelMax = panelMax,
+                splits = splits,
             )
         }
     }

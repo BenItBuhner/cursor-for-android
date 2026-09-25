@@ -65,7 +65,7 @@ enum class PaneSide { Start, End }
  * Of what happens in the strip it takes only that drag, and leaves the rest to the pane under it as though the strip
  * were not there: a tap, a press, a vertical scroll of the transcript or the list. A drag that begins in one of the
  * window's back-gesture strips ([edges]) is left to back, and one cancelled from outside — the system taking it —
- * puts the pane back as the drag found it and keeps nothing.
+ * puts the pane back as the drag found it and keeps nothing: [onResizeCancelled], with the width it started from.
  *
  * A mouse over the strip shows the resize cursor and, pressed there, keeps it until the button comes up; its drag starts
  * at the first move across. The divider is lit only while a drag is under way, and TalkBack widens or narrows the pane
@@ -84,6 +84,7 @@ fun PaneResizeEdge(
     contentDescription: String,
     edges: BackGestureEdges?,
     modifier: Modifier = Modifier,
+    onResizeCancelled: (from: Dp) -> Unit = onResize,
 ) {
     val highlight = CursorTheme.colors.accent
     val density = LocalDensity.current
@@ -93,6 +94,7 @@ fun PaneResizeEdge(
     val width by rememberUpdatedState(paneWidth)
     val resize by rememberUpdatedState(onResize)
     val done by rememberUpdatedState(onResizeDone)
+    val cancelled by rememberUpdatedState(onResizeCancelled)
     var dragging by remember { mutableStateOf(false) }
     var mouseHeld by remember { mutableStateOf(false) }
     val lit by animateFloatAsState(if (dragging) 1f else 0f, tween(if (dragging) LightMillis else DimMillis), label = "paneEdgeLit")
@@ -149,7 +151,7 @@ fun PaneResizeEdge(
                 },
                 onCancel = {
                     dragging = false
-                    resize(drag.from)
+                    cancelled(drag.from)
                 },
             ),
     )

@@ -10,6 +10,7 @@ import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.emptyPreferences
+import androidx.datastore.preferences.core.floatPreferencesKey
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
@@ -174,8 +175,8 @@ class PreferencesStore(
         val confirmStop = booleanPreferencesKey("confirm_stop")
         /** The widget kinds whose picker previews the system holds, each with the build and boot it was published on (see `WidgetPreviews`). */
         val widgetPreviewsPublished = stringSetPreferencesKey("widget_previews_published")
-        /** The conversation panel's width beside the chat on a wide window, in dp, as last dragged; absent until it has been. */
-        val panelWidthDp = intPreferencesKey("panel_width_dp")
+        /** The conversation panel's width beside the chat on a wide window, as a share of the window, as last dragged; absent until it has been. */
+        val panelWidthFraction = floatPreferencesKey("panel_width_fraction")
         /** The sidebar rail's width on a wide window, in dp, as last dragged; absent until it has been. */
         val railWidthDp = intPreferencesKey("rail_width_dp")
         /** Whether the conversation panel stands open beside the chat on a window of [widthClass]; absent is shut. */
@@ -186,6 +187,8 @@ class PreferencesStore(
             booleanPreferencesKey("update_include_pre_releases"),
             booleanPreferencesKey("haptic_feedback"),
             booleanPreferencesKey("voice_input"),
+            // The panel's width in dp, from before it was kept as a share of the window.
+            intPreferencesKey("panel_width_dp"),
         )
     }
 
@@ -438,14 +441,16 @@ class PreferencesStore(
     suspend fun setNewChatHome(home: NewChatHome) = edit { it[Keys.newChatHome] = home.key }
 
     /**
-     * The width the conversation panel stands at beside the chat on a wide window, in dp, as last dragged; null until
-     * it has been. A device preference like the theme: how much of this screen the panel gets is not the account's.
+     * The share of a wide window the conversation panel stands at beside the chat, as last dragged; null until it has
+     * been. A share rather than a width, so the panel comes back in proportion on a window of another size: a Fold's
+     * inner screen, a tablet turned. A device preference like the theme: how much of this screen the panel gets is not
+     * the account's.
      */
-    val panelWidthDp: Flow<Int?> = data.map { it[Keys.panelWidthDp] }.distinctUntilChanged()
+    val panelWidthFraction: Flow<Float?> = data.map { it[Keys.panelWidthFraction] }.distinctUntilChanged()
 
-    suspend fun setPanelWidthDp(width: Int) = edit { it[Keys.panelWidthDp] = width }
+    suspend fun setPanelWidthFraction(fraction: Float) = edit { it[Keys.panelWidthFraction] = fraction }
 
-    /** The sidebar rail's width on a wide window, in dp, as last dragged; null until it has been. The device's, like [panelWidthDp]. */
+    /** The sidebar rail's width on a wide window, in dp, as last dragged; null until it has been. The device's, like [panelWidthFraction]. */
     val railWidthDp: Flow<Int?> = data.map { it[Keys.railWidthDp] }.distinctUntilChanged()
 
     suspend fun setRailWidthDp(width: Int) = edit { it[Keys.railWidthDp] = width }
