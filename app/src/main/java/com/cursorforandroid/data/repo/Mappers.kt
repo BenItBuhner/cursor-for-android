@@ -25,15 +25,31 @@ import java.time.Instant
 import java.time.OffsetDateTime
 import java.time.format.DateTimeParseException
 
+/**
+ * Timestamps read before, by their text: every publish of a chat sorts and pairs its runs by these, and parsing an ISO
+ * instant costs a formatter's worth of objects each time. Bounded; cleared whole when full.
+ */
+private val parsedIso = java.util.concurrent.ConcurrentHashMap<String, Long>()
+private const val MAX_PARSED_ISO = 8_192
+private const val UNPARSEABLE = Long.MIN_VALUE
+
 fun parseIsoMillis(raw: String?, fallback: Long = 0L): Long {
     if (raw.isNullOrBlank()) return fallback
+    parsedIso[raw]?.let { return if (it == UNPARSEABLE) fallback else it }
+    val parsed = parseIsoOrNull(raw)
+    if (parsedIso.size >= MAX_PARSED_ISO) parsedIso.clear()
+    parsedIso[raw] = parsed ?: UNPARSEABLE
+    return parsed ?: fallback
+}
+
+private fun parseIsoOrNull(raw: String): Long? {
     return try {
         Instant.parse(raw).toEpochMilli()
     } catch (_: DateTimeParseException) {
         try {
             OffsetDateTime.parse(raw).toInstant().toEpochMilli()
         } catch (_: DateTimeParseException) {
-            fallback
+            null
         }
     }
 }

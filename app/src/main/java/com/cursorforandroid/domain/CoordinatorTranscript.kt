@@ -390,14 +390,39 @@ object CoordinatorTranscript {
     fun keptGroup(sent: Sent): ActivityGroup = ActivityGroup("${sent.group.id}$KEPT_SUFFIX${sent.call.callId}", listOf(sent.call))
 
     /** [text] as compared: trimmed, every run of whitespace one space. */
-    fun normalize(text: String): String = text.trim().replace(WHITESPACE, " ")
+    fun normalize(text: String): String {
+        // Most texts are normal already: they come back as they are, with nothing allocated.
+        var start = 0
+        var end = text.length
+        while (start < end && text[start].isWhitespace()) start++
+        while (end > start && text[end - 1].isWhitespace()) end--
+        var clean = true
+        for (i in start until end) {
+            val c = text[i]
+            if (isSpace(c) && (c != ' ' || isSpace(text[i + 1]))) { clean = false; break }
+        }
+        if (clean) return if (start == 0 && end == text.length) text else text.substring(start, end)
+        val out = StringBuilder(end - start)
+        var space = false
+        for (i in start until end) {
+            val c = text[i]
+            if (isSpace(c)) space = true
+            else {
+                if (space) out.append(' ')
+                space = false
+                out.append(c)
+            }
+        }
+        return out.toString()
+    }
 
     /** How long a message's opening words must be to be taken as the same message cut short (see [Sent.sameAs]). */
     const val MIN_PREFIX = 24
     /** What a group holding a message put back is named after its own group's id (see [keepMessages]). */
     const val KEPT_SUFFIX = "~kept-"
 
-    private val WHITESPACE = Regex("\\s+")
+    /** What the regex `\s` matches: the ends are trimmed as `trim` does, the runs inside collapsed as `\s+` did. */
+    private fun isSpace(c: Char): Boolean = c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\u000B' || c == '\u000C'
 
     /**
      * The items as the transcript shows them. Every call is [reinterpret]ed; the message calls keyed in [repeats]

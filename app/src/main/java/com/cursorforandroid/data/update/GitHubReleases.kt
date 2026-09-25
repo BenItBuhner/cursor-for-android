@@ -22,6 +22,7 @@ import java.io.File
 import java.io.IOException
 import java.security.MessageDigest
 import kotlin.coroutines.coroutineContext
+import com.cursorforandroid.util.toHex
 
 // ---------------------------------------------------------------------------------------------------------------------
 // GitHub REST shapes (https://docs.github.com/rest/releases/releases#list-releases); only what the updater reads.
@@ -284,7 +285,7 @@ class GitHubReleasesClient(
                     if (expectedBytes > 0 && read != expectedBytes) {
                         throw IOException("The download is $read bytes; the release says $expectedBytes.")
                     }
-                    digest.digest().joinToString("") { "%02x".format(it) }
+                    digest.digest().toHex()
                 }
             }
         } catch (t: Throwable) {
