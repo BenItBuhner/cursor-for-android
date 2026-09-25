@@ -22,6 +22,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyItemScope
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
@@ -100,7 +101,7 @@ import com.cursorforandroid.ui.components.RunStopDialog
 import com.cursorforandroid.ui.components.rememberAgentLinkStatuses
 import com.cursorforandroid.ui.components.rememberHaptics
 import com.cursorforandroid.ui.components.rememberRunStopConfirmation
-import com.cursorforandroid.ui.components.ShimmerText
+import com.cursorforandroid.ui.components.RollingText
 import com.cursorforandroid.ui.components.SpinnerRing
 import com.cursorforandroid.ui.components.cursorSurface
 import com.cursorforandroid.ui.components.composerDockPadding
@@ -153,6 +154,16 @@ internal fun ConversationState.workingCaption(): String = when {
     isReconnecting -> "Reconnecting…"
     else -> "Working…"
 }
+
+/**
+ * The working row's way on and off the list: it fades in where it lands and fades out where it stood, never popping.
+ * It does not slide: the list's own following puts the rows where they belong, and a slide would fight it.
+ */
+internal fun LazyItemScope.captionFade(): Modifier =
+    Modifier.animateItem(fadeInSpec = tween(CaptionFadeMillis), placementSpec = null, fadeOutSpec = tween(CaptionFadeMillis))
+
+internal const val CaptionFadeMillis = 220
+internal const val WORKING_CAPTION_TAG = "working-caption"
 
 /**
  * One chat: a header of its controls (back, its pull request once it has one, the panel, the menu) with the agent's
@@ -532,14 +543,15 @@ fun ConversationScreen(
             // The column the rows are laid out in, measured whether or not there are any rows yet.
             Box(Modifier.align(Alignment.TopCenter).padding(horizontal = TranscriptGutter).then(paneWidth).then(headerClearance.transcriptColumn))
             // The items above and below the rows, by their keys in [order].
-            val edgeItem: @Composable (String) -> Unit = { key ->
+            val edgeItem: @Composable (String, Modifier) -> Unit = { key, itemModifier ->
                 when (key) {
                     WORKING_KEY -> {
                         // A dropped connection is not the run's problem: the agent keeps working while the stream
                         // is re-established, so the caption keeps shimmering and only its wording says what is
-                        // going on. The caption is the whole indicator, as in the web chat: no glyph beside it.
-                        Box(paneWidth) {
-                            ShimmerText(conversation.workingCaption(), style = type.base)
+                        // going on, rolling from one wording to the next as a subagent's line does. The caption is
+                        // the whole indicator, as in the web chat: no glyph beside it.
+                        Box(itemModifier.then(paneWidth)) {
+                            RollingText(conversation.workingCaption(), style = type.base, label = "working-caption", modifier = Modifier.testTag(WORKING_CAPTION_TAG))
                         }
                     }
                     // Where the window's traces stand, when not every turn shown has its activity: the turns being
@@ -610,7 +622,7 @@ fun ConversationScreen(
                     // A following list is declared bottom-up, the newest row first (see TranscriptScroll). Each kind of
                     // item has one call site for both orders: a row declared from two would be a different group in
                     // each, and every switch would rebuild every row on screen and drop what the reader had opened.
-                    fun edge(key: String) = item(key) { edgeItem(key) }
+                    fun edge(key: String) = item(key) { edgeItem(key, if (key == WORKING_KEY) captionFade() else Modifier) }
                     val (before, after) = if (following) order.below.asReversed() to order.above.asReversed() else order.above to order.below
                     before.forEach(::edge)
                     // Without a content type the lazy layout offers a scrolled-off user bubble's slot to an activity

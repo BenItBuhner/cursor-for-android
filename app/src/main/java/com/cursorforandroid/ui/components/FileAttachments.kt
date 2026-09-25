@@ -340,6 +340,7 @@ internal fun FileChip(
     /** A sound: a tap on the chip opens the media viewer on it, out of the chip; [openSrc] is the reference it opens under. */
     onOpen: ((ThumbnailSlot) -> Unit)? = null,
     openSrc: String? = null,
+    modifier: Modifier = Modifier,
 ) {
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
@@ -355,7 +356,7 @@ internal fun FileChip(
         else -> "uploading ${(upload!!.progress * 100).toInt()}%"
     }
     Row(
-        Modifier
+        modifier
             .then(if (slot != null) Modifier.thumbnailSlot(slot) else Modifier)
             .widthIn(max = ChipMaxWidth)
             .cursorSurface(colors.fill, colors.stroke, CursorTheme.shapes.lg)

@@ -406,6 +406,7 @@ fun ComposerBox(
                 onRetryFile = onRetryFile,
                 agentId = mediaAgentId,
                 media = media,
+                anchor = anchor,
                 modifier = Modifier.padding(bottom = 8.dp),
             )
         }
