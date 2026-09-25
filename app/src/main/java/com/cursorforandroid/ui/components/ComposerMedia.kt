@@ -73,6 +73,7 @@ import java.io.File
 import java.security.MessageDigest
 import java.util.concurrent.TimeUnit
 import androidx.compose.ui.unit.IntOffset
+import com.cursorforandroid.util.toHex
 
 /**
  * A picture or a recording attached to the composer, whichever way it arrived — the photo picker, the share sheet,
@@ -184,7 +185,7 @@ class ComposerMediaPreviews(private val dir: File, private val releaseAfterMs: L
     }
 
     private fun file(id: String, mimeType: String): File {
-        val digest = MessageDigest.getInstance("SHA-1").digest(id.toByteArray()).joinToString("") { "%02x".format(it) }.take(24)
+        val digest = MessageDigest.getInstance("SHA-1").digest(id.toByteArray()).toHex().take(24)
         return File(dir, "m-$digest.${extensionFor(mimeType)}")
     }
 

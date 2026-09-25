@@ -6,6 +6,7 @@ import com.cursorforandroid.domain.CursorUser
 import com.cursorforandroid.util.AppClock
 import java.io.File
 import java.security.MessageDigest
+import com.cursorforandroid.util.toHex
 
 /**
  * The disk discipline every unsent draft is kept under — the follow-up composers' ([FollowUpStore]) and the New Chat
@@ -74,7 +75,7 @@ internal object DraftFiles {
     fun ownerKey(user: CursorUser?): String? {
         val identity = user?.userId?.let { "user:$it" } ?: user?.email?.trim()?.lowercase()?.takeIf { it.isNotEmpty() }?.let { "email:$it" } ?: return null
         val digest = MessageDigest.getInstance("SHA-256").digest(identity.toByteArray(Charsets.UTF_8))
-        return digest.take(12).joinToString("") { "%02x".format(it) }
+        return digest.toHex(12)
     }
 
     /**

@@ -21,6 +21,7 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import java.io.File
 import java.io.IOException
 import java.security.MessageDigest
+import com.cursorforandroid.util.toHex
 
 /**
  * Reads the files an agent's reply points into an Agent Store for (`/cursor/stores/<mount>/…`, see
@@ -191,7 +192,7 @@ class StoreFileRepository(
         val storeId = storeId(ownerId) ?: throw IOException(NO_STORE)
         val store = api() ?: throw IOException(NOT_AVAILABLE)
         val bytes = text.toByteArray(Charsets.UTF_8)
-        val sha = MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
+        val sha = MessageDigest.getInstance("SHA-256").digest(bytes).toHex()
         val instruction = store.presignWrite(storeId, relativePath, bytes.size.toLong(), sha) ?: throw IOException(NO_WRITE)
         if (instruction.preconditionFailed) throw IOException(FILE_EXISTS)
         val request = Request.Builder()

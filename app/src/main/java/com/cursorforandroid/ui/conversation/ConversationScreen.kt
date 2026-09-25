@@ -95,6 +95,7 @@ import com.cursorforandroid.ui.components.LocalAgentLinkStatuses
 import com.cursorforandroid.ui.components.LocalMarkdownMedia
 import com.cursorforandroid.ui.components.LocalRunStopConfirmation
 import com.cursorforandroid.ui.components.MarkdownMediaContext
+import com.cursorforandroid.ui.components.ProjectGlyph
 import com.cursorforandroid.ui.components.RunInterruption
 import com.cursorforandroid.ui.components.RunStopDialog
 import com.cursorforandroid.ui.components.rememberAgentLinkStatuses
@@ -165,8 +166,9 @@ internal const val CaptionFadeMillis = 220
 internal const val WORKING_CAPTION_TAG = "working-caption"
 
 /**
- * One chat: a header of controls alone (back, its pull request once it has one, the panel, the menu; the agent's name
- * is the header's accessibility label and the panel's header), the transcript, and the follow-up composer.
+ * One chat: a header of its controls (back, its pull request once it has one, the panel, the menu) with the agent's
+ * name beside back — a Project's after its icon — and no repository line (that is the panel's header), the transcript,
+ * and the follow-up composer.
  *
  * The transcript follows the newest row while the reader is at the bottom, bottom-anchored, and holds what is on
  * screen, top-anchored, once they have scrolled away or opened a dropdown (see [TranscriptScroll]).
@@ -466,9 +468,13 @@ fun ConversationScreen(
         // Where the header's buttons stand in the margin beside the transcript's column (a wide pane), the header gives
         // its band to the transcript, which then reads up to the status bar; where they reach the column it keeps it.
         val headerClearance = remember { HeaderClearance() }
+        // The name stands beside the back arrow and goes with it: a wide window, whose rail lists the chat, has neither.
+        val showsBack = onBack != null
         ChatHeader(
             label = agent?.name ?: "Chat",
             clearance = headerClearance,
+            title = agent?.name?.takeIf { showsBack && it.isNotBlank() },
+            titleIcon = agent?.takeIf { it.looksLikeProject }?.let { project -> { ProjectGlyph(project.projectAppearance) } },
             leading = {
                 when {
                     onBack != null -> FlatIconButton(CursorIcons.ChevronLeft, "Back", onClick = onBack, touchHeight = touchHeight)

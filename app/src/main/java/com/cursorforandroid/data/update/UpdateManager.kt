@@ -37,6 +37,7 @@ import java.io.IOException
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
 import java.security.MessageDigest
+import com.cursorforandroid.util.toHex
 
 /**
  * What the last check learned, kept on disk so a fresh process shows it at once and the next check can be
@@ -733,7 +734,7 @@ class UpdateManager(
                 digest.update(buffer, 0, n)
             }
         }
-        return digest.digest().joinToString("") { "%02x".format(it) }
+        return digest.digest().toHex()
     }
 
     /** rename(2) replaces atomically on Linux; the fallback covers file systems where it does not. */

@@ -38,6 +38,7 @@ class CrashLog(
     val pending: StateFlow<Report?> = _pending.asStateFlow()
 
     @Volatile private var context: () -> String = { "" }
+    @Volatile private var lastSnapshotAt = 0L
 
     /**
      * Records every uncaught exception from now on, on any thread, before handing it on to the handler that was
@@ -49,6 +50,10 @@ class CrashLog(
         this.context = context
         active = this
         synchronized(CrashLog) {
+            if (!reserved) {
+                reserved = true
+                reserve = ByteArray(RESERVE_BYTES)
+            }
             if (handlerInstalled) return
             handlerInstalled = true
             val previous = Thread.getDefaultUncaughtExceptionHandler()
@@ -65,6 +70,7 @@ class CrashLog(
 
     /** Writes the report of [error], raised on [threadName], now. Never throws. */
     fun record(threadName: String, error: Throwable) {
+        reserve = null
         val at = nowMillis()
         val file = File(dir, "$PREFIX$at-crash.txt")
         // The trace first and on its own: under an OutOfMemoryError the context may not fit, the trace must.
@@ -84,7 +90,53 @@ class CrashLog(
             val state = readContext()
             if (state.isNotBlank()) file.appendText(("\n---- State at the crash ----\n" + state).take(MAX_REPORT_CHARS - head.length.coerceAtMost(MAX_REPORT_CHARS)))
         }
+        runCatching {
+            val snapshot = File(dir, SNAPSHOT).takeIf { it.exists() && at - it.lastModified() < SNAPSHOT_RELEVANT_MS } ?: return@runCatching
+            val room = MAX_REPORT_CHARS - file.length().toInt()
+            if (room > 200) file.appendText(("\n---- Last memory snapshot ----\n" + snapshot.readText()).take(room))
+        }
         runCatching { prune() }
+    }
+
+    /**
+     * Writes the app's state now, while it can still be read, for the report of a crash that may follow (see
+     * [record]): called as memory runs short — the heap past [PRESSURE] of its limit (see [watchMemory]), or the
+     * system asking for memory back. At most one per [SNAPSHOT_SPACING_MS] unless [force]d. Never throws.
+     */
+    fun snapshot(reason: String, force: Boolean = false) {
+        val at = nowMillis()
+        if (!force && at - lastSnapshotAt < SNAPSHOT_SPACING_MS) return
+        lastSnapshotAt = at
+        runCatching {
+            val text = "Memory snapshot at ${Instant.ofEpochMilli(at)} ($reason), $appVersion\n" + readContext()
+            dir.mkdirs()
+            File(dir, SNAPSHOT).apply { writeText(text.take(MAX_REPORT_CHARS / 2)) }.setLastModified(at)
+        }
+    }
+
+    /**
+     * Looks at the heap every [periodMs] on a thread of its own, and has the [install]ed log take a [snapshot] when
+     * more than [PRESSURE] of it is in use: the state that led to an out-of-memory crash, kept before there is no
+     * memory left to read it with. One watcher for the process, like the handler; a later call only restarts it with
+     * the new [periodMs] and [heap] reading.
+     */
+    fun watchMemory(periodMs: Long = WATCH_PERIOD_MS, heap: () -> Pair<Long, Long> = ::heapUsedAndMax) {
+        val watcher = Thread({
+            while (true) {
+                runCatching {
+                    val (used, max) = heap()
+                    if (max > 0 && used > max * PRESSURE) active?.snapshot("heap ${used shr 20} of ${max shr 20} MB")
+                }
+                try { Thread.sleep(periodMs) } catch (_: InterruptedException) { return@Thread }
+            }
+        }, "crash-memory-watch")
+        watcher.isDaemon = true
+        watcher.priority = Thread.MIN_PRIORITY
+        synchronized(CrashLog) {
+            memoryWatcher?.interrupt()
+            memoryWatcher = watcher
+        }
+        watcher.start()
     }
 
     private fun readContext(): String {
@@ -222,6 +274,18 @@ class CrashLog(
         private const val MAX_TRACE_BYTES = 400_000
         private const val MAX_EXITS_READ = 16
         private const val CONTEXT_DEADLINE_MS = 1_500L
+        private const val RESERVE_BYTES = 4 shl 20
+        internal const val SNAPSHOT = "memory-snapshot.txt"
+        private const val PRESSURE = 0.8
+        private const val WATCH_PERIOD_MS = 15_000L
+        private const val SNAPSHOT_SPACING_MS = 5 * 60_000L
+        /** A snapshot older than this says nothing about a crash now. */
+        private const val SNAPSHOT_RELEVANT_MS = 30 * 60_000L
+
+        private fun heapUsedAndMax(): Pair<Long, Long> {
+            val rt = Runtime.getRuntime()
+            return (rt.totalMemory() - rt.freeMemory()) to rt.maxMemory()
+        }
         /** How far apart the handler's own stamp and Android's exit record of the same crash can be. */
         private const val MATCH_WINDOW_MS = 30_000L
         private const val PREFIX = "report-"
@@ -230,6 +294,13 @@ class CrashLog(
 
         @Volatile private var active: CrashLog? = null
         private var handlerInstalled = false
+        /**
+         * Memory set aside for the report of an out-of-memory crash, once for the process: let go first thing, so the
+         * state can still be read and written (0.4.1's reports of Bennett's crashes said "state unreadable").
+         */
+        @Volatile private var reserve: ByteArray? = null
+        private var reserved = false
+        private var memoryWatcher: Thread? = null
 
         /** Lets a test put its own default handler under the next [install]. */
         @androidx.annotation.VisibleForTesting

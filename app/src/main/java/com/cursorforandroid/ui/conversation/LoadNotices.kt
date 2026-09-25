@@ -4,6 +4,7 @@ import com.cursorforandroid.data.repo.ConversationState
 import com.cursorforandroid.data.repo.RecordFallback
 import com.cursorforandroid.domain.NoticeTone
 import java.security.MessageDigest
+import com.cursorforandroid.util.toHex
 
 /**
  * One notice about how the transcript loaded, as the dock shows it over the composer (see [LoadNoticeCard]): a load
@@ -30,7 +31,7 @@ data class LoadNotice(val kind: Kind, val title: String, val detail: String? = n
         /** The first sixteen hex digits of the SHA-256 of the title and the detail, the two kept apart by a NUL. */
         fun identityOf(title: String, detail: String?): String {
             val digest = MessageDigest.getInstance("SHA-256").digest((title + '\u0000' + (detail ?: "")).toByteArray())
-            return digest.take(8).joinToString("") { "%02x".format(it) }
+            return digest.toHex(8)
         }
     }
 }

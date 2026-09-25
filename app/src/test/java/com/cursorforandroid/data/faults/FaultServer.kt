@@ -979,9 +979,65 @@ class FaultServer(
     /** A Connect error body, as the account service writes one. */
     private fun connectError(code: String, message: String): String = """{"code":"$code","message":${quote(message)}}"""
 
+    /**
+     * Over [http2], a running turn's stream as the API holds it: what the log has at full speed, then each event
+     * [appendRunEvents] adds the moment it comes, a keep-alive between, and the end once the turn does. Takes
+     * precedence over [holdRunningStreamsMs], which trickles the whole answer.
+     */
+    @Volatile var liveRunStreams = false
+    /** How often a held run stream says something (see [liveRunStreams], [liveRunGenerator]). */
+    @Volatile var liveRunBeatMs = HELD_BEAT_MS
+    /**
+     * The agent working on, as the held stream's own words (see [liveRunStreams]): events written after the log once
+     * each beat, and never kept — the server's memory stays flat, so what grows is the client's. Tick counts from 1.
+     */
+    @Volatile var liveRunGenerator: ((runId: String, tick: Int) -> List<Pair<String, String>>)? = null
+    /** Run streams held open at this moment (see [liveRunStreams]). */
+    val liveRunOpen = AtomicInteger()
+
+    /** The agent working on: [events] appended to [runId]'s log, heard at once on its held streams (see [liveRunStreams]). */
+    fun appendRunEvents(runId: String, events: List<Pair<String, String>>) {
+        logs.compute(runId) { _, log -> log.orEmpty() + events }
+        synchronized(liveLock) { liveLock.notifyAll() }
+    }
+
+    private fun heldRun(runId: String, skip: Int): MockResponse =
+        MockResponse().setResponseCode(200).removeHeader("Content-Length").setHeader("Content-Type", "text/event-stream").setBody(object : DuplexResponseBody {
+            override fun onRequest(request: RecordedRequest, http2Stream: Http2Stream) {
+                liveRunOpen.incrementAndGet()
+                try {
+                    val sink = http2Stream.getSink().buffer()
+                    var sent = skip
+                    var tick = 0
+                    while (!closed) {
+                        val log = logs[runId].orEmpty()
+                        while (sent < log.size) {
+                            val (event, data) = log[sent++]
+                            sink.writeUtf8("event: ").writeUtf8(event).writeUtf8("\nid: ").writeUtf8(runId).writeUtf8("#").writeUtf8(sent.toString()).writeUtf8("\ndata: ").writeUtf8(data).writeUtf8("\n\n")
+                        }
+                        if (runs[runId]?.status != "RUNNING") {
+                            sink.writeUtf8("event: done\ndata: {}\n\n").flush()
+                            sink.close()
+                            return
+                        }
+                        liveRunGenerator?.invoke(runId, ++tick)?.forEach { (event, data) ->
+                            sink.writeUtf8("event: ").writeUtf8(event).writeUtf8("\nid: ").writeUtf8(runId).writeUtf8("#g").writeUtf8(tick.toString()).writeUtf8("\ndata: ").writeUtf8(data).writeUtf8("\n\n")
+                        }
+                        sink.writeUtf8(": keep-alive\n\n").flush()
+                        synchronized(liveLock) { if (logs[runId].orEmpty().size == sent && !closed) liveLock.wait(liveRunBeatMs) }
+                    }
+                } catch (_: IOException) {
+                    // The client reset the stream: it is gone.
+                } finally {
+                    liveRunOpen.decrementAndGet()
+                }
+            }
+        })
+
     private fun stream(runId: String, lastEventId: String?, cutAfter: Int?): MockResponse {
         val log = logs[runId] ?: return json(410, error("stream_expired", "This run's live stream has expired."))
         val skip = lastEventId?.substringAfterLast('#')?.toIntOrNull() ?: 0
+        if (http2 && liveRunStreams && cutAfter == null && runs[runId]?.status == "RUNNING") return heldRun(runId, skip)
         val remaining = log.drop(skip)
         val served = if (cutAfter != null) remaining.take(cutAfter) else remaining
         val body = StringBuilder()

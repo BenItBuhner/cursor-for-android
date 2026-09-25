@@ -46,7 +46,26 @@ object SendGate {
         val idle: Boolean get() = !busy
     }
 
-    enum class Source { Stream, Account, Row, Record, None }
+    enum class Source { Stream, Account, Row, Record, Screen, None }
+
+    /**
+     * The composer's send: [decide], and busy besides whenever the chat itself shows a turn under way — its run
+     * record active or its stream open, the very reading behind the Stop button and the "queues" placeholder. What the
+     * reader sees at the tap is what the tap does, with nothing asked of the server first.
+     *
+     * The sources [decide] prefers can lag the chat by a poll: a Project's coordinator starts turns of its own (a
+     * worker's report wakes it), which the chat follows at once while the account's word and the row still say idle.
+     * Deciding idle then sent the message into a bubble with the send animation, the run request came back
+     * `409 agent_busy`, and a round trip or two later the message popped off the bubble onto the card (Bennett,
+     * 0.4.1). Erring busy costs nothing: the account starts the message's run at once when the turn has ended, and
+     * this device's queue sends it the moment [decide] reads idle.
+     */
+    fun decideAtSend(inputs: Inputs): Decision {
+        val decision = decide(inputs)
+        if (decision.busy) return decision
+        if (inputs.chatRunStatus?.isActive == true || inputs.chatStreaming) return Decision(busy = true, Source.Screen, inputs)
+        return decision
+    }
 
     fun decide(inputs: Inputs): Decision {
         if (inputs.chatStreaming && !inputs.chatReconnecting && inputs.chatRunStatus?.isActive == true) return Decision(busy = true, Source.Stream, inputs)
