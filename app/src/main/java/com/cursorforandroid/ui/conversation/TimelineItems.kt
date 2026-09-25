@@ -97,6 +97,7 @@ import com.cursorforandroid.ui.files.openablePath
 import com.cursorforandroid.ui.files.rememberFileOpener
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.util.TimeFormat
+import com.cursorforandroid.ui.components.onContextClick
 
 @Composable
 fun TimelineItemView(item: TimelineItem, modifier: Modifier = Modifier) {
@@ -264,10 +265,10 @@ internal fun BackgroundMessage(item: AssistantMessage, modifier: Modifier = Modi
 private fun SystemNotificationView(item: SystemNotification, modifier: Modifier) = EventRow(item, count = 1, modifier = modifier)
 
 /**
- * Press and hold on a message: a haptic tick, then a context menu at the finger with "Copy message" (the raw text or
- * markdown, so it pastes back into a prompt or an editor as written). A plain tap runs [onClick], which is nothing
- * for a message, and links, images and code blocks inside keep their own gestures. The caller clips [modifier] to the
- * shape the highlight should take.
+ * Press and hold on a message: a haptic tick, then a context menu at the finger ([MessageMenu]). A right-click opens
+ * the same menu at the pointer, and Shift+F10 or the Menu key while the message has focus opens it too. A plain tap
+ * runs [onClick], which is nothing for a message, and links, images and code blocks inside keep their own gestures
+ * (a right-click on them is the message's). The caller clips [modifier] to the shape the highlight should take.
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -279,17 +280,17 @@ internal fun MessageActions(
     content: @Composable () -> Unit,
 ) {
     val colors = CursorTheme.colors
-    val context = LocalContext.current
-    val clipboard = LocalClipboardManager.current
     val haptics = LocalHapticFeedback.current
     val interaction = remember { MutableInteractionSource() }
     var menuOpen by remember { mutableStateOf(false) }
+    var menuAt by remember { mutableStateOf<IntOffset?>(null) }
     var pressedAt by remember { mutableStateOf(IntOffset.Zero) }
     LaunchedEffect(interaction) {
         interaction.interactions.collect { if (it is PressInteraction.Press) pressedAt = it.pressPosition.round() }
     }
     val openMenu = {
         haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+        menuAt = null
         menuOpen = true
     }
     // A message that does nothing when tapped is not a control: `combinedClickable` would announce every bubble and
@@ -319,18 +320,45 @@ internal fun MessageActions(
             .semantics(mergeDescendants = true) { onLongClick("Message actions") { openMenu(); true } }
         else -> Modifier
     }
-    Box(modifier.then(gestures)) {
+    Box(modifier.onContextClick(enabled) { at -> menuAt = at; menuOpen = true }.then(gestures)) {
         content()
         // A zero-size anchor at the press point, so the menu opens under the finger rather than below a tall reply.
         Box(Modifier.offset { pressedAt }) {
-            CursorMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
-                CursorMenuItem("Copy message", CursorIcons.Copy) {
-                    menuOpen = false
-                    clipboard.setText(AnnotatedString(text))
-                    // Android 13+ confirms clipboard writes with its own overlay; earlier versions show nothing.
-                    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) Toast.makeText(context, "Copied", Toast.LENGTH_SHORT).show()
-                }
-            }
+            MessageMenu(text, expanded = menuOpen, onDismiss = { menuOpen = false }, at = menuAt)
+        }
+    }
+}
+
+/**
+ * A transcript row with no press and hold of its own (a tool call's line, a thought): a right-click on it, or
+ * Shift+F10 / the Menu key while something in it has focus, opens [MessageMenu] on [text], labelled [copyLabel].
+ * Touch is left exactly as it was.
+ */
+@Composable
+internal fun ContextMenuArea(text: String, copyLabel: String, modifier: Modifier = Modifier, content: @Composable () -> Unit) {
+    var menuOpen by remember { mutableStateOf(false) }
+    var menuAt by remember { mutableStateOf<IntOffset?>(null) }
+    Box(modifier.onContextClick(text.isNotBlank()) { at -> menuAt = at; menuOpen = true }) {
+        content()
+        MessageMenu(text, expanded = menuOpen, onDismiss = { menuOpen = false }, at = menuAt, copyLabel = copyLabel)
+    }
+}
+
+/**
+ * The message options: "Copy message" (the raw text or markdown, so it pastes back into a prompt or an editor as
+ * written). Every way into it (a press and hold, a right-click, the Menu key) opens this one menu, so an option added
+ * here is on all of them. [at] is where a right-click opened it, in window coordinates.
+ */
+@Composable
+internal fun MessageMenu(text: String, expanded: Boolean, onDismiss: () -> Unit, at: IntOffset? = null, copyLabel: String = "Copy message") {
+    val context = LocalContext.current
+    val clipboard = LocalClipboardManager.current
+    CursorMenu(expanded = expanded, onDismissRequest = onDismiss, at = at) {
+        CursorMenuItem(copyLabel, CursorIcons.Copy) {
+            onDismiss()
+            clipboard.setText(AnnotatedString(text))
+            // Android 13+ confirms clipboard writes with its own overlay; earlier versions show nothing.
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) Toast.makeText(context, "Copied", Toast.LENGTH_SHORT).show()
         }
     }
 }
@@ -511,7 +539,9 @@ private fun StepList(steps: List<ActivityStep>, modifier: Modifier = Modifier) {
 /** A thought as Cursor shows one: the prose at half strength (`.markdown-normalized { opacity: .5 }`). */
 @Composable
 internal fun ThoughtText(text: String, modifier: Modifier = Modifier) {
-    Text(text.trim(), style = CursorTheme.typography.base, color = CursorTheme.colors.textTertiary, modifier = modifier)
+    ContextMenuArea(text.trim(), copyLabel = "Copy thought", modifier = modifier) {
+        Text(text.trim(), style = CursorTheme.typography.base, color = CursorTheme.colors.textTertiary)
+    }
 }
 
 /**
@@ -536,69 +566,72 @@ internal fun ToolCallLine(call: ToolCall, modifier: Modifier = Modifier) {
     val expandable = showOutput || payload || truncated
     var expanded by rememberSaveable(key = call.callId) { mutableStateOf(false) }
     val taps = LocalDisclosureTaps.current
-    Column(modifier.fillMaxWidth()) {
-        Row(
-            Modifier
-                .offset(x = (-6).dp)
-                .pressable({ taps.toggling(opening = !expanded); expanded = !expanded }, CursorTheme.shapes.base, enabled = expandable)
-                .heightIn(min = 24.dp)
-                .padding(horizontal = 6.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            if (call.kind == ToolKind.Mcp) {
-                Icon(CursorIcons.Plug, null, tint = colors.iconTertiary, modifier = Modifier.size(13.dp))
-                Spacer(Modifier.width(5.dp))
-            }
-            ShimmerText(call.action, style = type.base, color = colors.textSecondary, active = call.isRunning, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            val details = detailsText(call)
-            if (details.isNotEmpty()) {
-                Spacer(Modifier.width(4.dp))
-                // The file's name is a tap target of its own: it opens the file, where the rest of the row opens the call.
-                val opener = call.openablePath?.let { rememberFileOpener(it, call) }
-                Text(
-                    details,
-                    style = type.base.copy(fontFeatureSettings = "tnum"),
-                    color = colors.textTertiary,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f, fill = false).then(if (opener != null) Modifier.fileLink(opener) else Modifier),
-                )
-            }
-            call.lineStats?.let { stats ->
-                Spacer(Modifier.width(4.dp))
-                LineStats(stats)
-            }
-            // Extended mode: a step under way can be stopped on its own (`CancelBackgroundComposerToolCall`), the
-            // turn going on without it. A question is stopped by answering it, not here.
-            val controls = LocalTranscriptControls.current
-            val onCancel = controls.onCancelToolCall
-            if (call.isRunning && onCancel != null && call.pendingQuestion == null) {
-                Spacer(Modifier.width(6.dp))
-                val asked = call.callId in controls.state.cancelledCallIds || controls.state.isBusy("tool:${call.callId}")
-                if (asked) {
-                    Text("Stopping…", style = type.small, color = colors.textQuaternary, maxLines = 1)
-                } else {
-                    // Its own pressable, so it stays a control of its own inside the line's tap target.
-                    Box(
-                        Modifier
-                            .size(22.dp)
-                            .clip(CircleShape)
-                            .pressable({ onCancel(call.callId) }, CircleShape)
-                            .semantics { contentDescription = "Stop this step" }
-                            .testTag("stop-step"),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Icon(CursorIcons.Stop, null, tint = colors.iconTertiary, modifier = Modifier.size(11.dp))
+    val line = listOf(call.action, detailsText(call).text).filter { it.isNotBlank() }.joinToString(" ")
+    ContextMenuArea(line, copyLabel = "Copy step", modifier = modifier.fillMaxWidth()) {
+        Column(Modifier.fillMaxWidth()) {
+            Row(
+                Modifier
+                    .offset(x = (-6).dp)
+                    .pressable({ taps.toggling(opening = !expanded); expanded = !expanded }, CursorTheme.shapes.base, enabled = expandable)
+                    .heightIn(min = 24.dp)
+                    .padding(horizontal = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                if (call.kind == ToolKind.Mcp) {
+                    Icon(CursorIcons.Plug, null, tint = colors.iconTertiary, modifier = Modifier.size(13.dp))
+                    Spacer(Modifier.width(5.dp))
+                }
+                ShimmerText(call.action, style = type.base, color = colors.textSecondary, active = call.isRunning, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                val details = detailsText(call)
+                if (details.isNotEmpty()) {
+                    Spacer(Modifier.width(4.dp))
+                    // The file's name is a tap target of its own: it opens the file, where the rest of the row opens the call.
+                    val opener = call.openablePath?.let { rememberFileOpener(it, call) }
+                    Text(
+                        details,
+                        style = type.base.copy(fontFeatureSettings = "tnum"),
+                        color = colors.textTertiary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false).then(if (opener != null) Modifier.fileLink(opener) else Modifier),
+                    )
+                }
+                call.lineStats?.let { stats ->
+                    Spacer(Modifier.width(4.dp))
+                    LineStats(stats)
+                }
+                // Extended mode: a step under way can be stopped on its own (`CancelBackgroundComposerToolCall`), the
+                // turn going on without it. A question is stopped by answering it, not here.
+                val controls = LocalTranscriptControls.current
+                val onCancel = controls.onCancelToolCall
+                if (call.isRunning && onCancel != null && call.pendingQuestion == null) {
+                    Spacer(Modifier.width(6.dp))
+                    val asked = call.callId in controls.state.cancelledCallIds || controls.state.isBusy("tool:${call.callId}")
+                    if (asked) {
+                        Text("Stopping…", style = type.small, color = colors.textQuaternary, maxLines = 1)
+                    } else {
+                        // Its own pressable, so it stays a control of its own inside the line's tap target.
+                        Box(
+                            Modifier
+                                .size(22.dp)
+                                .clip(CircleShape)
+                                .pressable({ onCancel(call.callId) }, CircleShape)
+                                .semantics { contentDescription = "Stop this step" }
+                                .testTag("stop-step"),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Icon(CursorIcons.Stop, null, tint = colors.iconTertiary, modifier = Modifier.size(11.dp))
+                        }
                     }
                 }
             }
-        }
-        if (expandable) {
-            AnimatedVisibility(visible = expanded) {
-                Column(Modifier.padding(top = 4.dp, bottom = 6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    if (showOutput) ToolOutputView(call, output)
-                    if (payload) ToolPayloadView(call)
-                    call.truncated?.takeIf { it.any }?.let { TruncationNote(it, Modifier.padding(horizontal = 2.dp)) }
+            if (expandable) {
+                AnimatedVisibility(visible = expanded) {
+                    Column(Modifier.padding(top = 4.dp, bottom = 6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        if (showOutput) ToolOutputView(call, output)
+                        if (payload) ToolPayloadView(call)
+                        call.truncated?.takeIf { it.any }?.let { TruncationNote(it, Modifier.padding(horizontal = 2.dp)) }
+                    }
                 }
             }
         }

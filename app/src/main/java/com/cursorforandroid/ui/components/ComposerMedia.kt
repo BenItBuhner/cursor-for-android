@@ -72,6 +72,7 @@ import kotlinx.coroutines.sync.withLock
 import java.io.File
 import java.security.MessageDigest
 import java.util.concurrent.TimeUnit
+import androidx.compose.ui.unit.IntOffset
 
 /**
  * A picture or a recording attached to the composer, whichever way it arrived — the photo picker, the share sheet,
@@ -290,6 +291,7 @@ fun MediaChip(
     val shape = CursorTheme.shapes.base
     val haptics = LocalHapticFeedback.current
     var menuOpen by remember { mutableStateOf(false) }
+    var menuAt by remember { mutableStateOf<IntOffset?>(null) }
     val upload = item.upload
     val uploading = upload?.isUploading == true
     val failed = upload?.failed == true
@@ -308,6 +310,7 @@ fun MediaChip(
                 .thumbnailSlot(slot)
                 .size(MediaTile)
                 .cursorSurface(colors.fill, colors.stroke, shape)
+                .onContextClick { at -> menuAt = at; menuOpen = true }
                 // The down itself, seen on the way in and left for the click: a tap's press lasts a tenth of a second
                 // or so before the click, which is most of a screen-sized decode.
                 .pointerInput(Unit) {
@@ -323,6 +326,7 @@ fun MediaChip(
                     onLongClickLabel = "Attachment actions",
                     onLongClick = {
                         haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                        menuAt = null
                         menuOpen = true
                     },
                     onClick = { onOpen(slot) },
@@ -381,7 +385,7 @@ fun MediaChip(
                 Icon(CursorIcons.Close, "Remove attachment", tint = colors.canvas, modifier = Modifier.size(10.dp))
             }
         }
-        CursorMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+        CursorMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }, at = menuAt) {
             CursorMenuItem("Open", CursorIcons.Eye) { menuOpen = false; onOpen(slot) }
             if (failed && onRetry != null) CursorMenuItem("Retry upload", CursorIcons.Refresh) { menuOpen = false; onRetry() }
             CursorMenuItem("Remove", CursorIcons.Trash, tint = colors.red) { menuOpen = false; onRemove() }
