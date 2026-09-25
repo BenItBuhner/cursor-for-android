@@ -1,5 +1,6 @@
 package com.cursorforandroid.ui.components
 
+import android.view.ViewGroup
 import androidx.activity.ComponentActivity
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
@@ -16,7 +17,15 @@ import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.unit.DpRect
 import androidx.compose.ui.unit.IntRect
 import androidx.compose.ui.unit.dp
+import androidx.core.graphics.Insets
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.cursorforandroid.domain.CursorUser
+import com.cursorforandroid.ui.agents.AgentListUiState
+import com.cursorforandroid.ui.agents.AgentRowActions
+import com.cursorforandroid.ui.agents.Sidebar
+import com.cursorforandroid.ui.agents.SidebarCallbacks
 import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.ui.theme.ThemeMode
@@ -94,6 +103,44 @@ class CaptionHeaderTest {
         assertThat(bounds("Open sidebar").left).isLessThan(310.dp)
         assertClearOfControls("More")
         assertCentredOnBar("More")
+    }
+
+    @Test
+    fun `the rail's header stands in the bar clear of the app menu, its logo left to the system's`() {
+        compose.setContent {
+            CursorTheme(mode = ThemeMode.Dark) {
+                CompositionLocalProvider(LocalCaptionBar provides bar) {
+                    Sidebar(
+                        state = AgentListUiState(hasLoaded = true),
+                        user = CursorUser("key", "a@b.com", "Demo", "User", 1),
+                        isDemo = true,
+                        selectedAgentId = null,
+                        selectedDestination = null,
+                        onQueryChange = {},
+                        callbacks = SidebarCallbacks(
+                            onNewChat = {},
+                            onSettings = {},
+                            onCustomize = {},
+                            onToggleSidebar = {},
+                            onRefresh = {},
+                            rowActions = AgentRowActions({}, {}, {}, {}, { _, _ -> }, { _, _ -> }, {}),
+                        ),
+                        modifier = Modifier.width(300.dp),
+                    )
+                }
+            }
+        }
+        // The window reports the bar as an inset too, as a desktop window does; the rail must not pad by it as well.
+        compose.runOnUiThread {
+            val insets = WindowInsetsCompat.Builder().setInsets(WindowInsetsCompat.Type.captionBar(), Insets.of(0, 40, 0, 0)).build()
+            ViewCompat.dispatchApplyWindowInsets(compose.activity.findViewById<ViewGroup>(android.R.id.content).getChildAt(0), insets)
+        }
+        compose.waitForIdle()
+        for (button in listOf("New chat", "Search chats", "Toggle sidebar")) {
+            assertClearOfControls(button)
+            assertCentredOnBar(button)
+        }
+        compose.onNodeWithContentDescription("Cursor").assertDoesNotExist()
     }
 
     @Test

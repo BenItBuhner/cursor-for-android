@@ -192,7 +192,7 @@ fun Sidebar(
     // In a desktop window's caption bar the row is the bar's, and the logo gives way to the system's app menu, which
     // shows the app's icon at that very corner; the buttons stay, clear of the menu.
     val caption = LocalCaptionBar.current
-    Column(modifier.fillMaxSize().background(colors.sidebar).windowInsetsPadding(HeaderTopInsets)) {
+    Column(modifier.fillMaxSize().background(colors.sidebar).then(if (caption != null) Modifier else Modifier.windowInsetsPadding(HeaderTopInsets))) {
         Row(
             Modifier
                 .fillMaxWidth()
