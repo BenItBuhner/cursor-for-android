@@ -15,6 +15,7 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.FlowCollector
+import kotlinx.coroutines.flow.buffer
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.isActive
@@ -135,6 +136,9 @@ object SseParser {
     private const val MAX_RETRY_MS = 60_000L
 
     private const val NEWLINE = '\n'.code.toByte()
+    private const val CR = '\r'.code.toByte()
+    private const val COLON = ':'.code.toByte()
+    private const val SPACE = ' '.code.toByte()
 
     /**
      * The next complete frame, or null when there is not going to be one: the stream ended (whatever it had
@@ -146,35 +150,45 @@ object SseParser {
         var id: String? = null
         var resetId = false
         var retry: Long? = null
-        val data = StringBuilder()
+        // One data line — nearly every frame — is kept as it was read; only a second one starts a builder. A frame
+        // carrying a picture is megabytes of base64, and every copy of it is another few megabytes of heap per stream.
+        var data: String? = null
+        var joined: StringBuilder? = null
+        var dataChars = 0
         var sawField = false
         var oversized = false
         while (true) {
             val line = try {
-                readLine(source)
+                readField(source)
             } catch (_: IOException) {
                 return null
             } ?: return null
-            if (line === OVERSIZED_LINE) {
+            if (line === Line.Oversized) {
                 oversized = true
                 sawField = true
                 continue
             }
-            if (line.isEmpty()) {
-                if (sawField) return SseFrame(event, id, data.toString().removeSuffix("\n"), resetId, retry, oversized)
+            if (line === Line.Blank) {
+                if (sawField) return SseFrame(event, id, joined?.toString() ?: data.orEmpty(), resetId, retry, oversized)
                 continue
             }
-            if (line.startsWith(":")) continue
-            val colon = line.indexOf(':')
-            val field = if (colon < 0) line else line.substring(0, colon)
-            var value = if (colon < 0) "" else line.substring(colon + 1)
-            if (value.startsWith(" ")) value = value.substring(1)
+            if (line === Line.Comment) continue
+            val (field, value) = line as Line.Field
             sawField = true
             when (field) {
                 "event" -> event = value
                 // Past the cap the frame is oversized: skipped whole rather than kept short, which would neither
                 // decode nor let the position move past it.
-                "data" -> if (data.length + value.length <= MAX_DATA_CHARS) data.append(value).append('\n') else oversized = true
+                "data" -> if (dataChars + value.length <= MAX_DATA_CHARS) {
+                    when {
+                        data == null -> data = value
+                        joined == null -> joined = StringBuilder(data.length + value.length + 1).append(data).append('\n').append(value)
+                        else -> joined.append('\n').append(value)
+                    }
+                    dataChars += value.length + 1
+                } else {
+                    oversized = true
+                }
                 // An empty value says the stream has no resume position rather than that it is the empty string; a
                 // value with a NUL in it is not an id at all and is ignored, leaving the position as it was.
                 "id" -> if (!value.contains('\u0000')) {
@@ -189,19 +203,50 @@ object SseParser {
         }
     }
 
-    /** The marker [readLine] answers for a line it read past rather than into memory (compared by identity). */
-    private val OVERSIZED_LINE = String(charArrayOf('\u0000'))
+    /** One line of a frame, as [readField] reads it. */
+    private sealed interface Line {
+        data class Field(val name: String, val value: String) : Line
+        /** The empty line that ends a frame. */
+        data object Blank : Line
+        data object Comment : Line
+        /** Longer than [MAX_LINE_BYTES]: read past rather than into memory. */
+        data object Oversized : Line
+    }
 
     /**
-     * One line, without its LF or CRLF: null once the source is exhausted (a line the stream ended in the middle of
-     * is not a line), [OVERSIZED_LINE] for one longer than [MAX_LINE_BYTES], which is skipped to its end.
+     * One line, without its LF or CRLF, split into its field and value straight off [source], so the value — a
+     * frame's whole data, usually — is decoded once and never copied out of a larger string: null once the source is
+     * exhausted (a line the stream ended in the middle of is not a line), [Line.Oversized] for one longer than
+     * [MAX_LINE_BYTES], which is skipped to its end.
      */
-    private fun readLine(source: BufferedSource): String? {
+    private fun readField(source: BufferedSource): Line? {
         val newline = source.indexOf(NEWLINE, 0L, MAX_LINE_BYTES + 1)
         if (newline >= 0) {
-            val line = source.readUtf8(newline)
+            val length = if (newline > 0 && source.buffer[newline - 1] == CR) newline - 1 else newline
+            if (length == 0L) {
+                source.skip(newline + 1)
+                return Line.Blank
+            }
+            val colon = source.indexOf(COLON, 0L, length)
+            if (colon == 0L) {
+                source.skip(newline + 1)
+                return Line.Comment
+            }
+            if (colon < 0) {
+                val name = source.readUtf8(length)
+                source.skip(newline - length + 1)
+                return Line.Field(name, "")
+            }
+            val name = source.readUtf8(colon)
             source.skip(1)
-            return line.removeSuffix("\r")
+            var rest = length - colon - 1
+            if (rest > 0 && source.buffer[0] == SPACE) {
+                source.skip(1)
+                rest--
+            }
+            val value = source.readUtf8(rest)
+            source.skip(newline - length + 1)
+            return Line.Field(name, value)
         }
         // No newline within the cap: either the source ran out first, or the line is longer than the cap.
         if (!source.request(MAX_LINE_BYTES + 1)) return null
@@ -210,7 +255,7 @@ object SseParser {
             val end = source.indexOf(NEWLINE, 0L, SKIP_CHUNK_BYTES)
             if (end >= 0) {
                 source.skip(end + 1)
-                return OVERSIZED_LINE
+                return Line.Oversized
             }
             if (!source.request(SKIP_CHUNK_BYTES)) {
                 // The stream ended inside the oversized line: nothing after it is a frame.
@@ -352,7 +397,7 @@ class SseRunStreamer(
                 }
             }
         }
-    }.flowOn(STREAM_IO)
+    }.buffer(EVENTS_AHEAD).flowOn(STREAM_IO)
 
     private sealed interface Outcome {
         /** The run's `result` (and `done`) came through. */
@@ -470,6 +515,14 @@ class SseRunStreamer(
 
         /** A `Retry-After` beyond this is honoured only this far; the caller decides what to do about the rest. */
         const val MAX_RETRY_AFTER_MS = 60_000L
+
+        /**
+         * Events read off the socket before the collector has taken them. The default hand-off between the stream's
+         * thread and its collector holds 64, and a replay reads as fast as the network delivers: a run with pictures
+         * in it queued dozens of decoded multi-megabyte frames per stream, twenty streams at once under background
+         * live sync. The socket's own window holds the rest, still encoded.
+         */
+        const val EVENTS_AHEAD = 2
 
         /**
          * A stream holds its thread for as long as the run goes on (`execute()` blocks on the socket). Streams get
