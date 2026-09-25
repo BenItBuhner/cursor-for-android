@@ -106,6 +106,22 @@ class NavStack private constructor(initial: List<NavEntry>) {
         return result
     }
 
+    /** The id of the top [gliding] left, until [CursorNavHost] has put it on screen; not saved. */
+    internal var glideTop by mutableStateOf<String?>(null)
+
+    /**
+     * Makes [change], and has whatever it leaves on top fade in where it stands over the screen it covers, rather than
+     * slide in from the side: a chat started from the New Chat composer, whose prompt and composer carry on into the
+     * chat (see [com.cursorforandroid.ui.components.SendMotion]) and would be carried off sideways by a slide. Back
+     * from it slides as ever.
+     */
+    fun <T> gliding(change: () -> T): T {
+        val before = top.id
+        val result = change()
+        if (top.id != before) glideTop = top.id
+        return result
+    }
+
     /** The entry a back gesture would reveal, or null at the root. */
     val underTop: NavEntry? get() = list.getOrNull(list.size - 2)
 
