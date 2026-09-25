@@ -27,14 +27,20 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.IntOffset
@@ -90,8 +96,12 @@ fun ComposerPlusMenu(
     actions: ComposerMenuActions,
     /** What the Skills page lists: the composer's `/` catalog, the same one its popover completes from. */
     commands: SlashCatalog = SlashCatalog.BUILT_IN,
+    /** The menu put away with nothing picked — a tap outside it, or back — called after [onDismiss]. */
+    onCancel: () -> Unit = {},
 ) {
     var page by remember(expanded) { mutableStateOf(MenuPage.Root) }
+    // The keyboard stays with the composer while the menu is up, until the Skills search is tapped to type into.
+    var searching by remember(expanded) { mutableStateOf(false) }
     // The editor is a form the user fills in by pasting from another app, which is exactly when the process is most
     // likely to be killed. Only the edited server's id is saved, not the server: it is re-read from the store below
     // so credentials never reach the instance-state bundle.
@@ -105,7 +115,7 @@ fun ComposerPlusMenu(
 
     // Anchored to the "+" disc, [CursorDimens.composerPadding] in from the composer's side: the menu's start edge
     // drops from the disc's, so its corners are concentric with the composer's (see [CursorDimens.menuRadius]).
-    CursorMenu(expanded = expanded, onDismissRequest = onDismiss) {
+    CursorMenu(expanded = expanded, onDismissRequest = { onDismiss(); onCancel() }, keepsKeyboard = !searching) {
         AnimatedContent(
             targetState = page,
             transitionSpec = {
@@ -127,6 +137,7 @@ fun ComposerPlusMenu(
                     )
                     MenuPage.Skills -> SkillsPage(
                         prompt = prompt,
+                        onSearchFocused = { searching = true },
                         catalog = commands,
                         recent = actions.recentSkills,
                         onBack = { page = MenuPage.Root },
@@ -186,7 +197,14 @@ private fun RootPage(onMedia: () -> Unit, onFiles: (() -> Unit)?, onSkills: () -
 }
 
 @Composable
-private fun SkillsPage(prompt: String, catalog: SlashCatalog, recent: List<String>, onBack: () -> Unit, onSelect: (SlashCommand) -> Unit) {
+private fun SkillsPage(
+    prompt: String,
+    onSearchFocused: () -> Unit,
+    catalog: SlashCatalog,
+    recent: List<String>,
+    onBack: () -> Unit,
+    onSelect: (SlashCommand) -> Unit,
+) {
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
     var query by remember { mutableStateOf("") }
@@ -194,7 +212,7 @@ private fun SkillsPage(prompt: String, catalog: SlashCatalog, recent: List<Strin
     val results = remember(query, recent, catalog) { catalog.search(query, recent).filter { it.kind == SlashCommand.Kind.Skill } }
 
     PageHeader("Skills", onBack)
-    MenuSearchField(query, onValueChange = { query = it }, placeholder = "Search or type a skill name")
+    MenuSearchField(query, onValueChange = { query = it }, placeholder = "Search or type a skill name", onFocused = onSearchFocused)
     CursorMenuSeparator(Modifier.padding(top = 2.dp))
     Column(Modifier.heightIn(max = PageListMaxHeight).fadingVerticalScroll(surface = colors.elevated)) {
         if (results.isEmpty()) {
@@ -268,9 +286,24 @@ private fun Chevron() {
 }
 
 @Composable
-private fun MenuSearchField(value: String, onValueChange: (String) -> Unit, placeholder: String) {
+private fun MenuSearchField(value: String, onValueChange: (String) -> Unit, placeholder: String, onFocused: () -> Unit) {
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
+    val requester = remember { FocusRequester() }
+    val focusManager = LocalFocusManager.current
+    var focused by remember { mutableStateOf(false) }
+    // Focused, the field has the menu hand the keyboard over ([onFocused]); the window that could not take it a moment
+    // ago can once that lands, so the field is focused again then to start its typing in it.
+    var handedOver by remember { mutableStateOf(false) }
+    LaunchedEffect(focused) {
+        if (focused && !handedOver) {
+            handedOver = true
+            onFocused()
+            withFrameNanos {}
+            focusManager.clearFocus(force = true)
+            requester.requestFocus()
+        }
+    }
     Row(
         Modifier
             .fillMaxWidth()
@@ -290,7 +323,7 @@ private fun MenuSearchField(value: String, onValueChange: (String) -> Unit, plac
             textStyle = type.base.copy(color = colors.textPrimary),
             cursorBrush = SolidColor(colors.textPrimary),
             keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.None, autoCorrectEnabled = false),
-            modifier = Modifier.weight(1f),
+            modifier = Modifier.weight(1f).focusRequester(requester).onFocusChanged { focused = it.isFocused },
             decorationBox = { inner -> Box { if (value.isEmpty()) Text(placeholder, style = type.base, color = colors.textQuaternary, maxLines = 1); inner() } },
         )
     }

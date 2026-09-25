@@ -1,6 +1,7 @@
 package com.cursorforandroid.ui.components
 
 import android.view.View
+import android.view.WindowManager
 import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.animation.core.MutableTransitionState
 import androidx.compose.animation.core.animateFloat
@@ -87,6 +88,13 @@ fun CursorMenu(
     offset: DpOffset = DpOffset.Zero,
     /** False for a popover that has to leave the keyboard up and the typing going (the `/` popover). */
     focusable: Boolean = true,
+    /**
+     * For a focusable menu opened from a field that holds the keyboard (the composer's "+"): the menu takes focus but
+     * not the keyboard, which stays up for the field. The platform puts the keyboard away when a window that could
+     * take it gains focus with no text field of its own focused, and a menu's window would be that window. False
+     * while a field inside the menu is to take the keyboard itself.
+     */
+    keepsKeyboard: Boolean = false,
     /** Where a right-click opened the menu, in window coordinates: the menu opens at that point, not beside its anchor. */
     at: IntOffset? = null,
     content: @Composable ColumnScope.() -> Unit,
@@ -109,7 +117,8 @@ fun CursorMenu(
         else (height - insets.getTop(this) - insets.getBottom(this)).toDp() - CursorDimens.menuEdgeMargin * 2
     }
 
-    Popup(popupPositionProvider = provider, onDismissRequest = onDismissRequest, properties = PopupProperties(focusable = focusable)) {
+    val properties = remember(focusable, keepsKeyboard) { menuProperties(focusable, keepsKeyboard) }
+    Popup(popupPositionProvider = provider, onDismissRequest = onDismissRequest, properties = properties) {
         val transition = rememberTransition(state, label = "menu")
         val progress by transition.animateFloat(
             transitionSpec = { if (targetState) tween(ENTER_MILLIS, easing = EnterEasing) else tween(EXIT_MILLIS, easing = ExitEasing) },
@@ -149,6 +158,18 @@ fun CursorMenu(
             )
         }
     }
+}
+
+/**
+ * A popup's defaults, less the keyboard when [keepsKeyboard]. `FLAG_ALT_FOCUSABLE_IM` on a focusable window is what
+ * tells the platform the window cannot take the keyboard, so gaining focus leaves the keyboard with the window under it;
+ * on a window that is not focusable it would mean the reverse, and such a window leaves the keyboard be already.
+ */
+internal fun menuProperties(focusable: Boolean, keepsKeyboard: Boolean): PopupProperties {
+    var flags = WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH
+    if (!focusable) flags = flags or WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+    else if (keepsKeyboard) flags = flags or WindowManager.LayoutParams.FLAG_ALT_FOCUSABLE_IM
+    return PopupProperties(flags = flags, usePlatformDefaultWidth = false)
 }
 
 /**
