@@ -177,6 +177,12 @@ object CursorIcons {
 
     private const val MicScale = 0.75f
 
+    /** Grid units between [Mic]'s ink and either side of its box: the capsule's arc, scaled, and half its stroke. */
+    const val MicInkInset = 12f - 7f * MicScale - 1f
+
+    /** Grid units between [ChevronDown]'s ink and either side of its box: the tips at 6 and 18, less half the stroke. */
+    const val ChevronInkInset = 5f
+
     val Plus: ImageVector by lazy {
         icon("Plus") {
             path("M5 12h14", 2f)

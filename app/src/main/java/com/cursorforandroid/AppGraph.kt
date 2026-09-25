@@ -374,10 +374,11 @@ class AppGraph(
     val transcription: TranscriptionApi get() = lazyTranscription.value
 
     /**
-     * Whether the composers offer the microphone: the Experimental "Voice input" switch, which transcribes through the
-     * account (`api2`) and so is dormant while Extended mode is off, and never in the demo, which has no account to ask.
+     * Whether the composers offer the microphone: wherever a dictation can be transcribed. That is through the account
+     * (`api2`), whose session is refused while Extended mode is off, so the mic is there in Extended mode and gone in
+     * Default mode rather than failing at every tap; never in the demo, which has no account to ask.
      */
-    val voiceInput: Flow<Boolean> = combine(prefs.voiceInput, extendedMode.enabled, prefs.demoMode) { voice, extended, demo -> voice && extended && !demo }
+    val voiceInput: Flow<Boolean> = combine(extendedMode.enabled, prefs.demoMode) { extended, demo -> extended && !demo }
         .distinctUntilChanged()
     /**
      * The account's own transcript of a chat (`FetchBackgroundComposer`), on the account client with the transcript's

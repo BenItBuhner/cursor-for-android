@@ -1,16 +1,27 @@
 package com.cursorforandroid.ui.components
 
 import android.net.Uri
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.SizeTransform
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.content.MediaType
 import androidx.compose.foundation.content.ReceiveContentListener
 import androidx.compose.foundation.content.consume
 import androidx.compose.foundation.content.contentReceiver
 import androidx.compose.foundation.content.hasMediaType
+import androidx.compose.foundation.indication
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -20,9 +31,12 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -35,6 +49,7 @@ import androidx.compose.foundation.text.input.rememberTextFieldState
 import androidx.compose.foundation.text.input.setTextAndPlaceCursorAtEnd
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
+import androidx.compose.material3.ripple
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -51,6 +66,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.focus.FocusRequester
@@ -60,17 +76,22 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.drawscope.clipPath
 import androidx.compose.ui.graphics.drawscope.translate
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.disabled
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.drawText
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.lerp
 import com.cursorforandroid.data.media.MediaLoader
 import com.cursorforandroid.domain.SlashCatalog
 import com.cursorforandroid.domain.SlashCommand
@@ -180,7 +201,7 @@ fun ComposerBox(
      */
     focusRequests: Int = 0,
     /**
-     * Dictation (Settings › Experimental › Voice input, which needs Extended mode); null leaves the send slot as it
+     * Dictation (offered in Extended mode, see `AppGraph.voiceInput`); null leaves the send slot as it
      * always was. Given, a microphone joins it — see [composerButtons] — and the words go in at the caret, unsent.
      */
     voice: VoiceInput? = null,
@@ -351,7 +372,9 @@ fun ComposerBox(
     Column(
         modifier
             .fillMaxWidth()
-            .cursorSurface(colors.elevated, border, shape)
+            // Unclipped: beside the bare mic, the main button's 40dp touch area runs past the box's rounded edge
+            // (see FooterSpacing), and a clip would drop those touches. What scrolls inside clips itself.
+            .cursorSurface(colors.elevated, border, shape, clip = false)
             .padding(start = pad, end = pad, top = pad, bottom = pad - 2.dp),
     ) {
         // Everything attached, in one row that scrolls sideways past the composer's width; nothing at all when nothing is.
@@ -466,35 +489,6 @@ fun ComposerBox(
             // Pills right of "+", the model chip next to send, and the leftover width between them. The children are
             // measured in order, so the pills take what their words need and the chip is left the rest: it ellipsises
             // before a pill would, and send is never pushed out. A dictation under way has the middle to itself.
-            val dictating = voice != null && micTap != null && voice.state != VoiceState.Idle
-            if (dictating) VoiceStatus(voice, onTap = micTap)
-            else Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
-                if (wornMode != null) {
-                    ModePill(wornMode, onClear = { haptics.perform(Haptic.ToggleOff); onModePill?.invoke(null) })
-                    Spacer(Modifier.width(6.dp))
-                }
-                if (presented.multitask) {
-                    ModePill(ModePills.Pill.Multitask, onClear = { haptics.perform(Haptic.ToggleOff); publish(field.text.toString(), multitask = false) })
-                    Spacer(Modifier.width(6.dp))
-                }
-                Spacer(Modifier.weight(1f))
-                footerExtra?.invoke(this)
-                if (sendHint != null) {
-                    Text(
-                        sendHint,
-                        style = type.small,
-                        color = colors.textTertiary,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.padding(end = 6.dp).testTag("send-hint"),
-                    )
-                }
-                if (modelLabel != null) {
-                    SelectorChip(modelLabel, onClick = onModel ?: {}, enabled = onModel != null, showChevron = onModel != null)
-                }
-            }
-            // A dictation's status ends in its round cancel button, which needs the same clearance as the mic from send.
-            Spacer(Modifier.width(if (dictating) CursorDimens.roundButtonGap else 8.dp))
             val buttons = composerButtons(
                 isSending = isSending,
                 cancelOffered = cancelOffered && onCancelSend != null,
@@ -503,41 +497,221 @@ fun ComposerBox(
                 hasContent = field.text.isNotBlank() || shownImages.isNotEmpty() || shownFiles.isNotEmpty(),
                 voice = micTap != null,
             )
-            if (buttons.micBeside && voice != null && micTap != null) {
-                VoiceMicButton(voice, prominent = false, onClick = micTap)
-                Spacer(Modifier.width(CursorDimens.roundButtonGap))
+            val micBeside = buttons.micBeside && voice != null && micTap != null
+            val dictating = voice != null && micTap != null && voice.state != VoiceState.Idle
+            // The bare mic slides in and out beside the main button rather than popping: its slot widens from nothing
+            // while the chip's end padding and the spacer before it give their room up at the same pace.
+            val micShown by animateFloatAsState(if (micBeside) 1f else 0f, tween(MicSlideMillis, easing = FastOutSlowInEasing), label = "micShown")
+            val chipEnd = lerp(FooterSpacing.ChipEndPadding, FooterSpacing.ChipEndBesideMic, micShown)
+            val gapTarget = when {
+                micBeside && dictating -> FooterSpacing.CancelToMic
+                micBeside -> 0.dp
+                // A dictation's status ends in its round cancel button, clear of the main mic's touches.
+                dictating -> CursorDimens.roundButtonGap
+                else -> FooterSpacing.ChipToMain
             }
-            Box(Modifier.testTag("composer-main")) {
-                when (buttons.main) {
-                    SendSlot.CancelSend -> ComposerRoundButton(CursorIcons.Stop, "Cancel sending", onClick = { onCancelSend?.invoke() }, prominent = true)
-                    SendSlot.Busy -> ComposerBusyButton()
-                    SendSlot.Stop -> ComposerRoundButton(CursorIcons.Stop, "Stop", onClick = { onStop?.invoke() }, prominent = true)
-                    SendSlot.Mic -> if (voice != null && micTap != null) VoiceMicButton(voice, prominent = true, onClick = micTap)
-                    // The tap is felt, not a hardware Enter: a physical keyboard's keys are their own feedback.
-                    SendSlot.Send -> ComposerRoundButton(CursorIcons.ArrowUp, "Send", onClick = { haptics.perform(Haptic.Confirm); onSend() }, prominent = canSend, enabled = sendsNow)
+            val gap by animateDpAsState(gapTarget, tween(MicSlideMillis, easing = FastOutSlowInEasing), label = "footerGap")
+            AnimatedContent(
+                targetState = dictating,
+                transitionSpec = { fadeIn(tween(MicMotionMillis, easing = FastOutSlowInEasing)) togetherWith fadeOut(tween(MicMotionMillis * 2 / 3)) using SizeTransform(clip = false) },
+                contentAlignment = Alignment.CenterStart,
+                modifier = Modifier.weight(1f),
+                label = "footerMiddle",
+            ) { showsStatus ->
+                if (showsStatus && voice != null && micTap != null) {
+                    VoiceStatus(voice, onTap = micTap, cancelTouchShift = if (micBeside) FooterSpacing.CancelTouchShift else 0.dp, modifier = Modifier.fillMaxWidth())
+                } else {
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        if (wornMode != null) {
+                            ModePill(wornMode, onClear = { haptics.perform(Haptic.ToggleOff); onModePill?.invoke(null) })
+                            Spacer(Modifier.width(6.dp))
+                        }
+                        if (presented.multitask) {
+                            ModePill(ModePills.Pill.Multitask, onClear = { haptics.perform(Haptic.ToggleOff); publish(field.text.toString(), multitask = false) })
+                            Spacer(Modifier.width(6.dp))
+                        }
+                        Spacer(Modifier.weight(1f))
+                        footerExtra?.invoke(this)
+                        if (sendHint != null) {
+                            Text(
+                                sendHint,
+                                style = type.small,
+                                color = colors.textTertiary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.padding(end = 6.dp).testTag("send-hint"),
+                            )
+                        }
+                        if (modelLabel != null) {
+                            SelectorChip(
+                                modelLabel,
+                                onClick = onModel ?: {},
+                                enabled = onModel != null,
+                                showChevron = onModel != null,
+                                endPadding = chipEnd,
+                            )
+                        }
+                    }
+                }
+            }
+            Spacer(Modifier.width(gap))
+            if (voice != null && micTap != null && micShown > 0f) {
+                VoiceMicBeside(
+                    voice,
+                    glyphStart = FooterSpacing.MicGlyphStart,
+                    onClick = micTap,
+                    enabled = micBeside,
+                    modifier = Modifier
+                        .width(CursorDimens.roundButtonTouch * micShown)
+                        .wrapContentWidth(Alignment.End, unbounded = true)
+                        .graphicsLayer {
+                            alpha = micShown
+                            scaleX = 0.6f + 0.4f * micShown
+                            scaleY = 0.6f + 0.4f * micShown
+                        },
+                )
+            }
+            // Beside the mic, the main button takes touches from its disc's left edge rightwards: the room its hit
+            // layer would have reached into on the left is the mic's.
+            val mainShift = if (micBeside) FooterSpacing.MainTouchShift else 0.dp
+            val voiceState = voice?.state
+            val face = when (buttons.main) {
+                SendSlot.CancelSend -> MainFace(MainGlyph.Stop, "Cancel sending", onClick = { onCancelSend?.invoke() })
+                SendSlot.Busy -> MainFace(MainGlyph.Spinner, "Sending", onClick = null)
+                SendSlot.Stop -> MainFace(MainGlyph.Stop, "Stop", onClick = { onStop?.invoke() })
+                // The tap is felt, not a hardware Enter: a physical keyboard's keys are their own feedback.
+                SendSlot.Send -> MainFace(MainGlyph.Send, "Send", onClick = { haptics.perform(Haptic.Confirm); onSend() }, prominent = canSend, enabled = sendsNow)
+                SendSlot.Mic -> when (voiceState) {
+                    is VoiceState.Recording -> MainFace(MainGlyph.Mic, "Stop recording", onClick = micTap, recording = true)
+                    VoiceState.Transcribing -> MainFace(MainGlyph.Spinner, "Transcribing", onClick = null)
+                    else -> MainFace(MainGlyph.Mic, "Voice input", onClick = micTap)
+                }
+            }
+            ComposerMainButton(face, voice = voice, touchShift = mainShift, modifier = Modifier.testTag("composer-main"))
+        }
+    }
+}
+
+internal enum class MainGlyph { Send, Stop, Mic, Spinner }
+
+/**
+ * What the send slot's disc shows: its glyph, its name, its tap ([onClick] null while a send or a transcription is
+ * under way, when it takes none), and its colours — the white disc when [prominent], the soft disabled fill when not
+ * [enabled], red while [recording].
+ */
+internal data class MainFace(
+    val glyph: MainGlyph,
+    val description: String,
+    val onClick: (() -> Unit)?,
+    val prominent: Boolean = true,
+    val enabled: Boolean = true,
+    val recording: Boolean = false,
+)
+
+/**
+ * The send slot's one disc, whatever it holds: Send, Stop, the microphone, a spinner. It never leaves the layout, so
+ * nothing beside it jumps when its role changes; the fill cross-fades and the glyph swaps with a fade and a scale. As
+ * the microphone recording, the disc turns red inside [RecordingHalo]. The name is on a glyph-sized node rather than
+ * the hit layer, as with [ComposerRoundButton], and says when the disc takes no tap.
+ */
+@Composable
+private fun ComposerMainButton(face: MainFace, voice: VoiceInput?, touchShift: Dp, modifier: Modifier = Modifier) {
+    val colors = CursorTheme.colors
+    val targetFill = when {
+        face.recording -> colors.red
+        !face.enabled -> colors.fillSoft
+        face.prominent -> colors.textPrimary
+        else -> colors.fill
+    }
+    val targetTint = when {
+        face.recording -> Color.White
+        !face.enabled -> colors.iconQuaternary
+        face.prominent -> colors.canvas
+        else -> colors.iconSecondary
+    }
+    val motion = tween<Color>(MicMotionMillis, easing = FastOutSlowInEasing)
+    val fill by animateColorAsState(targetFill, motion, label = "mainFill")
+    val tint by animateColorAsState(targetTint, motion, label = "mainTint")
+    val halo by animateFloatAsState(if (face.recording) 1f else 0f, tween(MicMotionMillis, easing = FastOutSlowInEasing), label = "mainHalo")
+    val interaction = remember { MutableInteractionSource() }
+    val onClick = face.onClick
+    Box(modifier.size(CursorDimens.roundButton), contentAlignment = Alignment.Center) {
+        if (voice != null && halo > 0f) RecordingHalo(voice, halo)
+        if (onClick != null) {
+            Box(
+                Modifier
+                    .offset(x = touchShift)
+                    .requiredSize(CursorDimens.roundButtonTouch)
+                    .clickable(interactionSource = interaction, indication = null, enabled = face.enabled, role = Role.Button, onClick = onClick),
+            )
+        }
+        Box(
+            Modifier
+                .size(CursorDimens.roundButton)
+                .clip(CircleShape)
+                .indication(interaction, ripple(color = colors.base, bounded = true))
+                .background(fill, CircleShape),
+            contentAlignment = Alignment.Center,
+        ) {
+            Box(
+                Modifier
+                    .size(CursorDimens.roundButtonGlyph)
+                    .semantics {
+                        contentDescription = face.description
+                        if (!face.enabled) disabled()
+                    },
+                contentAlignment = Alignment.Center,
+            ) {
+                AnimatedContent(face.glyph, transitionSpec = { glyphSwap() }, contentAlignment = Alignment.Center, label = "mainGlyph") { glyph ->
+                    when (glyph) {
+                        MainGlyph.Send -> Icon(CursorIcons.ArrowUp, null, tint = tint, modifier = Modifier.size(CursorDimens.roundButtonGlyph))
+                        MainGlyph.Stop -> Icon(CursorIcons.Stop, null, tint = tint, modifier = Modifier.size(CursorDimens.roundButtonGlyph))
+                        MainGlyph.Mic -> Icon(CursorIcons.Mic, null, tint = tint, modifier = Modifier.size(CursorDimens.roundButtonGlyph))
+                        MainGlyph.Spinner -> SpinnerRing(color = tint, size = CursorDimens.roundButtonGlyph, strokeWidth = 1.5.dp)
+                    }
                 }
             }
         }
     }
 }
 
-/** The send slot while a prompt is in flight: the prominent disc with a canvas-coloured ring instead of a glyph. */
-@Composable
-private fun ComposerBusyButton(modifier: Modifier = Modifier) {
-    val colors = CursorTheme.colors
-    Box(
-        modifier
-            .size(CursorDimens.roundButton)
-            .background(colors.textPrimary, CircleShape)
-            .semantics { contentDescription = "Sending" },
-        contentAlignment = Alignment.Center,
-    ) {
-        SpinnerRing(color = colors.canvas, size = CursorDimens.roundButtonGlyph, strokeWidth = 1.5.dp)
-    }
-}
-
 /** How long a send has to be in flight before the busy ring becomes a cancel button. */
 private const val CancelOfferDelayMillis = 2_500L
+
+/**
+ * The footer's right-hand group — model chip, the mic beside the main button, the main disc — spaced by what the eye
+ * sees rather than by layout boxes, with touch areas that tile the row instead of overlapping.
+ *
+ * Without a mic, the chip's chevron ink sits [ModelToMain] from the main disc: the chevron's inset in its box, the
+ * chip's end padding and [ChipToMain]. With the bare mic beside the main button, the mic's ink sits that same distance
+ * from the disc and from the chevron. The mic's 40dp touch area fills the room between the chip and the disc exactly:
+ * the chip gives up the end padding nobody sees ([ChipEndBesideMic]) and the main button's hit layer starts at its
+ * disc's left edge ([MainTouchShift]), so a tap near the mic is never a send.
+ */
+internal object FooterSpacing {
+    val Chevron = 14.dp
+    val ChipEndPadding = 7.dp
+    val ChipToMain = 8.dp
+    private val ChevronInk = Chevron * (CursorIcons.ChevronInkInset / 24f)
+    private val MicInk = CursorDimens.roundButtonGlyph * (CursorIcons.MicInkInset / 24f)
+
+    /** Chevron ink to main disc before the mic existed; now also chevron ink to mic ink and mic ink to main disc. */
+    val ModelToMain: Dp = ChevronInk + ChipEndPadding + ChipToMain
+
+    /** Where the mic's glyph box starts inside its 40dp touch box, so its ink ends [ModelToMain] short of the disc. */
+    val MicGlyphStart: Dp = CursorDimens.roundButtonTouch - CursorDimens.roundButtonGlyph - (ModelToMain - MicInk)
+
+    /** The chip's end padding beside the mic: its chevron ink [ModelToMain] from the mic's, its tap area ending at the mic's. */
+    val ChipEndBesideMic: Dp = ModelToMain - ChevronInk - MicGlyphStart - MicInk
+
+    val MainTouchShift: Dp = (CursorDimens.roundButtonTouch - CursorDimens.roundButton) / 2
+
+    /** Dictating, the status's cancel disc to the mic's box: its edge [ModelToMain] from the mic's ink. */
+    val CancelToMic: Dp = ModelToMain - MicGlyphStart - MicInk
+
+    /** The cancel's hit layer moved left so it ends where the mic's begins. */
+    val CancelTouchShift: Dp = CancelToMic - MainTouchShift
+}
 
 /**
  * Where a text field leaves its layout provider: set from `onTextLayout` during the field's measure, read while the
@@ -648,6 +822,7 @@ fun SelectorChip(
     icon: ImageVector? = null,
     enabled: Boolean = true,
     showChevron: Boolean = enabled,
+    endPadding: Dp = FooterSpacing.ChipEndPadding,
 ) {
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
@@ -656,7 +831,7 @@ fun SelectorChip(
             .pressable(onClick, CursorTheme.shapes.base, enabled = enabled)
             // The composer footer's height: a fair tap height for a chip that paints nothing until pressed.
             .heightIn(min = CursorDimens.composerFooter)
-            .padding(horizontal = 7.dp),
+            .padding(start = 7.dp, end = endPadding),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(4.dp),
     ) {
@@ -672,7 +847,7 @@ fun SelectorChip(
                 modifier = Modifier.weight(1f, fill = false),
             )
         }
-        if (showChevron) Icon(CursorIcons.ChevronDown, null, tint = colors.iconTertiary, modifier = Modifier.size(14.dp))
+        if (showChevron) Icon(CursorIcons.ChevronDown, null, tint = colors.iconTertiary, modifier = Modifier.size(FooterSpacing.Chevron))
     }
 }
 
