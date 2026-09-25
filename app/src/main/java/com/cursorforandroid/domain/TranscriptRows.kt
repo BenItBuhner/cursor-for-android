@@ -81,8 +81,8 @@ sealed interface TranscriptRow {
      * coordinator's working notes, the turns Cursor injected (as their event rows, a run of them behind one line),
      * and the footers of the runs it spans. [live] while the run is still writing into it: the summary then reads
      * "Working" and shimmers; a subagent of it still at work keeps it from settling too (see [StretchSummary.of]).
-     * A stretch of one step — a tool call, a subagent, a thought, a footer, an event — is drawn as that step, not as
-     * a summary of it; a note is never drawn alone, it reads under the summary with the rest.
+     * A stretch of one step — a tool call, a thought, a footer, an event — is drawn as that step, not as a summary of
+     * it; a note or a subagent's row is never drawn alone, it reads under the summary with the rest.
      */
     data class Stretch(val entries: List<Entry>, val live: Boolean = false) : TranscriptRow {
         // By its first step's own key: an event it opens with keeps it when the next event folds the two into a group.
@@ -91,12 +91,13 @@ sealed interface TranscriptRow {
         /**
          * The one entry a stretch of one step is drawn as, or null for a stretch worth a summary. A failed run with
          * nothing else in its stretch — its footer and its failure line — is its failure line: the footer's duration
-         * is the line's to say, there being no summary to carry it.
+         * is the line's to say, there being no summary to carry it. A subagent's row is never the one entry: whether a
+         * thought or another call happened to come before it in its turn, it sits behind the summary like the rest.
          */
         val single: Entry? get() {
             val alone = entries.singleOrNull()
                 ?: entries.takeIf { it.size == 2 && it[0] is Entry.Footer && it[1] is Entry.Failure && (it[1] as Entry.Failure).footer.id == (it[0] as Entry.Footer).footer.id }?.get(1)
-            return alone?.takeUnless { it is Entry.Note || it is Entry.Events }
+            return alone?.takeUnless { it is Entry.Note || it is Entry.Events || (it is Entry.Call && it.subagent != null) }
         }
 
         val summary: StretchSummary by lazy { StretchSummary.of(this) }
