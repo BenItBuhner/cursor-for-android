@@ -1246,15 +1246,6 @@ class AppGraph(
         return storeFiles.writeText(DiagnosticsInbox.PROJECT_ID, DiagnosticsInbox.path(now), text)
     }
 
-    /** The crash card's Send: the kept crash reports and the Project diagnostics, into the same inbox (see [DiagnosticsInbox]). */
-    suspend fun sendCrashReportsToProject(): String {
-        if (session.isDemo) throw java.io.IOException(DiagnosticsInbox.DEMO_HAS_NO_ACCOUNT)
-        val now = AppClock.now()
-        val crashes = withContext(Dispatchers.IO) { crashLog.export() }
-        val text = DiagnosticsInbox.composeCrash(appVersion, now, crashes, projectDiagnosticsReport())
-        return storeFiles.writeText(DiagnosticsInbox.PROJECT_ID, DiagnosticsInbox.crashPath(now), text)
-    }
-
     /**
      * The app's account of the moment, for a crash report (see [CrashLog.install]): the build and device, background
      * live sync, the chats in memory and the run streams, memory and threads by pool, and the last things done. Reads
