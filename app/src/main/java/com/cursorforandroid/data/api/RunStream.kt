@@ -79,6 +79,12 @@ sealed interface RunStreamEvent {
         }
     }
     data object Done : RunStreamEvent
+    /**
+     * The stream's resume position once everything before it has been handed over: the SSE id of the frame just
+     * delivered (or deliberately skipped). A collector that keeps what it applied can come back later with this as
+     * `lastEventId` and be sent only what followed, instead of the run from its first event.
+     */
+    data class Position(val id: String) : RunStreamEvent
 }
 
 /**
@@ -305,10 +311,14 @@ class SseRunStreamer(
                 when (parsed) {
                     is SseParser.Parsed.Delivered -> {
                         frame.id?.let { lastId = it }
-                        parsed.event.takeUnless { it is RunStreamEvent.Error }?.let { delivered = true; emit(it) }
+                        parsed.event.takeUnless { it is RunStreamEvent.Error }?.let {
+                            delivered = true
+                            emit(it)
+                            frame.id?.let { id -> emit(RunStreamEvent.Position(id)) }
+                        }
                     }
                     // Skipped on purpose, either way: resuming past them is right, since asking again brings the same frame.
-                    SseParser.Parsed.Ignored, SseParser.Parsed.Oversized -> frame.id?.let { lastId = it }
+                    SseParser.Parsed.Ignored, SseParser.Parsed.Oversized -> frame.id?.let { lastId = it; emit(RunStreamEvent.Position(it)) }
                     SseParser.Parsed.Undecodable -> Unit
                 }
                 parsed

@@ -121,6 +121,12 @@ class LiveRunHub(
          * the screen (the finished snapshot stands in for the run until its replay lands, if its log is still there).
          */
         var fallback: TimelineBuilder.LiveRun? = null
+        /**
+         * Where the stream stands for [live]: the id of the last frame [live] has applied. A live subscriber that
+         * comes back after the stream was released resumes here and keeps [live], so reopening a chat whose turn
+         * ran on is sent what the turn did meanwhile, not the whole turn again (a long turn's log is megabytes).
+         */
+        var position: String? = null
     }
 
     /** What one connection to the stream came to. */
@@ -218,11 +224,12 @@ class LiveRunHub(
         // polling).
         val incomplete = !snapshot.finished || (replay && !snapshot.streamed)
         if (entry.job == null && incomplete && !(replay && snapshot.expired)) {
-            // A fresh connection replays the run from its first event, so start from an empty accumulator. Replayed
-            // events arrive as fast as the network delivers them, so thinking durations measured against the clock
-            // would be fiction; only a live pass times them.
-            restartAccumulator(entry, timed = !replay)
-            entry.job = scope.launch { stream(entry, historical = replay) }
+            val resumeFrom = entry.position?.takeIf { !replay && !entry.live.finished && entry.live.timed && entry.live.applied > 0 }
+            // Otherwise a fresh connection replays the run from its first event, so start from an empty accumulator.
+            // Replayed events arrive as fast as the network delivers them, so thinking durations measured against
+            // the clock would be fiction; only a live pass times them.
+            if (resumeFrom == null) restartAccumulator(entry, timed = !replay)
+            entry.job = scope.launch { stream(entry, historical = replay, resumeFrom = resumeFrom) }
         }
         entry
     }
@@ -267,10 +274,10 @@ class LiveRunHub(
      * log is reported instead of polled around, and the agent row is left alone. History that cannot be read right
      * now is simply not there yet, and the caller asks again later.
      */
-    private suspend fun stream(entry: Entry, historical: Boolean) {
+    private suspend fun stream(entry: Entry, historical: Boolean, resumeFrom: String? = null) {
         val self = currentCoroutineContext()[Job]
         val backend = session.current
-        var resumeFrom: String? = null
+        var resumeFrom: String? = resumeFrom
         var drops = 0
         try {
             while (currentCoroutineContext().isActive && owns(entry, self) && !entry.live.finished) {
@@ -326,6 +333,7 @@ class LiveRunHub(
                         live.apply(event)
                         finish(entry, self, event, historical, streamed = true)
                     }
+                    is RunStreamEvent.Position -> if (live === entry.live) entry.position = event.id
                     else -> {
                         if (event is RunStreamEvent.Assistant || event is RunStreamEvent.Thinking || event is RunStreamEvent.ToolCall) pass.progressed = true
                         live.apply(event)
@@ -419,6 +427,7 @@ class LiveRunHub(
         // The story so far outlives the rebuild that replaces it, until the rebuild has caught up with it (see [Entry.fallback]).
         val fuller = entry.fallback?.takeIf { it.applied > entry.live.applied } ?: entry.live.takeIf { it.applied > 0 }
         entry.fallback = fuller
+        entry.position = null
         entry.live = TimelineBuilder.LiveRun(entry.runId, timed = timed, nowProvider = nowProvider, startedAtMillis = entry.state.value.startedAtMillis, images = images?.forAgent(entry.agentId))
     }
 
