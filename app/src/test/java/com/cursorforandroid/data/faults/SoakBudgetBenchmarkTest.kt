@@ -351,7 +351,70 @@ class SoakBudgetBenchmarkTest {
         budget("bytes received reopening ten working chats", meter.bytesIn, REOPEN_BYTES_IN)
     }
 
+    /**
+     * Twenty working chats held by keep chats live, none of them on screen, their agents writing a step each half second
+     * for thirty seconds: how long their streams stay open, what the app allocates keeping them current, and — once a
+     * few are opened — how soon each shows its newest step and whether its story came through whole.
+     */
+    @Test
+    fun `held working chats nobody looks at are looked in on, not streamed`() = runBlocking {
+        server = FaultServer(rttMillis = 5L..20L, http2 = true).start()
+        server.clock = { now }
+        server.liveRunStreams = true
+        server.liveRunBeatMs = 500L
+        val ids = (0 until LiveSync.MAX_HELD).map { "bc-held-$it" }
+        ids.forEachIndexed { i, id ->
+            addChat(id, "Held $i", now - 100_000L - 1_000L * i)
+            server.startTurnElsewhere(id, "Work on part $i.", "run-held-$i")
+            server.appendRunEvents("run-held-$i", working("run-held-$i", 1))
+        }
+        val rig = rig()
+        rig.agents.refresh()
+        warmUp(rig, "bc-held-0")
+        val sync = liveSync(rig)
+        rig.awaitUntil(30_000) { sync.heldIds.value.size == ids.size }
+        ids.forEach { rig.conversations.settled(it) }
+        delay(2_000)
+        val meter = Meter(rig)
+        var streamSamples = 0L
+        val sampler = rig.scope.launch {
+            while (true) { streamSamples += server.liveRunOpen.get(); delay(100) }
+        }
+        var tick = 1
+        val started = System.nanoTime()
+        while (System.nanoTime() - started < HELD_WORK_MS * 1_000_000) {
+            tick++
+            ids.forEachIndexed { i, _ -> server.appendRunEvents("run-held-$i", working("run-held-$i", tick)) }
+            delay(500)
+        }
+        meter.checkpoint()
+        sampler.cancel()
+        val streamSeconds = streamSamples / 10.0
+        val opens = ids.take(HELD_OPENED).map { id ->
+            val openedAt = System.nanoTime()
+            rig.conversations.attach(id)
+            rig.awaitUntil(10_000) { rig.conversations.state(id).value.items.any { it.toString().contains("Step $tick passes") } }
+            val ms = (System.nanoTime() - openedAt) / 1_000_000
+            val story = rig.conversations.state(id).value.items.joinToString("\n")
+            rig.conversations.detach(id)
+            ms to story
+        }
+        report("held unwatched streamSeconds=${"%.0f".format(streamSeconds)} opens=${opens.map { it.first }}ms", meter, rig)
+        meter.close()
+        opens.forEach { (_, story) ->
+            for (step in listOf(1, tick / 2, tick)) assertThat(Regex("Step $step passes").findAll(story).count()).isEqualTo(1)
+        }
+        assertWithMessage("stream-seconds open for twenty held chats over ${HELD_WORK_MS / 1000} s").that(streamSeconds).isAtMost(HELD_STREAM_SECONDS)
+        budget("bytes allocated keeping twenty working chats current", meter.allocatedBytes(), HELD_ALLOCATED)
+        opens.forEach { (ms, _) -> assertWithMessage("opening a held chat to its newest step").that(ms).isAtMost(HELD_OPEN_MS) }
+    }
+
     private companion object {
+        const val HELD_WORK_MS = 30_000L
+        const val HELD_OPENED = 5
+        const val HELD_STREAM_SECONDS = 1_000.0
+        const val HELD_ALLOCATED = 1_000L shl 20
+        const val HELD_OPEN_MS = 2_000L
         const val EVICTED_CHATS = 40
         const val REOPENED = 10
         /** Beats of work in each run's log before it is first looked at: some 300 KB of tool output a run. */

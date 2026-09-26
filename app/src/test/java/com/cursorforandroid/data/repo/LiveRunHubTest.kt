@@ -449,6 +449,55 @@ class LiveRunHubTest {
     }
 
     /**
+     * A run nobody looks at is not streamed: once its connection has said what there was, it is let go at a
+     * position, and looked in on later from there — each look further apart — until someone watches, which brings
+     * the connection back at once. Nothing is skipped or said twice across the looks.
+     */
+    @Test
+    fun `a run nobody watches is looked in on from where it stopped, and a watcher brings the stream back at once`() = runBlocking {
+        hub = LiveRunHub(
+            session, agents, nowProvider = { now }, pollIntervalMs = 50, releaseGraceMs = releaseGrace, reconnectBaseMs = 20, reconnectMaxMs = 40,
+            lookBaseMs = 2_000, lookMaxMs = 4_000, lookQuietMs = 30, lookWindowMs = 150, scope = scope,
+        )
+        api.addRunningAgent("bc-1", "Agent", "run-1")
+        // The real streamer reports a position after every event; ids count everything the fake has emitted.
+        var emitted = 0
+        suspend fun say(event: RunStreamEvent) {
+            streamer.emit("run-1", event)
+            emitted++
+            streamer.emit("run-1", RunStreamEvent.Position("run-1#${++emitted}"))
+        }
+        fun reply() = (snapshot()?.items?.lastOrNull() as? AssistantMessage)?.markdown
+        say(RunStreamEvent.Status("run-1", RunStatus.RUNNING))
+        say(RunStreamEvent.Assistant("One "))
+        val watched = kotlinx.coroutines.flow.MutableStateFlow(false)
+        val subscription = scope.launch { hub.snapshots("bc-1", "run-1", watched = watched).collect { } }
+
+        awaitUntil { hub.stats().contains("resting=1") && reply() == "One " }
+        say(RunStreamEvent.Assistant("two "))
+        delay(300)
+        assertThat(reply()).isEqualTo("One ")
+        assertThat(connections()).isEqualTo(1)
+
+        // The next look resumes after the last event the first had applied.
+        awaitUntil { reply() == "One two " }
+        assertThat(connections()).isEqualTo(2)
+        assertThat(streamer.resumes.last()).isEqualTo("run-1#4")
+        awaitUntil { hub.stats().contains("resting=1") }
+
+        // The rest after that is longer than a second; a watcher does not wait it out.
+        watched.value = true
+        say(RunStreamEvent.Assistant("three"))
+        awaitUntil(timeoutMs = 1_000) { reply() == "One two three" }
+        assertThat(hub.stats()).contains("streaming=1 resting=0")
+        say(RunStreamEvent.Assistant("!"))
+        awaitUntil(timeoutMs = 1_000) { reply() == "One two three!" }
+        assertThat(connections()).isEqualTo(3)
+        assertThat(current().items.filterIsInstance<AssistantMessage>()).hasSize(1)
+        subscription.cancel()
+    }
+
+    /**
      * Cancelling a coroutine does not stop it: a released pass can still be applying events when the next
      * subscriber restarts the stream. Whatever the scheduling, it must not write into the accumulator that
      * replaced its own — the trace would read as the agent saying everything twice.
