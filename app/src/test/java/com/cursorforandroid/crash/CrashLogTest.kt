@@ -104,17 +104,33 @@ class CrashLogTest {
     fun `a state reader that blocks does not keep the trace from being written`() {
         val dir = folder.newFolder("crash")
         val lock = Object()
-        val holder = Thread { synchronized(lock) { Thread.sleep(5_000) } }.apply { isDaemon = true; start() }
+        // The holder must end quietly: install() puts a JVM-wide handler in place, and an interrupt escaping this
+        // thread would be recorded as a second crash under the fixed clock's same file name, over the one read below.
+        val holder = Thread {
+            synchronized(lock) {
+                try {
+                    Thread.sleep(5_000)
+                } catch (_: InterruptedException) {
+                }
+            }
+        }.apply { isDaemon = true; start() }
         Thread.sleep(50)
-        val log = log(dir)
-        log.install { synchronized(lock) { "never" } }
-        val started = System.nanoTime()
-        log.record("main", RuntimeException("deadlocked"))
-        assertThat((System.nanoTime() - started) / 1_000_000).isLessThan(4_000L)
-        holder.interrupt()
-        val text = log(dir).also { it.load() }.pending.value!!.text
-        assertThat(text).contains("deadlocked")
-        assertThat(text).contains("state unreadable")
+        val before = Thread.getDefaultUncaughtExceptionHandler()
+        try {
+            val log = log(dir)
+            log.install { synchronized(lock) { "never" } }
+            val started = System.nanoTime()
+            log.record("main", RuntimeException("deadlocked"))
+            assertThat((System.nanoTime() - started) / 1_000_000).isLessThan(4_000L)
+            holder.interrupt()
+            holder.join(5_000)
+            val text = log(dir).also { it.load() }.pending.value!!.text
+            assertThat(text).contains("deadlocked")
+            assertThat(text).contains("state unreadable")
+        } finally {
+            Thread.setDefaultUncaughtExceptionHandler(before)
+            resetInstall()
+        }
     }
 
     @Test
