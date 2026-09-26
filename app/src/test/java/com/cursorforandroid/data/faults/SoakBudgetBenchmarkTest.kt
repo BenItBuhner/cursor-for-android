@@ -431,7 +431,7 @@ class SoakBudgetBenchmarkTest {
         /** 838. A held chat re-read in a loop while its record and run list disagreed made 3,600. */
         const val FLEET_CALLS = 1_500
         /**
-         * 19.2 MB, of which some 16 MB is Robolectric's framework resource table, loaded once mid-scenario (21.9 MB
+         * 20.0 MB, of which some 16 MB is Robolectric's framework resource table, loaded once mid-scenario (21.2 MB
          * before the files its turns read were kept on disk: 1.3 million characters of reports read whole).
          */
         const val HUGE_OPEN_HEAP = 40 * MB
