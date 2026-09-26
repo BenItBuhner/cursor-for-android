@@ -568,6 +568,8 @@ class AgentRepository(
             clear()
             restoredFor = null
             pendingLaunches.clear()
+            namedRuns.clear()
+            namedRunsAfter.clear()
         }
     }
 
@@ -1613,7 +1615,7 @@ class AgentRepository(
             candidates.map { agent ->
                 async {
                     byIdPool.withPermit {
-                        val run = runCatching { api.getRun(agent.id, agent.latestRunId!!) }.getOrNull() ?: return@withPermit
+                        val run = runCatching { runRecord(agent.id, agent.latestRunId!!, api) }.getOrElse { t -> if (t is CancellationException) throw t; null } ?: return@withPermit
                         // As this device knows the run, read under the lock a cancel patches under: a Stop that landed
                         // while the record was on its way is not undone by it.
                         publish { s -> s.copy(agents = s.agents.map { if (it.id == agent.id) it.withLatestRun(known(agent.id, run)) else it }) }
@@ -2220,11 +2222,14 @@ class AgentRepository(
         send: suspend () -> String?,
     ): Result<RunDto?> = runCatching {
         val startedIn = token()
-        val runId = send()
+        val named = send()
+        val behind = queued(named)
+        // A run the account started under its own name is followed, stopped and read by the id the documented API
+        // lists it under (see [documentedRunId]); only when that cannot be learned yet does the account's name stand in.
+        val runId = if (named == null || behind || isDocumentedRunId(named)) named else resolveNamedRun(agentId, named, after = agent(agentId)?.latestRunId) ?: named
         val now = AppClock.now()
         val stamp = Instant.ofEpochMilli(now).toString()
         val run = runId?.let { RunDto(id = it, agentId = agentId, status = RunStatus.CREATING.name, createdAt = stamp, updatedAt = stamp) }
-        val behind = queued(runId)
         patch(agentId, startedIn) { current ->
             val switched = current.switchedTo(modelId, modelParams, modelDisplayName)
             if (behind) {
@@ -2246,9 +2251,7 @@ class AgentRepository(
     suspend fun cancelRun(agentId: String, runId: String): Result<String> = runCatching {
         val startedIn = token()
         val api = session.current.api
-        val target = runId.takeIf(::isDocumentedRunId)
-            ?: api.getAgent(agentId).latestRunId?.takeIf(::isDocumentedRunId)
-            ?: throw IllegalStateException("No active run.")
+        val target = documentedRunId(agentId, runId) ?: throw IllegalStateException("No active run.")
         api.cancelRun(agentId, target)
         // Remembered and patched as one step: a record read landing between the two would put the row back to
         // running for the run just stopped, and the memory is what tells the next read not to.
@@ -2260,6 +2263,53 @@ class AgentRepository(
             }
         }
         target
+    }
+
+    /** Account-named run ids already matched to the documented run they are (see [documentedRunId]). */
+    private val namedRuns = ConcurrentHashMap<String, String>()
+    /** Account-named run ids not matched yet, each with the documented run the agent was on before it: never its match. */
+    private val namedRunsAfter = ConcurrentHashMap<String, String>()
+
+    /**
+     * The id the documented API knows [runId] by: [runId] itself when it is one (`run-<uuid>`), else — a run the
+     * account service started and named in its own form (see [followUpVia]) — the run the agent's record says it is
+     * on, once that is a run other than the one it was on before the account started this one. The stream, the run
+     * record and the cancel all take only documented ids ("Run ID must be in the format 'run-<uuid>'"). Null while
+     * the record does not name the run yet, or cannot be read.
+     */
+    suspend fun documentedRunId(agentId: String, runId: String): String? {
+        if (isDocumentedRunId(runId)) return runId
+        namedRuns[runId]?.let { return it }
+        val startedIn = token()
+        val latest = runCatching { session.current.api.getAgent(agentId).latestRunId }
+            .getOrElse { t -> if (t is CancellationException) throw t; null }
+            ?.takeIf(::isDocumentedRunId) ?: return null
+        if (latest == namedRunsAfter[runId]) return null
+        if (generation.get() == startedIn) {
+            namedRuns[runId] = latest
+            namedRunsAfter.remove(runId)
+        }
+        return latest
+    }
+
+    /**
+     * `GET /v1/agents/{id}/runs/{runId}` for a run known by either id (see [documentedRunId]), answered under the id
+     * the caller holds, so it lands on the run the caller files by that id. Throws when the run cannot be read.
+     */
+    suspend fun runRecord(agentId: String, runId: String, api: CursorApi = session.current.api): RunDto {
+        val wire = documentedRunId(agentId, runId) ?: throw IllegalStateException("The run is not listed under its documented id yet.")
+        val run = api.getRun(agentId, wire)
+        return if (wire != runId && run.id == wire) run.copy(id = runId) else run
+    }
+
+    /** [documentedRunId] for a run the account has just named, asked a few times while the record catches up with it. */
+    private suspend fun resolveNamedRun(agentId: String, runId: String, after: String?): String? {
+        after?.takeIf(::isDocumentedRunId)?.let { namedRunsAfter[runId] = it }
+        repeat(NAMED_RUN_ATTEMPTS) { attempt ->
+            if (attempt > 0) delay(NAMED_RUN_BACKOFF_MS * attempt)
+            documentedRunId(agentId, runId)?.let { return it }
+        }
+        return null
     }
 
     suspend fun archive(agentId: String): Result<Unit> = setArchived(agentId, archived = true)
@@ -2559,6 +2609,10 @@ class AgentRepository(
     companion object {
         /** A run id the documented API minted and takes back (`run-<uuid>`); not a prompt's local placeholder, nor a run the account service named. */
         fun isDocumentedRunId(id: String): Boolean = id.startsWith("run-")
+
+        /** Reads of the agent's record a follow-up the account started waits on for its run's documented id, [NAMED_RUN_BACKOFF_MS] apart and growing. */
+        private const val NAMED_RUN_ATTEMPTS = 4
+        private const val NAMED_RUN_BACKOFF_MS = 300L
 
         private const val PAGE_SIZE = 100
         /** `/v0/agents` pages the running scan reads on a refresh: the newest five hundred agents by the list's order. */

@@ -856,6 +856,12 @@ class ConversationRepository(
         var attached = 0
         /** Screens attached: what the watch, the trace replays and the older pages are for (see [hold]). */
         var screens = 0
+            set(value) {
+                field = value
+                onScreen.value = value > 0
+            }
+        /** A screen is on the chat: its run's stream is followed as it happens, not looked in on (see `LiveRunHub.snapshots`). */
+        val onScreen = MutableStateFlow(false)
         /**
          * Callers between finding this entry and counting themselves in [attached] (see [claim]); guarded by the
          * entries map, not the entry, so eviction sees it without taking the entry's lock.
@@ -3573,7 +3579,7 @@ class ConversationRepository(
         val detail = runCatching { api.getAgent(agentId) }.getOrElse { t -> if (t is CancellationException) throw t; null }
         val latestId = (detail?.latestRunId ?: agents.agent(agentId)?.latestRunId)?.takeUnless { it.startsWith(LOCAL_RUN_PREFIX) || it == endedRunId } ?: return false
         val known = synchronized(e) { e.runById(latestId) }
-        val run = known?.takeIf { it.statusEnum().isActive } ?: runCatching { net(agentId, "run"); api.getRun(agentId, latestId) }.getOrElse { t -> if (t is CancellationException) throw t; null } ?: return false
+        val run = known?.takeIf { it.statusEnum().isActive } ?: runCatching { net(agentId, "run"); agents.runRecord(agentId, latestId, api) }.getOrElse { t -> if (t is CancellationException) throw t; null } ?: return false
         // Active as this device knows it: the run it stopped is not the next one to follow, whatever its record says yet.
         if (!e.statusOf(run).isActive) return false
         var follow = false
@@ -4059,7 +4065,7 @@ class ConversationRepository(
             }
         }
         if (latestId != null && page.items.none { it.id == latestId }) {
-            val latest = runCatching { net(agentId, "run"); api.getRun(agentId, latestId) }.getOrElse { t ->
+            val latest = runCatching { net(agentId, "run"); agents.runRecord(agentId, latestId, api) }.getOrElse { t ->
                 if (t is CancellationException) throw t
                 null
             }
@@ -4763,7 +4769,7 @@ class ConversationRepository(
         val job = e.scope.launch(start = CoroutineStart.LAZY) {
             val self = currentCoroutineContext()[Job]
             val startedAt = parseIsoMillis(run.createdAt).takeIf { it > 0 }
-            hub.snapshots(agentId, run.id, startedAt)
+            hub.snapshots(agentId, run.id, startedAt, watched = e.onScreen)
                 .transformWhile { snapshot -> emit(snapshot); !snapshot.finished }
                 .collect { snapshot ->
                     if (!e.applyLive(self, run, snapshot)) return@collect

@@ -80,6 +80,7 @@ class OutgoingSendTest {
     val mainDispatcher = MainDispatcherRule()
 
     private val api = FakeCursorApi()
+    private val streamer = FakeRunStreamer()
     private val storage = SlowStorage()
     private val account = AccountService(api)
     private lateinit var graph: AppGraph
@@ -92,7 +93,7 @@ class OutgoingSendTest {
         storage.start()
         graph = AppGraph(
             ApplicationProvider.getApplicationContext<Context>(),
-            real = CursorBackend(api, FakeRunStreamer(), isDemo = false),
+            real = CursorBackend(api, streamer, isDemo = false),
             followupQueue = account,
             promptUploadApi = storage.api,
         )
@@ -595,8 +596,29 @@ class OutgoingSendTest {
         }
         withTimeout(15_000) { vm.isSending.first { !it } }
         awaitUntil("the chat on the account's run") { graph.conversations.state(AGENT).value.runStatus?.isActive == true }
-        assertThat(graph.conversations.state(AGENT).value.activeRunId).doesNotContain("run-")
         return vm
+    }
+
+    /**
+     * The run the account started and named in its own form is followed under the id the documented API lists it
+     * under: the chat, its row and the stream all use that id, so the turn streams live instead of the stream being
+     * refused ("Run ID must be in the format 'run-<uuid>'") and the chat sitting on "Starting…" with nothing coming.
+     */
+    @Test
+    fun `a run the account started and named in its own form streams live under its documented id`() = runBlocking<Unit> {
+        accountStartsRunMidSend("Then ship it")
+        val documented = api.agents.getValue(AGENT).latestRunId!!
+        assertThat(documented).startsWith("run-")
+        assertThat(graph.conversations.state(AGENT).value.activeRunId).isEqualTo(documented)
+        assertThat(graph.agents.agent(AGENT)?.latestRunId).isEqualTo(documented)
+
+        streamer.emit(documented, com.cursorforandroid.data.api.RunStreamEvent.Status(documented, RunStatus.RUNNING))
+        streamer.emit(documented, com.cursorforandroid.data.api.RunStreamEvent.Assistant("Shipping now."))
+        awaitUntil("the turn streams in") {
+            graph.conversations.state(AGENT).value.items.any { it is com.cursorforandroid.domain.AssistantMessage && it.markdown == "Shipping now." }
+        }
+        assertThat(streamer.connections).contains(documented)
+        assertThat(streamer.connections.filterNot { it.startsWith("run-") }).isEmpty()
     }
 
     /** The server has the run cancelled, and a read of the chat after the Stop does not put it back to running. */

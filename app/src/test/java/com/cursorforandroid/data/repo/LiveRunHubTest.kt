@@ -449,6 +449,55 @@ class LiveRunHubTest {
     }
 
     /**
+     * A run nobody looks at is not streamed: once its connection has said what there was, it is let go at a
+     * position, and looked in on later from there — each look further apart — until someone watches, which brings
+     * the connection back at once. Nothing is skipped or said twice across the looks.
+     */
+    @Test
+    fun `a run nobody watches is looked in on from where it stopped, and a watcher brings the stream back at once`() = runBlocking {
+        hub = LiveRunHub(
+            session, agents, nowProvider = { now }, pollIntervalMs = 50, releaseGraceMs = releaseGrace, reconnectBaseMs = 20, reconnectMaxMs = 40,
+            lookBaseMs = 2_000, lookMaxMs = 4_000, lookQuietMs = 30, lookWindowMs = 150, scope = scope,
+        )
+        api.addRunningAgent("bc-1", "Agent", "run-1")
+        // The real streamer reports a position after every event; ids count everything the fake has emitted.
+        var emitted = 0
+        suspend fun say(event: RunStreamEvent) {
+            streamer.emit("run-1", event)
+            emitted++
+            streamer.emit("run-1", RunStreamEvent.Position("run-1#${++emitted}"))
+        }
+        fun reply() = (snapshot()?.items?.lastOrNull() as? AssistantMessage)?.markdown
+        say(RunStreamEvent.Status("run-1", RunStatus.RUNNING))
+        say(RunStreamEvent.Assistant("One "))
+        val watched = kotlinx.coroutines.flow.MutableStateFlow(false)
+        val subscription = scope.launch { hub.snapshots("bc-1", "run-1", watched = watched).collect { } }
+
+        awaitUntil { hub.stats().contains("resting=1") && reply() == "One " }
+        say(RunStreamEvent.Assistant("two "))
+        delay(300)
+        assertThat(reply()).isEqualTo("One ")
+        assertThat(connections()).isEqualTo(1)
+
+        // The next look resumes after the last event the first had applied.
+        awaitUntil { reply() == "One two " }
+        assertThat(connections()).isEqualTo(2)
+        assertThat(streamer.resumes.last()).isEqualTo("run-1#4")
+        awaitUntil { hub.stats().contains("resting=1") }
+
+        // The rest after that is longer than a second; a watcher does not wait it out.
+        watched.value = true
+        say(RunStreamEvent.Assistant("three"))
+        awaitUntil(timeoutMs = 1_000) { reply() == "One two three" }
+        assertThat(hub.stats()).contains("streaming=1 resting=0")
+        say(RunStreamEvent.Assistant("!"))
+        awaitUntil(timeoutMs = 1_000) { reply() == "One two three!" }
+        assertThat(connections()).isEqualTo(3)
+        assertThat(current().items.filterIsInstance<AssistantMessage>()).hasSize(1)
+        subscription.cancel()
+    }
+
+    /**
      * Cancelling a coroutine does not stop it: a released pass can still be applying events when the next
      * subscriber restarts the stream. Whatever the scheduling, it must not write into the accumulator that
      * replaced its own — the trace would read as the agent saying everything twice.
@@ -484,5 +533,52 @@ class LiveRunHubTest {
         assertThat(replies.map { it.markdown }).containsExactly("Hello")
         settled.cancel()
         hubScope.cancel()
+    }
+
+    /**
+     * A run followed by the name the account service gave it (a follow-up it started, whose documented id could not
+     * be learned when it answered): the stream is opened, and the record read, under the documented id the agent's
+     * record names — never under the account's name, which the API refuses ("Run ID must be in the format
+     * 'run-<uuid>'") — and what they say is the followed run's, under the name it is followed by.
+     */
+    @Test
+    fun `a run followed by the account's name for it streams under its documented id`() = runBlocking {
+        val own = "5b7c2f0e-9d41-4f6a-8c3e-2a1b0c9d8e7f"
+        val documented = "run-$own"
+        api.addRunningAgent("bc-1", "Agent", documented)
+        streamer.emit(documented, RunStreamEvent.Status(documented, RunStatus.RUNNING))
+        streamer.emit(documented, RunStreamEvent.Assistant("On it."))
+        val subscription = scope.launch { hub.snapshots("bc-1", own).collect {} }
+
+        awaitUntil { hub.current("bc-1", own)?.items?.any { it is AssistantMessage } == true }
+        assertThat(streamer.connections).containsExactly(documented)
+
+        streamer.emit(documented, RunStreamEvent.Result(documented, RunStatus.FINISHED, "Done.", 12_000, null))
+        streamer.emit(documented, RunStreamEvent.Done)
+        awaitUntil { hub.current("bc-1", own)?.finished == true }
+        assertThat(hub.current("bc-1", own)!!.status).isEqualTo(RunStatus.FINISHED)
+        assertThat(streamer.connections.none { !it.startsWith("run-") }).isTrue()
+        subscription.cancel()
+    }
+
+    /** The agent's record still names the run it was on before: nothing is streamed under either id until it names the new one. */
+    @Test
+    fun `a run the account named is not streamed as the turn before it`() = runBlocking {
+        val own = "0c1d2e3f-4a5b-4c6d-8e7f-9a0b1c2d3e4f"
+        api.addRunningAgent("bc-1", "Agent", "run-before")
+        agents.refresh()
+        // The follow-up the account started, answered before the agent's record lists the run.
+        agents.followUpVia("bc-1", send = { own }).getOrThrow()
+        val subscription = scope.launch { hub.snapshots("bc-1", own).collect {} }
+        delay(300)
+        assertThat(streamer.connections).isEmpty()
+
+        val documented = "run-$own"
+        api.runs[documented] = api.runs.getValue("run-before").copy(id = documented)
+        api.agents["bc-1"] = api.agents.getValue("bc-1").copy(latestRunId = documented)
+        streamer.emit(documented, RunStreamEvent.Assistant("Now."))
+        awaitUntil { hub.current("bc-1", own)?.items?.any { it is AssistantMessage } == true }
+        assertThat(streamer.connections.distinct()).containsExactly(documented)
+        subscription.cancel()
     }
 }
