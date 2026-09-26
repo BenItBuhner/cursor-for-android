@@ -151,10 +151,19 @@ class SoakBudgetBenchmarkTest {
      * list refreshing and turns ending and starting underneath.
      */
     @Test
-    fun `hundreds of working agents with Projects switched fast stay within budget`() = runBlocking {
+    fun `hundreds of working agents with Projects switched fast stay within budget`() = fleetWithin("fleet", runsDatedAt = now)
+
+    /**
+     * The same fleet with every turn's run dated an hour behind the chat's last finished one (a server clock off):
+     * the agent's record still names it as the latest. Read by dates alone, each held chat reloaded itself every
+     * round trip while its turn ran — 3,636 calls and 349 MB allocated where the fleet takes some 840 and 135 MB.
+     */
+    @Test
+    fun `hundreds of working agents whose runs are dated behind stay within budget`() = fleetWithin("fleet dated behind", runsDatedAt = now - 3_600_000L)
+
+    private fun fleetWithin(name: String, runsDatedAt: Long) = runBlocking {
         server = FaultServer(rttMillis = 5L..20L, http2 = true).start()
-        // Turns started now are the newest runs of their chats, as the fixtures date the finished ones.
-        server.clock = { now }
+        server.clock = { runsDatedAt }
         server.liveRunStreams = true
         server.liveRunBeatMs = 500L
         server.liveRunGenerator = working
@@ -189,7 +198,7 @@ class SoakBudgetBenchmarkTest {
         }
         delay(2_000)
         meter.checkpoint()
-        report("fleet", meter, rig)
+        report(name, meter, rig)
         meter.close()
         budget("peak retained heap", meter.peakRetained, FLEET_HEAP)
         budget("bytes received", meter.bytesIn, FLEET_BYTES_IN)
