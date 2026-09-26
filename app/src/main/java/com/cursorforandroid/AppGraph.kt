@@ -889,7 +889,7 @@ class AppGraph(
         RunMonitor(
             agents = agents,
             hub = liveRuns,
-            runRecord = { agentId, runId -> session.current.api.getRun(agentId, runId) },
+            runRecord = { agentId, runId -> agents.runRecord(agentId, runId) },
             notificationPrefs = prefs.projectNotifications,
         )
     }

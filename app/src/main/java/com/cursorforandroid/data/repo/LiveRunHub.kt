@@ -403,7 +403,12 @@ class LiveRunHub(
         val pass = Pass()
         val live = entry.live
         try {
-            backend.streamer.stream(entry.agentId, entry.runId, resumeFrom).collect { event ->
+            val wire = agents.documentedRunId(entry.agentId, entry.runId)
+            if (wire == null) {
+                pass.error = RunStreamEvent.Error("run_unresolved", "The run is not listed under its documented id yet.", resumeFrom = null)
+                return pass
+            }
+            backend.streamer.stream(entry.agentId, wire, resumeFrom).collect { event ->
                 if (!owns(entry, self)) return@collect
                 when (event) {
                     is RunStreamEvent.Error -> {
@@ -443,7 +448,8 @@ class LiveRunHub(
      * branches the record carries stand in for the `result` event the stream never delivered.
      */
     private suspend fun settleFromRecord(entry: Entry, self: Job?, backend: CursorBackend): Record {
-        val run = runCatching { backend.api.getRun(entry.agentId, entry.runId) }.getOrNull() ?: return Record.Unreadable
+        val wire = agents.documentedRunId(entry.agentId, entry.runId) ?: return Record.Unreadable
+        val run = runCatching { backend.api.getRun(entry.agentId, wire) }.getOrNull() ?: return Record.Unreadable
         val status = run.statusEnum()
         if (status.isActive) return Record.Running
         if (!status.isTerminal) return Record.Unrecognised

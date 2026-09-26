@@ -3573,7 +3573,7 @@ class ConversationRepository(
         val detail = runCatching { api.getAgent(agentId) }.getOrElse { t -> if (t is CancellationException) throw t; null }
         val latestId = (detail?.latestRunId ?: agents.agent(agentId)?.latestRunId)?.takeUnless { it.startsWith(LOCAL_RUN_PREFIX) || it == endedRunId } ?: return false
         val known = synchronized(e) { e.runById(latestId) }
-        val run = known?.takeIf { it.statusEnum().isActive } ?: runCatching { net(agentId, "run"); api.getRun(agentId, latestId) }.getOrElse { t -> if (t is CancellationException) throw t; null } ?: return false
+        val run = known?.takeIf { it.statusEnum().isActive } ?: runCatching { net(agentId, "run"); agents.runRecord(agentId, latestId, api) }.getOrElse { t -> if (t is CancellationException) throw t; null } ?: return false
         // Active as this device knows it: the run it stopped is not the next one to follow, whatever its record says yet.
         if (!e.statusOf(run).isActive) return false
         var follow = false
@@ -4059,7 +4059,7 @@ class ConversationRepository(
             }
         }
         if (latestId != null && page.items.none { it.id == latestId }) {
-            val latest = runCatching { net(agentId, "run"); api.getRun(agentId, latestId) }.getOrElse { t ->
+            val latest = runCatching { net(agentId, "run"); agents.runRecord(agentId, latestId, api) }.getOrElse { t ->
                 if (t is CancellationException) throw t
                 null
             }
