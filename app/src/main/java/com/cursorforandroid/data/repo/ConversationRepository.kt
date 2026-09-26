@@ -890,6 +890,8 @@ class ConversationRepository(
          * the stream ended. The run's own events, and a terminal status from anywhere, still have the last word.
          */
         @Volatile var cancelledRunId: String? = null
+        /** The id this chat knew [cancelledRunId] by, when that was a run the account service named (see `AgentRepository.cancelRun`). */
+        @Volatile var cancelledAs: String? = null
 
         /**
          * The status a run record gives the chat: an active status for a run this device saw end reads as it ended —
@@ -906,7 +908,7 @@ class ConversationRepository(
         fun statusOf(run: RunDto): RunStatus {
             val status = run.statusEnum()
             if (!status.isActive) return status
-            if (run.id == cancelledRunId) return RunStatus.CANCELLED
+            if (run.id == cancelledRunId || run.id == cancelledAs) return RunStatus.CANCELLED
             agents.endedStatus(agentId, run.id)?.let { return it }
             return if (agents.endedBefore(agentId, run)) RunStatus.UNKNOWN else status
         }
@@ -5691,11 +5693,15 @@ class ConversationRepository(
         return cancelRun(agentId, runId)
     }
 
-    /** Cancels one run of the chat and, once the server has agreed, shows the turn as cancelled. */
+    /**
+     * Cancels one run of the chat and, once the server has agreed, shows the turn as cancelled. A run the account
+     * service named is stopped as the run the server is on (see [AgentRepository.cancelRun]).
+     */
     suspend fun cancelRun(agentId: String, runId: String): Result<Unit> {
         val e = entry(agentId)
-        return agents.cancelRun(agentId, runId).onSuccess {
-            e.cancelledRunId = runId
+        return agents.cancelRun(agentId, runId).map { stopped ->
+            e.cancelledRunId = stopped
+            e.cancelledAs = runId.takeIf { it != stopped }
             e.state.update { it.copy(runStatus = RunStatus.CANCELLED) }
         }
     }

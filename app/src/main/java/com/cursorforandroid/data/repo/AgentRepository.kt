@@ -2236,15 +2236,30 @@ class AgentRepository(
         run
     }
 
-    suspend fun cancelRun(agentId: String, runId: String): Result<Unit> = runCatching {
+    /**
+     * Stops [runId] with the documented cancel, and answers with the run it stopped. The cancel takes only the run
+     * ids the documented API mints (`run-<uuid>`, refused otherwise: "Run ID must be in the format 'run-<uuid>'"); a
+     * run the account service named for a follow-up it started (`AddAsyncFollowupBackgroundComposer`, see
+     * [followUpVia]) is not one, so for such a run the agent's record is asked which run it is on, and that one is
+     * stopped. The row then runs on that id, so the reads after the Stop know the run they are told was cancelled.
+     */
+    suspend fun cancelRun(agentId: String, runId: String): Result<String> = runCatching {
         val startedIn = token()
-        session.current.api.cancelRun(agentId, runId)
+        val api = session.current.api
+        val target = runId.takeIf(::isDocumentedRunId)
+            ?: api.getAgent(agentId).latestRunId?.takeIf(::isDocumentedRunId)
+            ?: throw IllegalStateException("No active run.")
+        api.cancelRun(agentId, target)
         // Remembered and patched as one step: a record read landing between the two would put the row back to
         // running for the run just stopped, and the memory is what tells the next read not to.
         synchronized(publishLock) {
-            if (generation.get() == startedIn) endedRuns[agentId] = EndedRun(runId, RunStatus.CANCELLED, startOf(agentId, runId))
-            patch(agentId, startedIn) { it.copy(runStatus = RunStatus.CANCELLED, lifecycle = AgentLifecycle.IDLE) }
+            if (generation.get() == startedIn) endedRuns[agentId] = EndedRun(target, RunStatus.CANCELLED, startOf(agentId, target))
+            patch(agentId, startedIn) { row ->
+                val latest = row.latestRunId?.takeIf(::isDocumentedRunId) ?: target
+                row.copy(latestRunId = latest, runStatus = RunStatus.CANCELLED, lifecycle = AgentLifecycle.IDLE)
+            }
         }
+        target
     }
 
     suspend fun archive(agentId: String): Result<Unit> = setArchived(agentId, archived = true)
@@ -2542,6 +2557,9 @@ class AgentRepository(
     }
 
     companion object {
+        /** A run id the documented API minted and takes back (`run-<uuid>`); not a prompt's local placeholder, nor a run the account service named. */
+        fun isDocumentedRunId(id: String): Boolean = id.startsWith("run-")
+
         private const val PAGE_SIZE = 100
         /** `/v0/agents` pages the running scan reads on a refresh: the newest five hundred agents by the list's order. */
         const val RUNNING_SCAN_PAGES = 5

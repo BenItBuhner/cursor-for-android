@@ -78,6 +78,32 @@ class AttachmentStoreTest {
         assertThat(store.forAgent("bc-2")).isEmpty()
     }
 
+    /**
+     * A bubble drawn from the staged paths can still be holding them when the send settles and moves the files: the
+     * old paths lead to the new ones, through a set that went back to waiting and was filed under another run too.
+     */
+    @Test
+    fun `a path from before a commit resolves to where the file went, across every later move`() = runBlocking {
+        val staged = store.stage(listOf(png(40, 30)), listOf(PromptFile(byteArrayOf(1, 2, 3), "notes.txt", "text/plain")))
+        val stale = staged.attachments.map { it.path }
+        stale.forEach { assertThat(AttachmentMoves.resolve(it)).isEqualTo(it) }
+
+        val first = store.commit("bc-1", "run-1", staged)
+        stale.forEach { assertThat(File(it).exists()).isFalse() }
+        assertThat(stale.map(AttachmentMoves::resolve)).isEqualTo(first.map { it.path })
+
+        val second = store.commit("bc-1", "run-2", store.committed("bc-1", "run-1", first))
+        assertThat(stale.map(AttachmentMoves::resolve)).isEqualTo(second.map { it.path })
+        assertThat(first.map { AttachmentMoves.resolve(it.path) }).isEqualTo(second.map { it.path })
+        second.forEach { assertThat(File(it.path).isFile).isTrue() }
+
+        // A file that is gone for good stays gone, and paths nothing was moved from are left alone.
+        store.delete("bc-1")
+        assertThat(stale.map(AttachmentMoves::resolve)).isEqualTo(stale)
+        val elsewhere = File(context.filesDir, "elsewhere/0.png").path
+        assertThat(AttachmentMoves.resolve(elsewhere)).isEqualTo(elsewhere)
+    }
+
     @Test
     fun `files of any type are staged byte for byte under their own names and come back after the images, with name, type and size`() = runBlocking {
         val pdf = PromptFile(byteArrayOf(0x25, 0x50, 0x44, 0x46, 0x2D), "Q3 report (final).pdf", "application/pdf")

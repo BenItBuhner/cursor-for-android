@@ -132,8 +132,19 @@ class FaultRig(
     val bytesOut = java.util.concurrent.atomic.AtomicLong()
     /** Calls the clients started. */
     val calls = java.util.concurrent.atomic.AtomicInteger()
+    /**
+     * Calls to the account's record service not yet finished. Their answers carry the account's word on what is
+     * running, which the app stamps with the clock when an answer lands, not when the server wrote it.
+     */
+    val accountCallsInFlight = java.util.concurrent.atomic.AtomicInteger()
+    private fun isAccountCall(call: okhttp3.Call) = FaultServer.RECORD_SERVICE in call.request().url.encodedPath
     private val wire = object : okhttp3.EventListener() {
-        override fun callStart(call: okhttp3.Call) { calls.incrementAndGet() }
+        override fun callStart(call: okhttp3.Call) {
+            calls.incrementAndGet()
+            if (isAccountCall(call)) accountCallsInFlight.incrementAndGet()
+        }
+        override fun callEnd(call: okhttp3.Call) { if (isAccountCall(call)) accountCallsInFlight.decrementAndGet() }
+        override fun callFailed(call: okhttp3.Call, ioe: java.io.IOException) { if (isAccountCall(call)) accountCallsInFlight.decrementAndGet() }
         override fun requestHeadersEnd(call: okhttp3.Call, request: okhttp3.Request) { bytesOut.addAndGet(request.headers.byteCount()) }
         override fun requestBodyEnd(call: okhttp3.Call, byteCount: Long) { bytesOut.addAndGet(byteCount) }
         override fun responseHeadersEnd(call: okhttp3.Call, response: okhttp3.Response) { bytesIn.addAndGet(response.headers.byteCount()) }

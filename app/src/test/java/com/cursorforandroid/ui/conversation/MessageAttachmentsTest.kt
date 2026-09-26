@@ -16,8 +16,11 @@ import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.cursorforandroid.data.local.AttachmentStore
 import com.cursorforandroid.domain.MessageAttachment
+import com.cursorforandroid.domain.PromptImage
 import com.cursorforandroid.domain.UserMessage
 import com.cursorforandroid.ui.components.LocalMarkdownMedia
 import com.cursorforandroid.ui.components.MarkdownMediaContext
@@ -31,13 +34,17 @@ import com.cursorforandroid.ui.media.ViewerFixtures
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.ui.theme.ThemeMode
 import com.google.common.truth.Truth.assertThat
+import kotlinx.coroutines.runBlocking
+import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
 import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
+import java.io.ByteArrayOutputStream
 import java.io.File
+import java.nio.ByteBuffer
 
 /** Renders a user bubble with images through Robolectric's native graphics so the files are really decoded. */
 @RunWith(AndroidJUnit4::class)
@@ -50,6 +57,15 @@ class MessageAttachmentsTest {
 
     @get:Rule
     val folder = TemporaryFolder()
+
+    /**
+     * Native graphics look java.nio's buffer classes up once, on whichever thread first needs them; left to a decode
+     * on `Dispatchers.IO`, that lookup aborted the test JVM on CI ("JniConstants: Class not found"), so it is made here.
+     */
+    @Before
+    fun primeNativeGraphics() {
+        Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888).copyPixelsToBuffer(ByteBuffer.allocate(4))
+    }
 
     private fun shot(name: String, width: Int, height: Int): MessageAttachment {
         val file = File(folder.root, name)
@@ -118,6 +134,36 @@ class MessageAttachmentsTest {
         show(UserMessage("m1", "See the attached image.", attachments = listOf(MessageAttachment(File(folder.root, "gone.jpg").path, 100, 100))))
         awaitDecoded(1, "Attached image unavailable")
         compose.onNodeWithText("See the attached image.").assertIsDisplayed()
+    }
+
+    /**
+     * A New Chat's launch can settle — its copies moved from staging under the run — before its bubble, drawn from the
+     * staged paths, has decoded them; the state naming the new paths comes after. The thumbnails follow the files to
+     * where they went instead of showing them as gone, and stay when the new paths arrive.
+     */
+    @Test
+    fun `a bubble still holding its staged paths shows the pictures its send has just moved`() {
+        val store = AttachmentStore(ApplicationProvider.getApplicationContext())
+        val pictures = listOf(Color.RED, Color.GREEN).map { color ->
+            val out = ByteArrayOutputStream()
+            Bitmap.createBitmap(120, 90, Bitmap.Config.ARGB_8888).apply { eraseColor(color) }.compress(Bitmap.CompressFormat.PNG, 100, out)
+            PromptImage(out.toByteArray(), "image/png")
+        }
+        try {
+            val staged = runBlocking { store.stage(pictures) }
+            val kept = runBlocking { store.commit("bc-launch", "run-1", staged) }
+            staged.attachments.forEach { assertThat(File(it.path).exists()).isFalse() }
+            var item by mutableStateOf(UserMessage("local-1", "Match these colours", attachments = staged.attachments, isPending = true))
+            compose.setContent { CursorTheme(mode = ThemeMode.Dark) { TimelineItemView(item) } }
+            awaitDecoded(2)
+            assertThat(countOf("Attached image unavailable")).isEqualTo(0)
+
+            item = item.copy(attachments = kept, isPending = false)
+            awaitDecoded(2)
+            assertThat(countOf("Attached image unavailable")).isEqualTo(0)
+        } finally {
+            runBlocking { store.clear() }
+        }
     }
 
     /** The thumbnail is one of the media viewer's: a tap opens the viewer on the picture, out of the strip's crop. */

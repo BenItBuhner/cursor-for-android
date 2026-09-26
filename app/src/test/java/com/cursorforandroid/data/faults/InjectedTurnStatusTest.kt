@@ -97,8 +97,16 @@ class InjectedTurnStatusTest {
         val rig = FaultRig(server.baseUrl, folder.newFolder("rig"), readTimeoutMs = 8_000L, extended = true, engine = TranscriptEngine.BETA).also { it.now = turns.last().endedAt - 60_000L; rig = it }
         rig.agents.refresh()
         rig.awaitUntil(15_000) { rig.agents.runningScan.value.accountWord[root]?.running == true }
+        // A pass still out when the account goes quiet, as a background poll can be: the server writes its answer on
+        // arrival and the app stamps it on landing, so it must land before the clock moves or it reads as current.
+        rig.scope.launch { rig.agents.refresh(silent = true) }
+        delay(60)
         // The account went quiet since; the phone's copy of its word is the one from before the run ended.
         server.composers[root] = server.composers.getValue(root).copy(running = false)
+        rig.awaitUntil(15_000) { rig.accountCallsInFlight.get() == 0 }
+        // callEnd fires as the body is read, a moment before the repository takes the answer in.
+        delay(250)
+        rig.awaitUntil(15_000) { rig.accountCallsInFlight.get() == 0 }
         rig.now = now
 
         rig.conversations.attach(root)
