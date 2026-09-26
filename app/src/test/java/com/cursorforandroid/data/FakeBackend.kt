@@ -382,6 +382,11 @@ class FakeRunStreamer : RunStreamer {
     override fun stream(agentId: String, runId: String, lastEventId: String?): Flow<RunStreamEvent> = flow {
         connections += runId
         resumes += lastEventId
+        // As the API answers any id it did not mint.
+        if (!runId.startsWith("run-")) {
+            emit(RunStreamEvent.Error("invalid_argument", "Run ID must be in the format 'run-<uuid>'", resumeFrom = null))
+            return@flow
+        }
         val skip = lastEventId?.substringAfterLast('#')?.toIntOrNull() ?: 0
         val drop = synchronized(drops) { drops[runId]?.removeFirstOrNull() }
         if (drop != null && drop.afterEvents == 0) {

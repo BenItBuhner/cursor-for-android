@@ -534,4 +534,51 @@ class LiveRunHubTest {
         settled.cancel()
         hubScope.cancel()
     }
+
+    /**
+     * A run followed by the name the account service gave it (a follow-up it started, whose documented id could not
+     * be learned when it answered): the stream is opened, and the record read, under the documented id the agent's
+     * record names — never under the account's name, which the API refuses ("Run ID must be in the format
+     * 'run-<uuid>'") — and what they say is the followed run's, under the name it is followed by.
+     */
+    @Test
+    fun `a run followed by the account's name for it streams under its documented id`() = runBlocking {
+        val own = "5b7c2f0e-9d41-4f6a-8c3e-2a1b0c9d8e7f"
+        val documented = "run-$own"
+        api.addRunningAgent("bc-1", "Agent", documented)
+        streamer.emit(documented, RunStreamEvent.Status(documented, RunStatus.RUNNING))
+        streamer.emit(documented, RunStreamEvent.Assistant("On it."))
+        val subscription = scope.launch { hub.snapshots("bc-1", own).collect {} }
+
+        awaitUntil { hub.current("bc-1", own)?.items?.any { it is AssistantMessage } == true }
+        assertThat(streamer.connections).containsExactly(documented)
+
+        streamer.emit(documented, RunStreamEvent.Result(documented, RunStatus.FINISHED, "Done.", 12_000, null))
+        streamer.emit(documented, RunStreamEvent.Done)
+        awaitUntil { hub.current("bc-1", own)?.finished == true }
+        assertThat(hub.current("bc-1", own)!!.status).isEqualTo(RunStatus.FINISHED)
+        assertThat(streamer.connections.none { !it.startsWith("run-") }).isTrue()
+        subscription.cancel()
+    }
+
+    /** The agent's record still names the run it was on before: nothing is streamed under either id until it names the new one. */
+    @Test
+    fun `a run the account named is not streamed as the turn before it`() = runBlocking {
+        val own = "0c1d2e3f-4a5b-4c6d-8e7f-9a0b1c2d3e4f"
+        api.addRunningAgent("bc-1", "Agent", "run-before")
+        agents.refresh()
+        // The follow-up the account started, answered before the agent's record lists the run.
+        agents.followUpVia("bc-1", send = { own }).getOrThrow()
+        val subscription = scope.launch { hub.snapshots("bc-1", own).collect {} }
+        delay(300)
+        assertThat(streamer.connections).isEmpty()
+
+        val documented = "run-$own"
+        api.runs[documented] = api.runs.getValue("run-before").copy(id = documented)
+        api.agents["bc-1"] = api.agents.getValue("bc-1").copy(latestRunId = documented)
+        streamer.emit(documented, RunStreamEvent.Assistant("Now."))
+        awaitUntil { hub.current("bc-1", own)?.items?.any { it is AssistantMessage } == true }
+        assertThat(streamer.connections.distinct()).containsExactly(documented)
+        subscription.cancel()
+    }
 }
