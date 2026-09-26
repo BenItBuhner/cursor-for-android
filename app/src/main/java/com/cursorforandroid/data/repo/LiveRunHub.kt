@@ -3,6 +3,7 @@ package com.cursorforandroid.data.repo
 import com.cursorforandroid.crash.Breadcrumbs
 import com.cursorforandroid.data.api.RunStreamEvent
 import com.cursorforandroid.data.api.dto.RunDto
+import com.cursorforandroid.data.local.JsonDiskCache
 import com.cursorforandroid.domain.AgentLifecycle
 import com.cursorforandroid.domain.RunStatus
 import com.cursorforandroid.domain.TimelineItem
@@ -25,6 +26,8 @@ import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.serialization.Serializable
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * One shared live stream per (agent, run). The conversation screen and the live-notification monitor both
@@ -58,6 +61,12 @@ class LiveRunHub(
     private val catchUpTimeoutMs: Long = 20_000L,
     /** Where the images agents generate are kept on the device, so a trace carries a `file://` URI rather than the pixels. */
     private val images: GeneratedImageStore? = null,
+    /**
+     * Where a turn under way is parked when its entry leaves the table (see [park]): its story so far and the stream
+     * position it had reached, so the next subscriber resumes from there instead of replaying the run from its first
+     * event — for a turn that has run a while, megabytes. None, and an evicted run is replayed.
+     */
+    private val parking: JsonDiskCache? = null,
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
 ) {
     /** Everything known about a run right now. Items are the same timeline entries the conversation renders. */
@@ -139,6 +148,8 @@ class LiveRunHub(
     }
 
     private val entries = LinkedHashMap<String, Entry>()
+    /** Parked turns whose write to [parking] has not landed yet: a reopen straight after eviction finds them here. */
+    private val parkedPending = ConcurrentHashMap<String, Parked>()
 
     private val _finishes = MutableSharedFlow<Snapshot>(extraBufferCapacity = 64)
     /**
@@ -208,6 +219,8 @@ class LiveRunHub(
             }.also { entries.clear() }
         }
         old.forEach { (job, releaseJob) -> job?.cancel(); releaseJob?.cancel() }
+        parkedPending.clear()
+        parking?.let { store -> scope.launch { runCatching { store.removeAll() } } }
     }
 
     private fun key(agentId: String, runId: String) = "$agentId/$runId"
@@ -237,7 +250,7 @@ class LiveRunHub(
             // Replayed events arrive as fast as the network delivers them, so thinking durations measured against
             // the clock would be fiction; only a live pass times them.
             if (resumeFrom == null) restartAccumulator(entry, timed = !replay)
-            entry.job = scope.launch { stream(entry, historical = replay, resumeFrom = resumeFrom) }
+            entry.job = scope.launch { stream(entry, historical = replay, resumeFrom = resumeFrom, unpark = !replay && resumeFrom == null) }
         }
         entry
     }
@@ -262,9 +275,9 @@ class LiveRunHub(
      * holds the run's whole story, and a screen that wants it again replays it. Returns how many were dropped.
      */
     fun trimMemory(): Int = synchronized(entries) {
-        val before = entries.size
-        entries.values.removeAll { it.subscribers == 0 && it.job == null }
-        before - entries.size
+        val idle = entries.values.filter { it.subscribers == 0 && it.job == null }
+        idle.forEach { entries.remove(key(it.agentId, it.runId)); park(it) }
+        idle.size
     }
 
     private fun evictIfNeeded() {
@@ -278,8 +291,47 @@ class LiveRunHub(
         val iterator = entries.entries.iterator()
         while (iterator.hasNext() && entries.size >= MAX_ENTRIES) {
             val candidate = iterator.next().value
-            if (candidate.subscribers == 0 && candidate.job == null) iterator.remove()
+            if (candidate.subscribers == 0 && candidate.job == null) {
+                iterator.remove()
+                park(candidate)
+            }
         }
+    }
+
+    /**
+     * A turn still under way, followed live up to a known stream position, that is leaving the table: its story so far
+     * goes to disk with that position. Taken back by [unpark] when the run is next followed, it and what the stream
+     * sends after the position are the run's whole story again, however long ago it was parked; only a log the
+     * server has since let go (`stream_expired`) makes it the last word, as it is for a live entry. Anything else — a
+     * replay, a finished run, a rebuild half done — is simply dropped, as before.
+     */
+    private fun park(entry: Entry) {
+        val store = parking ?: return
+        val position = entry.position ?: return
+        if (entry.historicalOnly || entry.live.finished || !entry.live.timed || entry.live.applied == 0 || entry.fallback != null) return
+        val key = key(entry.agentId, entry.runId)
+        // A pass cancelled a moment ago can still be inside an event (see [follow]); its entry is going either way.
+        val saved = runCatching { entry.live.save() }.getOrNull() ?: return
+        val parked = Parked(saved, position, entry.state.value.startedAtMillis)
+        val token = store.token()
+        parkedPending[key] = parked
+        scope.launch {
+            runCatching {
+                store.write(key, Parked.serializer(), PARKED_VERSION, parked, token)
+                store.prune(MAX_PARKED, MAX_PARKED_BYTES)
+            }
+            parkedPending.remove(key, parked)
+        }
+    }
+
+    /** The turn parked for [entry], if there is one; either way, nothing stays parked for it. */
+    private suspend fun unpark(entry: Entry): Parked? {
+        val store = parking ?: return null
+        val key = key(entry.agentId, entry.runId)
+        val pending = parkedPending.remove(key)
+        val stored = runCatching { store.read(key, Parked.serializer(), PARKED_VERSION)?.value }.getOrNull()
+        if (pending != null || stored != null) runCatching { store.remove(key) }
+        return pending ?: stored
     }
 
     /**
@@ -292,12 +344,23 @@ class LiveRunHub(
      * log is reported instead of polled around, and the agent row is left alone. History that cannot be read right
      * now is simply not there yet, and the caller asks again later.
      */
-    private suspend fun stream(entry: Entry, historical: Boolean, resumeFrom: String? = null) {
+    private suspend fun stream(entry: Entry, historical: Boolean, resumeFrom: String? = null, unpark: Boolean = false) {
         val self = currentCoroutineContext()[Job]
         val backend = session.current
         var resumeFrom: String? = resumeFrom
         var drops = 0
         try {
+            if (unpark) unpark(entry)?.let { parked ->
+                synchronized(entries) {
+                    if (owns(entry, self) && entry.live.applied == 0) {
+                        entry.live = TimelineBuilder.LiveRun(entry.runId, timed = true, nowProvider = nowProvider, startedAtMillis = minOf(parked.startedAtMillis, entry.state.value.startedAtMillis), images = images?.forAgent(entry.agentId))
+                            .also { it.restore(parked.live) }
+                        entry.position = parked.position
+                        resumeFrom = parked.position
+                        publish(entry)
+                    }
+                }
+            }
             while (currentCoroutineContext().isActive && owns(entry, self) && !entry.live.finished) {
                 val pass = follow(entry, self, backend, resumeFrom, historical)
                 if (!owns(entry, self)) break
@@ -553,7 +616,15 @@ class LiveRunHub(
         }
     }
 
+    /** A turn under way, parked off the table (see [park]). */
+    @Serializable
+    private class Parked(val live: TimelineBuilder.LiveRun.Saved, val position: String, val startedAtMillis: Long)
+
     private companion object {
+        const val PARKED_VERSION = 1
+        /** Parked turns kept on disk, the last parked first; past these a reopen replays, as it did before there was parking. */
+        const val MAX_PARKED = 64
+        const val MAX_PARKED_BYTES = 32L shl 20
         const val MAX_ENTRIES = 32
         /** Replayed traces kept after they were handed over: enough for a second look at the last few, not a window's worth. */
         const val MAX_REPLAYED_KEPT = 6
