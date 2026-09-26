@@ -856,6 +856,12 @@ class ConversationRepository(
         var attached = 0
         /** Screens attached: what the watch, the trace replays and the older pages are for (see [hold]). */
         var screens = 0
+            set(value) {
+                field = value
+                onScreen.value = value > 0
+            }
+        /** A screen is on the chat: its run's stream is followed as it happens, not looked in on (see `LiveRunHub.snapshots`). */
+        val onScreen = MutableStateFlow(false)
         /**
          * Callers between finding this entry and counting themselves in [attached] (see [claim]); guarded by the
          * entries map, not the entry, so eviction sees it without taking the entry's lock.
@@ -4763,7 +4769,7 @@ class ConversationRepository(
         val job = e.scope.launch(start = CoroutineStart.LAZY) {
             val self = currentCoroutineContext()[Job]
             val startedAt = parseIsoMillis(run.createdAt).takeIf { it > 0 }
-            hub.snapshots(agentId, run.id, startedAt)
+            hub.snapshots(agentId, run.id, startedAt, watched = e.onScreen)
                 .transformWhile { snapshot -> emit(snapshot); !snapshot.finished }
                 .collect { snapshot ->
                     if (!e.applyLive(self, run, snapshot)) return@collect

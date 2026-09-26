@@ -11,6 +11,7 @@ import com.cursorforandroid.util.AppClock
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.currentCoroutineContext
@@ -19,13 +20,23 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.emitAll
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.merge
+import kotlinx.coroutines.flow.onCompletion
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.Serializable
 import java.util.concurrent.ConcurrentHashMap
 
@@ -67,6 +78,16 @@ class LiveRunHub(
      * event — for a turn that has run a while, megabytes. None, and an evicted run is replayed.
      */
     private val parking: JsonDiskCache? = null,
+    /**
+     * A run only unwatched subscribers follow (see [snapshots]'s `watched`) is looked in on rather than streamed: the
+     * connection is read until it has said what there was ([lookQuietMs] without an event, or [lookWindowMs] at most),
+     * let go, and taken up again from its position after a pause that starts at [lookBaseMs] and doubles, per look, up
+     * to [lookMaxMs]. A watcher arriving ends the pause at once.
+     */
+    private val lookBaseMs: Long = 5_000L,
+    private val lookMaxMs: Long = 30_000L,
+    private val lookQuietMs: Long = 1_000L,
+    private val lookWindowMs: Long = 5_000L,
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
 ) {
     /** Everything known about a run right now. Items are the same timeline entries the conversation renders. */
@@ -137,6 +158,21 @@ class LiveRunHub(
          * ran on is sent what the turn did meanwhile, not the whole turn again (a long turn's log is megabytes).
          */
         var position: String? = null
+        /** Each live subscriber's word on whether it is watched (see [snapshots]); guarded by [entries]. */
+        val watchers = ArrayList<StateFlow<Boolean>>()
+        /** Bumped whenever [watchers] changes, so a stream between two looks hears a watcher arrive at once. */
+        val watchersChanged = MutableStateFlow(0)
+        /** Between two looks (see [lookBaseMs]), with no connection open; for [stats]. */
+        @Volatile var resting = false
+
+        /** True while any subscriber is watched, or none has said (a replay riding along, a release's grace). */
+        fun watched(): Boolean = synchronized(entries) { watchers.isEmpty() || watchers.any { it.value } }
+
+        @OptIn(ExperimentalCoroutinesApi::class)
+        fun watchedChanges(): Flow<Boolean> = watchersChanged.flatMapLatest {
+            val now = synchronized(entries) { watchers.toList() }
+            if (now.isEmpty()) flowOf(true) else combine(now) { values -> values.any { it } }
+        }.distinctUntilChanged()
     }
 
     /** What one connection to the stream came to. */
@@ -145,6 +181,8 @@ class LiveRunHub(
         var progressed = false
         /** Why the connection ended before the run did; null when the run finished, or when the flow just ended. */
         var error: RunStreamEvent.Error? = null
+        /** Let go on purpose: nobody watches the run and the connection had said what there was (see [lookBaseMs]). */
+        var rested = false
     }
 
     private val entries = LinkedHashMap<String, Entry>()
@@ -165,13 +203,18 @@ class LiveRunHub(
     /**
      * Snapshots of one run, starting with whatever is already known. Collecting keeps the underlying stream alive;
      * the stream is released (after a short grace period) once the last collector leaves.
+     *
+     * [watched] says whether anyone is looking at what this collector shows (a chat kept current with no screen on it
+     * says false until one opens). A run no watched collector follows is looked in on every so often instead of
+     * streamed (see [lookBaseMs]); a collector that passes nothing always counts as watched.
      */
-    fun snapshots(agentId: String, runId: String, startedAtMillis: Long? = null): Flow<Snapshot> = flow {
-        val entry = acquire(agentId, runId, startedAtMillis, replay = false)
+    fun snapshots(agentId: String, runId: String, startedAtMillis: Long? = null, watched: StateFlow<Boolean>? = null): Flow<Snapshot> = flow {
+        val watcher = watched ?: ALWAYS_WATCHED
+        val entry = acquire(agentId, runId, startedAtMillis, replay = false, watcher = watcher)
         try {
             emitAll(entry.state)
         } finally {
-            release(entry)
+            release(entry, watcher)
         }
     }
 
@@ -202,9 +245,10 @@ class LiveRunHub(
 
     /** For a crash report: the runs kept, those with a connection of their own, and the live subscribers on them. */
     fun stats(): String = synchronized(entries) {
-        val streaming = entries.values.count { it.job?.isActive == true }
+        val streaming = entries.values.count { it.job?.isActive == true && !it.resting }
+        val resting = entries.values.count { it.resting }
         val subscribers = entries.values.sumOf { it.subscribers }
-        "runs=${entries.size} streaming=$streaming subscribers=$subscribers"
+        "runs=${entries.size} streaming=$streaming resting=$resting subscribers=$subscribers"
     }
 
     fun resetAll() {
@@ -229,13 +273,17 @@ class LiveRunHub(
      * The mode of a pass is the mode of the subscriber that started it: a live subscriber follows the run and
      * settles its outcome, a replay reads history. A subscriber joining a pass of the other kind rides along.
      */
-    private fun acquire(agentId: String, runId: String, startedAtMillis: Long?, replay: Boolean): Entry = synchronized(entries) {
+    private fun acquire(agentId: String, runId: String, startedAtMillis: Long?, replay: Boolean, watcher: StateFlow<Boolean>? = null): Entry = synchronized(entries) {
         evictIfNeeded()
         val entry = entries.getOrPut(key(agentId, runId)) { Entry(agentId, runId, startedAtMillis ?: nowProvider()) }
         if (startedAtMillis != null && startedAtMillis < entry.state.value.startedAtMillis) {
             entry.state.update { it.copy(startedAtMillis = startedAtMillis) }
         }
         entry.subscribers++
+        if (watcher != null) {
+            entry.watchers += watcher
+            entry.watchersChanged.update { it + 1 }
+        }
         entry.releaseJob?.cancel()
         entry.releaseJob = null
         if (!replay) entry.historicalOnly = false
@@ -255,8 +303,9 @@ class LiveRunHub(
         entry
     }
 
-    private fun release(entry: Entry) = synchronized(entries) {
+    private fun release(entry: Entry, watcher: StateFlow<Boolean>? = null) = synchronized(entries) {
         entry.subscribers = (entry.subscribers - 1).coerceAtLeast(0)
+        if (watcher != null && entry.watchers.remove(watcher)) entry.watchersChanged.update { it + 1 }
         if (entry.subscribers == 0 && entry.job != null) {
             entry.releaseJob = scope.launch {
                 delay(releaseGraceMs)
@@ -361,10 +410,19 @@ class LiveRunHub(
                     }
                 }
             }
+            var looks = 0
             while (currentCoroutineContext().isActive && owns(entry, self) && !entry.live.finished) {
                 val pass = follow(entry, self, backend, resumeFrom, historical)
                 if (!owns(entry, self)) break
                 if (entry.live.finished || historical) break
+                if (pass.rested) {
+                    // Nobody watches the run and the connection had said what there was: it is let go until the next
+                    // look, which resumes from the position reached — or at once, when someone looks.
+                    publish(entry)
+                    resumeFrom = entry.position
+                    if (rest(entry, lookDelay(looks++))) looks = 0
+                    continue
+                }
                 if (pass.error?.isFatal == true) {
                     // This stream will never say more (its log expired, or we may not read it); only the record can
                     // tell how the run ends.
@@ -399,17 +457,61 @@ class LiveRunHub(
      * can still be inside this collect when the next one restarts the stream, and it must not write the story of an
      * abandoned connection into the accumulator that replaced its own. [owns] keeps it out of the entry as well.
      */
+    @OptIn(ExperimentalCoroutinesApi::class)
     private suspend fun follow(entry: Entry, self: Job?, backend: CursorBackend, resumeFrom: String?, historical: Boolean): Pass {
         val pass = Pass()
         val live = entry.live
+        val wire = agents.documentedRunId(entry.agentId, entry.runId)
+        if (wire == null) {
+            pass.error = RunStreamEvent.Error("run_unresolved", "The run is not listed under its documented id yet.", resumeFrom = null)
+            return pass
+        }
+        val events = backend.streamer.stream(entry.agentId, wire, resumeFrom)
+        // A live pass also hears whether anyone watches the run, and — while nobody does — a tick to decide on, in the
+        // same collector as the events: the connection is let go only between an event and the next, at a position
+        // the accumulator has applied everything up to, so the next look neither skips nor repeats an event.
+        val beats: Flow<Any> = if (historical) events else merge(
+            events.map<RunStreamEvent, Any> { it }.onCompletion { if (it == null) emit(StreamEnded) },
+            entry.watchedChanges().flatMapLatest { watched ->
+                flow<Any> {
+                    emit(if (watched) Watched else Unwatched)
+                    if (!watched) while (true) { delay(lookQuietMs); emit(LookTick) }
+                }
+            },
+        )
+        var unwatched = false
+        var windowStartedAt = System.nanoTime()
+        var lastEventAt = 0L
+        var atPosition = true
+        var restOwed = false
         try {
-            val wire = agents.documentedRunId(entry.agentId, entry.runId)
-            if (wire == null) {
-                pass.error = RunStreamEvent.Error("run_unresolved", "The run is not listed under its documented id yet.", resumeFrom = null)
-                return pass
-            }
-            backend.streamer.stream(entry.agentId, wire, resumeFrom).collect { event ->
+            beats.collect { beat ->
                 if (!owns(entry, self)) return@collect
+                val event = when (beat) {
+                    StreamEnded -> throw EndOfPass
+                    Watched -> {
+                        // Publishing is owed only to a pass that was holding back; a pass starting out watched has
+                        // nothing new yet, and must not clear what the loop said about the connection.
+                        if (unwatched) { unwatched = false; restOwed = false; publish(entry) }
+                        return@collect
+                    }
+                    Unwatched -> { unwatched = true; windowStartedAt = System.nanoTime(); return@collect }
+                    LookTick -> {
+                        val now = System.nanoTime()
+                        val quiet = lastEventAt > 0 && now - lastEventAt >= lookQuietMs * NANOS_PER_MS
+                        val long = now - windowStartedAt >= lookWindowMs * NANOS_PER_MS
+                        if (unwatched && (quiet || long) && live === entry.live && entry.position != null && !live.finished) {
+                            if (atPosition) throw RestNow
+                            restOwed = true
+                        }
+                        return@collect
+                    }
+                    else -> beat as RunStreamEvent
+                }
+                if (event !is RunStreamEvent.Heartbeat && event !is RunStreamEvent.Position) {
+                    lastEventAt = System.nanoTime()
+                    atPosition = false
+                }
                 when (event) {
                     is RunStreamEvent.Error -> {
                         // The last event of the pass. An expired log is a fact about the run; the rest is about the
@@ -422,14 +524,21 @@ class LiveRunHub(
                         live.apply(event)
                         finish(entry, self, event, historical, streamed = true)
                     }
-                    is RunStreamEvent.Position -> if (live === entry.live) entry.position = event.id
+                    is RunStreamEvent.Position -> if (live === entry.live) {
+                        entry.position = event.id
+                        atPosition = true
+                        if (restOwed && unwatched) throw RestNow
+                    }
                     else -> {
                         if (event is RunStreamEvent.Assistant || event is RunStreamEvent.Thinking || event is RunStreamEvent.ToolCall) pass.progressed = true
                         live.apply(event)
-                        if (!historical) publish(entry)
+                        // Nobody watching: what a look brings is published once, when it rests (see [stream]).
+                        if (!historical && !unwatched) publish(entry)
                     }
                 }
             }
+        } catch (end: PassEnd) {
+            pass.rested = end.rested
         } catch (t: CancellationException) {
             throw t
         } catch (t: Throwable) {
@@ -546,6 +655,18 @@ class LiveRunHub(
 
     private fun reconnectDelay(drops: Int): Long = (reconnectBaseMs shl (drops - 1).coerceIn(0, 10)).coerceAtMost(reconnectMaxMs)
 
+    private fun lookDelay(looks: Int): Long = (lookBaseMs shl looks.coerceIn(0, 10)).coerceAtMost(lookMaxMs)
+
+    /** Waits out a pause between looks; true when it ended because someone watches the run now. */
+    private suspend fun rest(entry: Entry, pauseMs: Long): Boolean {
+        entry.resting = true
+        try {
+            return withTimeoutOrNull(pauseMs) { entry.watchedChanges().first { it } } != null
+        } finally {
+            entry.resting = false
+        }
+    }
+
     private fun publish(entry: Entry) {
         // A pass that replays fewer events than the last one applied would otherwise hold the trace still — and
         // "Reconnecting…" on — for the rest of the run, although the stream is perfectly healthy.
@@ -622,11 +743,23 @@ class LiveRunHub(
         }
     }
 
+    /** How a pass ends on purpose (see [follow]): let go between looks, or its stream ended. */
+    private class PassEnd(val rested: Boolean) : Throwable(null, null, false, false)
+    private val RestNow = PassEnd(rested = true)
+    private val EndOfPass = PassEnd(rested = false)
+    /** What a live pass hears besides its events (see [follow]). */
+    private object StreamEnded
+    private object Watched
+    private object Unwatched
+    private object LookTick
+
     /** A turn under way, parked off the table (see [park]). */
     @Serializable
     private class Parked(val live: TimelineBuilder.LiveRun.Saved, val position: String, val startedAtMillis: Long)
 
     private companion object {
+        val ALWAYS_WATCHED: StateFlow<Boolean> = MutableStateFlow(true)
+        const val NANOS_PER_MS = 1_000_000L
         const val PARKED_VERSION = 1
         /** Parked turns kept on disk, the last parked first; past these a reopen replays, as it did before there was parking. */
         const val MAX_PARKED = 64
