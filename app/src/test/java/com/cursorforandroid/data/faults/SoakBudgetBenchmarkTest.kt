@@ -430,7 +430,10 @@ class SoakBudgetBenchmarkTest {
         const val FLEET_ALLOCATED = 300 * MB
         /** 838. A held chat re-read in a loop while its record and run list disagreed made 3,600. */
         const val FLEET_CALLS = 1_500
-        /** 20.9 MB, of which some 16 MB is Robolectric's framework resource table, loaded once mid-scenario. */
+        /**
+         * 20.0 MB, of which some 16 MB is Robolectric's framework resource table, loaded once mid-scenario (21.2 MB
+         * before the files its turns read were kept on disk: 1.3 million characters of reports read whole).
+         */
         const val HUGE_OPEN_HEAP = 40 * MB
         /** 16.5 MB, the same 16 MB of it Robolectric's: the long chat itself is gone from memory once it is closed. */
         const val HUGE_CLOSED_HEAP = 22 * MB
