@@ -217,7 +217,7 @@ class FinishWatchdogJobService : JobService() {
             session = graph.session,
             agents = graph.agents,
             prefs = graph.prefs,
-            runRecord = { agentId, runId -> graph.session.current.api.getRun(agentId, runId) },
+            runRecord = { agentId, runId -> graph.agents.runRecord(agentId, runId) },
             isServiceActive = { LiveNotificationService.active.value },
             canShowLive = { LiveNotifications.canShowLive(this) },
             announce = { run -> LiveNotifications.post(this, LiveNotificationRenderer.finishedId(run.agentId), LiveNotificationRenderer.finished(this, run)) },
