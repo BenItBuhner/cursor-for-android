@@ -22,10 +22,12 @@ import com.cursorforandroid.domain.ConversationControls
 import com.cursorforandroid.domain.PendingFollowup
 import com.cursorforandroid.domain.PromptFile
 import com.cursorforandroid.domain.PromptImage
+import com.cursorforandroid.domain.RunStatus
 import com.cursorforandroid.domain.TranscriptEngine
 import com.cursorforandroid.domain.UserMessage
 import com.cursorforandroid.ui.components.PendingAttachment
 import com.cursorforandroid.ui.components.PendingFile
+import com.cursorforandroid.ui.projects.ProjectViewModel
 import com.cursorforandroid.util.MainDispatcherRule
 import com.google.common.truth.Truth.assertThat
 import com.google.common.truth.Truth.assertWithMessage
@@ -52,6 +54,7 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.UUID
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.random.Random
 
@@ -131,6 +134,11 @@ class OutgoingSendTest {
         /** Holds every call until released. */
         @Volatile var gate: CountDownLatch? = null
         val pending = CopyOnWriteArrayList<PendingFollowup>()
+        /**
+         * The run a call starts is named in the account's own form, not the documented `run-<uuid>` the public API
+         * lists it under (and alone takes back in a cancel): the id the chat then follows is not one Stop can send.
+         */
+        @Volatile var namesRunsInItsOwnForm = false
 
         override suspend fun addFollowup(agentId: String, followup: AccountFollowup, synchronous: Boolean): String? {
             calls.incrementAndGet()
@@ -145,8 +153,15 @@ class OutgoingSendTest {
                 pending += PendingFollowup(followup.followupId, followup.text)
                 return null
             }
-            val runId = "run-account-${calls.get()}"
             val now = "2026-09-20T23:0${(calls.get() % 10)}:00.000Z"
+            if (namesRunsInItsOwnForm) {
+                val own = UUID.randomUUID().toString()
+                val documented = "run-$own"
+                api.runs[documented] = RunDto(id = documented, agentId = agentId, status = "RUNNING", createdAt = now, updatedAt = now)
+                api.agents[agentId]?.let { api.agents[agentId] = it.copy(status = "ACTIVE", latestRunId = documented, updatedAt = now) }
+                return own
+            }
+            val runId = "run-account-${calls.get()}"
             api.runs[runId] = RunDto(id = runId, agentId = agentId, status = "RUNNING", createdAt = now, updatedAt = now)
             return runId
         }
@@ -556,6 +571,85 @@ class OutgoingSendTest {
         withTimeout(15_000) { vm.isSending.first { !it } }
         assertThat(card().queue.none { it.text == "Then ship it" }).isTrue()
         assertThat(graph.conversations.state(AGENT).value.activeRunId).isEqualTo("run-account-1")
+    }
+
+    /**
+     * The turn ends mid-send and the account starts the queued message's run at once (as in the test above), the account
+     * naming that run in its own form: the chat ends up following a run by an id the documented cancel refuses.
+     */
+    private suspend fun accountStartsRunMidSend(text: String): ConversationViewModel {
+        val vm = openMidTurn()
+        account.namesRunsInItsOwnForm = true
+        account.gate = CountDownLatch(1)
+        vm.setDraft(text)
+        assertThat(vm.send()).isNull()
+        await("on the card") { card().queue.singleOrNull { it.text == text } }
+        api.runs["run-live"] = api.runs.getValue("run-live").copy(status = "FINISHED")
+        api.v0[AGENT] = api.v0.getValue(AGENT).copy(status = "FINISHED")
+        graph.conversations.reload(AGENT)
+        awaitUntil("the chat sees the turn end") { graph.conversations.state(AGENT).value.runStatus?.isActive == false }
+        account.gate!!.countDown()
+        account.gate = null
+        awaitUntil("filed under the account's run") {
+            graph.conversations.state(AGENT).value.items.any { it is UserMessage && it.text == text && !it.isPending }
+        }
+        withTimeout(15_000) { vm.isSending.first { !it } }
+        awaitUntil("the chat on the account's run") { graph.conversations.state(AGENT).value.runStatus?.isActive == true }
+        assertThat(graph.conversations.state(AGENT).value.activeRunId).doesNotContain("run-")
+        return vm
+    }
+
+    /** The server has the run cancelled, and a read of the chat after the Stop does not put it back to running. */
+    private suspend fun assertStaysStopped(documented: String) {
+        awaitUntil("the chat shows the turn stopped") { graph.conversations.state(AGENT).value.runStatus == RunStatus.CANCELLED }
+        assertThat(graph.agents.agent(AGENT)?.isRunning).isFalse()
+        api.runs[documented] = api.runs.getValue(documented).copy(status = "CANCELLED")
+        api.agents[AGENT] = api.agents.getValue(AGENT).copy(status = "IDLE")
+        api.v0[AGENT] = api.v0.getValue(AGENT).copy(status = "CANCELLED")
+        graph.conversations.reload(AGENT)
+        graph.conversations.awaitLoad(AGENT)
+        delay(300)
+        assertThat(graph.conversations.state(AGENT).value.runStatus?.isActive).isFalse()
+        assertThat(graph.agents.agent(AGENT)?.isRunning).isFalse()
+    }
+
+    /**
+     * Bennett, 0.4.2: Stop did nothing but say "Run ID must be in the format 'run-<uuid>'". A message tapped mid-turn
+     * went to the account (#384), the turn ended on the way, and the account started the message's run at once,
+     * naming it in its own form; the chat and its row took that name for the run, and Stop sent it to the documented
+     * cancel, which takes only the ids it minted. Stop in the composer now stops the run the server is on.
+     */
+    @Test
+    fun `Stop in a chat stops a run the account started and named in its own form`() = runBlocking<Unit> {
+        val vm = accountStartsRunMidSend("Then ship it")
+        val documented = api.agents.getValue(AGENT).latestRunId!!
+        assertThat(documented).startsWith("run-")
+
+        vm.cancelRun()
+        awaitUntil("the cancel answered") { api.cancelled.isNotEmpty() || vm.toastMessage.value != null }
+
+        assertThat(vm.toastMessage.value).isNull()
+        assertThat(api.cancelled).containsExactly(documented)
+        assertStaysStopped(documented)
+    }
+
+    /** The same turn stopped from a Project's view — a coordinator's or a worker's row, which stop through the same cancel. */
+    @Test
+    fun `Stop in a Project stops a run the account started and named in its own form`() = runBlocking<Unit> {
+        accountStartsRunMidSend("Report when the workers land")
+        val documented = api.agents.getValue(AGENT).latestRunId!!
+        val store = ViewModelStore().also { stores += it }
+        val project = ViewModelProvider(store, object : ViewModelProvider.Factory {
+            @Suppress("UNCHECKED_CAST")
+            override fun <T : androidx.lifecycle.ViewModel> create(modelClass: Class<T>): T = ProjectViewModel(graph, AGENT) as T
+        })[ProjectViewModel::class.java]
+
+        project.stop(AGENT)
+        val said = await("the Project's word on the Stop") { project.toastMessage.value }
+
+        assertThat(said).isEqualTo("Stopped.")
+        assertThat(api.cancelled).containsExactly(documented)
+        assertStaysStopped(documented)
     }
 
     /**

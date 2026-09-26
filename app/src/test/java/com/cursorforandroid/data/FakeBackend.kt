@@ -310,6 +310,8 @@ open class FakeCursorApi : CursorApi {
         return CreateRunResponseDto(run)
     }
     override suspend fun cancelRun(id: String, runId: String): IdResponseDto {
+        // As the API answers any id it did not mint, before it looks for the run (Bennett's Stop on 0.4.2).
+        if (!runId.startsWith("run-")) throw CursorApiException(400, "invalid_argument", "Run ID must be in the format 'run-<uuid>'")
         if (failCancel || runId in notCancellable) throw CursorApiException(409, "run_not_cancellable", "Run already finished.")
         failCancelWith?.let { throw it }
         cancelled += runId
