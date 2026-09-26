@@ -31,12 +31,15 @@ sealed interface ToolPayload {
         val lines: List<String> get() = diff.replace("\r\n", "\n").lines()
     }
 
-    /** The text of a file as the agent saw it (`read.result.content`) or left it (`write.result.fileContentAfterWrite`). */
+    /**
+     * The text of a file as the agent saw it (`read.result.content`) or left it (`write.result.fileContentAfterWrite`).
+     * A long one is kept on disk, not on the heap, and read back when a row opens onto it (see [SpillText]).
+     */
     @Serializable
     @SerialName("file")
     data class FileContent(
         override val path: String,
-        val content: String,
+        @SerialName("content") private val text: SpillText,
         val kind: Kind,
         val totalLines: Int? = null,
         val fileSize: Long? = null,
@@ -44,6 +47,21 @@ sealed interface ToolPayload {
         /** A read of a range (`offset` / `start_line_one_indexed`): the file's line [content] starts at; null for a read from the top. */
         val startLine: Int? = null,
     ) : ToolPayload {
+        constructor(
+            path: String,
+            content: String,
+            kind: Kind,
+            totalLines: Int? = null,
+            fileSize: Long? = null,
+            truncated: Boolean = false,
+            startLine: Int? = null,
+        ) : this(path, SpillText.of(content), kind, totalLines, fileSize, truncated, startLine)
+
+        val content: String get() = text.value
+
+        /** The text's length, without reading a spilled one back. */
+        val contentLength: Int get() = text.length
+
         enum class Kind { Read, Written }
 
         val lineCount: Int get() = totalLines ?: content.lineSequence().count()

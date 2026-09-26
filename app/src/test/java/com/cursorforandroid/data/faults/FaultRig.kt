@@ -27,6 +27,7 @@ import com.cursorforandroid.data.local.FollowUpStore
 import com.cursorforandroid.data.local.JsonDiskCache
 import com.cursorforandroid.data.local.PreferencesStore
 import com.cursorforandroid.data.local.SecureKeyStore
+import com.cursorforandroid.data.local.TextSpill
 import com.cursorforandroid.data.local.TraceCache
 import com.cursorforandroid.data.repo.AgentRepository
 import com.cursorforandroid.data.repo.RefreshDepth
@@ -179,7 +180,7 @@ class FaultRig(
     val prefs = PreferencesStore(context)
     val backend = CursorBackend(api, streamer, isDemo = false)
     val session = SessionManager(SecureKeyStore(context), prefs, backend, CursorBackend(api, streamer, isDemo = true))
-    private val disk = JsonDiskCache(File(root, "cache").apply { mkdirs() }, dispatcher = Dispatchers.Unconfined)
+    private val disk = JsonDiskCache(File(root, "cache").apply { mkdirs() }, dispatcher = Dispatchers.Unconfined).also { TextSpill.install(it.child("spill")) }
     val attachments = AttachmentStore(context)
     /** The list's work in flight, shared by the list and the account layer (see `PendingWork`): what the sidebar's one loading row stands for. */
     val pending = PendingWork()
@@ -305,6 +306,7 @@ class FaultRig(
         accountClient.dispatcher.executorService.shutdownNow()
         accountClient.connectionPool.evictAll()
         AppClock.nowMillis = System::currentTimeMillis
+        TextSpill.install(null)
     }
 }
 

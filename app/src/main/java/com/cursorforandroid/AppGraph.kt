@@ -87,6 +87,7 @@ import com.cursorforandroid.data.local.JsonDiskCache
 import com.cursorforandroid.data.local.McpServerStore
 import com.cursorforandroid.data.local.PreferencesStore
 import com.cursorforandroid.data.local.SecureKeyStore
+import com.cursorforandroid.data.local.TextSpill
 import com.cursorforandroid.data.media.MediaLoader
 import com.cursorforandroid.data.repo.AgentFileRepository
 import com.cursorforandroid.data.repo.AgentRepository
@@ -235,7 +236,7 @@ class AppGraph(
      * Disk copies of what the API last returned; the app opens on them and revalidates in the background. Eager
      * because it is only file paths until something reads or writes, and the sign-out wipe goes through it.
      */
-    val caches = AppCaches(JsonDiskCache(File(app.cacheDir, "cursor")))
+    val caches = AppCaches(JsonDiskCache(File(app.cacheDir, "cursor"))).also { TextSpill.install(it.spill) }
     /** Follow-ups typed or queued but not yet sent, with their images, per chat. Eager for the same reason. */
     private val followUpStore = FollowUpStore(app)
     /**
