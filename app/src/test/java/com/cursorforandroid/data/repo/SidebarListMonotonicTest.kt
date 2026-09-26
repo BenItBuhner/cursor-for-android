@@ -473,7 +473,15 @@ class SidebarListMonotonicTest {
         val first = repository()
         loadWindow(first)
         val window = held(first)
-        withTimeout(10_000) { while ((cache.readWithLineage()?.first?.value?.size ?: 0) < window.size) delay(20) }
+        val workers = (recordWorkers + membershipWorkers).toSet()
+        withTimeout(10_000) {
+            while (true) {
+                val saved = cache.read()?.value.orEmpty()
+                val placed = saved.filter { it.id in workers && it.parent?.id == root }.mapTo(HashSet()) { it.id }
+                if (saved.size >= window.size && placed == workers) break
+                delay(20)
+            }
+        }
 
         val second = repository(CoroutineScope(SupervisorJob() + Dispatchers.Default))
         second.restoreFromCache()
