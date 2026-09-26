@@ -49,6 +49,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.FileProvider
+import com.cursorforandroid.data.local.AttachmentMoves
 import com.cursorforandroid.domain.MessageAttachment
 import com.cursorforandroid.domain.PromptFile
 import com.cursorforandroid.domain.PromptFileKind
@@ -163,7 +164,7 @@ internal fun AttachmentFileCard(attachment: MessageAttachment, alpha: Float = 1f
             .thumbnailSlot(slot)
             .widthIn(min = 160.dp, max = 320.dp)
             .cursorSurface(colors.fill.faded(alpha), colors.stroke.faded(alpha), shape)
-            .pressable({ if (!(viewable && File(attachment.path).isFile && openInViewer()) && !openAttachedFile(context, attachment)) missing = true }, shape)
+            .pressable({ if (!(viewable && File(AttachmentMoves.resolve(attachment.path)).isFile && openInViewer()) && !openAttachedFile(context, attachment)) missing = true }, shape)
             .heightIn(min = 44.dp)
             .padding(horizontal = 10.dp, vertical = 6.dp)
             .testTag("attachment-file-card")
@@ -190,7 +191,7 @@ internal fun AttachmentFileCard(attachment: MessageAttachment, alpha: Float = 1f
  * device with nothing to open the type shows the chooser's own word for that.
  */
 internal fun openAttachedFile(context: Context, attachment: MessageAttachment): Boolean {
-    val file = File(attachment.path)
+    val file = File(AttachmentMoves.resolve(attachment.path))
     if (!file.isFile) return false
     val uri = try {
         FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
@@ -252,7 +253,7 @@ private fun AttachmentVideoThumbnail(attachment: MessageAttachment, alpha: Float
     var durationMs by remember(attachment.path) { mutableStateOf<Long?>(null) }
     val posterPx = with(LocalDensity.current) { THUMB_MAX_WIDTH.roundToPx() * 2 }
     LaunchedEffect(attachment.path, loader) {
-        val probe = loader?.let { runCatching { it.videoPoster(MediaRef.Local(attachment.path), posterPx) }.getOrNull() } ?: return@LaunchedEffect
+        val probe = loader?.let { runCatching { it.videoPoster(MediaRef.Local(AttachmentMoves.resolve(attachment.path)), posterPx) }.getOrNull() } ?: return@LaunchedEffect
         frame = probe.frame?.asImageBitmap()
         durationMs = probe.durationMs
     }
@@ -308,10 +309,20 @@ private fun rememberAttachmentImage(path: String, targetEdgePx: Int, cache: Bool
         if (value is LoadedImage.Loading) {
             // Back on the main thread once decoded: the write below is a snapshot state's, and this effect must not
             // resume on the decoder's thread (see ioThenMain).
-            val decoded = ioThenMain { decodeSampled(path, targetEdgePx) }
+            val decoded = ioThenMain { decodeFollowingMoves(path, targetEdgePx) }
             value = if (decoded == null) LoadedImage.Missing else LoadedImage.Ready(decoded.also { if (cache) AttachmentImages.put(key, it) })
         }
     }.value
+}
+
+/**
+ * [decodeSampled] at wherever the file at [path] is now ([AttachmentMoves]): a prompt's copies are moved under its run
+ * once it is filed, which can happen after the bubble took the path and even while this decode reads it — so a
+ * decode that fails is tried again where the file went, once.
+ */
+internal fun decodeFollowingMoves(path: String, targetEdgePx: Int): ImageBitmap? {
+    val first = AttachmentMoves.resolve(path)
+    return decodeSampled(first, targetEdgePx) ?: AttachmentMoves.resolve(path).takeIf { it != first }?.let { decodeSampled(it, targetEdgePx) }
 }
 
 /**
