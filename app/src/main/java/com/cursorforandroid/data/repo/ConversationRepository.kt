@@ -1619,11 +1619,18 @@ class ConversationRepository(
         /**
          * The newest run there is, counting prompts sent from here that the server's list has not caught up with (never
          * a placeholder: there is nothing to stream for it yet), nor a run waiting behind the turn under way (see
-         * [waitingRuns]): the chat is on that turn until it ends.
+         * [waitingRuns]): the chat is on that turn until it ends. The newest by date, unless that one is over and the
+         * agent's record names an active run dated behind it (a server clock off, a run made on another host): the
+         * record's run is the turn under way. Dated only, the load put the chat back on the finished run, the look for
+         * the next run put it on the new one and read the chat again, round trip after round trip while the turn ran.
          */
         fun latestRun(): RunDto? {
             val waiting = waitingRuns()
-            return (runs + local.filter { it.filed }.map { it.run }).filter { waiting.isEmpty() || it.id !in waiting }.maxByOrNull { parseIsoMillis(it.createdAt) }
+            val candidates = (runs + local.filter { it.filed }.map { it.run }).filter { waiting.isEmpty() || it.id !in waiting }
+            val newest = candidates.maxByOrNull { parseIsoMillis(it.createdAt) } ?: return null
+            if (newest.statusEnum().isActive || candidates.none { it.statusEnum().isActive }) return newest
+            val named = agents.agent(agentId)?.latestRunId?.takeUnless { it == newest.id } ?: return newest
+            return candidates.firstOrNull { it.id == named && statusOf(it).isActive } ?: newest
         }
 
 
