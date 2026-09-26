@@ -104,7 +104,7 @@ object WidgetData {
         combine(graph.prefs.localAgentState, graph.pullRequests.states) { local, states -> local.copy(pullRequests = states) },
         combine(graph.prefs.themeMode, graph.prefs.oledBlack, ::Pair),
     ) { session, (list, roots, counts), (prefs, extended), local, appearance ->
-        WidgetSnapshot(session, list.hasLoaded, list.agents, prefs, local, appearance.first, appearance.second, knownRoots = roots, memberCounts = counts, extendedMode = extended)
+        WidgetSnapshot(session, list.hasLoaded, list.shownAgents, prefs, local, appearance.first, appearance.second, knownRoots = roots, memberCounts = counts, extendedMode = extended)
     }.distinctUntilChanged()
 
     suspend fun snapshot(graph: AppGraph): WidgetSnapshot = snapshots(graph).first()

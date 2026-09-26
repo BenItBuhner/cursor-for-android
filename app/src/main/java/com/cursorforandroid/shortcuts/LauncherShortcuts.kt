@@ -78,7 +78,7 @@ object LauncherShortcuts {
         graph.agents.knownRoots,
     ) { session, list, prefs, local, roots ->
         when (session) {
-            is SessionState.SignedIn -> LauncherShortcutPicks.pick(AgentListOrganizer.organize(list.agents, prefs, local, knownRoots = roots), max)
+            is SessionState.SignedIn -> LauncherShortcutPicks.pick(AgentListOrganizer.organize(list.shownAgents, prefs, local, knownRoots = roots), max)
             SessionState.SignedOut -> emptyList()
             SessionState.Loading -> null
         }

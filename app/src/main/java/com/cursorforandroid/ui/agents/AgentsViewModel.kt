@@ -221,10 +221,12 @@ class AgentsViewModel(
         combine(clock, pending) { now, work -> now to work },
     ) { list, prefs, device, q, (now, work) ->
         val local = device.local
-        val sections = AgentListOrganizer.organize(list.agents, prefs, local, q, nowMillis = now, unavailableProjects = device.unavailableProjects, knownRoots = device.knownRoots, memberCounts = device.memberCounts)
+        // Rows waiting on their record to place them are held, never drawn loose (see AgentListState.awaitingPlacement).
+        val shown = list.shownAgents
+        val sections = AgentListOrganizer.organize(shown, prefs, local, q, nowMillis = now, unavailableProjects = device.unavailableProjects, knownRoots = device.knownRoots, memberCounts = device.memberCounts)
         // The sidebar search narrows the sidebar only; while it is in use the recents are organized without it.
-        val recentRows = if (q.isBlank()) AgentListOrganizer.recentRows(sections) else AgentListOrganizer.recentRows(list.agents, prefs, local, nowMillis = now)
-        val unsearched = if (q.isBlank()) sections else AgentListOrganizer.organize(list.agents, prefs, local, nowMillis = now, unavailableProjects = device.unavailableProjects, knownRoots = device.knownRoots, memberCounts = device.memberCounts)
+        val recentRows = if (q.isBlank()) AgentListOrganizer.recentRows(sections) else AgentListOrganizer.recentRows(shown, prefs, local, nowMillis = now)
+        val unsearched = if (q.isBlank()) sections else AgentListOrganizer.organize(shown, prefs, local, nowMillis = now, unavailableProjects = device.unavailableProjects, knownRoots = device.knownRoots, memberCounts = device.memberCounts)
         val projectRows = AgentListOrganizer.projectRows(unsearched)
         val rows = list.agents.map { AgentListOrganizer.toRow(it, local, now) }
         AgentListUiState(
