@@ -35,6 +35,7 @@ import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.ui.theme.ThemeMode
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.runBlocking
+import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
@@ -43,6 +44,7 @@ import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 import java.io.ByteArrayOutputStream
 import java.io.File
+import java.nio.ByteBuffer
 
 /** Renders a user bubble with images through Robolectric's native graphics so the files are really decoded. */
 @RunWith(AndroidJUnit4::class)
@@ -55,6 +57,15 @@ class MessageAttachmentsTest {
 
     @get:Rule
     val folder = TemporaryFolder()
+
+    /**
+     * Native graphics look java.nio's buffer classes up once, on whichever thread first needs them; left to a decode
+     * on `Dispatchers.IO`, that lookup aborted the test JVM on CI ("JniConstants: Class not found"), so it is made here.
+     */
+    @Before
+    fun primeNativeGraphics() {
+        Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888).copyPixelsToBuffer(ByteBuffer.allocate(4))
+    }
 
     private fun shot(name: String, width: Int, height: Int): MessageAttachment {
         val file = File(folder.root, name)
