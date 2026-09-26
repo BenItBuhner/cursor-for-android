@@ -412,9 +412,6 @@ class SoakBudgetBenchmarkTest {
     private companion object {
         const val HELD_WORK_MS = 30_000L
         const val HELD_OPENED = 5
-        const val HELD_STREAM_SECONDS = 1_000.0
-        const val HELD_ALLOCATED = 1_000L shl 20
-        const val HELD_OPEN_MS = 2_000L
         const val EVICTED_CHATS = 40
         const val REOPENED = 10
         /** Beats of work in each run's log before it is first looked at: some 300 KB of tool output a run. */
@@ -449,5 +446,11 @@ class SoakBudgetBenchmarkTest {
         const val REOPEN_REPLAYS = 1
         /** 0.1 MB: what the turns did meanwhile, and the chats' own reads. Replaying their runs from the first event was 1.9 MB. */
         const val REOPEN_BYTES_IN = 512L * 1024
+        /** 228 of the 600 there are, each look a resumed connection (604 while every held run was streamed throughout). */
+        const val HELD_STREAM_SECONDS = 320.0
+        /** 30 MB (48 MB streamed: every event published to a chat nobody sees). */
+        const val HELD_ALLOCATED = 40 * MB
+        /** 77–178 ms: the rest is cut short and the look catches up from its position. Waiting it out would be up to 30 s. */
+        const val HELD_OPEN_MS = 1_000L
     }
 }
