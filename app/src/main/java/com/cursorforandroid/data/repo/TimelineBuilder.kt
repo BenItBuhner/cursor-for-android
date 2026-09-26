@@ -21,6 +21,7 @@ import com.cursorforandroid.domain.TimelineItem
 import com.cursorforandroid.domain.ToolCall
 import com.cursorforandroid.domain.UserMessage
 import com.cursorforandroid.util.AppClock
+import kotlinx.serialization.Serializable
 
 object TimelineBuilder {
 
@@ -277,6 +278,63 @@ object TimelineBuilder {
         fun snapshot(): List<TimelineItem> {
             flushText()
             return items.toList()
+        }
+
+        /**
+         * Everything this accumulator knows, to be put back into a fresh one with [restore]: with the stream position
+         * it had reached, the rest of the run is only what follows that position, not the run from its first event.
+         */
+        fun save(): Saved {
+            flushText()
+            return Saved(
+                items = items.toList(),
+                seq = seq,
+                thinkingStartedAt = thinkingStartedAt,
+                errorCode = streamError?.code,
+                errorMessage = streamError?.message,
+                assistantIndex = assistantIndex,
+                thinkingGroup = thinkingGroup,
+                todos = todos?.map { Saved.Todo(it.id, it.content, it.status) },
+                status = status,
+                finished = finished,
+                applied = applied,
+            )
+        }
+
+        /** Takes up where [saved] left off. Only on an accumulator nothing has been applied to yet. */
+        fun restore(saved: Saved) {
+            check(items.isEmpty() && applied == 0) { "restore into an accumulator already in use" }
+            items += saved.items
+            seq = saved.seq
+            thinkingStartedAt = saved.thinkingStartedAt
+            streamError = saved.errorCode?.let { RunStreamEvent.Error(it, saved.errorMessage.orEmpty()) }
+            assistantIndex = saved.assistantIndex
+            assistantText = StringBuilder((items.getOrNull(assistantIndex) as? AssistantMessage)?.markdown.orEmpty())
+            thinkingGroup = saved.thinkingGroup
+            thinkingText = StringBuilder(((items.getOrNull(thinkingGroup) as? ActivityGroup)?.steps?.lastOrNull() as? ThinkingBlock)?.text.orEmpty())
+            todos = saved.todos?.map { ToolCallMapper.Todo(it.id, it.content, it.status) }
+            status = saved.status
+            finished = saved.finished
+            applied = saved.applied
+            items.forEachIndexed { index, item -> (item as? ActivityGroup)?.steps?.forEach { if (it is ToolCall) callGroup[it.callId] = index } }
+        }
+
+        @Serializable
+        data class Saved(
+            val items: List<TimelineItem>,
+            val seq: Int,
+            val thinkingStartedAt: Long? = null,
+            val errorCode: String? = null,
+            val errorMessage: String? = null,
+            val assistantIndex: Int = -1,
+            val thinkingGroup: Int = -1,
+            val todos: List<Todo>? = null,
+            val status: RunStatus = RunStatus.RUNNING,
+            val finished: Boolean = false,
+            val applied: Int = 0,
+        ) {
+            @Serializable
+            data class Todo(val id: String, val content: String, val status: String)
         }
 
         private fun nextId(prefix: String) = "$prefix-$runId-${seq++}"

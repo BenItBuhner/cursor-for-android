@@ -44,6 +44,8 @@ class AppCaches(private val root: JsonDiskCache) {
     val storeFiles: JsonDiskCache = root.child("storefiles")
     /** The account records' blobs (the Beta transcript engine's, see `BlobCache`). */
     val blobs = BlobDiskStore(root.child("blobs"))
+    /** Turns under way whose streams left the live-run table, parked to be resumed rather than replayed (see `LiveRunHub`). */
+    val liveRuns: JsonDiskCache = root.child("liveruns")
 
     /**
      * Stops the caches accepting writes, before the work that feeds them is cancelled. A blocking write already in

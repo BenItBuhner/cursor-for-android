@@ -297,7 +297,65 @@ class SoakBudgetBenchmarkTest {
         assertThat(server.liveRunOpen.get()).isEqualTo(0)
     }
 
+    /**
+     * Forty working chats looked in on one after another — more runs than the live-run table keeps — then the first
+     * ten opened again once their agents have done a little more: what those reopens cost on the wire, and how many
+     * of their runs' streams were read again from the first event rather than resumed.
+     */
+    @Test
+    fun `working chats reopened after their runs left the live table resume rather than replay`() = runBlocking {
+        server = FaultServer(rttMillis = 5L..20L, http2 = true).start()
+        server.clock = { now }
+        server.liveRunStreams = true
+        server.liveRunBeatMs = 500L
+        val ids = (0 until EVICTED_CHATS).map { "bc-evict-$it" }
+        ids.forEachIndexed { i, id ->
+            addChat(id, "Worker $i", now - 100_000L - 1_000L * i)
+            server.startTurnElsewhere(id, "Work on part $i.", "run-evict-$i")
+            server.appendRunEvents("run-evict-$i", (1..RUN_EVENTS).flatMap { tick -> working("run-evict-$i", tick) })
+        }
+        val rig = rig()
+        rig.agents.refresh()
+        warmUp(rig, "bc-evict-${EVICTED_CHATS - 1}")
+        val conversations = rig.conversations
+        suspend fun look(id: String, tick: Int) {
+            conversations.attach(id)
+            rig.awaitUntil(20_000) {
+                conversations.state(id).value.let { s -> s.isStreaming && s.items.any { it.toString().contains("Step $tick passes") } }
+            }
+            conversations.detach(id)
+        }
+        ids.forEachIndexed { i, id -> look(id, RUN_EVENTS) }
+        delay(1_000)
+        // The agents work on while nobody looks.
+        ids.forEachIndexed { i, _ -> server.appendRunEvents("run-evict-$i", (RUN_EVENTS + 1..RUN_EVENTS + 3).flatMap { tick -> working("run-evict-$i", tick) }) }
+        val streamsBefore = server.seen.size
+        val meter = Meter(rig)
+        val stories = ids.take(REOPENED).map { id ->
+            look(id, RUN_EVENTS + 3)
+            conversations.state(id).value.items.joinToString("\n")
+        }
+        delay(1_000)
+        meter.checkpoint()
+        val reopenStreams = server.seen.drop(streamsBefore).filter { it.route == FaultServer.Route.Stream }
+        val replays = reopenStreams.count { it.lastEventId == null }
+        report("reopen after eviction streams=${reopenStreams.size} replays=$replays", meter, rig)
+        meter.close()
+        // Resumed, each turn's story is whole: its first step, its newest, and none of them twice.
+        stories.forEach { story ->
+            assertThat(story).contains("Step 1 passes")
+            assertThat(Regex("Step ${RUN_EVENTS + 3} passes").findAll(story).count()).isEqualTo(1)
+            assertThat(Regex("Step $RUN_EVENTS passes").findAll(story).count()).isEqualTo(1)
+        }
+        assertWithMessage("runs read again from their first event").that(replays).isAtMost(REOPEN_REPLAYS)
+        budget("bytes received reopening ten working chats", meter.bytesIn, REOPEN_BYTES_IN)
+    }
+
     private companion object {
+        const val EVICTED_CHATS = 40
+        const val REOPENED = 10
+        /** Beats of work in each run's log before it is first looked at: some 300 KB of tool output a run. */
+        const val RUN_EVENTS = 80
         const val HUGE_TURNS = 1_500
         const val SCROLL_PAGES = 20
 
@@ -324,5 +382,9 @@ class SoakBudgetBenchmarkTest {
         const val HUGE_CALLS = 4_000
         /** Nothing at all: keep chats live stands down in the background, and nothing else streams. */
         const val BACKGROUND_BYTES_IN = 256L * 1024
+        /** 0 of 10 (10 of 10 before runs leaving the live table were parked to be resumed). */
+        const val REOPEN_REPLAYS = 1
+        /** 0.1 MB: what the turns did meanwhile, and the chats' own reads. Replaying their runs from the first event was 1.9 MB. */
+        const val REOPEN_BYTES_IN = 512L * 1024
     }
 }

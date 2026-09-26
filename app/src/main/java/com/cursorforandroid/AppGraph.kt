@@ -702,7 +702,7 @@ class AppGraph(
 
     /** One shared live stream per run, consumed by both the conversation screen and the live notification. */
     private val lazyLiveRuns = lazy {
-        LiveRunHub(session, agents, images = GeneratedImageStore { agentId, callId, bytes, mimeType -> generatedMedia.save(agentId, callId, bytes, mimeType) })
+        LiveRunHub(session, agents, images = GeneratedImageStore { agentId, callId, bytes, mimeType -> generatedMedia.save(agentId, callId, bytes, mimeType) }, parking = caches.liveRuns)
     }
     val liveRuns: LiveRunHub get() = lazyLiveRuns.value
 
