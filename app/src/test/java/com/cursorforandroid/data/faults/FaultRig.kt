@@ -104,6 +104,8 @@ class FaultRig(
     http2: Boolean = false,
     /** The blob store's budget on disk, all chats together (production: `BlobDiskStore.MAX_BYTES`). */
     blobDiskBytes: Long = BlobDiskStore.MAX_BYTES,
+    /** Long texts are kept on disk while their chats are open, as in the app (see `TextSpill`); false keeps them on the heap. */
+    spillTexts: Boolean = true,
 ) : AutoCloseable {
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     var now: Long = 1_800_000_000_000L
@@ -180,7 +182,7 @@ class FaultRig(
     val prefs = PreferencesStore(context)
     val backend = CursorBackend(api, streamer, isDemo = false)
     val session = SessionManager(SecureKeyStore(context), prefs, backend, CursorBackend(api, streamer, isDemo = true))
-    private val disk = JsonDiskCache(File(root, "cache").apply { mkdirs() }, dispatcher = Dispatchers.Unconfined).also { TextSpill.install(it.child("spill")) }
+    private val disk = JsonDiskCache(File(root, "cache").apply { mkdirs() }, dispatcher = Dispatchers.Unconfined).also { TextSpill.install(if (spillTexts) it.child("spill") else null) }
     val attachments = AttachmentStore(context)
     /** The list's work in flight, shared by the list and the account layer (see `PendingWork`): what the sidebar's one loading row stands for. */
     val pending = PendingWork()

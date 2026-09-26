@@ -65,7 +65,8 @@ class TrimMemoryTest {
         server = FaultServer(rttMillis = 2L..8L).start()
         val ids = (0 until 24).map { "bc-trim-$it" }
         ids.forEachIndexed { i, id -> addHeavyChat(id, now - 100_000L - i * 1_000L) }
-        val rig = FaultRig(server.baseUrl, folder.newFolder("disk"), extended = false, engine = TranscriptEngine.STABLE).also { it.now = now; this@TrimMemoryTest.rig = it }
+        // The files stay on the heap: what is measured is what a trim lets go of, and the app keeps them on disk.
+        val rig = FaultRig(server.baseUrl, folder.newFolder("disk"), extended = false, engine = TranscriptEngine.STABLE, spillTexts = false).also { it.now = now; this@TrimMemoryTest.rig = it }
         rig.agents.refresh()
         val conversations = rig.conversations
         suspend fun openAndLeave(id: String) {
