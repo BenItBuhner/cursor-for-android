@@ -314,7 +314,10 @@ class AppGraph(
     private val realBackend = real ?: CursorBackend(isDemo = false, parts = realParts)
     /** Seeded when the demo is entered, so a launch into a real account never pays for the dataset. */
     private val perfSeeds = BuildConfig.DEBUG && com.cursorforandroid.data.demo.DemoPerfSeeds.enabled(app.cacheDir)
-    private val demoParts = lazy { DemoBackendFactory.create(perfSeeds = perfSeeds) }
+    private val demoParts = lazy {
+        val realistic = BuildConfig.DEBUG && com.cursorforandroid.data.demo.DemoPace.enabled(app.cacheDir)
+        DemoBackendFactory.create(perfSeeds = perfSeeds, pace = if (realistic) com.cursorforandroid.data.demo.DemoPace.Realistic else com.cursorforandroid.data.demo.DemoPace.Brisk)
+    }
 
     init {
         // A debug build measuring the transcript on a device: the `perf:` block after each presentation, in logcat.

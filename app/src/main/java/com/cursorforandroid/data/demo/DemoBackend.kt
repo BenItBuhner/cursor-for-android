@@ -535,7 +535,7 @@ internal class DemoCursorApi(private val store: DemoStore) : CursorApi {
  * Replays scripted streams with realistic pacing and mutates the store when a run finishes. Like the real endpoint,
  * a finished run's stream replays its retained event log until the retention window lapses, then reports it expired.
  */
-internal class DemoRunStreamer(private val store: DemoStore) : RunStreamer {
+internal class DemoRunStreamer(private val store: DemoStore, private val pace: DemoPace = DemoPace.Brisk) : RunStreamer {
 
     /** Raised by the recorder when the user has stopped the run, to unwind whatever the script was in the middle of. */
     private class Stopped : Exception(null, null, false, false)
@@ -608,70 +608,70 @@ internal class DemoRunStreamer(private val store: DemoStore) : RunStreamer {
 
     private fun tool(id: String, name: String, status: String, vararg args: Pair<String, String>) = toolEvent(id, name, status, *args)
 
-    private suspend fun kotlinx.coroutines.flow.FlowCollector<RunStreamEvent>.type(text: String, chunk: Int = 18, delayMs: Long = 22) {
+    private suspend fun kotlinx.coroutines.flow.FlowCollector<RunStreamEvent>.type(text: String) {
         var i = 0
         while (i < text.length) {
-            val end = (i + chunk).coerceAtMost(text.length)
+            val end = (i + pace.typeChunk).coerceAtMost(text.length)
             emit(RunStreamEvent.Assistant(text.substring(i, end)))
             i = end
-            delay(delayMs)
+            delay(pace.typeDelayMs)
         }
     }
 
     private suspend fun kotlinx.coroutines.flow.FlowCollector<RunStreamEvent>.think(text: String) {
-        text.split(" ").chunked(6).forEach { words ->
+        text.split(" ").chunked(pace.thinkWords).forEach { words ->
             emit(RunStreamEvent.Thinking(words.joinToString(" ") + " "))
-            delay(60)
+            delay(pace.thinkDelayMs)
         }
     }
 
     private suspend fun kotlinx.coroutines.flow.FlowCollector<RunStreamEvent>.cesium(): Outcome {
         think("This is more of a strategic assessment request than a code change, so I should focus on understanding Cesium's actual architecture, features, cloud dependencies like Convex and Clerk, licensing, and any existing monetization hooks before I can give a useful answer. I'll dispatch a couple of parallel explore subagents alongside direct reads of key files like README, LICENSE, and package.json.")
-        delay(300)
-        emit(tool("c1", "read_file", "running", "path" to "LICENSE")); delay(250)
+        delay(pace.step(300))
+        emit(tool("c1", "read_file", "running", "path" to "LICENSE")); delay(pace.step(250))
         emit(tool("c1", "read_file", "completed", "path" to "LICENSE"))
-        emit(tool("c2", "read_file", "running", "path" to "package.json")); delay(200)
+        emit(tool("c2", "read_file", "running", "path" to "package.json")); delay(pace.step(200))
         emit(tool("c2", "read_file", "completed", "path" to "package.json"))
-        emit(tool("c3", "grep", "running", "pattern" to "convex")); delay(200)
+        emit(tool("c3", "grep", "running", "pattern" to "convex")); delay(pace.step(200))
         emit(tool("c3", "grep", "completed", "pattern" to "convex"))
-        emit(tool("c4", "grep", "running", "pattern" to "clerk")); delay(150)
+        emit(tool("c4", "grep", "running", "pattern" to "clerk")); delay(pace.step(150))
         emit(tool("c4", "grep", "completed", "pattern" to "clerk"))
-        emit(tool("c5", "read_file", "running", "path" to "README.md")); delay(150)
+        emit(tool("c5", "read_file", "running", "path" to "README.md")); delay(pace.step(150))
         emit(tool("c5", "read_file", "completed", "path" to "README.md"))
         listOf("stripe", "billing", "usage", "upstash").forEachIndexed { i, p ->
-            emit(tool("g$i", "codebase_search", "running", "query" to p)); delay(120)
+            emit(tool("g$i", "codebase_search", "running", "query" to p)); delay(pace.step(120))
             emit(tool("g$i", "codebase_search", "completed", "query" to p))
         }
-        delay(300)
+        delay(pace.step(300))
         type("Hell yes, this is the kind of question I love sinking my teeth into. But I refuse to hand you generic \"open-core + SaaS\" slop without actually knowing what Cesium is made of. Let me tear through the repo first so the strategy is grounded in what you've actually built.\n\n")
-        delay(300)
+        delay(pace.step(300))
         emit(tool("s1", "task", "running", "subagent_type" to "explore", "description" to "Survey cloud sync layer"))
-        delay(200)
+        delay(pace.step(200))
         emit(tool("s2", "task", "running", "subagent_type" to "explore", "description" to "Survey first-party agent and inference"))
-        delay(200)
+        delay(pace.step(200))
         emit(tool("s3", "task", "running", "subagent_type" to "explore", "description" to "Survey distribution and platform surfaces"))
-        delay(1200)
+        delay(pace.step(1200))
         type("Repo's telling me a LOT already: AGPL-3.0 on the whole thing, a live Convex + Clerk production cloud (`cesium.techlitnow.com`), self-hosted engines paired over an Upstash-backed rendezvous registry, tunnels piggybacking on free `localhost.run` / Cloudflare quick tunnels, GitHub Codespaces as a disposable engine host, and a first-party agent that is pure BYOK plus ChatGPT/SuperGrok subscription OAuth. Zero billing, zero metering so far, which is exactly the blank canvas I want.\n\nI've got three explorers finishing the inventory of the cloud layer, the inference/cost surfaces, and the distribution/team surfaces. The moment they report back I'll assemble the full monetization teardown for you.")
-        delay(900)
+        delay(pace.step(900))
         emit(tool("s2", "task", "completed", "subagent_type" to "explore", "description" to "Survey first-party agent and inference"))
-        delay(700)
+        delay(pace.step(700))
         emit(tool("s1", "task", "completed", "subagent_type" to "explore", "description" to "Survey cloud sync layer"))
-        delay(500)
+        delay(pace.step(500))
         emit(tool("s3", "task", "completed", "subagent_type" to "explore", "description" to "Survey distribution and platform surfaces"))
-        delay(400)
+        delay(pace.step(400))
         think("One down, and it confirmed the thing I was hoping for: the first-party agent is pure BYOK with costUsd null everywhere, and the only hosted inference surface is a stateless CORS relay on Vercel.")
-        delay(200)
+        delay(pace.step(200))
         val closing = "\n\nOne down, and it confirmed the thing I was hoping for: the first-party agent is pure BYOK with `costUsd: null` everywhere, and the only \"hosted\" inference surface is a stateless CORS relay on Vercel. That means the subsidized-inference lever is wide open, and the env bootstrap (`CESIUM_BASE_URL` / `CESIUM_PROVIDER_ID`) is already the exact seam where a Cesium-operated gateway would plug in.\n\n**The teardown**\n\n1. **Hosted control plane as the paid tier.** Keep the engine and client AGPL, charge for the Convex + Clerk cloud: pairing, sync, history. Free tier caps at 1 engine and 7 days of history.\n2. **Metered subsidized inference.** Ship a Cesium gateway behind `CESIUM_BASE_URL` with included credits per seat; BYOK stays free forever so the community never feels held hostage.\n3. **Transcription minutes** as the cleanest usage meter: predictable COGS, obviously valuable, trivially enforced server-side.\n4. **Team surfaces** (shared engines, SSO, audit log) at a per-seat price for the people who already pay for Codespaces."
         type(closing)
         return Outcome(finalText = closing.trim(), reportedDurationMs = 185_000)
     }
 
     private suspend fun kotlinx.coroutines.flow.FlowCollector<RunStreamEvent>.codex(): Outcome {
-        emit(tool("k1", "run_terminal_cmd", "running", "command" to "kubectl scale deploy/poly-bot --replicas=12")); delay(900)
+        emit(tool("k1", "run_terminal_cmd", "running", "command" to "kubectl scale deploy/poly-bot --replicas=12")); delay(pace.step(900))
         emit(tool("k1", "run_terminal_cmd", "completed", "command" to "kubectl scale deploy/poly-bot --replicas=12"))
         type("Scaling the fleet to 12 workers now. I'll watch the catch-up queue depth and report the drain time.\n\n")
         for (i in 1..6) {
-            emit(tool("k${i + 1}", "run_terminal_cmd", "running", "command" to "redis-cli LLEN catchup:queue")); delay(1500)
+            emit(tool("k${i + 1}", "run_terminal_cmd", "running", "command" to "redis-cli LLEN catchup:queue")); delay(pace.step(1500))
             emit(tool("k${i + 1}", "run_terminal_cmd", "completed", "command" to "redis-cli LLEN catchup:queue"))
             emit(RunStreamEvent.Heartbeat)
         }
@@ -682,9 +682,9 @@ internal class DemoRunStreamer(private val store: DemoStore) : RunStreamer {
 
     private suspend fun kotlinx.coroutines.flow.FlowCollector<RunStreamEvent>.limbs(): Outcome {
         think("The arm rig uses linear blend skinning with four influences; muscle bulge needs corrective shapes or a dual-quaternion pass.")
-        emit(tool("l1", "read_file", "running", "path" to "rig/arm_rig.py")); delay(600)
+        emit(tool("l1", "read_file", "running", "path" to "rig/arm_rig.py")); delay(pace.step(600))
         emit(tool("l1", "read_file", "completed", "path" to "rig/arm_rig.py"))
-        emit(tool("l2", "edit_file", "running", "path" to "rig/arm_rig.py")); delay(1400)
+        emit(tool("l2", "edit_file", "running", "path" to "rig/arm_rig.py")); delay(pace.step(1400))
         emit(tool("l2", "edit_file", "completed", "path" to "rig/arm_rig.py"))
         val text = "Switched the arm and leg meshes to dual-quaternion skinning and added bicep / calf corrective blendshapes driven by joint angle. Pushed to `cursor/limb-rigging-3e4f`; +5159 −8."
         type(text)
@@ -693,9 +693,9 @@ internal class DemoRunStreamer(private val store: DemoStore) : RunStreamer {
 
     private suspend fun kotlinx.coroutines.flow.FlowCollector<RunStreamEvent>.generic(prompt: String, mcpServers: List<String>): Outcome {
         think("Let me look at the relevant files before changing anything.")
-        emit(tool("g1", "list_dir", "running", "path" to ".")); delay(400)
+        emit(tool("g1", "list_dir", "running", "path" to ".")); delay(pace.step(400))
         emit(tool("g1", "list_dir", "completed", "path" to "."))
-        emit(tool("g2", "grep", "running", "pattern" to prompt.split(" ").firstOrNull { it.length > 4 }.orEmpty().ifBlank { "TODO" })); delay(500)
+        emit(tool("g2", "grep", "running", "pattern" to prompt.split(" ").firstOrNull { it.length > 4 }.orEmpty().ifBlank { "TODO" })); delay(pace.step(500))
         emit(tool("g2", "grep", "completed", "pattern" to "TODO"))
         mcpTool(mcpServers)
         val text = "Done. I handled \"${prompt.lines().first().take(80)}\" and pushed the change to a branch — this is the demo backend, so nothing left your device."
@@ -707,13 +707,13 @@ internal class DemoRunStreamer(private val store: DemoStore) : RunStreamer {
     private suspend fun kotlinx.coroutines.flow.FlowCollector<RunStreamEvent>.multitask(prompt: String, mcpServers: List<String>): Outcome {
         val task = SlashCommands.strip(prompt).lines().first().take(60).ifBlank { "the request" }
         think("Multitask mode: split \"$task\" into independent pieces and hand each to its own subagent so they run in parallel instead of queueing.")
-        delay(300)
+        delay(pace.step(300))
         mcpTool(mcpServers)
-        emit(tool("m1", "task", "running", "subagent_type" to "generalPurpose", "description" to "Implement: $task")); delay(200)
-        emit(tool("m2", "task", "running", "subagent_type" to "explore", "description" to "Find the tests that cover it")); delay(200)
-        emit(tool("m3", "task", "running", "subagent_type" to "generalPurpose", "description" to "Update the docs")); delay(1500)
-        emit(tool("m2", "task", "completed", "subagent_type" to "explore", "description" to "Find the tests that cover it")); delay(700)
-        emit(tool("m3", "task", "completed", "subagent_type" to "generalPurpose", "description" to "Update the docs")); delay(600)
+        emit(tool("m1", "task", "running", "subagent_type" to "generalPurpose", "description" to "Implement: $task")); delay(pace.step(200))
+        emit(tool("m2", "task", "running", "subagent_type" to "explore", "description" to "Find the tests that cover it")); delay(pace.step(200))
+        emit(tool("m3", "task", "running", "subagent_type" to "generalPurpose", "description" to "Update the docs")); delay(pace.step(1500))
+        emit(tool("m2", "task", "completed", "subagent_type" to "explore", "description" to "Find the tests that cover it")); delay(pace.step(700))
+        emit(tool("m3", "task", "completed", "subagent_type" to "generalPurpose", "description" to "Update the docs")); delay(pace.step(600))
         emit(tool("m1", "task", "completed", "subagent_type" to "generalPurpose", "description" to "Implement: $task"))
         val text = "Three subagents ran in parallel: one implemented \"$task\", one found and ran the tests that cover it, one updated the docs. Their changes are merged on `cursor/demo-multitask` — this is the demo backend, so nothing left your device."
         type(text)
@@ -723,13 +723,13 @@ internal class DemoRunStreamer(private val store: DemoStore) : RunStreamer {
     /** One `mcp` tool call against the first attached server, so inline servers show up in the transcript. */
     private suspend fun kotlinx.coroutines.flow.FlowCollector<RunStreamEvent>.mcpTool(mcpServers: List<String>) {
         val server = mcpServers.firstOrNull() ?: return
-        emit(tool("mcp1", "mcp", "running", "server" to server, "tool" to "list_tools")); delay(500)
+        emit(tool("mcp1", "mcp", "running", "server" to server, "tool" to "list_tools")); delay(pace.step(500))
         emit(tool("mcp1", "mcp", "completed", "server" to server, "tool" to "list_tools"))
     }
 
     private suspend fun kotlinx.coroutines.flow.FlowCollector<RunStreamEvent>.plan(prompt: String): Outcome {
         think("Plan mode: explore first, then draft a plan without editing files.")
-        emit(tool("p1", "codebase_search", "running", "query" to prompt.take(60))); delay(700)
+        emit(tool("p1", "codebase_search", "running", "query" to prompt.take(60))); delay(pace.step(700))
         emit(tool("p1", "codebase_search", "completed", "query" to prompt.take(60)))
         val text = "**Plan**\n\n1. Audit the current implementation and list the touch points.\n2. Introduce the change behind a flag.\n3. Add tests and a rollout note.\n\nReply with follow-up instructions and I'll switch to agent mode to implement it."
         type(text)
@@ -740,8 +740,8 @@ internal class DemoRunStreamer(private val store: DemoStore) : RunStreamer {
 /** Assembles the demo backend. */
 object DemoBackendFactory {
     /** [perfSeeds] adds the two long chats of [DemoPerfSeeds] (a debug build with the marker file, for measuring the transcript on a device). */
-    fun create(perfSeeds: Boolean = false): Pair<CursorApi, RunStreamer> {
+    fun create(perfSeeds: Boolean = false, pace: DemoPace = DemoPace.Brisk): Pair<CursorApi, RunStreamer> {
         val store = DemoStore(if (perfSeeds) DemoData.seeds + DemoPerfSeeds.seeds() else DemoData.seeds)
-        return DemoCursorApi(store) to DemoRunStreamer(store)
+        return DemoCursorApi(store) to DemoRunStreamer(store, pace)
     }
 }
