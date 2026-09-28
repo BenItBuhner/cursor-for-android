@@ -46,11 +46,11 @@ class DemoPaceTest {
         val calls = events.mapNotNull { e -> (e.event as? RunStreamEvent.ToolCall)?.let { e.atMs to it.call } }
         val started = calls.filter { it.second.status == "running" }.associate { it.second.callId to it.first }
         val took = calls.filter { it.second.status == "completed" }.associate { it.second.callId to it.first - started.getValue(it.second.callId) }
-        assertThat(took.values.min()).isAtLeast(500L)
+        assertThat(took.values.min()).isAtLeast(1_000L)
         val subagents = calls.filter { it.second.name == "task" && it.second.status == "completed" }.map { took.getValue(it.second.callId) }
         assertThat(subagents).isNotEmpty()
-        assertThat(subagents.min()).isAtLeast(5_000L)
-        assertThat(events.last().atMs).isAtLeast(30_000L)
+        assertThat(subagents.min()).isAtLeast(10_000L)
+        assertThat(events.last().atMs).isAtLeast(60_000L)
     }
 
     @Test

@@ -26,7 +26,7 @@ data class DemoPace(
         val Brisk = DemoPace(typeChunk = 18, typeDelayMs = 22, thinkWords = 6, thinkDelayMs = 60, stepScale = 1.0)
 
         /** 12 characters (about 3 tokens) per 34 ms is some 88 tokens a second; 6 words (about 8 tokens) per 90 ms, 89. */
-        val Realistic = DemoPace(typeChunk = 12, typeDelayMs = 34, thinkWords = 6, thinkDelayMs = 90, stepScale = 5.0)
+        val Realistic = DemoPace(typeChunk = 12, typeDelayMs = 34, thinkWords = 6, thinkDelayMs = 90, stepScale = 10.0)
 
         fun enabled(cacheDir: File?): Boolean = cacheDir != null && File(cacheDir, MARKER).exists()
     }
