@@ -315,8 +315,8 @@ class AppGraph(
     /** Seeded when the demo is entered, so a launch into a real account never pays for the dataset. */
     private val perfSeeds = BuildConfig.DEBUG && com.cursorforandroid.data.demo.DemoPerfSeeds.enabled(app.cacheDir)
     private val demoParts = lazy {
-        val realistic = BuildConfig.DEBUG && com.cursorforandroid.data.demo.DemoPace.enabled(app.cacheDir)
-        DemoBackendFactory.create(perfSeeds = perfSeeds, pace = if (realistic) com.cursorforandroid.data.demo.DemoPace.Realistic else com.cursorforandroid.data.demo.DemoPace.Brisk)
+        val realistic = if (BuildConfig.DEBUG) com.cursorforandroid.data.demo.DemoPace.fromMarker(app.cacheDir) else null
+        DemoBackendFactory.create(perfSeeds = perfSeeds, pace = realistic ?: com.cursorforandroid.data.demo.DemoPace.Brisk)
     }
 
     init {

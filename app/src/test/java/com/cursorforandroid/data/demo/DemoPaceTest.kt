@@ -7,6 +7,8 @@ import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.currentTime
 import kotlinx.coroutines.test.runTest
 import org.junit.Test
+import java.io.File
+import java.nio.file.Files
 
 /** The realistic pace plays a scripted run the way a real model would, measured on the virtual clock. */
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -51,6 +53,19 @@ class DemoPaceTest {
         assertThat(subagents).isNotEmpty()
         assertThat(subagents.min()).isAtLeast(10_000L)
         assertThat(events.last().atMs).isAtLeast(60_000L)
+    }
+
+    @Test
+    fun `the marker picks the realistic pace and can only slow its steps`() {
+        val dir = Files.createTempDirectory("pace").toFile()
+        assertThat(DemoPace.fromMarker(dir)).isNull()
+        val marker = File(dir, DemoPace.MARKER).apply { writeText("") }
+        assertThat(DemoPace.fromMarker(dir)).isEqualTo(DemoPace.Realistic)
+        marker.writeText("40\n")
+        assertThat(DemoPace.fromMarker(dir)).isEqualTo(DemoPace.Realistic.copy(stepScale = 40.0))
+        marker.writeText("1")
+        assertThat(DemoPace.fromMarker(dir)).isEqualTo(DemoPace.Realistic)
+        dir.deleteRecursively()
     }
 
     @Test
