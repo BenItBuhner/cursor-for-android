@@ -122,6 +122,7 @@ import com.cursorforandroid.data.repo.RefreshDepth
 import com.cursorforandroid.data.repo.RemoteRepository
 import com.cursorforandroid.data.repo.ReviewRepository
 import com.cursorforandroid.data.repo.RunMonitor
+import com.cursorforandroid.data.repo.SpotlightFeed
 import com.cursorforandroid.data.repo.SessionManager
 import com.cursorforandroid.data.repo.SessionState
 import com.cursorforandroid.data.repo.McpConnectorRepository
@@ -160,6 +161,7 @@ import com.cursorforandroid.domain.WorkerMembership
 import com.cursorforandroid.domain.WorkerSpawnKind
 import com.cursorforandroid.domain.WorkspaceTree
 import com.cursorforandroid.notifications.LiveNotifications
+import com.cursorforandroid.notifications.SpotlightController
 import com.cursorforandroid.share.ShareInbox
 import com.cursorforandroid.ui.components.ComposerMediaPreviews
 import com.cursorforandroid.ui.conversation.AttachmentImages
@@ -938,6 +940,12 @@ class AppGraph(
     }
     val runMonitor: RunMonitor get() = lazyRunMonitor.value
 
+    /** The one chat or Project in the Spotlight. Plain state, cheap enough to build eagerly: menus read it on every row. */
+    val spotlight = SpotlightController()
+
+    private val lazySpotlightFeed = lazy { SpotlightFeed(agents, liveRuns) }
+    val spotlightFeed: SpotlightFeed get() = lazySpotlightFeed.value
+
     /**
      * The GitHub releases of [BuildConfig.GITHUB_REPO], read anonymously: one client for the updater and the What's
      * new notes, so the rate limit GitHub answers one of them with is remembered for both.
@@ -1029,6 +1037,7 @@ class AppGraph(
             // reset and is left unbuilt. The wipes further down are the opposite case: what an earlier process
             // wrote is on disk whether or not this one ever looked at it, so those are forced.
             if (lazyRunMonitor.isInitialized()) runMonitor.stop()
+            spotlight.stop()
             if (lazyLiveRuns.isInitialized()) liveRuns.resetAll()
             if (lazyConversations.isInitialized()) conversations.resetAll()
             if (lazyFollowUps.isInitialized()) followUps.resetAll()
@@ -1163,6 +1172,7 @@ class AppGraph(
             "storeFiles" to lazyStoreFiles,
             "media" to lazyMedia,
             "runMonitor" to lazyRunMonitor,
+            "spotlightFeed" to lazySpotlightFeed,
             "releases" to lazyReleases,
             "updates" to lazyUpdates,
             "whatsNew" to lazyWhatsNew,

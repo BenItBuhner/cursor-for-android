@@ -144,8 +144,9 @@ class LiveNotificationService : Service() {
         }
         monitor.start()
         watching.launch {
-            combine(monitor.state, graph.prefs.liveNotifications, graph.prefs.localAgentState) { state, enabled, local ->
-                Triple(audible(state, local.quietIds(AppClock.now())), enabled, local)
+            // A chat in the Spotlight has a card of its own, so the roster leaves it out as it does a snoozed one.
+            combine(monitor.state, graph.prefs.liveNotifications, graph.prefs.localAgentState, graph.spotlight.covered) { state, enabled, local, spotlit ->
+                Triple(audible(state, local.quietIds(AppClock.now()) + spotlit), enabled, local)
             }
                 .collect { (state, enabled, _) ->
                     when {

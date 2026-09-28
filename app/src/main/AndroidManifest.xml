@@ -178,6 +178,12 @@
             android:exported="false"
             android:foregroundServiceType="dataSync" />
 
+        <!-- Follows the one chat or Project in the Spotlight and owns its notification while it runs. -->
+        <service
+            android:name=".notifications.SpotlightService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
+
         <!-- The live notification's safety net: while the service is gone (killed, timed out, or the phone rebooted),
              a persisted job reads the running agents' run records and posts the "Finished" cards. -->
         <service

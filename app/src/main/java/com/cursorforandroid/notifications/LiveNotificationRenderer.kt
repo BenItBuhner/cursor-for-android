@@ -231,7 +231,7 @@ object LiveNotificationRenderer {
     }
 
     /** Reuses the app's `https://cursor.com/agents/<id>` deep link so the conversation opens directly. */
-    private fun openAgent(context: Context, agentId: String): PendingIntent {
+    internal fun openAgent(context: Context, agentId: String): PendingIntent {
         val intent = Intent(Intent.ACTION_VIEW, CursorEndpoints.webUrl(agentId).toUri(), context, MainActivity::class.java)
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         return PendingIntent.getActivity(context, requestCode("agent", agentId), intent, flags())
