@@ -253,31 +253,8 @@ class RunMonitor(
         _finished.tryEmit(run)
     }
 
-    private fun toTracked(agent: Agent, snapshot: LiveRunHub.Snapshot): TrackedRun {
-        val result = snapshot.result
-        val phase = when {
-            snapshot.finished -> LivePhase.Finished
-            agent.id in stopping -> LivePhase.Stopping
-            snapshot.eventCount == 0 -> LivePhase.Starting
-            else -> LivePhase.Running
-        }
-        val branches = result?.git.toBranches().ifEmpty { agent.branches }
-        return TrackedRun(
-            agentId = agent.id,
-            runId = snapshot.runId,
-            title = agent.name,
-            status = snapshot.status,
-            phase = phase,
-            startedAtMillis = snapshot.startedAtMillis,
-            digest = RunDigest.from(snapshot.items),
-            durationMs = result?.durationMs ?: if (snapshot.finished) (snapshot.finishedAtMillis ?: nowProvider()) - snapshot.startedAtMillis else null,
-            branch = branches.firstOrNull { it.branch != null }?.branch,
-            prUrl = branches.firstOrNull { it.prUrl != null }?.prUrl,
-            summary = result?.text?.takeIf { it.isNotBlank() }
-                ?: snapshot.items.lastOrNull { it is AssistantMessage && it.markdown.isNotBlank() }?.let { (it as AssistantMessage).markdown },
-            finishedAtMillis = snapshot.finishedAtMillis,
-        )
-    }
+    private fun toTracked(agent: Agent, snapshot: LiveRunHub.Snapshot): TrackedRun =
+        trackedRun(agent, snapshot, stopping = agent.id in stopping, now = nowProvider())
 
     private fun TrackedRun.withAgent(agent: Agent) = copy(
         title = agent.name,
@@ -305,4 +282,31 @@ class RunMonitor(
         /** Far more finishes than a session sees, and small enough that the ids cost nothing to hold. */
         private const val MAX_REMEMBERED_FINISHES = 256
     }
+}
+
+/** [agent]'s run as a notification shows it, from its latest [snapshot]: shared by the live roster and the Spotlight. */
+internal fun trackedRun(agent: Agent, snapshot: LiveRunHub.Snapshot, stopping: Boolean, now: Long): TrackedRun {
+    val result = snapshot.result
+    val phase = when {
+        snapshot.finished -> LivePhase.Finished
+        stopping -> LivePhase.Stopping
+        snapshot.eventCount == 0 -> LivePhase.Starting
+        else -> LivePhase.Running
+    }
+    val branches = result?.git.toBranches().ifEmpty { agent.branches }
+    return TrackedRun(
+        agentId = agent.id,
+        runId = snapshot.runId,
+        title = agent.name,
+        status = snapshot.status,
+        phase = phase,
+        startedAtMillis = snapshot.startedAtMillis,
+        digest = RunDigest.from(snapshot.items),
+        durationMs = result?.durationMs ?: if (snapshot.finished) (snapshot.finishedAtMillis ?: now) - snapshot.startedAtMillis else null,
+        branch = branches.firstOrNull { it.branch != null }?.branch,
+        prUrl = branches.firstOrNull { it.prUrl != null }?.prUrl,
+        summary = result?.text?.takeIf { it.isNotBlank() }
+            ?: snapshot.items.lastOrNull { it is AssistantMessage && it.markdown.isNotBlank() }?.let { (it as AssistantMessage).markdown },
+        finishedAtMillis = snapshot.finishedAtMillis,
+    )
 }
