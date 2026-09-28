@@ -15,7 +15,7 @@ serialization = "1.7.3"
 coroutines = "1.10.2"
 browser = "1.8.0"
 # Coil 3.3.0 is the last line built against Kotlin 2.2 / lifecycle 2.8 (3.4+ pulls Kotlin 2.3 and lifecycle 2.9).
-coil = "3.3.0"
+coil = "3.6.3"
 media3 = "1.11.0"
 # Home-screen widgets. 1.2.0 compiles against Compose runtime 1.7 and needs nothing newer than lifecycle 2.8.
 glance = "1.2.0"
