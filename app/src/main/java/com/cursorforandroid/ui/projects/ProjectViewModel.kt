@@ -96,10 +96,7 @@ class ProjectViewModel(private val graph: AppGraph, val projectId: String) : Vie
     fun pause() = graph.projects.detach(projectId)
 
     /** By hand: the list (for the primaries' status) and the account's memberships, whatever the poll's schedule says. */
-    fun refresh() = viewModelScope.launch {
-        graph.agents.refreshIfStale(0L)
-        graph.projects.refreshView(projectId)
-    }
+    fun refresh() = viewModelScope.launch { graph.projects.refreshView(projectId, withList = true) }
 
     fun clearToast() { message.value = null }
 

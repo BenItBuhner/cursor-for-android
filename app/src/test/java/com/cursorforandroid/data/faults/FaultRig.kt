@@ -112,6 +112,8 @@ class FaultRig(
     quietRetryDelaysMs: List<Long> = listOf(2_000L, 5_000L, 15_000L, 30_000L),
     /** How long a run stream that said the run ended may go on without its `result` before the run is finished on its word (production: 15 s). */
     terminalGraceMs: Long = 15_000L,
+    /** How often an open Project's view polls its memberships and the list (production: 20 s; see `ProjectRepository.attach`). */
+    projectPollMs: Long = 60_000L,
 ) : AutoCloseable {
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     var now: Long = 1_800_000_000_000L
@@ -232,7 +234,7 @@ class FaultRig(
         override suspend fun scanRoots(maxPages: Int, stopBelowActivityMillis: Long?, firstPage: AccountList?): RootScan =
             accountAgents.scanRoots(maxPages, stopBelowActivityMillis, firstPage)
     }
-    val projects: ProjectRepository = ProjectRepository(session, agents, lineageApi, actions = projectApi, store = projectApi, scope = scope, pollIntervalMs = 60_000, capabilities = { capabilities }, retryDelaysMs = listOf(500L, 500L, 500L)).also { it.watchList() }
+    val projects: ProjectRepository = ProjectRepository(session, agents, lineageApi, actions = projectApi, store = projectApi, scope = scope, pollIntervalMs = projectPollMs, capabilities = { capabilities }, retryDelaysMs = listOf(500L, 500L, 500L)).also { it.watchList() }
     val pins: PinRepository = PinRepository(
         session, prefs, agents, accountAgents, scope = scope, capabilities = { capabilities }, retryDelaysMs = listOf(500L, 1_000L, 2_000L), pending = pending,
         onList = { list, token ->

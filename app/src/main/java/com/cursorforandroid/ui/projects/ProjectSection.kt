@@ -288,7 +288,7 @@ private fun LazyListScope.contextItems(projectId: String, context: ContextState,
 private fun SectionLabel(text: String, syncing: Boolean = false) {
     Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, top = 10.dp, bottom = 2.dp), verticalAlignment = Alignment.CenterVertically) {
         GroupLabel(text, Modifier.weight(1f))
-        if (syncing) SpinnerRing(size = 11.dp)
+        if (syncing) SpinnerRing(size = 11.dp, modifier = Modifier.testTag("project-syncing"))
     }
 }
 

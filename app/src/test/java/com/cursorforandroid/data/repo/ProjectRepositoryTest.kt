@@ -34,12 +34,14 @@ import com.cursorforandroid.domain.WorkerMembership
 import com.cursorforandroid.domain.WorkerSpawnKind
 import com.cursorforandroid.util.AppClock
 import com.google.common.truth.Truth.assertThat
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.Json
@@ -73,11 +75,14 @@ class ProjectRepositoryTest {
         var children: Map<String, List<ComposerSnapshot>> = emptyMap()
         @Volatile var failing: Throwable? = null
         @Volatile var sideChatFailure: Throwable? = null
+        /** While set, the workers read waits on it: a read held open for a test to look at the view meanwhile. */
+        @Volatile var gate: CompletableDeferred<Unit>? = null
         var storeId: String? = "st-1"
         var entries: Map<String, List<ContextEntry>> = mapOf("" to listOf(ContextEntry("notes.md", isDirectory = false, sizeBytes = 12L), ContextEntry("docs", isDirectory = true)))
 
         override suspend fun workersForManager(managerId: String): List<WorkerMembership> {
             calls += "workers:$managerId"
+            gate?.await()
             failing?.let { throw it }
             return workers[managerId].orEmpty()
         }
@@ -240,6 +245,53 @@ class ProjectRepositoryTest {
         lineage.calls.clear()
         projects.syncLineage(listOf("bc-p", "bc-q"), force = true)
         assertThat(lineage.calls.filter { it.startsWith("workers:") }).containsExactly("workers:bc-p", "workers:bc-q")
+    }
+
+    /**
+     * The Primaries spinner: the view says it is syncing for the Project's first read and for a read asked for by
+     * hand, never for a round that runs on its own (the poll, the list's), which refreshes the view silently.
+     */
+    @Test
+    fun `the view is syncing for the first read and a read by hand, not for a round of its own`() = runBlocking<Unit> {
+        extended = true
+        api.addIdleAgent("bc-p", "One", "run-p")
+        api.addIdleAgent("bc-w", "Worker", "run-w")
+        val agents = agents()
+        agents.refresh()
+        agents.applyAccountSnapshots(listOf(ComposerSnapshot("bc-p", isProject = true, activityAtMillis = 1_000L)))
+        lineage.workers = mapOf("bc-p" to listOf(WorkerMembership("bc-w", "bc-p")))
+        val projects = projects(agents)
+        val shown = CopyOnWriteArrayList<Boolean>()
+        val watch = scope.launch { projects.view("bc-p").collect { shown += it.isSyncing } }
+
+        /** Runs [read] with its workers read held open; whether the view said it was syncing meanwhile. */
+        suspend fun syncingWhile(read: suspend () -> Unit): Boolean {
+            val gate = CompletableDeferred<Unit>()
+            lineage.gate = gate
+            val before = lineage.calls.count { it == "workers:bc-p" }
+            val job = scope.launch { read() }
+            awaitUntil { lineage.calls.count { it == "workers:bc-p" } > before }
+            delay(50)
+            val syncing = projects.view("bc-p").first().isSyncing
+            lineage.gate = null
+            gate.complete(Unit)
+            job.join()
+            return syncing
+        }
+
+        assertThat(syncingWhile { projects.syncLineage(listOf("bc-p")) }).isTrue()
+        assertThat(projects.view("bc-p").first().let { it.hasSynced && !it.isSyncing }).isTrue()
+
+        // The coordinator's record moved: the next round reads the memberships again, and the view says nothing of it.
+        agents.applyAccountSnapshots(listOf(ComposerSnapshot("bc-p", isProject = true, activityAtMillis = 2_000L)))
+        delay(50)
+        shown.clear()
+        assertThat(syncingWhile { projects.syncLineage(listOf("bc-p")) }).isFalse()
+        assertThat(shown).doesNotContain(true)
+
+        assertThat(syncingWhile { projects.refreshView("bc-p") }).isTrue()
+        assertThat(projects.view("bc-p").first().isSyncing).isFalse()
+        watch.cancel()
     }
 
     @Test

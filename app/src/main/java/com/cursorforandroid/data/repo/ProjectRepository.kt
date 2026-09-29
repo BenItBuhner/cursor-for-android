@@ -88,7 +88,10 @@ data class ProjectViewState(
     val workers: List<ProjectWorker> = emptyList(),
     val sideChats: List<Agent> = emptyList(),
     val subagents: List<Agent> = emptyList(),
-    /** The account's memberships are being read. */
+    /**
+     * The view is waiting on the account's memberships: their first read, or a read asked for by hand
+     * ([ProjectRepository.refreshView]). The poll's and the list's own rounds refresh the view without saying so.
+     */
     val isSyncing: Boolean = false,
     /** True once the account has been asked at least once this session (or it is not going to be: default mode, demo). */
     val hasSynced: Boolean = false,
@@ -177,6 +180,8 @@ class ProjectRepository(
         val lastSync: LineageSyncRecord? = null,
         /** The root's record as it was when its memberships were last read (see [syncLineage]); null before a read. */
         val syncedRecordStamp: Long? = null,
+        /** Reads asked for by hand still under way (see [refreshView]). */
+        val readsByHand: Int = 0,
     )
 
     private val _syncingLineage = MutableStateFlow(false)
@@ -635,7 +640,7 @@ class ProjectRepository(
                 extra.memberships.values.filter { it.workerId !in listedWorkerIds }.map { ProjectWorker(placeholderWorker(it), it) },
             sideChats = members.filter { it.parent?.kind == AgentParentKind.SIDE_CHAT },
             subagents = members.filter { it.parent?.kind == AgentParentKind.SUBAGENT },
-            isSyncing = extra.isSyncing,
+            isSyncing = extra.readsByHand > 0 || (extra.isSyncing && !extra.hasSynced),
             hasSynced = extra.hasSynced,
             lineageNotice = extra.lineageNotice,
             context = extra.context,
@@ -703,9 +708,19 @@ class ProjectRepository(
         pollers.remove(projectId)?.cancel()
     }
 
-    /** One read of what the Project's view shows beyond the list: the account's memberships, when they may be read. */
-    suspend fun refreshView(projectId: String) {
-        readView(projectId, force = true)
+    /**
+     * One read by hand of what the Project's view shows beyond the list — the account's memberships, when they may be
+     * read, after the list itself when [withList] — with the view syncing until it is over.
+     */
+    suspend fun refreshView(projectId: String, withList: Boolean = false) {
+        val flow = extrasOf(projectId)
+        flow.update { it.copy(readsByHand = it.readsByHand + 1) }
+        try {
+            if (withList) agents.refreshIfStale(0L)
+            readView(projectId, force = true)
+        } finally {
+            flow.update { it.copy(readsByHand = it.readsByHand - 1) }
+        }
     }
 
     /**
