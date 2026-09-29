@@ -18,13 +18,17 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.LifecycleStartEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -58,6 +62,7 @@ import com.cursorforandroid.ui.home.HomeScreen
 import com.cursorforandroid.ui.media.MediaViewerHost
 import com.cursorforandroid.ui.media.rememberMediaViewerState
 import com.cursorforandroid.ui.settings.ExtendedModeUpgradeNotice
+import com.cursorforandroid.ui.panel.LocalHinge
 import com.cursorforandroid.ui.projects.ProjectEditorHost
 import com.cursorforandroid.ui.projects.ProjectEditorTarget
 import com.cursorforandroid.ui.settings.KeyboardShortcutsScreen
@@ -196,7 +201,19 @@ private fun AppShell(
     val mediaViewer = rememberMediaViewerState()
     val focusManager = LocalFocusManager.current
     // How the wide window shares its width between the rail, the chat and a panel pinned beside it (see ShellPanes).
-    val panes = remember { ShellPanes(graph.prefs, scope, railExpanded = { !sidebarCollapsed }, chatOnTop = { stack.top.screen is Screen.Agent }) }
+    // A fold splitting the window is read where the panes are worked out, so a change to it recomposes only what moves.
+    val windowHinge by rememberUpdatedState(LocalHinge.current)
+    val rtl by rememberUpdatedState(LocalLayoutDirection.current == LayoutDirection.Rtl)
+    val panes = remember {
+        ShellPanes(
+            graph.prefs,
+            scope,
+            railExpanded = { !sidebarCollapsed },
+            chatOnTop = { stack.top.screen is Screen.Agent },
+            hinge = { windowHinge?.value },
+            rtl = { rtl },
+        )
+    }
     // A fold, an unfold or a turn lays the whole window out again in one frame, so the rail is where the new window has
     // it in that frame: a rail still sliding once the window has changed would drag the chat and a pinned panel
     // through widths of their own after it. That includes making way for the chat's sheet, pinned open as the window

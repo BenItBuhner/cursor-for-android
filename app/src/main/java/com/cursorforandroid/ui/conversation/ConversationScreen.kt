@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -38,6 +39,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.Stable
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
@@ -182,7 +184,50 @@ internal fun rememberCaptionFadeIn(shown: Boolean): Animatable<Float, AnimationV
     return fade
 }
 
+/**
+ * What takes the working caption's place as it goes — a reply's first thought, its first call, its text — waits out
+ * of sight until the caption has faded out where it stood, then fades in there itself. The list fades a removed row
+ * out at its last place while the rows after it are already laid out in that place, so otherwise the two are drawn
+ * over each other for the whole fade. [keys] are the rows that landed under the caption on the frame it went.
+ */
+@Stable
+internal class CaptionHandoff(private val keys: Set<String>) {
+    private val fade = Animatable(if (keys.isEmpty()) 1f else 0f)
+    private var holding by mutableStateOf(keys.isNotEmpty())
+
+    /** [key]'s row at the hand-off's fade while it lasts; else as it is. */
+    fun hold(key: String): Modifier = if (holding && key in keys) Modifier.graphicsLayer { alpha = fade.value } else Modifier
+
+    suspend fun run() {
+        if (!holding) return
+        fade.animateTo(1f, tween(CaptionFadeMillis, delayMillis = CaptionFadeMillis + CaptionHandoffGapMillis))
+        holding = false
+    }
+}
+
+/** Where the caption stood: whether it was shown, under which row. Written as the screen is composed. */
+private class CaptionSpot {
+    var shown = false
+    var under: String? = null
+}
+
+/** The hand-off from the caption to the rows that land under it as it goes (see [CaptionHandoff]); none while it stays. */
+@Composable
+internal fun rememberCaptionHandoff(shown: Boolean, rows: List<TranscriptRow>): CaptionHandoff {
+    val spot = remember { CaptionSpot() }
+    val handoff = remember(shown) {
+        val under = rows.indexOfLast { it.key == spot.under }.takeIf { !shown && spot.shown && spot.under != null && it >= 0 }
+        CaptionHandoff(if (under == null) emptySet() else rows.subList(under + 1, rows.size).mapTo(HashSet()) { it.key })
+    }
+    spot.shown = shown
+    if (shown) spot.under = rows.lastOrNull()?.key
+    LaunchedEffect(handoff) { handoff.run() }
+    return handoff
+}
+
 internal const val CaptionFadeMillis = 220
+/** The caption's fade out runs on the list's own clock, begun as the list measures, a frame or so off the hand-off's. */
+private const val CaptionHandoffGapMillis = 32
 internal const val WORKING_CAPTION_TAG = "working-caption"
 
 /**
@@ -233,6 +278,7 @@ fun ConversationScreen(
     val fileUploads by viewModel.fileUploads.collectAsStateWithLifecycle()
     val uploadHint by viewModel.uploadHint.collectAsStateWithLifecycle()
     val deviceQueue by viewModel.queue.collectAsStateWithLifecycle()
+    val refusedQueuedId by viewModel.refusedQueuedId.collectAsStateWithLifecycle()
     // The stack opens or closes on the tap, the device's record of the choice following (and seeding it again when it changes).
     val queueStacked by viewModel.queueStacked.collectAsStateWithLifecycle()
     var queueStackedHere by remember(queueStacked) { mutableStateOf(queueStacked) }
@@ -336,17 +382,6 @@ fun ConversationScreen(
     val following = transcriptScroll.following
     // The order the list was last measured in, which is what its scroll bounds are in: the fades read the two together.
     val listReversed by remember(listState) { derivedStateOf { listState.layoutInfo.reverseLayout } }
-    // The chat opens on its newest turns; the ones before them are paged in when the reader scrolls up to them:
-    // nearing the top is having only a few items above the top-most one in view — and only the reader's scroll asks:
-    // a gesture arms one page, a fling under way keeps asking as its rows come into reach, and a transcript short
-    // enough to show its oldest row at rest asks for nothing until the reader moves it. Until 0.3.47 the list asked
-    // whenever its end was in view: a coordinator's turns fold into a few rows, so a Project of 240 turns paged itself
-    // in whole, page after page, every turn's log replayed behind it, and again on every reopen (Bennett,
-    // 2026-09-20). "Older messages" stays a tap away at rest (the paging itself is asked for by transcriptList).
-    var olderArmed by remember(agentId) { mutableStateOf(false) }
-    LaunchedEffect(listState) {
-        snapshotFlow { listState.isScrollInProgress }.collect { scrolling -> if (scrolling) olderArmed = true }
-    }
 
     // The right-side panel: the chat's files, changes, pull request, media, artifacts and usage, read off the same
     // repositories as the transcript plus the documented reads only it needs. Opened by the header button or a drag
@@ -531,6 +566,7 @@ fun ConversationScreen(
                 val loadingRow = conversation.isLoading && items.isEmpty()
                 val emptyRow = !conversation.isLoading && items.isEmpty()
                 val captionIn = rememberCaptionFadeIn(showWorking)
+                val captionHandoff = rememberCaptionHandoff(showWorking, listedRows)
                 // Everything the list holds, top to bottom: the rows between the items above them and the working caption below.
                 val order = remember(listedRows, showWorking, showTraces, hasOlder, loadingRow, emptyRow) {
                     TranscriptOrder(
@@ -551,17 +587,10 @@ fun ConversationScreen(
                     snapshotFlow { transcriptScroll.isJumping }.first { !it }
                     if (transcriptScroll.following) listState.requestScrollToItem(0)
                 }
-                // The reader's scroll nearing the top pages the turns before the window in (see olderArmed).
-                LaunchedEffect(listState, hasOlder, isLoadingOlder) {
-                    if (!hasOlder || isLoadingOlder) return@LaunchedEffect
-                    snapshotFlow { listState.layoutInfo.let { info -> TranscriptScroll.itemsAbove(info) to info.totalItemsCount } }
-                        .collect { (above, total) ->
-                            if ((olderArmed || listState.isScrollInProgress) && total > 0 && above < OlderTurnsPrefetchRows) {
-                                olderArmed = false
-                                viewModel.loadOlder()
-                            }
-                        }
-                }
+                // The chat opens on its newest turns; the ones before them are paged in by what the list draws — until a
+                // reply is shown and a screen and a half lies above the viewport, at rest as the chat opens and ahead of
+                // the reader's scroll up (see OlderPaging). "Older messages" is only the fallback of a page that did not come.
+                OlderPagingEffect(agentId, listState, listedRows, canPage = hasOlder && !isLoadingOlder && items.isNotEmpty(), loadOlder = viewModel::loadOlder)
                 TranscriptHitScroll(agentId, rows, conversation, transcriptScroll, viewModel)
                 val subagents = presentedTranscript.subagents
                 val subagentRuns = conversation.subagentRuns
@@ -605,8 +634,9 @@ fun ConversationScreen(
                             // A dropped connection is not the run's problem: the agent keeps working while the stream
                             // is re-established, so the caption keeps shimmering and only its wording says what is
                             // going on, rolling from one wording to the next as a subagent's line does. The caption is
-                            // the whole indicator, as in the web chat: no glyph beside it.
-                            Box(itemModifier.then(paneWidth)) {
+                            // the whole indicator, as in the web chat: no glyph beside it. It stands in a thinking
+                            // line's place, as tall and its words as high, so the line that takes over comes in there.
+                            Box(itemModifier.then(paneWidth).heightIn(min = DisclosureRowHeight), contentAlignment = Alignment.CenterStart) {
                                 RollingText(conversation.workingCaption(), style = type.base, label = "working-caption", modifier = Modifier.testTag(WORKING_CAPTION_TAG))
                             }
                         }
@@ -615,8 +645,8 @@ fun ConversationScreen(
                         // this time (with a Retry). Above the oldest turn shown, where the missing activity would be
                         // noticed; nothing when every turn is whole.
                         TRACES_KEY -> TraceStatusRow(conversation.traceStatus, onRetry = viewModel::retryTraces, modifier = paneWidth)
-                        // Past the oldest turn shown: the turns before it, being paged in, or a tap away when the
-                        // reader's scroll did not reach far enough to ask for them.
+                        // Past the oldest turn shown: the turns before it, being paged in, or a tap away when a page
+                        // did not come.
                         OLDER_KEY -> OlderTurnsRow(isLoading = isLoadingOlder, onLoad = viewModel::loadOlder, modifier = paneWidth)
                         EMPTY_KEY -> {
                             val failure = conversation.error ?: conversation.transcriptError?.let { "Couldn't load the transcript: $it" }
@@ -686,7 +716,7 @@ fun ConversationScreen(
                         before.forEach(::edge)
                         // Without a content type the lazy layout offers a scrolled-off user bubble's slot to an activity
                         // group, whose subtree shares nothing with it: the reuse always fails and costs more than it saves.
-                        items(if (following) listedRows.asReversed() else listedRows, key = { it.key }, contentType = ::transcriptContentType) { row -> TranscriptRowView(row, paneWidth.then(rowMotion(row, openStretches))) }
+                        items(if (following) listedRows.asReversed() else listedRows, key = { it.key }, contentType = ::transcriptContentType) { row -> TranscriptRowView(row, paneWidth.then(rowMotion(row, openStretches)).then(captionHandoff.hold(row.key))) }
                         after.forEach(::edge)
                     }
                     SideEffect { transcriptScroll.orient(following, order) }
@@ -824,16 +854,18 @@ fun ConversationScreen(
                             position = index + 1,
                             count = queue.size,
                             thumbnails = thumbnails,
-                            onEdit = { queueFlights.dismiss(it.id); viewModel.editQueued(it.id) },
+                            // A message on its way refuses all three (its card says why) and keeps its flight: the
+                            // run may yet take it, and its row then lifts off into the bubble like any delivered one.
+                            onEdit = { if (viewModel.editQueued(it.id)) queueFlights.dismiss(it.id) else haptics.perform(Haptic.Reject) },
                             // The up arrow steers into the turn under way, which carries on; with none, the message goes next.
                             onSteer = { item ->
-                                haptics.perform(Haptic.Confirm)
-                                viewModel.steerQueued(item.id, turnUnderWay = isActive)
+                                haptics.perform(if (viewModel.steerQueued(item.id, turnUnderWay = isActive)) Haptic.Confirm else Haptic.Reject)
                             },
-                            onRemove = { queueFlights.dismiss(it.id); viewModel.removeQueued(it.id) },
+                            onRemove = { if (viewModel.removeQueued(it.id)) queueFlights.dismiss(it.id) else haptics.perform(Haptic.Reject) },
                             flights = queueFlights,
                             face = face,
                             steers = isActive,
+                            refused = refusedQueuedId == queue[index].id,
                         )
                     } else {
                         val at = index - queue.size
@@ -1006,13 +1038,6 @@ private val TranscriptGutter = 16.dp
 private val JumpButtonGap = 10.dp
 
 /**
- * How many rows from the oldest one shown the reader may be before the turns before it are asked for: about a
- * screen's worth, so a page is on its way while the reader is still reading the one above it rather than when they
- * have reached its end (the insert above them costs nothing to what they are looking at; see [TranscriptPresenter]).
- */
-private const val OlderTurnsPrefetchRows = 6
-
-/**
  * A load that did not go through: the server's words, Retry, and "Share diagnostics" — the redacted load block
  * (window bounds, runs and their order, each turn's trace state, the live follow, the last errors) handed to the
  * share sheet, so a chat that would not load can be reported from where it failed. A card over the composer
@@ -1103,8 +1128,8 @@ internal fun TraceStatusRow(status: TraceStatus, onRetry: () -> Unit, modifier: 
 
 /**
  * The row past the oldest turn shown, while the chat has older ones: "Loading older…" while they are being paged in
- * (their run records fetched, their traces read or replayed), else a line that asks for them — for a reader whose
- * scroll stopped just short of where the list asks by itself.
+ * (their run records fetched, their traces read or replayed), else a line that asks for them — only when a page did
+ * not come, or the list stopped asking at rest (see [OlderPaging]).
  */
 @Composable
 internal fun OlderTurnsRow(isLoading: Boolean, onLoad: () -> Unit, modifier: Modifier = Modifier) {

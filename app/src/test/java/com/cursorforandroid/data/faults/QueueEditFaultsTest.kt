@@ -14,8 +14,9 @@ import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
 
 /**
- * A queued message taken back to edit while the composer holds a draft, over the app's real HTTP stack against
- * [FaultServer]: the draft that takes its place in line goes out, once, on a phone's 300–900 ms round trips.
+ * A refused queued message taken back to edit while the composer holds a draft, or removed with another behind it,
+ * over the app's real HTTP stack against [FaultServer]: what is left in line goes out, once, on a phone's 300–900 ms
+ * round trips.
  */
 @RunWith(AndroidJUnit4::class)
 @Config(sdk = [35])
@@ -60,5 +61,20 @@ class QueueEditFaultsTest {
         assertThat(server.sent.map { it.first }).containsExactly("Also bump the version")
         assertThat(server.requests(Route.CreateRun)).hasSize(2)
         assertThat(rig.followUps.state("bc-1").value.draft.text).isEqualTo("Now the tests")
+    }
+
+    @Test
+    fun `a refused head removed with a message queued behind it while it was out - that message is filed once`() = runBlocking<Unit> {
+        open()
+        server.script(Route.CreateRun, Fault.Status(503, "unavailable", "Cursor is briefly unavailable. Try again."))
+        val head = rig.followUps.enqueue("bc-1", "Now the tests")
+        rig.followUps.enqueue("bc-1", "Also bump the version")
+        rig.awaitUntil { rig.followUps.state("bc-1").value.queue.firstOrNull()?.error != null }
+
+        rig.followUps.remove("bc-1", head.id)
+
+        rig.awaitUntil { rig.followUps.state("bc-1").value.queue.isEmpty() }
+        assertThat(server.sent.map { it.first }).containsExactly("Also bump the version")
+        assertThat(server.requests(Route.CreateRun)).hasSize(2)
     }
 }

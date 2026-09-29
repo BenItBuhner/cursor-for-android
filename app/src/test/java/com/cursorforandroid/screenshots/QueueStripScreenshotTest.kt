@@ -156,4 +156,48 @@ class QueueStripScreenshotTest {
         capture("65_composer_device_queue_strip")
         AppClock.nowMillis = System::currentTimeMillis
     }
+
+    /**
+     * A held card whose retry is on the wire, a tap on one of its glyphs just refused: the glyphs dimmed, and the
+     * wait's line saying why in its place — on the card, the card no taller, nothing at the foot of the screen.
+     */
+    @OptIn(ExperimentalMaterial3Api::class)
+    @Test
+    fun heldCardRefusedTap() {
+        AppClock.nowMillis = { now }
+        val held = QueuedFollowUp("q-held", "Now run the tests", queuedAtMillis = 1_000L, heldSinceMillis = now - 12_000L, busyRefusals = 1, isSending = true)
+        compose.setContent {
+            CursorTheme(mode = ThemeMode.Dark) {
+                CompositionLocalProvider(LocalRippleConfiguration provides null) {
+                    Column(
+                        Modifier.fillMaxSize().background(CursorTheme.colors.canvas).padding(horizontal = 12.dp).padding(bottom = 10.dp),
+                        verticalArrangement = Arrangement.Bottom,
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                    ) {
+                        QueuedFollowUps(
+                            queue = listOf(held, QueuedFollowUp("q-next", "Then add a test for the light theme", queuedAtMillis = 2_000L)),
+                            thumbnails = emptyMap(),
+                            onEdit = {},
+                            onSteer = {},
+                            onRemove = {},
+                            refusedId = held.id,
+                            modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp),
+                        )
+                        ComposerBox(
+                            value = "",
+                            onValueChange = {},
+                            placeholder = "Follow up (sends when the turn ends)…",
+                            onSend = {},
+                            plusMenu = ComposerMenuActions(onPickMedia = {}),
+                            modelLabel = "Claude Fable 5.1",
+                            onModel = {},
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    }
+                }
+            }
+        }
+        capture("830_queue_held_card_refused_tap")
+        AppClock.nowMillis = System::currentTimeMillis
+    }
 }

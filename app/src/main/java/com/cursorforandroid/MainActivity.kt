@@ -16,10 +16,15 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.ProcessLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
+import androidx.window.layout.WindowInfoTracker
 import com.cursorforandroid.data.repo.LoginProgress
 import com.cursorforandroid.data.repo.SessionState
 import com.cursorforandroid.share.ShareIntent
 import com.cursorforandroid.ui.CursorRoot
+import com.cursorforandroid.ui.panel.Hinge
+import com.cursorforandroid.ui.panel.LocalHinge
+import com.cursorforandroid.ui.panel.WindowHinge
 import com.cursorforandroid.ui.shortcuts.KeyboardShortcuts
 import com.cursorforandroid.ui.shortcuts.LocalKeyboardShortcuts
 import com.cursorforandroid.ui.theme.AppNightMode
@@ -46,6 +51,9 @@ class MainActivity : ComponentActivity() {
      */
     private val shortcuts by lazy { KeyboardShortcuts(lifecycleScope) }
 
+    /** A fold splitting the window, as the platform last reported it ([followHinge]). */
+    internal val hinge = WindowHinge()
+
     override fun onCreate(savedInstanceState: Bundle?) {
         val splash = installSplashScreen()
         super.onCreate(savedInstanceState)
@@ -60,12 +68,13 @@ class MainActivity : ComponentActivity() {
         readRequests(intent)
         returnFromBrowserWhenLoginEnds(graph)
         followThemePreference(graph)
+        followHinge()
 
         setContent {
             val themeMode by graph.prefs.themeMode.collectAsStateWithLifecycle(initialValue = ThemeMode.System)
             val oledBlack by graph.prefs.oledBlack.collectAsStateWithLifecycle(initialValue = false)
             CursorTheme(mode = themeMode, oledBlack = oledBlack) {
-                CompositionLocalProvider(LocalKeyboardShortcuts provides shortcuts) {
+                CompositionLocalProvider(LocalKeyboardShortcuts provides shortcuts, LocalHinge provides hinge) {
                     CursorRoot(
                         graph = graph,
                         deepLinkAgentId = pendingAgentId,
@@ -148,6 +157,20 @@ class MainActivity : ComponentActivity() {
     private fun followThemePreference(graph: AppGraph) {
         lifecycleScope.launch {
             graph.prefs.themeMode.collect { AppNightMode.apply(this@MainActivity, it) }
+        }
+    }
+
+    /**
+     * Keeps [hinge] on the fold the window is laid across, in the window's own coordinates: it moves as the device opens
+     * or closes and as a freeform window is dragged over the fold. Followed while the activity is started.
+     */
+    private fun followHinge() {
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                WindowInfoTracker.getOrCreate(this@MainActivity).windowLayoutInfo(this@MainActivity).collect { info ->
+                    hinge.value = Hinge.of(info, resources.displayMetrics.density)
+                }
+            }
         }
     }
 

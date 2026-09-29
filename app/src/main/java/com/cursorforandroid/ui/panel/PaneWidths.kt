@@ -56,6 +56,11 @@ enum class PaneWidthClass(internal val key: String) {
  *
  * With the panel shut, the rail is as wide as asked, up to what leaves the chat its minimum; on the narrowest wide
  * windows that still leaves it at least [CursorDimens.sidebarWidth], the width it has always had there.
+ *
+ * Across a [Hinge] with room for the chat on either side of it, nothing stands across the fold: the rail fills the pane
+ * before the hinge and the chat the pane past it ([endPane]), and the panel opens as the pane past the hinge, the chat
+ * moving into the pane before it and the rail making way unless both fit there. Neither edge drags while the panes keep
+ * to the hinge.
  */
 @Immutable
 data class PaneWidths(
@@ -77,13 +82,21 @@ data class PaneWidths(
     val panelMax: Dp,
     /** Whether the panel, not yet dragged, shares with the chat, half and half, what the rail leaves of the window. */
     val splits: Boolean,
+    /** The pane past the hinge, from the hinge to the window's end, while the panes keep to a [Hinge]; null without one. */
+    val endPane: Dp? = null,
 ) {
     companion object {
         /** Whether a window of [window] has room for the panel at its narrowest beside the chat at its narrowest. */
         fun pinnable(window: Dp): Boolean = window - ChatMinWidth >= PinnedPanelMinWidth
 
-        /** [panelFraction]: the share of the window the panel was last dragged to; null until it has been. */
-        fun of(window: Dp, railExpanded: Boolean, railWidth: Dp, panelOpen: Boolean, panelFraction: Float?): PaneWidths {
+        /**
+         * [panelFraction]: the share of the window the panel was last dragged to; null until it has been. [hinge]: a fold
+         * splitting the window, measured from its start edge ([Hinge.fromStart]).
+         */
+        fun of(window: Dp, railExpanded: Boolean, railWidth: Dp, panelOpen: Boolean, panelFraction: Float?, hinge: Hinge? = null): PaneWidths {
+            if (hinge != null && hinge.start >= ChatMinWidth && window - hinge.end >= ChatMinWidth) {
+                return besideHinge(window, railExpanded, railWidth, panelOpen, start = hinge.start, end = hinge.end)
+            }
             val pinnable = pinnable(window)
             val panelMax = if (pinnable) window - ChatMinWidth else PinnedPanelMinWidth
             val asked = (window * (panelFraction ?: HalfWindow)).coerceIn(PinnedPanelMinWidth, panelMax)
@@ -108,6 +121,29 @@ data class PaneWidths(
                 panel = if (splits && railExpanded) (window - rail) / 2 else asked,
                 panelMax = panelMax,
                 splits = splits,
+            )
+        }
+
+        /**
+         * The panes of a window split by a hinge from [start] to [end]: the pane before it holds the rail, or the chat
+         * with the panel open; the pane past it holds the chat, or the panel. The panel spans the hinge too, so the chat
+         * beside it ends where the hinge begins, and the panel keeps its content to the pane past it.
+         */
+        private fun besideHinge(window: Dp, railExpanded: Boolean, railWidth: Dp, panelOpen: Boolean, start: Dp, end: Dp): PaneWidths {
+            val railRoom = if (panelOpen) start - ChatMinWidth else start
+            val railFits = railRoom >= RailMinWidth
+            val railMax = if (panelOpen) railRoom.coerceAtMost(RailMaxWidth) else start
+            return PaneWidths(
+                rail = if (panelOpen) railWidth.coerceIn(RailMinWidth, maxOf(railMax, RailMinWidth)) else start,
+                railShown = railExpanded && railFits,
+                railFits = railFits,
+                railMax = railMax,
+                pinnable = true,
+                panelShown = panelOpen,
+                panel = window - start,
+                panelMax = window - start,
+                splits = false,
+                endPane = window - end,
             )
         }
     }

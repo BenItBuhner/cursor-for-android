@@ -346,14 +346,28 @@ class FollowUpRepository(
         return item
     }
 
-    /** Takes a queued follow-up away. One in flight, or steered, stays until the server has answered. */
-    fun remove(agentId: String, id: String) {
+    /**
+     * Takes a queued follow-up away. False when nothing was taken: the message is gone, or [isOnItsWay] — its request
+     * is out, and the run it asks for cannot be called back, so it stays until the server has answered.
+     */
+    fun remove(agentId: String, id: String): Boolean {
         val e = entry(agentId)
-        synchronized(e) {
-            e.update { copy(queue = queue.filterNot { it.id == id && !it.isSending && !it.isSteered }) }
+        val removed = synchronized(e) {
+            if (e.state.value.queue.none { it.id == id && !it.isOnItsWay }) return@synchronized false
+            e.update { copy(queue = queue.filterNot { it.id == id }) }
+            true
         }
-        e.scheduleSave()
+        if (removed) e.scheduleSave()
+        return removed
     }
+
+    /**
+     * Whether queued follow-up [id] is on its way to the server — its request out (a held message's retry among them,
+     * though its card still reads as waiting), or steered — so it can be neither removed, edited nor sent again until
+     * the server has answered.
+     */
+    fun isOnItsWay(agentId: String, id: String): Boolean =
+        entry(agentId).state.value.queue.any { it.id == id && it.isOnItsWay }
 
     /**
      * Hands a queued follow-up back to the composer to be reworked: it leaves the queue with its model and mode, and

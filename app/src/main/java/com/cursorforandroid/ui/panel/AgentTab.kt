@@ -22,7 +22,6 @@ import androidx.compose.runtime.State
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
-import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
@@ -42,6 +41,7 @@ import com.cursorforandroid.ui.components.MarkdownMediaContext
 import com.cursorforandroid.ui.components.ShimmerText
 import com.cursorforandroid.ui.components.scrollEdgeFade
 import com.cursorforandroid.ui.conversation.LocalTranscriptControls
+import com.cursorforandroid.ui.conversation.OlderPagingEffect
 import com.cursorforandroid.ui.conversation.OlderTurnsRow
 import com.cursorforandroid.ui.conversation.PresentedTranscript
 import com.cursorforandroid.ui.conversation.TranscriptControls
@@ -54,7 +54,6 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.conflate
 import kotlinx.coroutines.flow.distinctUntilChanged
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.withContext
@@ -182,13 +181,8 @@ private fun AgentTranscript(graph: AppGraph, agentId: String, agent: Agent?, act
     }
     val listState = rememberLazyListState()
     val hasOlder = conversation.hasOlder && rows.isNotEmpty()
-    // Older turns are paged in only as the reader scrolls up to them, as the chat's own screen does; at rest they are a tap away.
-    LaunchedEffect(listState, hasOlder, conversation.isLoadingOlder) {
-        if (!hasOlder || conversation.isLoadingOlder) return@LaunchedEffect
-        snapshotFlow { listState.isScrollInProgress && listState.layoutInfo.let { info -> (info.visibleItemsInfo.lastOrNull()?.index ?: 0) >= info.totalItemsCount - OlderPrefetchRows } }
-            .first { it }
-        graph.conversations.loadOlder(agentId)
-    }
+    // Older turns are paged in by what the list draws, as the chat's own screen does (see OlderPaging).
+    OlderPagingEffect(agentId, listState, rows, canPage = hasOlder && !conversation.isLoadingOlder) { graph.conversations.loadOlder(agentId) }
     val working = conversation.runStatus?.isActive == true || conversation.isStreaming
     if (rows.isEmpty()) {
         val failure = conversation.error ?: conversation.transcriptError?.let { "Couldn't load the transcript: $it" }
@@ -251,6 +245,3 @@ private fun rememberLinkedAgents(agents: AgentRepository): LinkedAgents {
 
 /** The agent tab's second row, a line taller than a file's: the chat's name over where it stands. */
 private val AgentBarHeight = 48.dp
-
-/** How near the oldest row the reader's scroll asks for the turns before it. */
-private const val OlderPrefetchRows = 3

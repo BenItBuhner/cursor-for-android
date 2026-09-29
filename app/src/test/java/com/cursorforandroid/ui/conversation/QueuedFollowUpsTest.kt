@@ -1,14 +1,24 @@
 package com.cursorforandroid.ui.conversation
 
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.test.SemanticsMatcher
+import androidx.compose.ui.test.assert
+import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.assertCountEquals
+import androidx.compose.ui.test.assertTextEquals
+import androidx.compose.ui.test.getBoundsInRoot
 import androidx.compose.ui.test.onAllNodesWithContentDescription
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.unit.height
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.cursorforandroid.domain.QueuedFollowUp
 import com.cursorforandroid.ui.theme.CursorTheme
@@ -150,6 +160,62 @@ class QueuedFollowUpsTest {
         } finally {
             AppClock.nowMillis = System::currentTimeMillis
         }
+    }
+
+    /**
+     * A held message's retry on the wire keeps the waiting face, but its glyphs say they cannot act: dimmed, and marked
+     * as being sent for a screen reader. A tap still reaches the screen, which refuses it and has the row say why.
+     */
+    @Test
+    fun `a held row whose retry is out dims its glyphs and says it is being sent`() {
+        val removed = mutableListOf<String>()
+        var item by mutableStateOf(QueuedFollowUp(id = "q1", text = "Follow up text", queuedAtMillis = 0L, heldSinceMillis = 0L, busyRefusals = 1))
+        compose.setContent {
+            CursorTheme(mode = ThemeMode.Dark) {
+                QueuedFollowUps(queue = listOf(item), thumbnails = emptyMap(), onEdit = {}, onSteer = {}, onRemove = { removed += it.id })
+            }
+        }
+        compose.onAllNodesWithTag(QueueGlyphs.ON_ITS_WAY_TAG).assertCountEquals(0)
+
+        item = item.copy(isSending = true)
+        compose.waitForIdle()
+        compose.onNodeWithTag(QueueGlyphs.ON_ITS_WAY_TAG).assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, QueueGlyphs.ON_ITS_WAY))
+        compose.onAllNodesWithContentDescription("Sending").assertCountEquals(0)
+        compose.onNodeWithContentDescription("Remove queued follow-up").performClick()
+        assertThat(removed).containsExactly("q1")
+
+        // Refused again: the glyphs are live once more.
+        item = item.copy(isSending = false, busyRefusals = 2)
+        compose.waitForIdle()
+        compose.onAllNodesWithTag(QueueGlyphs.ON_ITS_WAY_TAG).assertCountEquals(0)
+    }
+
+    /**
+     * A tap refused on a held row whose retry is out is told on the row itself, where its wait is: the line swaps to
+     * why and back, the card no taller for it — never a snackbar at the foot of the screen.
+     */
+    @Test
+    fun `a refused tap on a held row says why in place of its wait, the card no taller`() {
+        val item = QueuedFollowUp(id = "q1", text = "Follow up text", queuedAtMillis = 0L, heldSinceMillis = 0L, busyRefusals = 1, isSending = true)
+        var refusedId by mutableStateOf<String?>(null)
+        compose.setContent {
+            CursorTheme(mode = ThemeMode.Dark) {
+                QueuedFollowUps(queue = listOf(item), thumbnails = emptyMap(), onEdit = {}, onSteer = {}, onRemove = {}, refusedId = refusedId)
+            }
+        }
+        val card = compose.onNodeWithContentDescription("Queued follow-up 1 of 1")
+        val height = card.getBoundsInRoot().height
+        compose.onAllNodesWithTag(QueueGlyphs.REFUSED_TAG).assertCountEquals(0)
+
+        refusedId = "q1"
+        compose.waitForIdle()
+        compose.onNodeWithTag(QueueGlyphs.REFUSED_TAG, useUnmergedTree = true).assertTextEquals(QueueGlyphs.REFUSED)
+        assertThat(card.getBoundsInRoot().height).isEqualTo(height)
+
+        refusedId = null
+        compose.waitForIdle()
+        compose.onAllNodesWithTag(QueueGlyphs.REFUSED_TAG, useUnmergedTree = true).assertCountEquals(0)
+        assertThat(card.getBoundsInRoot().height).isEqualTo(height)
     }
 
     private fun Rect.intersects(other: Rect): Boolean =

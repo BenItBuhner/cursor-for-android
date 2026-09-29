@@ -181,6 +181,71 @@ class PaneWidthsTest {
         assertThat(tight.railFits).isFalse()
     }
 
+    /** A Fold's inner screen held half open like a book: 841dp, its crease down the middle. */
+    private val fold = 841.dp
+    private val crease = Hinge(420.5.dp, 420.5.dp)
+
+    @Test
+    fun `across a hinge the rail fills the pane before it and the chat the pane past it`() {
+        val w = PaneWidths.of(fold, railExpanded = true, railWidth = CursorDimens.sidebarWidth, panelOpen = false, panelFraction = null, hinge = crease)
+        assertThat(w.railShown).isTrue()
+        assertThat(w.rail).isEqualTo(420.5.dp)
+        assertThat(w.endPane).isEqualTo(420.5.dp)
+        assertThat(w.chat(fold)).isEqualTo(420.5.dp)
+        // The rail's own width, even dragged past its maximum or under its minimum, gives way to the hinge's.
+        assertThat(PaneWidths.of(fold, true, RailMinWidth, false, null, crease).rail).isEqualTo(420.5.dp)
+        assertThat(PaneWidths.of(fold, true, RailMaxWidth, false, null, crease).rail).isEqualTo(420.5.dp)
+        // Put away, the pane past the hinge is still the chat's (SidePanel keeps it there).
+        val collapsed = PaneWidths.of(fold, railExpanded = false, railWidth = CursorDimens.sidebarWidth, panelOpen = false, panelFraction = null, hinge = crease)
+        assertThat(collapsed.railShown).isFalse()
+        assertThat(collapsed.railFits).isTrue()
+        assertThat(collapsed.endPane).isEqualTo(420.5.dp)
+    }
+
+    @Test
+    fun `across a hinge the panel opens as the pane past it, however it was dragged, and the rail makes way`() {
+        for (fraction in listOf(null, 0.25f, 0.6f)) {
+            val w = PaneWidths.of(fold, railExpanded = true, railWidth = CursorDimens.sidebarWidth, panelOpen = true, panelFraction = fraction, hinge = crease)
+            assertThat(w.panelShown).isTrue()
+            assertThat(w.splits).isFalse()
+            assertThat(w.panel).isEqualTo(420.5.dp)
+            assertThat(w.railShown).isFalse()
+            assertThat(w.railFits).isFalse()
+            assertThat(w.chat(fold)).isEqualTo(420.5.dp)
+        }
+    }
+
+    @Test
+    fun `a hinge with room for the rail beside the chat before it keeps the rail with the panel open`() {
+        val window = 1400.dp
+        val w = PaneWidths.of(window, railExpanded = true, railWidth = CursorDimens.sidebarWidth, panelOpen = true, panelFraction = null, hinge = Hinge(700.dp, 700.dp))
+        assertThat(w.railShown).isTrue()
+        assertThat(w.rail).isEqualTo(CursorDimens.sidebarWidth)
+        assertThat(w.panel).isEqualTo(700.dp)
+        assertThat(w.chat(window)).isEqualTo(700.dp - CursorDimens.sidebarWidth)
+    }
+
+    @Test
+    fun `a hinge that hides part of the screen is covered by the panel and kept out of the chat pane`() {
+        val window = 900.dp
+        val w = PaneWidths.of(window, railExpanded = true, railWidth = CursorDimens.sidebarWidth, panelOpen = false, panelFraction = null, hinge = Hinge(440.dp, 460.dp))
+        assertThat(w.rail).isEqualTo(440.dp)
+        assertThat(w.endPane).isEqualTo(440.dp)
+        val open = PaneWidths.of(window, railExpanded = true, railWidth = CursorDimens.sidebarWidth, panelOpen = true, panelFraction = null, hinge = Hinge(440.dp, 460.dp))
+        assertThat(open.panel).isEqualTo(460.dp)
+        assertThat(open.endPane).isEqualTo(440.dp)
+    }
+
+    @Test
+    fun `a hinge leaving either side too narrow for the chat is laid out as if there were none`() {
+        val window = 1000.dp
+        val offCentre = Hinge(300.dp, 300.dp)
+        assertThat(PaneWidths.of(window, true, CursorDimens.sidebarWidth, true, null, offCentre)).isEqualTo(PaneWidths.of(window, true, CursorDimens.sidebarWidth, true, null))
+        val nearEnd = Hinge(700.dp, 700.dp)
+        assertThat(PaneWidths.of(window, true, CursorDimens.sidebarWidth, false, null, nearEnd)).isEqualTo(PaneWidths.of(window, true, CursorDimens.sidebarWidth, false, null))
+        assertThat(PaneWidths.of(window, true, CursorDimens.sidebarWidth, false, null).endPane).isNull()
+    }
+
     @Test
     fun `the size class turns at 840dp`() {
         assertThat(PaneWidthClass.of(600.dp)).isEqualTo(PaneWidthClass.Medium)

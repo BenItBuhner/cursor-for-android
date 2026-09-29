@@ -8,6 +8,8 @@ import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.assertCountEquals
+import androidx.compose.ui.test.assertTextEquals
+import androidx.compose.ui.test.getBoundsInRoot
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithContentDescription
 import androidx.compose.ui.test.onAllNodesWithTag
@@ -17,6 +19,7 @@ import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.height
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.cursorforandroid.domain.AgentSource
 import com.cursorforandroid.domain.PendingFollowup
@@ -84,6 +87,38 @@ class SteerInQueueTest {
         compose.onNodeWithText(QueueCardWords.STEERED).assertExists()
         compose.onNodeWithTag(QueueGlyphs.ON_ITS_WAY_TAG).assertExists()
         compose.onAllNodesWithText(QueueCardWords.STEERING).assertCountEquals(0)
+    }
+
+    /**
+     * A steering card is on its way as a held retry is, so a tap on it is refused the same way: the steer's line swaps
+     * to why, in its place and no taller, and back — one second line for both notes, never a snackbar.
+     */
+    @Test
+    fun `a refused tap on a steering card says why on its steer line, the card no taller, then the steer note again`() {
+        val steering = waiting.copy(isSending = true, steer = SteerPhase.STEERING)
+        var refusedId by mutableStateOf<String?>(null)
+        compose.setContent {
+            CursorTheme(mode = ThemeMode.Dark) {
+                QueuedFollowUps(queue = listOf(steering), thumbnails = emptyMap(), onEdit = {}, onSteer = {}, onRemove = {}, steers = true, refusedId = refusedId)
+            }
+        }
+        compose.mainClock.autoAdvance = false
+        advance(500)
+        val card = compose.onNodeWithContentDescription("Queued follow-up 1 of 1, steering into this turn")
+        val height = card.getBoundsInRoot().height
+        compose.onAllNodesWithTag(QueueGlyphs.REFUSED_TAG).assertCountEquals(0)
+
+        refusedId = steering.id
+        advance(500)
+        compose.onNodeWithTag(QueueGlyphs.REFUSED_TAG, useUnmergedTree = true).assertTextEquals(QueueGlyphs.REFUSED)
+        compose.onNodeWithTag(QueueSteerLabelTag, useUnmergedTree = true).assertExists()
+        assertThat(card.getBoundsInRoot().height).isEqualTo(height)
+
+        refusedId = null
+        advance(500)
+        compose.onAllNodesWithTag(QueueGlyphs.REFUSED_TAG, useUnmergedTree = true).assertCountEquals(0)
+        compose.onNodeWithText(QueueCardWords.STEERING).assertExists()
+        assertThat(card.getBoundsInRoot().height).isEqualTo(height)
     }
 
     @Test

@@ -1,6 +1,7 @@
 package com.cursorforandroid.ui.conversation
 
 import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
@@ -36,12 +37,11 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.clearAndSetSemantics
-import androidx.compose.ui.semantics.liveRegion
-import androidx.compose.ui.semantics.LiveRegionMode
-import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.TextFieldValue
@@ -118,11 +118,13 @@ fun QueuedFollowUps(
     flights: QueueFlights? = null,
     /** A turn is under way: the up arrow steers into it (and says so) rather than sending next. */
     steers: Boolean = false,
+    /** The row whose glyph tap was just refused, its message being on its way: its second line says so for a moment. */
+    refusedId: String? = null,
 ) {
     Column(modifier.animateContentSize(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
         queue.forEachIndexed { index, item ->
             key(item.id) {
-                QueuedFollowUpCard(item, index + 1, queue.size, thumbnails, onEdit, onSteer, onRemove, flights, steers = steers)
+                QueuedFollowUpCard(item, index + 1, queue.size, thumbnails, onEdit, onSteer, onRemove, flights, steers = steers, refused = item.id == refusedId)
             }
         }
     }
@@ -141,6 +143,7 @@ internal fun QueuedFollowUpCard(
     flights: QueueFlights?,
     face: QueueCardFace = QueueCardFace.Plain,
     steers: Boolean = false,
+    refused: Boolean = false,
 ) {
     QueuedFollowUpRow(
         item = item,
@@ -154,6 +157,7 @@ internal fun QueuedFollowUpCard(
         anchor = flights?.anchor(item.id),
         face = face,
         steers = steers,
+        refused = refused,
     )
 }
 
@@ -174,6 +178,7 @@ private fun QueuedFollowUpRow(
     anchor: ComposerAnchor?,
     face: QueueCardFace,
     steers: Boolean,
+    refused: Boolean,
 ) {
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
@@ -217,14 +222,16 @@ private fun QueuedFollowUpRow(
             item.warning?.let { note ->
                 Text(note, style = type.small, color = colors.red, maxLines = 2, overflow = TextOverflow.Ellipsis)
             }
+            // A refused tap says why on the one second line the card has: a steer's note, else a held message's wait.
+            val saysRefused = refused && item.isOnItsWay
             if (steer != null) {
-                SteerNote(steer)
+                SteerNote(steer, refused = saysRefused)
             } else {
                 item.steerError?.let { reason ->
                     Text(reason, style = type.small, color = colors.red, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.testTag(QueueSteerErrorTag))
                 }
             }
-            if (item.isHeld) HeldNote(item)
+            if (item.isHeld) HeldNote(item, refused = saysRefused && steer == null)
         }
         Spacer(Modifier.width(8.dp))
         if (sending) {
@@ -233,7 +240,8 @@ private fun QueuedFollowUpRow(
             }
         } else {
             // A message on its way — a held message's retry out, or a steer the account has not yet shown in the
-            // transcript — keeps its glyphs, dimmed, for as long as that lasts: its request cannot be called back.
+            // transcript — keeps its glyphs, dimmed, for as long as that lasts: its request cannot be called back, so
+            // a tap then is refused and the card's second line says why (see RefusableLine).
             val onItsWay = item.isOnItsWay
             Row(
                 horizontalArrangement = Arrangement.spacedBy(12.dp),
@@ -251,21 +259,51 @@ private fun QueuedFollowUpRow(
 
 /**
  * A steered card's second line, where a held card keeps its wait: "Steering…" while the account takes the message,
- * then "Steered", the one fading into the other in place, the line no taller for it. Quiet, as the wait is.
+ * then "Steered", the one fading into the other in place, the line no taller for it. Quiet, as the wait is. A glyph
+ * tap refused meanwhile ([refused]) swaps it for why, as a held card's wait does (see [RefusableLine]).
  */
 @Composable
-private fun SteerNote(phase: SteerPhase) {
+private fun SteerNote(phase: SteerPhase, refused: Boolean) {
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
     val steered by animateFloatAsState(if (phase == SteerPhase.STEERED) 1f else 0f, tween(NoteFadeMs), label = "steer-note")
-    Box(Modifier.fillMaxWidth().testTag(QueueSteerLabelTag).semantics { liveRegion = LiveRegionMode.Polite }) {
-        Text(
-            QueueCardWords.STEERING, style = type.small, color = colors.textQuaternary, maxLines = 1, overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.graphicsLayer { alpha = 1f - steered }.then(if (phase == SteerPhase.STEERED) Modifier.clearAndSetSemantics {} else Modifier),
-        )
-        if (phase == SteerPhase.STEERED || steered > 0f) {
-            Box(Modifier.matchParentSize().graphicsLayer { alpha = steered }, contentAlignment = Alignment.CenterStart) {
-                Text(QueueCardWords.STEERED, style = type.small, color = colors.textQuaternary, maxLines = 1, overflow = TextOverflow.Ellipsis)
+    RefusableLine(refused) { faded ->
+        Box(faded.fillMaxWidth().testTag(QueueSteerLabelTag).semantics { liveRegion = LiveRegionMode.Polite }) {
+            Text(
+                QueueCardWords.STEERING, style = type.small, color = colors.textQuaternary, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.graphicsLayer { alpha = 1f - steered }.then(if (phase == SteerPhase.STEERED) Modifier.clearAndSetSemantics {} else Modifier),
+            )
+            if (phase == SteerPhase.STEERED || steered > 0f) {
+                Box(Modifier.matchParentSize().graphicsLayer { alpha = steered }, contentAlignment = Alignment.CenterStart) {
+                    Text(QueueCardWords.STEERED, style = type.small, color = colors.textQuaternary, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+            }
+        }
+    }
+}
+
+/**
+ * A card's second line, and why a glyph tap was just refused ([refused]), the message being on its way: the reason
+ * fades in over the [line] in the same place and no taller — the line keeps its room underneath — and then back, so
+ * the card never grows for it and nothing pops up elsewhere. [line] takes the modifier that fades it out.
+ */
+@Composable
+private fun RefusableLine(refused: Boolean, line: @Composable (Modifier) -> Unit) {
+    val colors = CursorTheme.colors
+    val type = CursorTheme.typography
+    val swap by animateFloatAsState(if (refused) 1f else 0f, tween(NoteFadeMs), label = "refusal")
+    Box {
+        line(Modifier.graphicsLayer { alpha = 1f - swap })
+        if (refused || swap > 0f) {
+            Box(Modifier.matchParentSize().graphicsLayer { alpha = swap }, contentAlignment = Alignment.CenterStart) {
+                Text(
+                    QueueGlyphs.REFUSED,
+                    style = type.small,
+                    color = colors.textSecondary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.testTag(QueueGlyphs.REFUSED_TAG).semantics { liveRegion = LiveRegionMode.Polite },
+                )
             }
         }
     }
@@ -300,9 +338,11 @@ internal object QueueCardWords {
  * The line under a message the server keeps refusing as busy while nothing here calls the agent busy: what is being
  * waited for and for how long, ticking by the second, and — from the third refusal on — the server's own words for
  * it, so a wait of minutes is never a riddle. Quiet, not red: nothing has failed.
+ *
+ * A glyph tap refused while the retry is out ([refused]) swaps the wait for why (see [RefusableLine]).
  */
 @Composable
-private fun HeldNote(item: QueuedFollowUp) {
+private fun HeldNote(item: QueuedFollowUp, refused: Boolean) {
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
     val since = item.heldSinceMillis ?: return
@@ -317,15 +357,17 @@ private fun HeldNote(item: QueuedFollowUp) {
     // and the time's own space are non-breaking, and a card too narrow for the whole line (a phone, the card stood in
     // from the composer's sides) breaks before the last word and carries the time down with it.
     val waited = TimeFormat.duration((now - since).coerceAtLeast(0L))?.replace(' ', '\u00A0')
-    Text(
-        // What is waited for: the agent's turn, or — the server having asked every caller to slow down — the wait it named.
-        listOfNotNull(item.holdReason ?: QueuedFollowUp.WAITING_FOR_AGENT, waited).joinToString("\u00A0\u00B7\u00A0"),
-        style = type.small.copy(fontFeatureSettings = "tnum"),
-        color = colors.textQuaternary,
-        maxLines = 2,
-        overflow = TextOverflow.Ellipsis,
-        modifier = Modifier.testTag("queued-held"),
-    )
+    RefusableLine(refused) { faded ->
+        Text(
+            // What is waited for: the agent's turn, or — the server having asked every caller to slow down — the wait it named.
+            listOfNotNull(item.holdReason ?: QueuedFollowUp.WAITING_FOR_AGENT, waited).joinToString("\u00A0\u00B7\u00A0"),
+            style = type.small.copy(fontFeatureSettings = "tnum"),
+            color = colors.textQuaternary,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.testTag("queued-held").then(faded),
+        )
+    }
     item.serverReason?.let { reason ->
         Text("Cursor says: $reason", style = type.small, color = colors.textQuaternary, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.testTag("queued-held-reason"))
     }
@@ -616,6 +658,9 @@ object QueueGlyphs {
     /** The glyphs' state while the message's request is out (a held message's retry, a steer): dimmed, and a tap is refused. */
     const val ON_ITS_WAY = "Being sent"
     const val ON_ITS_WAY_TAG = "queued-glyphs-on-its-way"
+    /** What a card's second line (a held one's wait, a steered one's note) says for a moment when one of its glyphs is tapped while it is [ON_ITS_WAY]. */
+    const val REFUSED = "Being sent · can't change it now"
+    const val REFUSED_TAG = "queued-held-refused"
 
     fun upArrow(steers: Boolean, retry: Boolean = false): String = when {
         steers -> STEER

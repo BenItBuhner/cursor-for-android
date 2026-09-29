@@ -78,6 +78,7 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.offset
 import com.cursorforandroid.ui.components.BackGestureEdges
 import com.cursorforandroid.ui.components.Haptics
 import com.cursorforandroid.ui.components.LocalScrollFadeSurface
@@ -182,6 +183,8 @@ private fun SidePanelHost(
     val rtl = LocalLayoutDirection.current == LayoutDirection.Rtl
     val edges = rememberBackGestureEdges()
     val beside = pinned != null
+    // Whether there is a hinge at all, not where it falls: the pane past it follows the window's width.
+    val keepsToHinge by remember(pinned) { derivedStateOf { pinned?.endPane != null } }
     val swipes = gesturesEnabled && !beside
     val opening = remember(state, scope, edges) { ScrollerHandoff(state, scope, from = SidePanelValue.Closed, edges = edges) }
     val closing = remember(state, scope) { ScrollerHandoff(state, scope, from = SidePanelValue.Open, edges = null) }
@@ -227,7 +230,7 @@ private fun SidePanelHost(
             Modifier
                 // The end edge is the panel's now, bars and cutout included: the chat's own padding for them would stand
                 // as a gap between the two.
-                .then(if (beside) Modifier.besidePanel(state, panelWidth, WindowInsets.safeDrawing.only(WindowInsetsSides.End)) else Modifier)
+                .then(if (pinned != null) Modifier.besidePanel(state, panelWidth, pinned, WindowInsets.safeDrawing.only(WindowInsetsSides.End)) else Modifier)
                 .coveredFocus(covered)
                 .nestedScroll(opening)
                 .openDrag(state, scope, edges, enabled = gesturesEnabled && (beside || !state.isOpen), moves = !beside, rtl = rtl, flingPx = flingPx),
@@ -277,13 +280,17 @@ private fun SidePanelHost(
             // edge to edge, under the status bar and the navigation bar alike; the content insets itself
             // (`panelInsetPadding` at the panel's root), so the one consumption is the content's whichever host it is in.
             if (shown) {
+                // Across a hinge the panel's surface runs under it and its content keeps to the pane past it.
                 Surface(color = containerColor, contentColor = contentColor, shape = RectangleShape, modifier = Modifier.fillMaxSize()) {
-                    CompositionLocalProvider(LocalScrollFadeSurface provides containerColor, content = panelContent)
+                    Box(Modifier.pastHinge(pinned, laidOut), propagateMinConstraints = true) {
+                        CompositionLocalProvider(LocalScrollFadeSurface provides containerColor, content = panelContent)
+                    }
                 }
             }
         }
-        // Over the boundary, riding it as the panel slides; last, so hit testing reaches it before either side.
-        if (pinned != null && shown) {
+        // Over the boundary, riding it as the panel slides; last, so hit testing reaches it before either side. Across a
+        // hinge the boundary is the fold's, and does not drag.
+        if (pinned != null && shown && !keepsToHinge) {
             PaneResizeEdge(
                 side = PaneSide.End,
                 paneWidth = { if (pinned.splits) laidOut.value else pinned.width },
@@ -318,15 +325,33 @@ private fun Modifier.panelSlot(state: SidePanelState, panelWidth: (Dp) -> Dp, la
 }
 
 /**
+ * Across a hinge, the panel's content kept to the pane past it: in from the start by as much of the panel as lies
+ * before the fold. Read at layout, so the host's width does not recompose the panel.
+ */
+private fun Modifier.pastHinge(pinned: PinnedPanel?, laidOut: State<Dp>): Modifier = layout { measurable, constraints ->
+    val gap = pinned?.endPane?.let { (laidOut.value - it).coerceAtLeast(0.dp).roundToPx() } ?: 0
+    val placeable = measurable.measure(constraints.offset(horizontal = -gap))
+    val width = (placeable.width + gap).coerceIn(constraints.minWidth, constraints.maxWidth)
+    layout(width, placeable.height) { placeable.placeRelative(gap, 0) }
+}
+
+/**
  * The content beside a pinned panel: as wide as the panel leaves it, following the panel's slide frame by frame, so
  * the chat reflows into the room rather than being covered. Read at layout, so neither the slide nor the host's width
  * recomposes the chat.
+ *
+ * Across a hinge ([PinnedPanel.endPane]) the chat keeps to one side of it: with the panel shut it stands in the pane
+ * past the hinge, and the opening panel pushes it into the pane before the hinge rather than narrowing it across the
+ * fold. The content reaches the end of the window, so the pane past the hinge begins [PinnedPanel.endPane] before that.
  */
-private fun Modifier.besidePanel(state: SidePanelState, panelWidth: (Dp) -> Dp, endInsets: WindowInsets): Modifier = layout { measurable, constraints ->
+private fun Modifier.besidePanel(state: SidePanelState, panelWidth: (Dp) -> Dp, pinned: PinnedPanel, endInsets: WindowInsets): Modifier = layout { measurable, constraints ->
     val panelPx = panelWidth(constraints.maxWidth.toDp()).toPx()
-    val width = (constraints.maxWidth - (state.fraction * panelPx).roundToInt()).coerceIn(0, constraints.maxWidth)
+    val fraction = state.fraction
+    val alone = pinned.endPane?.let { (constraints.maxWidth - it.roundToPx()).coerceAtLeast(0) } ?: 0
+    val start = ((1f - fraction) * alone).roundToInt()
+    val width = (constraints.maxWidth - (fraction * panelPx).roundToInt() - start).coerceIn(0, constraints.maxWidth)
     val placeable = measurable.measure(constraints.copy(minWidth = width, maxWidth = width))
-    layout(constraints.maxWidth, placeable.height) { placeable.placeRelative(0, 0) }
+    layout(constraints.maxWidth, placeable.height) { placeable.placeRelative(start, 0) }
 }.consumeWindowInsets(endInsets)
 
 /**

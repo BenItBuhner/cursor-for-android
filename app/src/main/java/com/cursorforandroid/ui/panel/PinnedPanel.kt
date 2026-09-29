@@ -24,6 +24,12 @@ interface PinnedPanel {
      */
     val splits: Boolean
 
+    /**
+     * The pane past a hinge splitting the window, while the panes keep to it ([PaneWidths.endPane]): the chat stands
+     * there with the panel shut and is pushed into the pane before the hinge as the panel opens; null without one.
+     */
+    val endPane: Dp? get() = null
+
     /** Puts the panel open or shut as the window has it: carried over from a sheet, not a slide of its own. */
     fun setOpen(open: Boolean)
 

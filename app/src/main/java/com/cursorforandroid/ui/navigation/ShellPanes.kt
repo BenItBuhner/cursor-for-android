@@ -36,6 +36,7 @@ import com.cursorforandroid.ui.components.PaneSide
 import com.cursorforandroid.ui.components.backGestureEdges
 import com.cursorforandroid.ui.components.rememberBackGestureEdges
 import com.cursorforandroid.ui.components.setOffAhead
+import com.cursorforandroid.ui.panel.Hinge
 import com.cursorforandroid.ui.panel.LocalPinnedPanel
 import com.cursorforandroid.ui.panel.PaneWidthClass
 import com.cursorforandroid.ui.panel.PaneWidths
@@ -58,7 +59,8 @@ import kotlinx.coroutines.launch
  * ([PaneWidths]), with what the reader has made of it: the width the rail was dragged to and the share of the window
  * the panel was, and the panel open or shut for each window size class, all kept for the device ([PreferencesStore])
  * and read once as the shell starts. It is every chat's [PinnedPanel], so the panel left open beside one chat stands
- * open beside the next.
+ * open beside the next. Across a fold that splits the window ([hinge], from the window's left edge) the panes keep to
+ * either side of it instead.
  */
 @Stable
 internal class ShellPanes(
@@ -66,6 +68,8 @@ internal class ShellPanes(
     private val scope: CoroutineScope,
     private val railExpanded: () -> Boolean,
     private val chatOnTop: () -> Boolean,
+    private val hinge: () -> Hinge? = { null },
+    private val rtl: () -> Boolean = { false },
 ) : PinnedPanel {
     private var configured by mutableStateOf(0.dp)
     private var measured by mutableStateOf<Dp?>(null)
@@ -90,6 +94,7 @@ internal class ShellPanes(
             railWidth = railWant ?: CursorDimens.sidebarWidth,
             panelOpen = chatOnTop() && open == true,
             panelFraction = panelFraction,
+            hinge = hinge()?.fromStart(window, rtl()),
         )
     }
 
@@ -137,6 +142,8 @@ internal class ShellPanes(
     override val width: Dp get() = widths.panel
 
     override val splits: Boolean get() = widths.splits
+
+    override val endPane: Dp? get() = widths.endPane
 
     /**
      * The configuration's screen width, as the composition that sees it hears it ([ShellWindow.follow]): a change drops
@@ -251,6 +258,7 @@ internal fun WidePanes(
     // The rail's edge as it is drawn, sliding in and out included, for the resize strip to ride.
     var railEdge by remember { mutableIntStateOf(0) }
     val railYields by remember(panes) { derivedStateOf { panes.railYields } }
+    val keepsToHinge by remember(panes) { derivedStateOf { panes.widths.endPane != null } }
     SideEffect { panes.railYielded = railYields }
     val railSlide = remember { Animatable(if (railShown) 1f else 0f) }
     DisposableEffect(panes, railSlide) {
@@ -285,7 +293,7 @@ internal fun WidePanes(
                 detail(Modifier.weight(1f).fillMaxHeight())
             }
         }
-        if (railShown) {
+        if (railShown && !keepsToHinge) {
             PaneResizeEdge(
                 side = PaneSide.Start,
                 paneWidth = { panes.widths.rail },

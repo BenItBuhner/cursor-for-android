@@ -430,6 +430,9 @@ fun SummaryLine(label: String, value: String, modifier: Modifier = Modifier) {
     }
 }
 
+/** A [DisclosureRow]'s height, its words centred in it; the working caption stands in one (see ConversationScreen). */
+internal val DisclosureRowHeight = 28.dp
+
 /**
  * Cursor's collapsible step header (`Collapsible` in the desktop build): the verb in the secondary text colour, its
  * details after a 4px gap in the tertiary colour with tabular numerals, and a right-pointing chevron at the end that
@@ -453,7 +456,7 @@ internal fun DisclosureRow(
         Modifier
             .offset(x = (-6).dp)
             .pressable({ taps.toggling(opening = !expanded); onToggle() }, CursorTheme.shapes.base, enabled = expandable)
-            .heightIn(min = 28.dp)
+            .heightIn(min = DisclosureRowHeight)
             .padding(horizontal = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {

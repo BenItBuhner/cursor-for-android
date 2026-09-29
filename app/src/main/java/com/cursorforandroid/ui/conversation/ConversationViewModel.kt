@@ -275,6 +275,10 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
     /** Where each message sent from here and not yet filed stands, by its bubble's id — the transcript draws it on the bubble. */
     val outgoingStatuses: StateFlow<Map<String, OutgoingStatus>> = outgoing.statuses
     val toastMessage: StateFlow<String?> = toast.asStateFlow()
+    private val refused = MutableStateFlow<String?>(null)
+    private var refusalShown: Job? = null
+    /** The queued follow-up whose remove, edit or up arrow was just refused, being on its way: its card says so, briefly. */
+    val refusedQueuedId: StateFlow<String?> = refused.asStateFlow()
     /**
      * Follow-ups sent while the agent was busy, oldest first; they go out by themselves once it is free. A steered
      * one is not among them: it shows in the transcript as a pending prompt instead.
@@ -791,10 +795,11 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
      * Takes a queued follow-up back into the composer; a draft already there is queued in its place, so nothing is lost.
      * Its text and chips are the composer's before this returns: a send the moment after acts on them, never on the
      * draft just queued (which went out a second time, and emptied the repository's copy of the edited text). Only the
-     * chips' previews wait on a decode off the main thread, filled in once it is done.
+     * chips' previews wait on a decode off the main thread, filled in once it is done. False when nothing was taken:
+     * the message is gone, or on its way (see [refusedOnItsWay]).
      */
-    fun editQueued(id: String) {
-        graph.followUps.takeForEdit(agentId, id) ?: return
+    fun editQueued(id: String): Boolean {
+        if (graph.followUps.takeForEdit(agentId, id) == null) return false.also { refusedOnItsWay(id) }
         val taken = graph.followUps.state(agentId).value.draft
         picker.update { it.adopting(taken) }
         draft.value = taken.text
@@ -806,6 +811,7 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
         takenFiles.forEach { graph.attachmentUploads.start(it.id, it.file) }
         keepModesExclusive(taken.text)
         if (images.isNotEmpty() || takenFiles.isNotEmpty()) viewModelScope.launch { fillPreviews(images, takenFiles) }
+        return true
     }
 
     /** The thumbnails of chips put in the composer without one, decoded off the main thread, onto the chips still there. */
@@ -819,20 +825,39 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
         files.value = files.value.map { f -> decodedFiles.firstOrNull { it.id == f.id }?.let { f.withPreview(it.thumbnail, null) } ?: f }
     }
 
-    fun removeQueued(id: String) = graph.followUps.remove(agentId, id)
+    /** Takes a queued follow-up away; false when nothing was taken: the message is gone, or on its way (see [refusedOnItsWay]). */
+    fun removeQueued(id: String): Boolean = graph.followUps.remove(agentId, id).also { removed -> if (!removed) refusedOnItsWay(id) }
+
+    /**
+     * A card's glyph tapped while its message is on its way — a held message's retry out, its card still reading as
+     * waiting: the request cannot be called back, so the tap is refused and the card itself says why for a moment
+     * ([refusedQueuedId]), rather than taking it silently and the message reaching the agent all the same.
+     */
+    private fun refusedOnItsWay(id: String) {
+        if (!graph.followUps.isOnItsWay(agentId, id)) return
+        refused.value = id
+        refusalShown?.cancel()
+        refusalShown = viewModelScope.launch {
+            delay(REFUSAL_SHOWN_MS)
+            refused.value = null
+        }
+    }
 
     /**
      * A waiting card's up arrow. With a turn under way it steers the message into that turn, never stopping it — in
      * Extended mode through the account ([FollowUpRepository.steerNow]), where it stands and any failure shown on the
      * card itself; with no account to steer through the message keeps its place and its card says it goes when the
-     * turn ends. With nothing running it goes next ([FollowUpRepository.sendNext]).
+     * turn ends. With nothing running it goes next ([FollowUpRepository.sendNext]). False when the tap was refused, the
+     * message being on its way (a steering card among them: its card says why, as a held one's does).
      */
-    fun steerQueued(id: String, turnUnderWay: Boolean) {
+    fun steerQueued(id: String, turnUnderWay: Boolean): Boolean {
+        if (graph.followUps.isOnItsWay(agentId, id)) return false.also { refusedOnItsWay(id) }
         when {
-            !turnUnderWay -> graph.followUps.sendNext(agentId, id)
+            !turnUnderWay -> if (!graph.followUps.sendNext(agentId, id)) return false.also { refusedOnItsWay(id) }
             canSteer() -> viewModelScope.launch { graph.followUps.steerNow(agentId, id) }
             else -> graph.followUps.noteSteerUnavailable(agentId, id)
         }
+        return true
     }
 
     /** Whether a queued message can be steered into the turn under way from here: the account's steering and queue, not the demo. */
@@ -1027,6 +1052,8 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
         const val ANSWER_SHOWN_MS = 1_800L
         /** How long a pull's failure waits to be told by the screen before it is put away untold. */
         const val FAILURE_SHOWN_MS = 6_000L
+        /** How long a held card says why its glyphs refused a tap before it goes back to the wait. */
+        const val REFUSAL_SHOWN_MS = 3_000L
     }
 
     class Factory(private val graph: AppGraph, private val agentId: String) : ViewModelProvider.Factory {

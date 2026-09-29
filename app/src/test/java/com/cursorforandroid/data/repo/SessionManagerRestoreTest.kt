@@ -9,11 +9,16 @@ import com.cursorforandroid.data.FakeRunStreamer
 import com.cursorforandroid.data.local.PreferencesStore
 import com.cursorforandroid.data.local.SecureKeyStore
 import com.google.common.truth.Truth.assertThat
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeoutOrNull
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
 import java.security.GeneralSecurityException
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 
 /**
  * What a cold start does when the stores it reads are broken: it always leaves [SessionState.Loading] — the splash
@@ -79,5 +84,29 @@ class SessionManagerRestoreTest {
         session.signIn("key_pasted").getOrThrow()
 
         assertThat(session.signedOutReason.value).isNull()
+    }
+
+    /**
+     * The activity's restore runs in its composition: an activity torn down while the Keystore is still opening
+     * cancels it, and a restore that went on holding its caller until the open returned would then resume on a UI
+     * dispatcher nothing drives any more — which, under Robolectric, wedges Compose for every later test in the JVM.
+     */
+    @Test
+    fun `a restore cancelled while the secure store is still opening lets its caller go at once`() = runBlocking {
+        val opening = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val session = session(SecureKeyStore(context) { opening.countDown(); release.await(); standIn("restore-cancelled") })
+
+        val restore = launch(Dispatchers.Default) { session.restoreIfNeeded() }
+        assertThat(opening.await(5, TimeUnit.SECONDS)).isTrue()
+        restore.cancel()
+        val letGo = withTimeoutOrNull(2_000) { restore.join() } != null
+        release.countDown()
+
+        assertThat(letGo).isTrue()
+        // Nothing was decided by the cancelled restore; the next one, with the store open, decides it.
+        assertThat(session.state.value).isEqualTo(SessionState.Loading)
+        session.restoreIfNeeded()
+        assertThat(session.state.value).isEqualTo(SessionState.SignedOut)
     }
 }
