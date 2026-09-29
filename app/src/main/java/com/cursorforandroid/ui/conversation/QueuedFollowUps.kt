@@ -1,6 +1,7 @@
 package com.cursorforandroid.ui.conversation
 
 import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -37,12 +38,18 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.cursorforandroid.domain.PendingFollowup
 import com.cursorforandroid.domain.QueuedFollowUp
+import com.cursorforandroid.domain.SteerPhase
 import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.runtime.produceState
 import com.cursorforandroid.domain.PromptFileKind
@@ -89,7 +96,13 @@ import com.cursorforandroid.ui.components.onContextClick
  * as a list of what is about to be said, not as a stack of forms. While a turn is under way ([steers]) the up arrow
  * steers the message into that turn — never stopping it; with nothing running it sends the message next. A message
  * that could not be sent shows a warning where its tiles would be and the reason under the message, in red; the up
- * arrow then retries it. One on its way out shows a ring instead of the glyphs.
+ * arrow then retries it. One on its way out shows a ring instead of the glyphs; a held one whose retry is out keeps
+ * its glyphs, dimmed, until the server answers.
+ *
+ * A message steered into the running turn is on its way the same way: its glyphs dim, and it stays on its card
+ * until the transcript shows it — "Steering…" on its second line, where a held card keeps its wait, while the
+ * account takes it, then "Steered", the message dimmed throughout. A steer that did not go through leaves the card as it was,
+ * the reason under the line in red, and the up arrow tries again.
  *
  * With [flights], each row is an end of the send's flight (see `SendMotion`): a message sent while the agent is busy
  * lands in its row from the composer, and a row the run takes lifts off the card into its bubble.
@@ -171,12 +184,7 @@ private fun QueuedFollowUpRow(
             // The card's own surface, stood in from the composer's sides so its corners are concentric with the box's.
             // The description sits on the surface, so the row's node is the card as drawn.
             .dockedCard(surface = Modifier.queueCard(motion, anchor, item.id, words, queueCardSurface(), face.contentAlpha, face.cover))
-            .semantics {
-                contentDescription = when (val note = item.warning) {
-                    null -> "Queued follow-up $position of $count"
-                    else -> "Queued follow-up $position of $count, not sent: $note"
-                }
-            }
+            .semantics { contentDescription = QueueCardWords.description(item, position, count) }
             .heightIn(min = RowHeight)
             .padding(start = CursorDimens.composerPadding + CursorDimens.composerTextInset, end = CursorDimens.composerPadding - 6.dp)
             .faceOf(face),
@@ -198,15 +206,23 @@ private fun QueuedFollowUpRow(
         // whether or not an attempt happens to be in flight this instant: the attempts are brief and the pauses
         // between them long, and a card that read "sending" for each would flicker between the two for as long as
         // the server took (see QueuedFollowUp.isHeld). The ring is for a first send only.
-        val sending = item.isSending && !item.isHeld
-        Column(Modifier.weight(1f).padding(vertical = 4.dp)) {
+        val steer = item.steer
+        val sending = item.isSending && !item.isHeld && steer == null
+        Column(Modifier.weight(1f).padding(vertical = 4.dp).animateContentSize(tween(NoteFadeMs))) {
             // The commands dim with the rest of the line while it goes out.
-            val textColor = if (sending) colors.textTertiary else colors.textPrimary
+            val textColor = if (sending || steer != null) colors.textTertiary else colors.textPrimary
             QueueLine(words, textColor, motion, anchor, item.id)
             if (item.files.isNotEmpty()) AttachedFileNames(item.files.map { it.file.name })
             // Why it did not go, in the server's words or the connection's: without it the warning is only a riddle.
             item.warning?.let { note ->
                 Text(note, style = type.small, color = colors.red, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            }
+            if (steer != null) {
+                SteerNote(steer)
+            } else {
+                item.steerError?.let { reason ->
+                    Text(reason, style = type.small, color = colors.red, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.testTag(QueueSteerErrorTag))
+                }
             }
             if (item.isHeld) HeldNote(item)
         }
@@ -216,11 +232,66 @@ private fun QueuedFollowUpRow(
                 SpinnerRing(size = 11.dp)
             }
         } else {
-            Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                GlyphButton(CursorIcons.Trash, "Remove queued follow-up", colors.iconTertiary, onRemove)
-                GlyphButton(CursorIcons.Pencil, "Edit queued follow-up", colors.iconTertiary, onEdit)
-                GlyphButton(CursorIcons.ArrowUp, QueueGlyphs.upArrow(steers, retry = item.warning != null), colors.iconPrimary, onSteer)
+            // A message on its way — a held message's retry out, or a steer the account has not yet shown in the
+            // transcript — keeps its glyphs, dimmed, for as long as that lasts: its request cannot be called back.
+            val onItsWay = item.isOnItsWay
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = if (onItsWay) Modifier.testTag(QueueGlyphs.ON_ITS_WAY_TAG).semantics { stateDescription = QueueGlyphs.ON_ITS_WAY } else Modifier,
+            ) {
+                val quiet = if (onItsWay) colors.iconQuaternary else colors.iconTertiary
+                GlyphButton(CursorIcons.Trash, "Remove queued follow-up", quiet, onRemove)
+                GlyphButton(CursorIcons.Pencil, "Edit queued follow-up", quiet, onEdit)
+                GlyphButton(CursorIcons.ArrowUp, QueueGlyphs.upArrow(steers, retry = item.warning != null), if (onItsWay) colors.iconQuaternary else colors.iconPrimary, onSteer)
             }
+        }
+    }
+}
+
+/**
+ * A steered card's second line, where a held card keeps its wait: "Steering…" while the account takes the message,
+ * then "Steered", the one fading into the other in place, the line no taller for it. Quiet, as the wait is.
+ */
+@Composable
+private fun SteerNote(phase: SteerPhase) {
+    val colors = CursorTheme.colors
+    val type = CursorTheme.typography
+    val steered by animateFloatAsState(if (phase == SteerPhase.STEERED) 1f else 0f, tween(NoteFadeMs), label = "steer-note")
+    Box(Modifier.fillMaxWidth().testTag(QueueSteerLabelTag).semantics { liveRegion = LiveRegionMode.Polite }) {
+        Text(
+            QueueCardWords.STEERING, style = type.small, color = colors.textQuaternary, maxLines = 1, overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.graphicsLayer { alpha = 1f - steered }.then(if (phase == SteerPhase.STEERED) Modifier.clearAndSetSemantics {} else Modifier),
+        )
+        if (phase == SteerPhase.STEERED || steered > 0f) {
+            Box(Modifier.matchParentSize().graphicsLayer { alpha = steered }, contentAlignment = Alignment.CenterStart) {
+                Text(QueueCardWords.STEERED, style = type.small, color = colors.textQuaternary, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+        }
+    }
+}
+
+/** What a device card says of itself, to the eye and to a screen reader. */
+internal object QueueCardWords {
+    const val STEERING = "Steering\u2026"
+    const val STEERED = "Steered \u00B7 the agent reads it at its next step"
+
+    fun steerLabel(phase: SteerPhase): String = when (phase) {
+        SteerPhase.STEERING -> STEERING
+        SteerPhase.STEERED -> STEERED
+    }
+
+    fun description(item: QueuedFollowUp, position: Int, count: Int): String {
+        val base = "Queued follow-up $position of $count"
+        val warning = item.warning
+        val steer = item.steer
+        return when {
+            warning != null -> "$base, not sent: $warning"
+            steer == SteerPhase.STEERING -> "$base, steering into this turn"
+            steer == SteerPhase.STEERED -> "$base, steered; the agent reads it at its next step"
+            item.isSending && !item.isHeld -> "$base, sending"
+            item.steerError != null -> "$base, not steered: ${item.steerError}"
+            else -> base
         }
     }
 }
@@ -542,6 +613,9 @@ object QueueGlyphs {
     const val SEND = "Send now"
     /** The message could not be sent: the tap tries again. */
     const val RETRY = "Retry sending"
+    /** The glyphs' state while the message's request is out (a held message's retry, a steer): dimmed, and a tap is refused. */
+    const val ON_ITS_WAY = "Being sent"
+    const val ON_ITS_WAY_TAG = "queued-glyphs-on-its-way"
 
     fun upArrow(steers: Boolean, retry: Boolean = false): String = when {
         steers -> STEER
@@ -566,6 +640,10 @@ private fun Modifier.faceOf(face: QueueCardFace): Modifier =
 private val RowHeight = 40.dp
 private val Tile = 18.dp
 private val Glyph = 14.dp
+/** A card's second line comes in, and one note on it fades into the next, over this long. */
+private const val NoteFadeMs = 160
+const val QueueSteerLabelTag = "queued-steer"
+const val QueueSteerErrorTag = "queued-steer-error"
 private const val TileThumbnailPx = 256
 
 /** Where a tile's preview of the picture at [path] is kept once decoded ([AttachmentImages]). */

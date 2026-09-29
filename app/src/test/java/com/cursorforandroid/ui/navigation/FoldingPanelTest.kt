@@ -129,9 +129,9 @@ class FoldingPanelTest {
         assertThat(panelBounds().width).isWithin(0.5f).of(bounds.width)
     }
 
-    /** The Project's notes read and laid out on the panel's Project tab, long enough to scroll. */
+    /** The Project's notes read and laid out on the panel's Project tab, long enough to scroll: their first block showing, or the tab scrolled into them. */
     private fun waitForNotes() {
-        compose.waitUntil(30_000) { exists(hasTestTag(NOTES_BODY)) }
+        compose.waitUntil(30_000) { exists(hasTestTag(NOTES_BODY)) || (exists(hasTestTag(NOTES)) && notesScrolled() > 0f) }
         compose.waitForIdle()
     }
 

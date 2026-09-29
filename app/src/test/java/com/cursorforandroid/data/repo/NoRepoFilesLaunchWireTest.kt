@@ -98,7 +98,6 @@ class NoRepoFilesLaunchWireTest {
         ref = "main",
         modelId = "cursor-grok-4.6",
         modelParams = listOf(ModelParam("thinking", "high")),
-        autoCreatePr = false,
         planMode = false,
     )
 

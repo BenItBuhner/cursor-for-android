@@ -14,6 +14,7 @@ import com.cursorforandroid.domain.UserMessage
 import com.cursorforandroid.fixtures.BigProject
 import com.google.common.truth.Truth.assertThat
 import com.google.common.truth.Truth.assertWithMessage
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
@@ -25,6 +26,7 @@ import org.junit.rules.TemporaryFolder
 import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
 import java.io.File
+import java.util.concurrent.CopyOnWriteArrayList
 
 /**
  * Bennett's v0.3.85 frame: a Project chat, with Wi-Fi and cellular both up, said "Couldn't refresh the transcript:
@@ -82,12 +84,31 @@ class FalseOfflineTest {
         if (manager != null) server.composers[id] = FaultServer.Composer(id, name, activityMs = newest.endedAt, manager = manager)
     }
 
-    private fun rig(disk: File = folder.newFolder()): FaultRig = FaultRig(server.baseUrl, disk, readTimeoutMs = 20_000L, extended = true, engine = TranscriptEngine.BETA, http2 = true).also {
+    private fun rig(disk: File = folder.newFolder(), quietRetryDelaysMs: List<Long> = listOf(2_000L, 5_000L, 15_000L, 30_000L)): FaultRig = FaultRig(server.baseUrl, disk, readTimeoutMs = 20_000L, extended = true, engine = TranscriptEngine.BETA, http2 = true, quietRetryDelaysMs = quietRetryDelaysMs).also {
         it.now = now
         rigs += it
     }
 
     private fun FaultRig.state(id: String): ConversationState = conversations.state(id).value
+
+    /** Every failure the chat says from now on, under the transcript or in its place: one up for as long as a frame, too. */
+    private fun FaultRig.saidFailures(id: String): CopyOnWriteArrayList<String> {
+        val seen = CopyOnWriteArrayList<String>()
+        scope.launch(start = CoroutineStart.UNDISPATCHED) { conversations.state(id).collect { s -> listOfNotNull(s.transcriptError, s.error).forEach { seen += it } } }
+        return seen
+    }
+
+    /** The Project saved by an earlier process on [disk], at rest: what the next process opens on. Its items on screen. */
+    private suspend fun savedProject(disk: File): Int {
+        val first = rig(disk)
+        first.openAtRest(project)
+        // A coordinator's window goes on widening and filling in behind the first paint: the saved copy is all of it.
+        first.awaitUntil(30_000) { !first.state(project).isLoadingOlder && first.conversations.loadDiagnostics(project)!!.beta!!.incomplete == 0 }
+        val items = first.state(project).items.size
+        rigs.single().close()
+        rigs.clear()
+        return items
+    }
 
     private fun ConversationState.atRest(): Boolean = items.isNotEmpty() && !isLoading && !isStreaming && runStatus?.isActive != true && traceStatus.pending == 0
 
@@ -172,28 +193,52 @@ class FalseOfflineTest {
         assertThat(rig.lastGoodDns.answeredFromKept).isAtLeast(1)
     }
 
+    /**
+     * Bennett's 0.4.15 coordinator: `record: error="You're offline." cause="UnknownHostException" online=true`. The
+     * phone back from Doze, the resolver not answering for a moment and nothing looked up yet in this process to fall
+     * back on: the read is asked again unseen, like any transient failure, and the chat catches up with nothing said.
+     */
     @Test
-    fun `a lookup that fails with the phone online is not said as offline, and the chat reads itself again once the host answers`() = runBlocking<Unit> {
+    fun `a lookup that fails for a moment with the phone online is retried unseen, and the chat catches up with nothing said`() = runBlocking<Unit> {
         DeviceNetwork.install { true }
         val disk = folder.newFolder("disk")
-        val first = rig(disk)
-        first.openAtRest(project)
-        // A coordinator's window goes on widening and filling in behind the first paint: the saved copy is all of it.
-        first.awaitUntil(30_000) { !first.state(project).isLoadingOlder && first.conversations.loadDiagnostics(project)!!.beta!!.incomplete == 0 }
-        val before = first.state(project).items.size
-        rigs.single().close()
-        rigs.clear()
+        savedProject(disk)
+
+        val second = rig(disk, quietRetryDelaysMs = listOf(500L, 1_000L, 2_000L, 4_000L))
+        second.dnsFailure = resolverDown
+        val said = second.saidFailures(project)
+        second.conversations.attach(project)
+        // The first read has failed on the lookup — said at once, before — and a quiet retry has failed after it.
+        second.awaitUntil(60_000) { second.conversations.loadDiagnostics(project)?.record?.error != null }
+        delay(1_000)
+        val failedLookups = second.dnsLookups.get()
+        second.dnsFailure = null
+        val cleared = System.nanoTime()
+        second.awaitUntil(30_000) { second.state(project).atRest() && second.conversations.loadDiagnostics(project)!!.fetched }
+        println("   $failedLookups lookups failed; caught up ${(System.nanoTime() - cleared) / 1_000_000} ms after the resolver answered; said: $said")
+        assertWithMessage("lookups that failed before the resolver answered").that(failedLookups).isAtLeast(2)
+        assertWithMessage("a moment's failed lookup, with the phone online, said to the reader").that(said).isEmpty()
+        assertThat(second.state(project).transcriptError).isNull()
+    }
+
+    @Test
+    fun `a lookup that keeps failing with the phone online is said after the quiet retries, never as offline, and clears once the host answers`() = runBlocking<Unit> {
+        DeviceNetwork.install { true }
+        val disk = folder.newFolder("disk")
+        val before = savedProject(disk)
 
         // The next process starts on a phone whose resolver is not answering: nothing looked up yet to fall back on.
-        val second = rig(disk)
+        val second = rig(disk, quietRetryDelaysMs = listOf(300L, 600L, 900L))
         second.dnsFailure = resolverDown
+        val said = second.saidFailures(project)
         second.conversations.attach(project)
         second.awaitUntil(60_000) { second.state(project).transcriptError != null && !second.state(project).isLoading }
         val shown = second.state(project)
-        println("   the saved copy stands (${shown.items.size} items) with: ${shown.transcriptError}")
+        println("   the saved copy stands (${shown.items.size} items) with: ${shown.transcriptError}; lookups ${second.dnsLookups.get()}")
         assertThat(shown.items.size).isEqualTo(before)
         assertThat(shown.transcriptError).isEqualTo(LOOKUP_FAILED_ONLINE)
-        assertThat(shown.transcriptError).doesNotContain("offline")
+        assertWithMessage("a lookup failed with the phone online, said as offline").that(said).doesNotContain(OFFLINE)
+        assertWithMessage("lookups: the first read's and one per quiet retry").that(second.dnsLookups.get()).isAtLeast(4)
 
         // The resolver answers again: the chat reads itself, with no Retry tapped, and goes back to holding its live stream.
         second.dnsFailure = null
@@ -203,6 +248,32 @@ class FalseOfflineTest {
         println("   read again by itself ${(System.nanoTime() - cleared) / 1_000_000} ms after the resolver answered")
         second.awaitUntil(10_000) { server.requests(Route.Live).size > liveAsked }
         assertThat(second.conversations.loadDiagnostics(project)!!.record!!.unreached).isFalse()
+    }
+
+    /**
+     * The phone reads offline for a moment as it wakes from Doze (the system hands the app no network until it lets
+     * it back on): the failure met in that moment is not said as "offline" once the phone is back online.
+     */
+    @Test
+    fun `a moment's offline reading as the phone wakes is not said, and the chat reads itself once it is back online`() = runBlocking<Unit> {
+        var online = true
+        DeviceNetwork.install { online }
+        val disk = folder.newFolder("disk")
+        savedProject(disk)
+
+        online = false
+        val second = rig(disk)
+        second.dnsFailure = resolverDown
+        val said = second.saidFailures(project)
+        second.conversations.attach(project)
+        // The read has failed while the phone read offline; it is back online a moment later, as Doze lets it go.
+        second.awaitUntil(60_000) { second.conversations.loadDiagnostics(project)?.record?.error != null }
+        delay(500)
+        online = true
+        second.dnsFailure = null
+        second.awaitUntil(30_000) { second.state(project).atRest() && second.conversations.loadDiagnostics(project)!!.fetched }
+        println("   said while the phone woke: $said")
+        assertThat(said).isEmpty()
     }
 
     @Test

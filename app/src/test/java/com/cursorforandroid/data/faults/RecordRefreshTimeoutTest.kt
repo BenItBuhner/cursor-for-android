@@ -19,9 +19,13 @@ import com.cursorforandroid.ui.conversation.TRANSCRIPT_REFRESH_DETAIL
 import com.google.common.truth.Truth.assertThat
 import com.google.common.truth.Truth.assertWithMessage
 import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.async
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import org.junit.After
@@ -224,6 +228,120 @@ class RecordRefreshTimeoutTest {
         assertThat(shown.items.filterIsInstance<AssistantMessage>().map { it.markdown }).contains("Workers dispatched.")
         assertThat(shown.transcriptError).isNull()
         assertThat(rig.followUps.decide(agentId).busy).isTrue()
+    }
+
+    /**
+     * Bennett's 0.4.15 coordinator: `live: stream=events:3,status:FINISHED,finished:false,items:0`, the stream held
+     * with the API's keep-alive comments and nothing else — no heartbeat events — and the record calling the run
+     * running. The grace ran only when another event came, and none did: the chat stayed on the finished run.
+     */
+    @Test
+    fun `a stream that said FINISHED with no items, then only keep-alive comments, hands the chat to the account's next run`() = runBlocking<Unit> {
+        server = FaultServer(rttMillis = 5L..20L, http2 = true).start()
+        server.liveRunStreams = true
+        server.liveRunBeatMs = 200L
+        val agentId = "bc-coordinator"
+        val at = now - 60_000L
+        val done = "run-done"
+        server.runs[done] = RunDto(id = done, agentId = agentId, status = "FINISHED", createdAt = iso(at - 60_000L), updatedAt = iso(at), durationMs = 60_000L, result = "Started.")
+        server.logs[done] = listOf("assistant" to """{"text":"Started."}""", "result" to """{"runId":"$done","status":"FINISHED","text":"Started.","durationMs":60000}""")
+        server.agents[agentId] = AgentDto(id = agentId, name = "Coordinator", status = "IDLE", createdAt = iso(at - 60_000L), updatedAt = iso(at), latestRunId = done, url = "https://cursor.com/agents/$agentId")
+        server.v0[agentId] = V0AgentDto(id = agentId, name = "Coordinator", status = "FINISHED")
+        server.transcripts[agentId] = listOf(V0ConversationMessageDto("$done-u", "user_message", "Start."), V0ConversationMessageDto("$done-a", "assistant_message", "Started."))
+        server.composers[agentId] = FaultServer.Composer(agentId, "Coordinator", activityMs = at, project = true)
+        server.clock = { now }
+
+        val rig = FaultRig(server.baseUrl, folder.newFolder("disk"), readTimeoutMs = 20_000L, extended = true, engine = TranscriptEngine.BETA, http2 = true, terminalGraceMs = 1_000L).also {
+            it.now = now
+            rigs += it
+        }
+        // A worker's report waking the coordinator: a prompt-only turn, its stream saying nothing but its status.
+        val first = server.startTurnElsewhere(agentId, "Worker report: market 200 filed.", "run-first")
+        rig.agents.refresh()
+        rig.conversations.attach(agentId)
+        rig.awaitUntil(20_000) { rig.state(agentId).let { !it.isLoading && it.isStreaming && it.activeRunId == first.id } }
+
+        server.appendRunEvents(first.id, listOf("status" to """{"runId":"${first.id}","status":"FINISHED"}"""))
+        val next = server.startTurnElsewhere(agentId, "Worker report: market 300 filed.", "run-next")
+        server.runs[next.id] = next.copy(status = "CREATING")
+        server.logs[next.id] = listOf("status" to """{"runId":"${next.id}","status":"CREATING"}""")
+        server.touch(agentId)
+        rig.agents.refresh()
+
+        val said = System.nanoTime()
+        rig.awaitUntil(30_000) { rig.state(agentId).activeRunId == next.id }
+        println("   handed to ${rig.state(agentId).activeRunId} ${(System.nanoTime() - said) / 1_000_000} ms after the stream said FINISHED; first run's record still ${server.runs.getValue(first.id).status}")
+        assertThat(server.runs.getValue(first.id).status).isEqualTo("RUNNING")
+        assertThat(rig.state(agentId).runStatus?.isActive).isTrue()
+        assertThat(rig.state(agentId).transcriptError).isNull()
+    }
+
+    /**
+     * Bennett's 0.4.15 dump: `throttle: control 3/3 +3 waiting`, the coordinator's record 7.6 minutes behind its row,
+     * `fetched=false loading=true`. A Project's kept-live chats each read their whole conversation state on the
+     * control lane, a minute or more apiece on a chat this size, and the chat on screen's refresh waited behind them
+     * for as long. With every control permit taken and callers queued behind, the chat on screen still refreshes.
+     */
+    @Test
+    fun `a chat on screen refreshes its record with every control permit taken and callers waiting behind them`() = runBlocking<Unit> {
+        bigProject()
+        val rig = bigRig(quietRetryDelaysMs = listOf(500L, 1_000L, 2_000L, 4_000L))
+        rig.openSettled(project)
+        val prompt = "Next: the fee table for market 400 (#saturated)."
+        val reply = "Market 400's fee table row is filed."
+        turnTakenElsewhere(prompt, reply)
+
+        val throttle = rig.accountRpc.throttle
+        val held = CompletableDeferred<Unit>()
+        val control = List(6) { rig.scope.async { throttle.call { held.await() } } }
+        rig.awaitUntil(5_000) { throttle.describe().startsWith("control 3/3 +3 waiting") }
+        val from = server.requests(Route.RecordState).size
+        rig.conversations.revalidate(project, force = true)
+        rig.awaitUntil(30_000) { rig.state(project).items.filterIsInstance<UserMessage>().lastOrNull()?.text == prompt }
+        rig.awaitUntil(10_000) { rig.state(project).items.filterIsInstance<AssistantMessage>().lastOrNull()?.markdown == reply && !rig.state(project).isLoading }
+        println("   refreshed with ${throttle.describe()}; state reads ${server.requests(Route.RecordState).size - from}")
+        assertThat(throttle.describe()).startsWith("control 3/3 +3 waiting")
+        assertThat(rig.conversations.loadDiagnostics(project)!!.fetched).isTrue()
+        assertThat(rig.state(project).transcriptError).isNull()
+        held.complete(Unit)
+        control.awaitAll()
+    }
+
+    /**
+     * Bennett's 0.4.15 coordinator: `recordProjectMode=false` on a Project's root, its window — turns 6644 to 6704 —
+     * all its workers' injected reports, none a prompt sent in Project mode, painted from the disk while the state
+     * read never landed. The saved state's word that the chat is a root makes it a coordinator from the first frame.
+     */
+    @Test
+    fun `a Project root whose newest turns are all injected reports reopens from the disk as a coordinator before the account answers`() = runBlocking<Unit> {
+        bigProject()
+        // Its prompts all its workers' injected reports, none sent in Project mode: only the account's state says root.
+        server.records[project] = server.records.getValue(project).map { step ->
+            val human = step["humanMessage"] as? JsonObject ?: return@map step
+            JsonObject(step + ("humanMessage" to JsonObject(human - "agentMode")))
+        }
+        server.rootProjects += project
+        val disk = folder.newFolder("disk-root")
+        val first = FaultRig(server.baseUrl, disk, readTimeoutMs = 2_000L, extended = true, engine = TranscriptEngine.BETA).also { it.now = now; rigs += it }
+        first.openSettled(project)
+        assertThat(first.state(project).isProjectConversation).isTrue()
+        first.close()
+        rigs.clear()
+
+        // The next process: nothing the account says about the chat answers — its state, its record, its live
+        // stream, each of which carries the state — and the disk is all there is.
+        val held = Fault.Held()
+        val silent = listOf(Route.RecordState, Route.Record, Route.Live)
+        silent.forEach { server.outage(it, held) }
+        val second = FaultRig(server.baseUrl, disk, readTimeoutMs = 20_000L, extended = true, engine = TranscriptEngine.BETA).also { it.now = now; rigs += it }
+        second.conversations.attach(project)
+        second.awaitUntil(30_000) { second.state(project).items.isNotEmpty() }
+        val coordinator = runCatching { second.awaitUntil(10_000) { second.state(project).isProjectConversation } }.isSuccess
+        println("   painted from the disk: ${second.state(project).items.size} items, isProjectConversation=$coordinator")
+        assertWithMessage("a Project root painted from the disk, as a coordinator").that(coordinator).isTrue()
+        assertThat(second.conversations.loadDiagnostics(project)!!.fetched).isFalse()
+        held.release()
+        silent.forEach { server.clear(it) }
     }
 
     private fun iso(ms: Long) = Instant.ofEpochMilli(ms).toString()

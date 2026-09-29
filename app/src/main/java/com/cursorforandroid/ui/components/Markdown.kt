@@ -1,7 +1,5 @@
 package com.cursorforandroid.ui.components
 
-import android.os.Build
-import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.awaitEachGesture
@@ -39,7 +37,6 @@ import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.PointerInputChange
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalClipboardManager
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.UriHandler
@@ -830,19 +827,13 @@ private fun Modifier.copyInlineSpanOnLongPress(paragraph: ParagraphHolder, onCop
 private object Cancelled
 
 /**
- * Copies code to the clipboard with the confirmation the message menu gives: the system's own overlay on Android 13+,
- * a toast before that. The clipboard itself plays the copy's haptic (see [ProvideHaptics]).
+ * Copies code to the clipboard. The clipboard itself plays the copy's haptic (see [ProvideHaptics]); Android 13+
+ * adds its own overlay, and nothing else is shown.
  */
 @Composable
 internal fun rememberCopyCode(): (String) -> Unit {
-    val context = LocalContext.current
     val clipboard = LocalClipboardManager.current
-    return remember(context, clipboard) {
-        { code: String ->
-            clipboard.setText(AnnotatedString(code))
-            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) Toast.makeText(context, "Copied", Toast.LENGTH_SHORT).show()
-        }
-    }
+    return remember(clipboard) { { code: String -> clipboard.setText(AnnotatedString(code)) } }
 }
 
 /**

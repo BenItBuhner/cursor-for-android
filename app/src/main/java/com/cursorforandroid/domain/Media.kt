@@ -106,9 +106,42 @@ object MediaMarkup {
 
     /** Drops an unfinished tag at the end of streaming text so the raw markup never flashes before it completes. */
     fun trimPartialTail(text: String): String {
-        val m = partialTail.find(text) ?: return text
+        val from = partialTailFloor(text)
+        if (from < 0) return text
+        val m = partialTail.find(text, from) ?: return text
         return text.substring(0, m.range.first).trimEnd()
     }
+
+    /**
+     * The earliest index [partialTail] can match at, or -1 when it cannot match anywhere: a reply streaming token by
+     * token would otherwise have the regex walk it from its first character on every token.
+     */
+    private fun partialTailFloor(text: String): Int {
+        // A tag match holds no `>` before its own, and its own is followed by at most 160 characters and a final
+        // line break: this margin must stay above that bound.
+        val afterTagGuard = text.lastIndexOf('>', text.length - PARTIAL_TAG_REACH) + 1
+        // An image match holds no `]` before the one that opens its `(`, which comes after the last `)`.
+        val afterImageGuard = text.lastIndexOf(']', text.lastIndexOf(')')) + 1
+        val tag = firstMediaTagOpen(text, afterTagGuard)
+        val image = text.indexOf("![", afterImageGuard)
+        return when {
+            tag < 0 -> image
+            image < 0 -> tag
+            else -> minOf(tag, image)
+        }
+    }
+
+    private fun firstMediaTagOpen(text: String, from: Int): Int {
+        var i = text.indexOf('<', from)
+        while (i >= 0) {
+            if (MEDIA_TAGS.any { text.regionMatches(i + 1, it, 0, it.length, ignoreCase = true) }) return i
+            i = text.indexOf('<', i + 1)
+        }
+        return -1
+    }
+
+    private const val PARTIAL_TAG_REACH = 200
+    private val MEDIA_TAGS = listOf("img", "video", "audio")
 
     /**
      * When the image at [imageEnd] is wrapped in a link, returns the length [before] should be cut to and the

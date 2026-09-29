@@ -22,6 +22,8 @@ import com.cursorforandroid.data.repo.CursorBackend
 import com.cursorforandroid.domain.CursorUser
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.ui.theme.ThemeMode
+import com.cursorforandroid.util.awaitSynced
+import com.cursorforandroid.util.holdFrameClock
 import com.cursorforandroid.util.AppClock
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.Dispatchers
@@ -70,25 +72,13 @@ class SidebarCollapsePersistenceTest {
         AppClock.nowMillis = System::currentTimeMillis
     }
 
-    /**
-     * The rule's own `waitUntil` runs on the frame clock, which the disk-backed preferences do not; this waits on the
-     * wall while keeping the main looper and the composition moving.
-     */
-    private fun awaitOnScreen(condition: () -> Boolean) {
-        repeat(1500) {
-            compose.waitForIdle()
-            if (condition()) return
-            Thread.sleep(20)
-        }
-        throw AssertionError("Condition was still not satisfied after 30s")
-    }
-
     private fun composed(text: String) = compose.onAllNodes(hasText(text)).fetchSemanticsNodes().isNotEmpty()
 
     @Test
     fun `a fold made in the sidebar is written to the device and read back by the next view model`() = runBlocking<Unit> {
         // Which view model the sidebar reads from: swapping it is the restart, the composition standing in for the app's.
         var viewModel by mutableStateOf(AgentsViewModel(graph))
+        compose.holdFrameClock()
         compose.setContent {
             val vm = viewModel
             val state by vm.uiState.collectAsState(context = Dispatchers.Main.immediate)
@@ -112,7 +102,7 @@ class SidebarCollapsePersistenceTest {
                 )
             }
         }
-        awaitOnScreen { composed("Today") && viewModel.uiState.value.hasLoaded }
+        compose.awaitSynced { composed("Today") && viewModel.uiState.value.hasLoaded }
         val todayRows = viewModel.uiState.value.sections.first { it.key == "date:Today" }.rows
         assertThat(todayRows).isNotEmpty()
         val firstToday = todayRows.first().agent.name
@@ -120,14 +110,14 @@ class SidebarCollapsePersistenceTest {
 
         // Folded from the header: the rows go, the count comes, and the device has the fold.
         compose.onNodeWithText("Today").performClick()
-        awaitOnScreen { viewModel.uiState.value.collapsedSections.contains("date:Today") }
+        compose.awaitSynced { viewModel.uiState.value.collapsedSections.contains("date:Today") }
         compose.onNodeWithText(firstToday).assertDoesNotExist()
         compose.onNodeWithTag("section-count-date:Today", useUnmergedTree = true).assertIsDisplayed()
         assertThat(PreferencesStore(context).collapsedSidebarSections.first()).containsExactly("date:Today")
 
         // Restart: a new view model, a fresh read of the same device. Today comes back folded, nothing tapped.
         viewModel = AgentsViewModel(graph)
-        awaitOnScreen { viewModel.uiState.value.hasLoaded && viewModel.uiState.value.collapsedSections.contains("date:Today") }
+        compose.awaitSynced { viewModel.uiState.value.hasLoaded && viewModel.uiState.value.collapsedSections.contains("date:Today") }
         compose.onNodeWithText(firstToday).assertDoesNotExist()
         compose.onNodeWithTag("section-count-date:Today", useUnmergedTree = true).assertIsDisplayed()
         compose.onNodeWithContentDescription("Expand Today").assertIsDisplayed()
@@ -136,7 +126,7 @@ class SidebarCollapsePersistenceTest {
 
         // Opened again, the device forgets the fold.
         compose.onNodeWithContentDescription("Expand Today").performClick()
-        awaitOnScreen { viewModel.uiState.value.collapsedSections.isEmpty() }
+        compose.awaitSynced { viewModel.uiState.value.collapsedSections.isEmpty() }
         compose.onNodeWithText(firstToday).assertIsDisplayed()
         assertThat(PreferencesStore(context).collapsedSidebarSections.first()).isEmpty()
     }

@@ -396,7 +396,55 @@ class CatalogRepositoryTest {
 
         api.failWorkers = IOException("forbidden")
         api.failPools = IOException("forbidden")
-        assertThat(catalog.loadDevices().getOrThrow()).isEmpty()
+        assertThat(catalog.loadDevices(force = true).getOrThrow()).isEmpty()
+    }
+
+    @Test
+    fun `a device listing stands for a minute, a refresh asks again, and callers arriving together share one`() = runBlocking<Unit> {
+        api.workers = listOf(WorkerDto(name = "studio", scope = "personal"))
+        val catalog = CatalogRepository(session, cache)
+
+        assertThat(catalog.loadDevices().getOrThrow().map { it.target }).containsExactly(DeviceTarget.machine("studio"))
+        assertThat(api.workersCalls to api.poolsCalls).isEqualTo(2 to 1)
+
+        // Another New chat inside the minute: what is shown, no call.
+        now += CatalogRepository.DEVICES_FRESH_MS - 1
+        assertThat(catalog.loadDevices().getOrThrow().map { it.target }).containsExactly(DeviceTarget.machine("studio"))
+        assertThat(api.workersCalls to api.poolsCalls).isEqualTo(2 to 1)
+
+        // The picker's refresh asks at once.
+        api.workers = listOf(WorkerDto(name = "devbox", scope = "personal"))
+        assertThat(catalog.loadDevices(force = true).getOrThrow().map { it.target }).containsExactly(DeviceTarget.machine("devbox"))
+        assertThat(api.workersCalls to api.poolsCalls).isEqualTo(4 to 2)
+
+        // A minute on, the next open asks again; two opens together cost one listing.
+        now += CatalogRepository.DEVICES_FRESH_MS
+        val gate = CompletableDeferred<Unit>().also { api.workersGate = it }
+        val first = async(Dispatchers.Default) { catalog.loadDevices() }
+        val second = async(Dispatchers.Default) { catalog.loadDevices() }
+        while (api.workersCalls < 6) yield()
+        gate.complete(Unit)
+        assertThat(first.await().getOrThrow()).isEqualTo(second.await().getOrThrow())
+        assertThat(api.workersCalls to api.poolsCalls).isEqualTo(6 to 3)
+
+        // A sign-out forgets the listing with the rest.
+        catalog.reset()
+        catalog.loadDevices()
+        assertThat(api.workersCalls to api.poolsCalls).isEqualTo(8 to 4)
+    }
+
+    @Test
+    fun `a failing fleet call leaves the others' rows listed`() = runBlocking<Unit> {
+        api.workers = listOf(WorkerDto(name = "studio", scope = "personal"))
+        api.pools = listOf(PoolDto(name = "gpu", connectedWorkerCount = 1))
+        api.failWorkers = IOException("forbidden")
+        val catalog = CatalogRepository(session, cache)
+
+        assertThat(catalog.loadDevices().getOrThrow().map { it.target }).containsExactly(DeviceTarget.pool("gpu"))
+
+        api.failWorkers = null
+        api.failPools = IOException("forbidden")
+        assertThat(catalog.loadDevices(force = true).getOrThrow().map { it.target }).containsExactly(DeviceTarget.machine("studio"))
     }
 
     /**
@@ -446,7 +494,7 @@ class CatalogRepositoryTest {
             .isEqualTo(MachineWorker(workerId = "9e8d7c6b", name = "studio", repoLabel = null, ownerUserId = 42))
 
         api.workers = emptyList()
-        assertThat(catalog.loadDevices().getOrThrow()).isEmpty()
+        assertThat(catalog.loadDevices(force = true).getOrThrow()).isEmpty()
         assertThat(catalog.lastSeenWorker(DeviceTarget.machine("bennett"))?.workerId).isEqualTo("5f1c9d2a")
         assertThat(CatalogRepository(session, cache).also { it.loadDevices() }.lastSeenWorker(DeviceTarget.machine("bennett"))?.workerId).isEqualTo("5f1c9d2a")
     }

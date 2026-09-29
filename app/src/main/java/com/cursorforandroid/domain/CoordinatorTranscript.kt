@@ -121,44 +121,10 @@ object CoordinatorTranscript {
      * is free to say the same words twice in two calls of its own. Nothing is read from anywhere else and no text
      * is made up: a copy is left out, that is all.
      */
-    fun repeatedMessages(items: List<TimelineItem>): Map<String, String> {
-        var repeats: MutableMap<String, String>? = null
-        var seen: MutableMap<String, String>? = null
-        for (item in items) {
-            if (item !is ActivityGroup) continue
-            for (step in item.steps) {
-                if (step !is ToolCall) continue
-                val call = reinterpret(step)
-                val payload = call.payload as? ToolPayload.CoordinatorMessage ?: continue
-                if (payload.missing && payload.message.isBlank()) continue
-                val text = normalize(payload.message)
-                val names = listOfNotNull(
-                    call.callId.takeIf { it.isNotBlank() }?.let { "call\u0000$it\u0000$text" },
-                    payload.messageId?.takeIf { it.isNotBlank() }?.let { "message\u0000$it\u0000$text" },
-                )
-                if (names.isEmpty()) continue
-                val original = names.firstNotNullOfOrNull { seen?.get(it) }
-                if (original != null) {
-                    (repeats ?: LinkedHashMap<String, String>().also { repeats = it })[messageKey(item, call)] = original
-                    continue
-                }
-                val known = seen ?: HashMap<String, String>().also { seen = it }
-                names.forEach { known[it] = call.callId }
-            }
-        }
-        return repeats ?: emptyMap()
-    }
+    fun repeatedMessages(items: List<TimelineItem>): Map<String, String> = LeftOutScan().apply { scan(items, 0, items.size) }.messages
 
     /** Everything [items] leave out as said again: the message copies ([repeatedMessages]) and the replayed activity ([replayedActivity]), by key. */
-    fun leftOut(items: List<TimelineItem>): Set<String> {
-        val messages = repeatedMessages(items)
-        val replays = replayedActivity(items)
-        return when {
-            replays.isEmpty() -> messages.keys
-            messages.isEmpty() -> replays.keys
-            else -> messages.keys + replays.keys
-        }
-    }
+    fun leftOut(items: List<TimelineItem>): Set<String> = LeftOutScan().apply { scan(items, 0, items.size) }.keys()
 
     /** The key a whole item is left out under (see [replayedActivity]): `item:` and its id. */
     fun itemKey(item: TimelineItem): String = "item:${item.id}"
@@ -185,29 +151,106 @@ object CoordinatorTranscript {
      */
     private fun callKey(call: ToolCall): String = "${call.callId}\u0000${call.name.lowercase()}\u0000${call.summary}\u0000${call.detail ?: ""}"
 
-    fun replayedActivity(items: List<TimelineItem>): Map<String, String> {
-        var out: MutableMap<String, String>? = null
-        // Where each call id was first drawn: by group, and the run's footer id once known (the original's run).
-        val seenCalls = HashMap<String, String>()
-        val seenTexts = HashMap<String, String>()
-        var start = 0
-        var runNo = 0
-        while (start < items.size) {
-            var end = start
-            while (end < items.size && items[end] !is RunFooter) end++
-            val run = items.subList(start, minOf(end + 1, items.size))
+    fun replayedActivity(items: List<TimelineItem>): Map<String, String> = LeftOutScan().apply { scan(items, 0, items.size) }.replays
+
+    /**
+     * The reading behind [repeatedMessages], [replayedActivity] and [leftOut], run by run and resumable: what a scan
+     * of the runs up to a footer leaves behind is all a later run is read against, so a caller that keeps the scan of
+     * the transcript's settled runs reads only the runs after them (see `TranscriptPresenter`). A scan over [base]
+     * reads what [base] has seen and left out, and adds to itself alone; [base] must not be scanned further while it is.
+     */
+    class LeftOutScan(private val base: LeftOutScan? = null) {
+        /** The message copies found ([repeatedMessages]) and the replays ([replayedActivity]), by key, in order; this scan's alone. */
+        internal val messages = LinkedHashMap<String, String>()
+        internal val replays = LinkedHashMap<String, String>()
+        /** What [repeatedMessages] has seen: each message's names, to the call that said it first. */
+        private val seenNames = HashMap<String, String>()
+        /** Where each call and text [replayedActivity] has seen was first drawn: the run it was drawn in. */
+        private val seenCalls = HashMap<String, String>()
+        private val seenTexts = HashMap<String, String>()
+        private var runNo: Int = base?.runNo ?: 0
+
+        private fun seenName(name: String): String? = seenNames[name] ?: base?.seenName(name)
+        private fun seenCall(key: String): String? = seenCalls[key] ?: base?.seenCall(key)
+        private fun seenText(text: String): String? = seenTexts[text] ?: base?.seenText(text)
+
+        /** True when this scan or its base leaves nothing out. */
+        val isEmpty: Boolean get() = messages.isEmpty() && replays.isEmpty() && (base?.isEmpty ?: true)
+
+        /** True when [key] (a [messageKey] or an [itemKey]) is left out by this scan or its base. */
+        fun leavesOut(key: String): Boolean = key in messages || key in replays || base?.leavesOut(key) == true
+
+        /** This scan's keys (its base's not among them), as [leftOut] gives them. */
+        fun keys(): Set<String> = when {
+            replays.isEmpty() -> messages.keys
+            messages.isEmpty() -> replays.keys
+            else -> messages.keys + replays.keys
+        }
+
+        /**
+         * Reads the runs of `items[from, to)` on from what has been read. [from] is 0 or follows a footer, as does
+         * [to] unless it is the end: a run is cut at its footer, and the items after the last footer are the run under way.
+         */
+        fun scan(items: List<TimelineItem>, from: Int, to: Int) {
+            require(from == 0 || items[from - 1] is RunFooter) { "a scan resumes after a footer" }
+            require(to == 0 || to == items.size || items[to - 1] is RunFooter) { "a scan stops after a footer" }
+            var start = from
+            while (start < to) {
+                var end = start
+                while (end < to && items[end] !is RunFooter) end++
+                val run = items.subList(start, minOf(end + 1, to))
+                repeatedMessages(run)
+                replayedActivity(run)
+                start = end + 1
+                runNo++
+            }
+        }
+
+        private fun repeatedMessages(run: List<TimelineItem>) {
+            for (item in run) {
+                if (item !is ActivityGroup) continue
+                for (step in item.steps) {
+                    if (step !is ToolCall) continue
+                    val call = reinterpret(step)
+                    val payload = call.payload as? ToolPayload.CoordinatorMessage ?: continue
+                    if (payload.missing && payload.message.isBlank()) continue
+                    val text = normalize(payload.message)
+                    val names = listOfNotNull(
+                        call.callId.takeIf { it.isNotBlank() }?.let { "call\u0000$it\u0000$text" },
+                        payload.messageId?.takeIf { it.isNotBlank() }?.let { "message\u0000$it\u0000$text" },
+                    )
+                    if (names.isEmpty()) continue
+                    val original = names.firstNotNullOfOrNull { seenName(it) }
+                    if (original != null) {
+                        messages[messageKey(item, call)] = original
+                        continue
+                    }
+                    names.forEach { seenNames[it] = call.callId }
+                }
+            }
+        }
+
+        private fun replayedActivity(run: List<TimelineItem>) {
             val runName = (run.lastOrNull() as? RunFooter)?.let { "run:${it.runId}" } ?: "run#$runNo"
             // First pass: which calls of this run were drawn before, and whether any call is the run's own.
             var own = false
             val replayed = HashSet<String>()
+            var ownKeys: HashSet<String>? = null
             for (item in run) {
                 if (item !is ActivityGroup) continue
                 for (step in item.steps) {
                     if (step !is ToolCall || step.callId.isBlank()) continue
                     val key = callKey(step)
-                    if (seenCalls.containsKey(key)) replayed += messageKey(item, step) else own = true
+                    if (seenCall(key) != null) replayed += messageKey(item, step)
+                    else {
+                        own = true
+                        (ownKeys ?: HashSet<String>().also { ownKeys = it }) += messageKey(item, step)
+                    }
                 }
             }
+            // Calls are left out by their message key, and a key can come round within a run: one a replay shares
+            // with a call of the run's own is drawn, or the run's own call would go with the replay.
+            ownKeys?.let { replayed.removeAll(it) }
             // Second pass: the calls and items left out, and what this run adds to what has been drawn.
             for (item in run) {
                 when (item) {
@@ -215,34 +258,37 @@ object CoordinatorTranscript {
                         val calls = item.steps.filterIsInstance<ToolCall>()
                         val gone = calls.filter { messageKey(item, it) in replayed }
                         if (gone.isEmpty()) {
-                            calls.forEach { seenCalls.putIfAbsent(callKey(it), runName) }
+                            calls.forEach { drawn(callKey(it), runName) }
                             continue
                         }
-                        val map = out ?: LinkedHashMap<String, String>().also { out = it }
                         if (gone.size == calls.size) {
-                            map[itemKey(item)] = seenCalls.getValue(callKey(gone.first()))
+                            replays[itemKey(item)] = drawnIn(callKey(gone.first()))
                         } else {
-                            gone.forEach { map[messageKey(item, it)] = seenCalls.getValue(callKey(it)) }
-                            calls.filter { messageKey(item, it) !in replayed }.forEach { seenCalls.putIfAbsent(callKey(it), runName) }
+                            gone.forEach { replays[messageKey(item, it)] = drawnIn(callKey(it)) }
+                            calls.filter { messageKey(item, it) !in replayed }.forEach { drawn(callKey(it), runName) }
                         }
                     }
                     is AssistantMessage -> {
                         val text = normalize(item.markdown)
                         if (text.isEmpty()) continue
-                        val earlier = seenTexts[text]
+                        val earlier = seenText(text)
                         if (earlier != null && !own && earlier != runName) {
-                            (out ?: LinkedHashMap<String, String>().also { out = it })[itemKey(item)] = earlier
-                        } else {
-                            seenTexts.putIfAbsent(text, runName)
+                            replays[itemKey(item)] = earlier
+                        } else if (earlier == null) {
+                            seenTexts[text] = runName
                         }
                     }
                     else -> Unit
                 }
             }
-            start = end + 1
-            runNo++
         }
-        return out ?: emptyMap()
+
+        private fun drawn(key: String, runName: String) {
+            if (seenCall(key) == null) seenCalls[key] = runName
+        }
+
+        /** The run the call [key] was first drawn in; every call left out as a replay was, and one never drawn throws. */
+        private fun drawnIn(key: String): String = seenCall(key) ?: throw NoSuchElementException("Key $key is missing in the map.")
     }
 
     /**
@@ -265,6 +311,16 @@ object CoordinatorTranscript {
             if (steps.isNotEmpty()) out += item.copy(steps = steps)
         }
         return if (changed) out else items
+    }
+
+    /** [items] without the coordinator's messages to the user (see [isUserMessageCall]): its activity alone. The same list when it sent none. */
+    fun withoutMessages(items: List<TimelineItem>): List<TimelineItem> {
+        var keys: MutableSet<String>? = null
+        for (item in items) {
+            if (item !is ActivityGroup) continue
+            for (step in item.steps) if (step is ToolCall && isUserMessageCall(reinterpret(step))) (keys ?: HashSet<String>().also { keys = it }) += messageKey(item, step)
+        }
+        return keys?.let { withoutRepeats(items, it) } ?: items
     }
 
     /** The message texts of [items] as they read once whitespace is normalised, for telling a copy from its message. */

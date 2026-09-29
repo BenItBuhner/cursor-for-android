@@ -34,6 +34,8 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.ripple
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.State
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -45,6 +47,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -92,8 +96,6 @@ import com.cursorforandroid.ui.components.rememberFilePicker
 import com.cursorforandroid.ui.components.rememberMediaPicker
 import com.cursorforandroid.ui.components.scrollEdgeFade
 import com.cursorforandroid.ui.components.stylusWriting
-import com.cursorforandroid.ui.components.Haptic
-import com.cursorforandroid.ui.components.rememberHaptics
 import com.cursorforandroid.share.ShareTarget
 import com.cursorforandroid.ui.compose.LaunchRefusedHaptic
 import com.cursorforandroid.ui.compose.NewAgentUiState
@@ -147,7 +149,10 @@ fun HomeScreen(
     val viewModel: NewAgentViewModel = viewModel(factory = NewAgentViewModel.Factory(graph, resume = openDraft))
     val draftId by viewModel.draftId.collectAsStateWithLifecycle()
     LaunchedEffect(draftId) { openDraft = draftId }
-    val state by viewModel.state.collectAsStateWithLifecycle()
+    // Every keystroke is a new state, so this body reads it only through derivedStateOf: the composer item reads the
+    // prompt in its own scope, and the list's items are not rebuilt under it.
+    val stateHolder = viewModel.state.collectAsStateWithLifecycle()
+    val state by stateHolder
     val commands by viewModel.commands.collectAsStateWithLifecycle()
     val colors = CursorTheme.colors
     var repoSheet by rememberSaveable { mutableStateOf(false) }
@@ -159,26 +164,30 @@ fun HomeScreen(
     // lists never disagree about which chats are visible; the cards are newest first.
     val blocks = remember(home, listState, projectsAvailable) { homeBlocks(home, listState, projectsAvailable) }
     val projectGrid = remember { ProjectGridState() }
-    val blockActions = HomeBlockActions(
-        onOpenAgent = onOpenAgent,
-        rowActions = rowActions,
-        onNewProject = onNewProject,
-        onOpenSettings = onOpenSettings,
-        projectGrid = projectGrid,
-        onReorderProjects = onReorderProjects,
-    )
+    // Kept across recompositions so the cards skip while the prompt is typed: the class compares by identity.
+    val blockActions = remember(onOpenAgent, rowActions, onNewProject, onOpenSettings, onReorderProjects) {
+        HomeBlockActions(
+            onOpenAgent = onOpenAgent,
+            rowActions = rowActions,
+            onNewProject = onNewProject,
+            onOpenSettings = onOpenSettings,
+            projectGrid = projectGrid,
+            onReorderProjects = onReorderProjects,
+        )
+    }
     // The "+" menu's two pickers: the gallery — images alone in the default mode, images and videos as real files in
     // Extended mode — and, in Extended mode, the document picker for files of any type.
-    val counts = AttachmentCounts.of(state.attachments, state.files)
+    val counts by remember { derivedStateOf { AttachmentCounts.of(state.attachments, state.files) } }
+    val canAttachFiles by remember { derivedStateOf { state.canAttachFiles } }
     val pickMedia = rememberMediaPicker(
-        extended = state.canAttachFiles,
+        extended = canAttachFiles,
         counts = counts,
         onPickedImages = viewModel::addAttachments,
         onPickedFiles = viewModel::addFiles,
         onError = viewModel::reportError,
     )
     val pickFiles = rememberFilePicker(counts = counts, onPickedFiles = viewModel::addFiles, onError = viewModel::reportError)
-    val plusMenu = rememberComposerMenuActions(graph, onPickMedia = pickMedia, onPickFiles = if (state.canAttachFiles) pickFiles else null)
+    val plusMenu = rememberComposerMenuActions(graph, onPickMedia = pickMedia, onPickFiles = if (canAttachFiles) pickFiles else null)
     val voice = rememberComposerVoice(graph)
     val share by graph.share.offer.collectAsStateWithLifecycle()
     LaunchedEffect(share?.generation, share?.target) {
@@ -210,7 +219,7 @@ fun HomeScreen(
                 onComposerFocused()
             }
         }
-        LaunchRefusedHaptic(state)
+        LaunchRefusedHaptic(stateHolder)
         // Expanded, the composer runs from under its selectors to just above the pane's foot — the keyboard's edge while
         // it is up — with the lead above it given up as it grows and the page held still at the top.
         val expansion = rememberComposerExpansion()
@@ -330,12 +339,8 @@ fun HomeScreen(
             models = state.models,
             selectedModel = state.selectedModel,
             selectedVariant = state.selectedVariant,
-            planMode = state.planMode,
-            autoCreatePr = state.autoCreatePr,
             loading = state.isLoadingModels,
             unavailable = state.modelsUnavailable,
-            onPlanMode = viewModel::setPlanMode,
-            onAutoCreatePr = viewModel::setAutoCreatePr,
             onRefresh = viewModel::refreshModels,
             onSelect = viewModel::selectModel,
             onDismiss = { modelSheet = false },
@@ -365,7 +370,7 @@ fun RecentChatRow(
     var menuOpen by remember { mutableStateOf(false) }
     var menuAt by remember { mutableStateOf<IntOffset?>(null) }
     val interaction = remember { MutableInteractionSource() }
-    val haptics = rememberHaptics()
+    val haptics = LocalHapticFeedback.current
     Box(modifier) {
     Row(
         Modifier
@@ -379,7 +384,7 @@ fun RecentChatRow(
                             interactionSource = interaction,
                             indication = ripple(color = colors.base),
                             onClick = onClick,
-                            onLongClick = { haptics.perform(Haptic.LongPress); menuAt = null; menuOpen = true },
+                            onLongClick = { haptics.performHapticFeedback(HapticFeedbackType.LongPress); menuAt = null; menuOpen = true },
                         )
                 } else {
                     Modifier.pressable(onClick, shape)
@@ -419,7 +424,7 @@ fun RecentChatRow(
             }
         }
     }
-        if (actions != null) ChatRowMenu(row = row, expanded = menuOpen, onDismiss = { menuOpen = false }, actions = actions, at = menuAt)
+        if (actions != null && menuOpen) ChatRowMenu(row = row, expanded = true, onDismiss = { menuOpen = false }, actions = actions, at = menuAt)
     }
 }
 
@@ -450,6 +455,12 @@ private fun PreviewCard(row: AgentRow) {
             }
         }
     }
+}
+
+/** [LaunchRefusedHaptic] in a scope of its own, so the state it reads on every keystroke recomposes it alone. */
+@Composable
+private fun LaunchRefusedHaptic(state: State<NewAgentUiState>) {
+    LaunchRefusedHaptic(state.value)
 }
 
 /**

@@ -24,6 +24,7 @@ import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.yield
 import org.junit.Test
+import java.nio.file.Files
 
 /**
  * The demo backend stands in for the API in every walkthrough and screenshot, so where it behaves unlike the real one
@@ -317,5 +318,44 @@ class DemoBackendTest {
         val remaining = api.listAgents(limit = 100).items.map { it.id }
         assertThat(remaining).containsNoDuplicates()
         assertThat(remaining).containsNoneIn(launched)
+    }
+
+    @Test
+    fun `scale markers select only the requested supported fleet`() {
+        val cache = Files.createTempDirectory("demo-scale-marker").toFile()
+        try {
+            assertThat(DemoPerfSeeds.scaleFleet(cache)).isNull()
+            cache.resolve("perf-scale-50").createNewFile()
+            assertThat(DemoPerfSeeds.scaleFleet(cache)).isEqualTo(50)
+            cache.resolve("perf-scale-500").createNewFile()
+            assertThat(DemoPerfSeeds.scaleFleet(cache)).isEqualTo(500)
+        } finally {
+            cache.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `scale datasets have exact fleet project running and transcript shapes`() {
+        data class Expected(val projects: Int, val smallWorkers: Int, val bigWorkers: Int, val running: Int)
+        val expected = mapOf(
+            50 to Expected(projects = 4, smallWorkers = 15, bigWorkers = 20, running = 15),
+            200 to Expected(projects = 7, smallWorkers = 72, bigWorkers = 120, running = 60),
+            500 to Expected(projects = 11, smallWorkers = 150, bigWorkers = 150, running = 120),
+        )
+
+        expected.forEach { (size, shape) ->
+            val dataset = DemoPerfSeeds.scaleDataset(size)
+            assertThat(dataset.seeds).hasSize(size)
+            assertThat(dataset.seeds.count { it.runStatus == "RUNNING" }).isEqualTo(shape.running)
+            assertThat(dataset.composers.count { it.isProject }).isEqualTo(shape.projects)
+            assertThat(dataset.composers.count { it.parent?.id == DemoPerfSeeds.SCALE_BIG_PROJECT_ID }).isEqualTo(shape.bigWorkers)
+            assertThat(dataset.composers.count { it.id.startsWith("bc-scale-small-") && it.parent != null }).isEqualTo(shape.smallWorkers)
+            assertThat(dataset.sources).hasSize(size)
+
+            val coordinator = dataset.seeds.single { it.id == DemoPerfSeeds.SCALE_BIG_PROJECT_ID }
+            assertThat(coordinator.earlier.size + 1).isEqualTo(2_000)
+            assertThat(coordinator.liveScript).isEqualTo("scale")
+            assertThat(dataset.seeds.map { it.liveScript }.distinct()).containsExactly("scale")
+        }
     }
 }

@@ -652,6 +652,46 @@ class LiveRunHubTest {
         subscription.cancel()
     }
 
+    /**
+     * Bennett's 0.4.15 coordinator: `stream=events:3,status:FINISHED,finished:false,items:0`, the connection held with
+     * keep-alive comments only — which are not events — and the record still calling the run running. The grace runs
+     * on the clock: no event after the terminal status is needed to let the stream go.
+     */
+    @Test
+    fun `a stream that says the run ended with nothing else and then falls silent is let go after the grace, on the clock`() = runBlocking {
+        hub = LiveRunHub(session, agents, nowProvider = { now }, pollIntervalMs = 50, releaseGraceMs = releaseGrace, reconnectBaseMs = 20, reconnectMaxMs = 40, terminalGraceMs = 300, scope = scope)
+        api.addRunningAgent("bc-1", "Agent", "run-1")
+        streamer.emit("run-1", RunStreamEvent.Status("run-1", RunStatus.RUNNING))
+        streamer.emit("run-1", RunStreamEvent.Status("run-1", RunStatus.FINISHED))
+        val subscription = scope.launch { hub.snapshots("bc-1", "run-1").collect { } }
+
+        awaitUntil { snapshot()?.finished == true }
+        assertThat(current().status).isEqualTo(RunStatus.FINISHED)
+        assertThat(current().items.filterIsInstance<AssistantMessage>()).isEmpty()
+        assertThat(api.runs.getValue("run-1").status).isEqualTo("RUNNING")
+        assertThat(connections()).isEqualTo(1)
+        subscription.cancel()
+    }
+
+    /** A stream gone for good after it said the run ended: finished on its word, not polled for as long as the record lags it. */
+    @Test
+    fun `a stream gone for good after saying the run ended finishes the run, the record still calling it running`() = runBlocking {
+        api.addRunningAgent("bc-1", "Agent", "run-1")
+        streamer.emit("run-1", RunStreamEvent.Status("run-1", RunStatus.RUNNING))
+        streamer.emit("run-1", RunStreamEvent.Status("run-1", RunStatus.FINISHED))
+        streamer.emit("run-1", RunStreamEvent.Error(RunStreamEvent.Error.STREAM_EXPIRED, "This run's live stream has expired."))
+        streamer.emit("run-1", RunStreamEvent.Done)
+        val subscription = scope.launch { hub.snapshots("bc-1", "run-1").collect { } }
+
+        awaitUntil { snapshot()?.finished == true }
+        assertThat(current().status).isEqualTo(RunStatus.FINISHED)
+        val polls = api.getRunCalls
+        delay(300)
+        assertThat(api.getRunCalls).isEqualTo(polls)
+        assertThat(polls).isAtMost(1)
+        subscription.cancel()
+    }
+
     @Test
     fun `a result that follows its terminal status within the grace is the run's ending, as streamed`() = runBlocking {
         hub = LiveRunHub(session, agents, nowProvider = { now }, pollIntervalMs = 50, releaseGraceMs = releaseGrace, reconnectBaseMs = 20, reconnectMaxMs = 40, terminalGraceMs = 5_000, scope = scope)

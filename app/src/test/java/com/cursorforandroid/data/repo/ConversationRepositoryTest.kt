@@ -138,7 +138,6 @@ class ConversationRepositoryTest {
         ref = "main",
         modelId = "auto-smart",
         modelParams = emptyList(),
-        autoCreatePr = false,
         planMode = false,
     ).let { it.copy(agentId = LaunchIdempotency.agentId(it, "nonce")) }
 

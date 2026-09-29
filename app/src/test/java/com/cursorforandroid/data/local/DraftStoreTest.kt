@@ -60,7 +60,6 @@ class DraftStoreTest {
                 modelChosen = true,
                 planMode = true,
                 mode = "DEBUG",
-                autoCreatePr = true,
             ),
         )
         store.write(draft("d-2", "And another", updatedAt = 2_000L))
@@ -161,7 +160,7 @@ class DraftStoreTest {
         assertThat(first.modelId).isEqualTo("composer-2.5")
         assertThat(first.modelParams).containsExactly(ModelParam("fast", "false"))
         assertThat(first.modelChosen).isTrue()
-        assertThat(first.autoCreatePr).isTrue()
+        // The old draft's auto-create PR switch is read past: launches no longer ask for a pull request.
         assertThat(first.planMode).isTrue()
         assertThat(first.nonce).isEqualTo("n-0361")
         // 0.3.61 never recorded a device: the draft opens on the last launch's.

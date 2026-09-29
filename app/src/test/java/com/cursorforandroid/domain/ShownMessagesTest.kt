@@ -137,6 +137,62 @@ class ShownMessagesTest {
         assertThat(CoordinatorTranscript.keepMessages(before, before)).isSameInstanceAs(before)
     }
 
+    private fun ask(i: Int) = "Where are we on step $i of the scanner?"
+    private fun reply(i: Int) = "Step $i: forty markets read, nothing flagged for you."
+
+    /** A coordinator chat of [turns] turns (from [from]), each asked in its own words and answered as [answered] says. */
+    private fun longChat(turns: Int, from: Int = 0, answered: (Int) -> String? = ::reply) = (from until turns).flatMap { i ->
+        listOfNotNull(prompt("rec-prompt-$i", ask(i)), work("w$i"), answered(i)?.let { message("m$i", "c$i", it) }, footer("f$i"))
+    }
+
+    @Test
+    fun `a chat of six thousand turns keeps what it remembers, exactly as a short one`() {
+        val turns = 6_000
+        val shown = ShownMessages()
+        val full = longChat(turns)
+        assertThat(shown.keep(full, "record")).isSameInstanceAs(full)
+        assertThat(shown.keep(full, "record")).isSameInstanceAs(full)
+        assertThat(shown.size).isEqualTo(ShownMessages.CAPACITY)
+
+        // More sent than remembered: what this build lacks is let go first, and nothing is drawn back.
+        val lossy = longChat(turns) { i -> reply(i).takeIf { i % 2 == 1 } }
+        assertThat(shown.keep(lossy, "record")).isSameInstanceAs(lossy)
+        assertThat(shown.keep(full, "record")).isSameInstanceAs(full)
+
+        // The window's last turns without every third message: those come back in place; turns paged past show none.
+        val windowFrom = turns - 200
+        val window = longChat(turns, from = windowFrom) { i -> reply(i).takeIf { i % 3 != 0 } }
+        val kept = shown.keep(window, "record")
+        assertThat(replies(kept)).containsExactlyElementsIn((windowFrom until turns).map { ask(it) to listOf(reply(it)) }).inOrder()
+        assertThat(kept.count { it.id.contains(ShownMessages.SHOWN_SUFFIX) }).isEqualTo((windowFrom until turns).count { it % 3 == 0 })
+        val firstBack = kept.indexOfFirst { it.id.contains(ShownMessages.SHOWN_SUFFIX) }
+        assertThat(kept[firstBack - 1].id).isEqualTo("w${windowFrom + 2}")
+        assertThat(kept[firstBack + 1]).isInstanceOf(RunFooter::class.java)
+    }
+
+    @Test
+    fun `in a chat of thousands of messages a grown copy from another source is not drawn twice`() {
+        val turns = 6_000
+        val shown = ShownMessages()
+        shown.keep(longChat(turns), "record")
+        val from = turns - 300
+        val fromLogs = (from until turns).flatMap { i -> listOf(prompt("run-$i-u", ask(i)), message("x$i", "s$i", "${reply(i)} Nothing else changed."), footer("fb$i")) }
+        assertThat(shown.keep(fromLogs, "runs")).isSameInstanceAs(fromLogs)
+    }
+
+    @Test
+    fun `in a chat of thousands of messages a call read in other words brings back only the newer reading`() {
+        val turns = 6_000
+        val last = turns - 1
+        val shown = ShownMessages()
+        repeat(3) { shown.keep(longChat(turns), "record") }
+        val corrected = "Reloaded: step $last is done after all."
+        val reread = longChat(turns, from = turns - 100) { i -> if (i == last) corrected else reply(i) }
+        assertThat(shown.keep(reread, "record")).isSameInstanceAs(reread)
+        val short = longChat(turns, from = turns - 100) { i -> reply(i).takeIf { i != last } }
+        assertThat(replies(shown.keep(short, "record")).last()).isEqualTo(ask(last) to listOf(corrected))
+    }
+
     @Test
     fun `a message read leniently in either copy is not drawn twice`() {
         val before = listOf(asked, message("m0", "c0", "The scanner is on day two", recovered = true, messageId = "msg-1"))

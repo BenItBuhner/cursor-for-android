@@ -72,6 +72,10 @@ import com.cursorforandroid.ui.compose.NewAgentViewModel
 import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
 import kotlin.math.roundToInt
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.flow.map
 
 /** The New Chat pane's words that tests and the Settings picker have to agree on. */
 object NewChatHomeCopy {
@@ -311,13 +315,15 @@ internal fun rememberComposerChips(graph: AppGraph): ComposerChips {
     val defaults by graph.prefs.composerDefaults.collectAsStateWithLifecycle(initialValue = null)
     val repositories by graph.catalog.repositories.collectAsStateWithLifecycle()
     val models by graph.catalog.models.collectAsStateWithLifecycle()
-    val agents by graph.agents.state.collectAsStateWithLifecycle()
-    return remember(defaults, repositories, models, agents.agents) {
+    val newestAccountModel by remember(graph) {
+        graph.agents.state.map { ModelResolution.newestAccountModel(it.agents) }.distinctUntilChanged().flowOn(Dispatchers.Default)
+    }.collectAsStateWithLifecycle(initialValue = remember(graph) { ModelResolution.newestAccountModel(graph.agents.state.value.agents) })
+    return remember(defaults, repositories, models, newestAccountModel) {
         val saved = defaults
         val url = saved?.repoUrl
         val repo = url?.let { repositories.firstOrNull { r -> r.url == it } ?: repositories.firstOrNull { r -> r.isAt(it) } } ?: repositories.firstOrNull()
         val remembered = saved?.takeIf { it.modelChosen }?.modelId?.let { ModelResolution.Candidate.Remembered(it, saved.modelParams, saved.modelChosenAtMillis) }
-        val model = ModelResolution.forNewChat(models, listOfNotNull(remembered, ModelResolution.newestAccountModel(agents.agents)), settleOnAuto = true)?.choice?.model
+        val model = ModelResolution.forNewChat(models, listOfNotNull(remembered, newestAccountModel), settleOnAuto = true)?.choice?.model
         ComposerChips(
             repoLabel = repo?.shortName ?: "Repository",
             noRepo = false,

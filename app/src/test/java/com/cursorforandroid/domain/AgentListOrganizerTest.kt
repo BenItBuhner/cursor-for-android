@@ -52,6 +52,43 @@ class AgentListOrganizerTest {
     private fun List<AgentSection>.ids(key: String) = first { it.key == key }.rows.map { it.agent.id }
 
     @Test
+    fun `one organizer pass reports counts for visible and held agents`() {
+        val visibleUnread = agent("unread")
+        val visibleRead = agent("read", updatedAgo = hour)
+        val heldRunning = agent("held-running", lifecycle = AgentLifecycle.ACTIVE, runStatus = RunStatus.RUNNING)
+        val all = listOf(visibleUnread, visibleRead, heldRunning)
+        val local = LocalAgentState(readMarkers = mapOf(visibleRead.id to now))
+
+        val organized = AgentListOrganizer.organizeWithCounts(
+            agents = listOf(visibleUnread, visibleRead),
+            countAgents = all,
+            prefs = ListPreferences(),
+            local = local,
+            nowMillis = now,
+            zone = zone,
+        )
+
+        assertThat(organized.unreadCount).isEqualTo(1)
+        assertThat(organized.runningCount).isEqualTo(1)
+        assertThat(organized.sections.flatMap { it.rows }.map { it.agent.id }).doesNotContain(heldRunning.id)
+    }
+
+    @Test
+    fun `searching an organized tree matches organizing with the query`() {
+        val agents = listOf(
+            agent("project", name = "Project", isProject = true),
+            agent("matching-child", name = "Needle worker", parent = "project"),
+            agent("other", name = "Other"),
+        )
+        val prefs = ListPreferences()
+        val local = LocalAgentState()
+        val unsearched = AgentListOrganizer.organize(agents, prefs, local, nowMillis = now, zone = zone)
+
+        assertThat(AgentListOrganizer.search(unsearched, "needle"))
+            .isEqualTo(AgentListOrganizer.organize(agents, prefs, local, query = "needle", nowMillis = now, zone = zone))
+    }
+
+    @Test
     fun `Projects lead the sidebar, pinned or not, and only a Project at the top of its tree is one`() {
         val agents = listOf(
             agent("plain", updatedAgo = 0),

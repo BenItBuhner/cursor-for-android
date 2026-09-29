@@ -24,6 +24,17 @@ class SlashCommandHighlightTest {
     }
 
     @Test
+    fun `the field's highlight finds a laid-out text's tokens once, not on every redraw of it`() {
+        val cache = TokenRangesCache()
+        val text = "/review " + "Ship the notes. ".repeat(300)
+        val found = cache.of(text)
+        assertThat(found).isEqualTo(SlashCommands.tokenRanges(text))
+        assertThat(cache.of(text)).isSameInstanceAs(found)
+        val edited = "$text /subscribe"
+        assertThat(cache.of(edited)).isEqualTo(SlashCommands.tokenRanges(edited))
+    }
+
+    @Test
     fun `a mode's own token takes its pill's tint and every other command the command yellow, in both themes`() {
         val text = "/multitask /plan /debug /ask then /review it"
         fun painted(dark: Boolean) = highlightSlashCommands(text, CommandTints.forTheme(dark)).let { a -> a.spanStyles.map { text.substring(it.start, it.end) to it.item.color } }

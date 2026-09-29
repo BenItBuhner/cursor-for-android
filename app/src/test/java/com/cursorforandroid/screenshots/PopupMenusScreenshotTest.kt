@@ -22,11 +22,13 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.hasSetTextAction
+import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.isEnabled
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.longClick
-import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.onAllNodesWithContentDescription
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onFirst
@@ -79,6 +81,7 @@ import com.cursorforandroid.ui.conversation.LocalTranscriptControls
 import com.cursorforandroid.ui.conversation.TimelineItemView
 import com.cursorforandroid.ui.conversation.TranscriptControls
 import com.cursorforandroid.ui.customize.CustomizeSheet
+import com.cursorforandroid.ui.customize.READ_ALL
 import com.cursorforandroid.ui.projects.ProjectActions
 import com.cursorforandroid.ui.projects.projectSection
 import com.cursorforandroid.ui.theme.CursorDimens
@@ -87,6 +90,7 @@ import com.cursorforandroid.ui.theme.ThemeMode
 import com.github.takahirom.roborazzi.ExperimentalRoborazziApi
 import com.github.takahirom.roborazzi.RoborazziOptions
 import com.github.takahirom.roborazzi.captureScreenRoboImage
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
 import org.junit.Rule
 import org.junit.Test
@@ -462,30 +466,22 @@ class PopupMenusScreenshotTest {
     @Config(qualifiers = LIGHT)
     fun mediaTileLight() = mediaTile(ThemeMode.Light, "260_popup_media_tile_light")
 
-    /**
-     * The rule's own `waitUntil` runs on the frame clock, which the disk-backed list preferences do not; this waits
-     * on the wall while keeping the main looper and the composition moving.
-     */
-    private fun awaitOnScreen(condition: () -> Boolean) {
-        repeat(500) {
-            compose.waitForIdle()
-            if (condition()) return
-            Thread.sleep(20)
-        }
-        throw AssertionError("Condition was still not satisfied after 10s")
-    }
-
     private fun customizePicker(mode: ThemeMode, name: String) {
         val api = FakeCursorApi()
         api.addIdleAgent(id = "bc-1", name = "Cli exploration", runId = "run-1", repo = "https://github.com/acme/app")
         api.addIdleAgent(id = "bc-2", name = "Latest release process", runId = "run-2", repo = "https://github.com/acme/site")
-        val graph = AppGraph(ApplicationProvider.getApplicationContext<Context>(), demo = CursorBackend(api, FakeRunStreamer(), isDemo = true))
+        val graph = AppGraph(ApplicationProvider.getApplicationContext<Context>(), demo = CursorBackend(api, FakeRunStreamer(), isDemo = true), agentListDispatcher = Dispatchers.Main)
         runBlocking { graph.session.enterDemo() }
         val viewModel = AgentsViewModel(graph)
         compose.setContent {
             Scene(mode) { CustomizeSheet(viewModel, onDismiss = {}) }
         }
-        awaitOnScreen { compose.onAllNodes(hasText("Group by")).fetchSemanticsNodes().isNotEmpty() && viewModel.uiState.value.repoSlugs.size == 2 }
+        // Read all is drawn enabled only once the unread chats have reached the sheet (see AppGraph.agentListDispatcher).
+        compose.waitUntil(timeoutMillis = 10_000) {
+            compose.onAllNodes(hasText("Group by")).fetchSemanticsNodes().isNotEmpty() &&
+                compose.onAllNodes(hasTestTag("sheet-header-action-$READ_ALL") and isEnabled()).fetchSemanticsNodes().isNotEmpty() &&
+                compose.runOnIdle { viewModel.uiState.value.repoSlugs.size == 2 }
+        }
         compose.onNodeWithText("Group by").performClick()
         capture(name)
     }

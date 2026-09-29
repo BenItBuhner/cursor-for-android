@@ -33,6 +33,7 @@ import org.robolectric.annotation.GraphicsMode
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.util.Base64
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * The bytes that reached the decoder and came back as "…not encoded as a valid image format", one per format and
@@ -104,6 +105,19 @@ class MediaLoaderDecodeTest {
         val error = result.exceptionOrNull()
         assertThat(error).isInstanceOf(MediaProblemException::class.java)
         return (error as MediaProblemException).problem
+    }
+
+    @Test
+    fun `building the loader builds no HTTP client, and the first image builds it off the main thread`() {
+        val builtOn = AtomicReference<Thread?>(null)
+        val loader = MediaLoader(context, { builtOn.set(Thread.currentThread()); OkHttpClient() }, ArtifactRepository(api = { FakeCursorApi() }))
+        assertThat(builtOn.get()).isNull()
+
+        server.enqueue(MockResponse().setHeader("Content-Type", "image/png").setBody(Buffer().write(png)))
+        assertThat(decode(loader, MediaRef.Remote(server.url("/shot.png").toString())).getOrThrow().width).isEqualTo(40)
+
+        assertThat(builtOn.get()).isNotNull()
+        assertThat(builtOn.get()).isNotSameInstanceAs(Looper.getMainLooper().thread)
     }
 
     @Test

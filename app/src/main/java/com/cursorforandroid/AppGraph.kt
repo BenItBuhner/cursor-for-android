@@ -24,6 +24,7 @@ import com.cursorforandroid.data.api.ConnectRepositoryBranchesApi
 import com.cursorforandroid.data.api.RepositoryBranchesApi
 import com.cursorforandroid.data.api.ConnectAgentStartApi
 import com.cursorforandroid.data.api.ApiThrottle
+import com.cursorforandroid.data.api.HostPause
 import com.cursorforandroid.data.api.ConnectJsonClient
 import com.cursorforandroid.data.api.ConnectProjectCreationApi
 import com.cursorforandroid.data.api.ConnectPromptUploadApi
@@ -74,6 +75,8 @@ import com.cursorforandroid.data.auth.CursorLoginEndpoints
 import com.cursorforandroid.data.auth.SessionTokenProvider
 import com.cursorforandroid.data.demo.DemoBackendFactory
 import com.cursorforandroid.data.demo.DemoData
+import com.cursorforandroid.data.demo.DemoPace
+import com.cursorforandroid.data.demo.DemoPerfSeeds
 import com.cursorforandroid.data.demo.DemoMcpConnectorApi
 import com.cursorforandroid.data.demo.DemoPullRequests
 import com.cursorforandroid.data.demo.DemoReview
@@ -154,9 +157,11 @@ import com.cursorforandroid.domain.SlashCatalog
 import com.cursorforandroid.domain.SlashCommand
 import com.cursorforandroid.domain.SteerOutcome
 import com.cursorforandroid.domain.QueuedFollowUp
+import com.cursorforandroid.domain.ReleaseNotes
 import com.cursorforandroid.domain.ToolPayload
 import com.cursorforandroid.domain.TranscriptDiagnostics
 import com.cursorforandroid.domain.TranscriptPresenters
+import com.cursorforandroid.domain.UpdateState
 import com.cursorforandroid.domain.WorkerMembership
 import com.cursorforandroid.domain.WorkerSpawnKind
 import com.cursorforandroid.domain.WorkspaceTree
@@ -172,17 +177,25 @@ import com.cursorforandroid.ui.settings.DIAGNOSTICS_DIR
 import com.cursorforandroid.update.AndroidUpdatePlatform
 import com.cursorforandroid.update.allocatableBytes
 import com.cursorforandroid.util.AppClock
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * Hand-rolled dependency graph. Small enough that a DI framework would only add build time.
@@ -233,6 +246,13 @@ class AppGraph(
     repositoryBranchesApi: RepositoryBranchesApi? = null,
     /** Injectable for tests only: the account's transcription, so the composer's voice input can be driven against a scripted account. */
     transcriptionApi: TranscriptionApi? = null,
+    /**
+     * Where the agent list is organized for its screens (see [com.cursorforandroid.ui.agents.AgentsViewModel.uiState]).
+     * Injectable for tests only: the Compose test rule runs a screen's collectors on whichever thread publishes to
+     * them, and a state written from a background thread while the main thread composes can go unseen, leaving the
+     * screen on the state before it.
+     */
+    val agentListDispatcher: CoroutineDispatcher = Dispatchers.Default,
 ) {
     private val app = context.applicationContext
 
@@ -306,17 +326,25 @@ class AppGraph(
         if (lazyNewChatDrafts.isInitialized()) newChatDrafts.flush()
     }
 
+    /** The pause each host asked for with a `429`, held by the REST calls, the run streams and the account's Connect calls alike. */
+    private val hostPauses = HostPause()
+
+    /** The connection pool and threads every OkHttp client below is built on (see [CursorApiFactory.newRoot]). */
+    private val httpRoot = lazy { CursorApiFactory.newRoot() }
+
     /** The account's API: one client, with the SSE stream sharing its dispatcher and connection pool. */
     private val realParts = lazy {
-        val client = CursorApiFactory.okHttp { keyStore.apiKey() }
-        CursorApiFactory.retrofit(client) to SseRunStreamer(CursorApiFactory.sseClient(client), { keyStore.apiKey() })
+        val client = CursorApiFactory.okHttp(httpRoot.value, hostPauses) { keyStore.apiKey() }
+        CursorApiFactory.retrofit(client) to SseRunStreamer(CursorApiFactory.sseClient(client), { keyStore.apiKey() }, pauses = hostPauses)
     }
     private val realBackend = real ?: CursorBackend(isDemo = false, parts = realParts)
     /** Seeded when the demo is entered, so a launch into a real account never pays for the dataset. */
-    private val perfSeeds = BuildConfig.DEBUG && com.cursorforandroid.data.demo.DemoPerfSeeds.enabled(app.cacheDir)
+    private val perfSeeds = BuildConfig.DEBUG && DemoPerfSeeds.enabled(app.cacheDir)
+    private val scaleFleet = if (BuildConfig.DEBUG) DemoPerfSeeds.scaleFleet(app.cacheDir) else null
+    private val scaleDataset = scaleFleet?.let(DemoPerfSeeds::scaleDataset)
     private val demoParts = lazy {
-        val realistic = if (BuildConfig.DEBUG) com.cursorforandroid.data.demo.DemoPace.fromMarker(app.cacheDir) else null
-        DemoBackendFactory.create(perfSeeds = perfSeeds, pace = realistic ?: com.cursorforandroid.data.demo.DemoPace.Brisk)
+        val realistic = if (BuildConfig.DEBUG) DemoPace.fromMarker(app.cacheDir) else null
+        DemoBackendFactory.create(perfSeeds = perfSeeds, scaleFleet = scaleFleet, pace = realistic ?: DemoPace.Brisk)
     }
 
     init {
@@ -356,8 +384,8 @@ class AppGraph(
      * around it: at OkHttp's five per host a figure's presign queued there behind the record's blobs and the open
      * chats' streams, where no call timeout runs yet.
      */
-    private val lazyAccountClient = lazy { CursorApiFactory.loginClient().also { it.dispatcher.maxRequestsPerHost = ApiThrottle.ON_THE_WIRE + 2 } }
-    private val lazyAccountRpc = lazy { ConnectJsonClient(lazyAccountClient.value, CursorLoginEndpoints.API_URL) }
+    private val lazyAccountClient = lazy { CursorApiFactory.loginClient(httpRoot.value).also { it.dispatcher.maxRequestsPerHost = ApiThrottle.ON_THE_WIRE + 2 } }
+    private val lazyAccountRpc = lazy { ConnectJsonClient(lazyAccountClient.value, CursorLoginEndpoints.API_URL, throttle = ApiThrottle(pauses = hostPauses)) }
 
     /** How long the account's calls are still held off by a pause the server asked for (a `429`, see `ApiThrottle`); 0 when none, or before any call. */
     fun accountPauseMillis(): Long {
@@ -379,7 +407,7 @@ class AppGraph(
     /** The agent's live VM: its workspace files and its branch diff (the panel's Files › Workspace and Changes). */
     private val lazyAgentFiles = lazy { AgentFilesApi(lazyAccountRpc.value, lazySessionTokens.value) }
     /** The machine's cursor-server, for a picture a tool call read outside the workspace (see [CursorServerApi]). */
-    private val lazyCursorServer = lazy { CursorServerApi(lazyAccountRpc.value, lazySessionTokens.value, CursorApiFactory.cursorServerClient()) }
+    private val lazyCursorServer = lazy { CursorServerApi(lazyAccountRpc.value, lazySessionTokens.value, CursorApiFactory.cursorServerClient(httpRoot.value)) }
     /** The account's view of a pull request on any host it connects, and opening one from here. */
     private val lazyPullRequestApi = lazy { PullRequestApi(lazyAccountRpc.value, lazySessionTokens.value) }
     /** Where the agent's machine is, for its desktop. */
@@ -427,7 +455,7 @@ class AppGraph(
      * GitHub's REST API, anonymous: what stands in for the account service while Extended mode is off, for the
      * repositories it hosts — pull request states and the `.cursor/` skills and commands in a repository's tree.
      */
-    private val lazyGitHub = lazy { GitHubApi(CursorApiFactory.gitHubClient()) }
+    private val lazyGitHub = lazy { GitHubApi(CursorApiFactory.gitHubClient(httpRoot.value)) }
     private val lazyGitHubPullRequests = lazy { GitHubPullRequestSource(lazyGitHub.value) }
     private val lazyGitHubSlashCommands = lazy { GitHubSlashCommandApi(lazyGitHub.value) }
 
@@ -436,7 +464,7 @@ class AppGraph(
      * the app has no documented way to mint (the CLI's exchange is not in the reference), so the provider answers
      * null and every Origin read degrades to "open in browser" until one exists.
      */
-    private val lazyOrigin = lazy { OriginApi(CursorApiFactory.originClient(), tokenProvider = { null }) }
+    private val lazyOrigin = lazy { OriginApi(CursorApiFactory.originClient(httpRoot.value), tokenProvider = { null }) }
 
     /**
      * The panel's reads of a pull request, a repository's files and the agent's token usage: the documented and
@@ -507,6 +535,8 @@ class AppGraph(
         override suspend fun record(id: String): ComposerSnapshot? = lazyAccountAgents.value.record(id)
         override suspend fun scanRoots(maxPages: Int): RootScan = lazyAccountAgents.value.scanRoots(maxPages)
         override suspend fun scanRoots(maxPages: Int, stopBelowActivityMillis: Long?): RootScan = lazyAccountAgents.value.scanRoots(maxPages, stopBelowActivityMillis)
+        override suspend fun scanRoots(maxPages: Int, stopBelowActivityMillis: Long?, firstPage: AccountList?): RootScan =
+            lazyAccountAgents.value.scanRoots(maxPages, stopBelowActivityMillis, firstPage)
         override suspend fun createWorker(managerId: String, launch: WorkerLaunch): ComposerSnapshot = lazyProjectApi.value.createWorker(managerId, launch)
         override suspend fun setWorkerManager(workerId: String, managerId: String, spawnKind: WorkerSpawnKind) = lazyProjectApi.value.setWorkerManager(workerId, managerId, spawnKind)
         override suspend fun clearWorkerManager(workerId: String) = lazyProjectApi.value.clearWorkerManager(workerId)
@@ -617,14 +647,15 @@ class AppGraph(
             prefs,
             attachments,
             caches.agents,
-            demoSources = DemoData.sources,
-            demoComposers = DemoData.composers,
+            demoSources = scaleDataset?.sources ?: DemoData.sources,
+            demoComposers = scaleDataset?.composers ?: DemoData.composers,
             account = accountAgents,
             capabilities = capabilities,
             stats = refreshStats,
             pending = pendingWork,
             // A pinned chat the public API will not give (Extended mode): stood in from its account record.
             recordOf = { id -> if (!session.isDemo && capabilities().accountSession) lazyAccountAgents.value.record(id) else null },
+            accountPaused = { accountPauseMillis() > 0L },
             start = { lazyAgentStart.value },
             uploads = { promptUploads },
         ).also { repo ->
@@ -677,7 +708,7 @@ class AppGraph(
                 // The root registry is filled from the account list — to the page older than every Project it
                 // knows, or the whole list on a deep refresh and a few times an hour — the memberships read after;
                 // the Projects group is drawn from the registry, not from the pages the sidebar holds.
-                projects.scheduleRootDiscovery(list.composers.filter { it.scope == AgentScope.PROJECT_ROOT }.map { it.id }, deep = agents.lastRefreshDepth == RefreshDepth.Deep)
+                projects.scheduleRootDiscovery(list.composers.filter { it.scope == AgentScope.PROJECT_ROOT }.map { it.id }, deep = agents.lastRefreshDepth == RefreshDepth.Deep, firstPage = list.takeIf { it.isFirstPage })
             },
             capabilities = capabilities,
             stats = refreshStats,
@@ -857,7 +888,8 @@ class AppGraph(
             },
             accountQueueAvailable = { capabilities().accountQueue && !session.isDemo },
             // A waiting card's up arrow mid-turn: the message filed with the account's queue and promoted into the turn
-            // under way, as an account row's steer is — the queue read once, by the promote, so the card never shows it twice.
+            // under way, as an account row's steer is — the queue read once, by the promote; the card stands for the
+            // account's row of it until the transcript shows it (see FollowUpRepository.steerNow).
             accountSteering = object : FollowUpRepository.AccountSteering {
                 override suspend fun handOff(agentId: String, item: QueuedFollowUp): FollowUpRepository.AccountHandoff {
                     val followup = accountFollowupOf(item)
@@ -866,6 +898,9 @@ class AppGraph(
 
                 override suspend fun promote(agentId: String, followupId: String): SteerOutcome =
                     steering.promotePending(agentId, followupId).onFailure { steering.refreshQueue(agentId) }.getOrThrow()
+
+                override suspend fun withdraw(agentId: String, followupId: String): Boolean =
+                    steering.deletePending(agentId, followupId).isSuccess
             },
             store = followUpStore,
             persist = { !session.isDemo },
@@ -914,7 +949,7 @@ class AppGraph(
     val artifacts: ArtifactRepository get() = lazyArtifacts.value
 
     /** The files `/cursor/stores/…` paths in replies point at, read through the account's store reads (Extended mode). */
-    private val lazyMediaClient = lazy { CursorApiFactory.mediaClient() }
+    private val lazyMediaClient = lazy { CursorApiFactory.mediaClient(httpRoot.value) }
     private val lazyStoreFiles = lazy {
         StoreFileRepository(
             api = { projectAccount },
@@ -926,7 +961,7 @@ class AppGraph(
     }
     val storeFiles: StoreFileRepository get() = lazyStoreFiles.value
 
-    private val lazyMedia = lazy { MediaLoader(app, lazyMediaClient.value, artifacts, stores = { storeFiles }, files = { agentFileReads }) }
+    private val lazyMedia = lazy { MediaLoader(app, { lazyMediaClient.value }, artifacts, stores = { storeFiles }, files = { agentFileReads }) }
     val media: MediaLoader get() = lazyMedia.value
 
     /** The media viewer's saves to the gallery: the process's, so a save runs on past the viewer's close and shows when it opens again. */
@@ -955,7 +990,7 @@ class AppGraph(
      */
     private val lazyReleases = lazy {
         GitHubReleasesClient(
-            CursorApiFactory.updateClient(),
+            CursorApiFactory.updateClient(httpRoot.value),
             BuildConfig.GITHUB_REPO,
             apiBaseUrl = BuildConfig.UPDATE_API_BASE_URL,
             freeSpace = { allocatableBytes(app, it) },
@@ -976,9 +1011,21 @@ class AppGraph(
             // The background service streaming a run is the one thing a silent self-update would cut off; a monitor
             // this process never built is holding no stream, and asking is not worth building one.
             agentsRunning = { lazyRunMonitor.isInitialized() && runMonitor.isRunning },
-        )
+        ).also { builtUpdates.value = it }
     }
     val updates: UpdateManager get() = lazyUpdates.value
+
+    private val builtUpdates = MutableStateFlow<UpdateManager?>(null)
+
+    /**
+     * [UpdateManager.state] for the sidebar's hint, without building the updater: Idle until something has — the
+     * deferred startup, Settings — which is all the updater itself says before then, as it restores on first use.
+     */
+    @OptIn(ExperimentalCoroutinesApi::class)
+    val updateState: Flow<UpdateState> = builtUpdates.flatMapLatest { it?.state ?: flowOf(UpdateState.Idle) }
+
+    /** What [updateState] says right now, for a composition's first frame. */
+    fun currentUpdateState(): UpdateState = builtUpdates.value?.state?.value ?: UpdateState.Idle
 
     /**
      * The installed version's release notes — the What's new page, its row in Settings and its card in the sidebar.
@@ -990,9 +1037,18 @@ class AppGraph(
             prefs = prefs,
             cache = JsonDiskCache(File(app.cacheDir, "whats-new")),
             installedVersionName = appVersion,
-        )
+        ).also { builtWhatsNew.value = it }
     }
     val whatsNew: WhatsNewRepository get() = lazyWhatsNew.value
+
+    private val builtWhatsNew = MutableStateFlow(releaseNotes)
+
+    /**
+     * [WhatsNewRepository.unread] for the sidebar's card, without building the repository: null until something has
+     * (the deferred startup's refresh, Settings), which is all it says itself before its first refresh.
+     */
+    @OptIn(ExperimentalCoroutinesApi::class)
+    val whatsNewUnread: Flow<ReleaseNotes?> = builtWhatsNew.flatMapLatest { it?.unread ?: flowOf(null) }
 
     private val swept = AtomicBoolean(false)
 
@@ -1014,6 +1070,83 @@ class AppGraph(
         }
     }
 
+    /** Where a launch's own background work runs: the warm-up, and what a restored session needs next. */
+    private val startupScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+
+    /**
+     * Opens the key store, with the Android Keystore behind it — the slowest read of the session's restore — on a
+     * background thread, for `Application.onCreate`: the restore the activity starts a moment later finds it open
+     * instead of paying for it while the splash screen waits. The settings are left to the restore, which reads them
+     * in one snapshot beside it.
+     */
+    fun warmUp() {
+        startupScope.launch(Dispatchers.IO) { runCatching { keyStore.apiKey() } }
+    }
+
+    private val sessionStartLock = Any()
+    @Volatile private var sessionStart: Job? = null
+    private val restoredHandOff = AtomicBoolean(false)
+
+    /**
+     * A launch's way to its first screen, once per process: the first-run flag, read ahead of the restore so a session
+     * the restore finds signed in has its answer by the frame that shows it; the session's restore; then the Extended
+     * mode upgrade step, which reads the same stores, and owes an install it finds signed in a notice and a wipe.
+     * The activity starts it from its creation in the process's [scope], so the restore is under way while the first
+     * frame is still being built; `CursorRoot` asks as well — for a root composed without that activity — and gets
+     * the start already under way. A start cancelled with the scope it ran in is begun again by the next caller.
+     */
+    fun startSession(scope: CoroutineScope): Job = synchronized(sessionStartLock) {
+        sessionStart?.takeUnless { it.isCancelled }?.let { return it }
+        // Off the caller's thread: on the main thread it would wait out the first screen's composition, which the
+        // session it waits for is what starts.
+        if (restoredHandOff.compareAndSet(false, true)) startupScope.launch { runCatching { handOffRestored() } }
+        scope.launch {
+            // The session settles itself to signed-out when a store cannot be read; these only keep a future throw
+            // from taking the caller (and the process) with it.
+            runCatching { onboarding.load() }
+            runCatching { session.restoreIfNeeded() }
+            runCatching { extendedMode.migrateInstall() }
+        }.also { sessionStart = it }
+    }
+
+    /** The list fetch [handOffRestored] started, until the sidebar takes it (see [takeStartupListFetch]). */
+    private val startupListFetch = AtomicReference<Job?>(null)
+
+    /**
+     * A session the launch restored signed in, with nothing left to settle before the shell shows it (not the demo,
+     * no first-run choice owed): the sidebar's list is read from disk and fetched now, and its pull requests' saved
+     * states read beside it, rather than once the sidebar's view model is built after the first frame. With the
+     * account service allowed, its session is exchanged for at the same time, so the account's list and a chat's
+     * record find it minted or on its way: callers wait on the one exchange in flight (see [SessionTokenProvider]).
+     * The upgrade step goes first — it runs once, whichever caller asks first — since the wipe it may owe is of
+     * exactly what this reads.
+     */
+    private suspend fun handOffRestored() {
+        fun ready() = (session.state.value as? SessionState.SignedIn)?.isDemo == false && onboarding.modeChoicePending.value == false
+        session.state.first { it !is SessionState.Loading }
+        onboarding.modeChoicePending.first { it != null }
+        if (!ready()) return
+        runCatching { extendedMode.migrateInstall() }
+        // Not the same state necessarily: the key's validation republishes it with the account's fresh profile.
+        if (!ready()) return
+        if (capabilities().accountSession) startupScope.launch { runCatching { lazySessionTokens.value.accessToken() } }
+        startupScope.launch { runCatching { pullRequests.restoreFromCache() } }
+        startupListFetch.set(
+            startupScope.launch {
+                runCatching {
+                    agents.restoreFromCache()
+                    agents.refresh(silent = agents.state.value.hasLoaded)
+                }
+            },
+        )
+    }
+
+    /**
+     * The list fetch the launch started for a restored session, once: the first sidebar joins it rather than fetching
+     * again; null for any later one, and after a sign-out.
+     */
+    fun takeStartupListFetch(): Job? = startupListFetch.getAndSet(null)
+
     init {
         session.onSignedIn = {
             // A sign-in through the sign-in screen owes the first-run choice; a restored session never does.
@@ -1027,6 +1160,7 @@ class AppGraph(
             // Read before anything is reset: the account the drafts belong to — and what it typed a moment ago,
             // written before the saves are stopped.
             val owner = draftOwner()
+            startupListFetch.set(null)
             if (owner != null && lazyFollowUps.isInitialized()) followUps.saveAll()
             if (owner != null && lazyNewChatDrafts.isInitialized()) newChatDrafts.saveOpen()
             // The choice the account owed goes with it (its stored flag is among the session keys cleared below).

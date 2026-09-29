@@ -25,6 +25,7 @@ import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyItemScope
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -38,7 +39,10 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.MutableState
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
@@ -79,6 +83,7 @@ import com.cursorforandroid.domain.NestedRow
 import com.cursorforandroid.ui.components.CursorIcons
 import com.cursorforandroid.ui.components.FlatIconButton
 import com.cursorforandroid.ui.components.PullRefreshHaptics
+import com.cursorforandroid.ui.components.rememberHaptics
 import com.cursorforandroid.ui.components.pressable
 import com.cursorforandroid.ui.components.SpinnerRing
 import com.cursorforandroid.ui.components.scrollEdgeFade
@@ -90,6 +95,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 
 enum class SidebarDestination { NewChat, Settings }
 
+@Immutable
 data class SidebarCallbacks(
     val onNewChat: () -> Unit,
     val onSettings: () -> Unit,
@@ -166,9 +172,17 @@ fun Sidebar(
     searchRequests: Int = 0,
     /** Ctrl is held on a hardware keyboard: the first ten chat rows show the digit that opens them. */
     showShortcutNumbers: Boolean = false,
+    /** The chats whose nested chats are listed, where the shell keeps them (see `ShellShortcuts.railRows`); null, the sidebar's own. */
+    expansion: MutableState<List<String>>? = null,
+    /**
+     * False while the rows are to land where they belong without sliding, fading in or out: the frame a shut drawer
+     * catches up in with what changed behind the screen.
+     */
+    animateRows: Boolean = true,
 ) {
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
+    val haptics = rememberHaptics()
     var searching by rememberSaveable { mutableStateOf(false) }
     LaunchedEffect(searchRequests) { if (searchRequests > 0) searching = true }
     // The field owns what is typed. [state.query] is the organized list's copy, computed off the main thread, and
@@ -177,7 +191,8 @@ fun Sidebar(
     var query by rememberSaveable { mutableStateOf("") }
     // Chats whose nested chats — a Project's workers, side chats, subagents — are listed beneath them. Closed until
     // opened: a Project can have dozens of workers, and the row's count says they are there.
-    var expandedParents by rememberSaveable { mutableStateOf(listOf<String>()) }
+    val ownExpansion = rememberSaveable { mutableStateOf(listOf<String>()) }
+    var expandedParents by expansion ?: ownExpansion
     val focusRequester = remember { FocusRequester() }
 
     fun setSearchQuery(value: String) {
@@ -253,27 +268,38 @@ fun Sidebar(
                 snapshotFlow { listState.layoutInfo.let { info -> (info.visibleItemsInfo.lastOrNull()?.index ?: -1) to info.totalItemsCount } }
                     .collect { (lastVisible, total) -> if (total > 0 && lastVisible >= total - MoreAgentsPrefetchRows) callbacks.onLoadMore() }
             }
-            val groups = sidebarGroups(state, query, expandedParents, selectedAgentId, shortLists)
-            val numbered = SidebarGroup.numbered(groups)
-            val shortcutNumbers = SidebarGroup.shortcutNumbers(numbered)
+            // Derived, for the long groups listed in full are read from [shortLists] as the groups are worked out.
+            val groups by remember(
+                state.sections,
+                state.collapsedSections,
+                state.shortenLongGroups,
+                query,
+                expandedParents,
+                selectedAgentId,
+                shortLists,
+            ) {
+                derivedStateOf { sidebarGroups(state, query, expandedParents, selectedAgentId, shortLists) }
+            }
+            val numbered = remember(groups) { SidebarGroup.numbered(groups) }
+            val shortcutNumbers = remember(numbered) { SidebarGroup.shortcutNumbers(numbered) }
             LaunchedEffect(numbered) { callbacks.onShortcutRows(numbered) }
             LazyColumn(Modifier.fillMaxSize().scrollEdgeFade(listState), state = listState, contentPadding = PaddingValues(top = 2.dp, bottom = 12.dp)) {
                 // The drafts lead the list, above every group, each a chat that has not been sent yet.
-                items(shownDrafts, key = { DRAFT_KEY_PREFIX + it.id }) { row ->
+                items(shownDrafts, key = { DRAFT_KEY_PREFIX + it.id }, contentType = { "draft" }) { row ->
                     DraftRowItem(
                         row = row,
                         prefs = state.prefs,
                         onOpen = callbacks.onOpenDraft,
                         onDelete = callbacks.onDeleteDraft,
-                        modifier = Modifier.animateItem().padding(vertical = CursorDimens.sidebarRowGap / 2),
+                        modifier = rowMotion(animateRows).padding(vertical = CursorDimens.sidebarRowGap / 2),
                         nowMillis = state.nowMillis,
                     )
                 }
                 if (!state.hasLoaded && state.sections.isEmpty()) {
-                    item("loading") { Text("Loading chats…", style = type.small, color = colors.textQuaternary, modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) }
+                    item(key = "loading", contentType = "message") { Text("Loading chats…", style = type.small, color = colors.textQuaternary, modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) }
                 }
                 if (state.hasLoaded && state.sections.isEmpty()) {
-                    item("empty") {
+                    item(key = "empty", contentType = "message") {
                         Text(
                             when {
                                 query.isNotBlank() -> "No chats match \"$query\""
@@ -285,12 +311,12 @@ fun Sidebar(
                     }
                 }
                 state.error?.let { err ->
-                    item("error") { Text(err, style = type.small, color = colors.red, modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) }
+                    item(key = "error", contentType = "message") { Text(err, style = type.small, color = colors.red, modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) }
                 }
                 groups.forEach { group ->
                     val section = group.section
                     val expanded = group.expanded
-                    item("hdr-${section.key}") {
+                    item(key = "hdr-${section.key}", contentType = "header") {
                         SidebarSectionHeader(
                             section = section,
                             expanded = expanded,
@@ -302,7 +328,7 @@ fun Sidebar(
                     if (expanded && section.key == AgentListOrganizer.PROJECTS_KEY && !extendedMode && !isDemo) {
                         // Without the account service only a coordinator's own transcript says which chats are its
                         // workers; the rest of them look like chats of their own.
-                        item("projects-notice") {
+                        item(key = "projects-notice", contentType = "message") {
                             Text(
                                 PROJECTS_DEFAULT_MODE_NOTICE,
                                 style = type.small,
@@ -315,14 +341,15 @@ fun Sidebar(
                         val expandedIds = group.expandedIds
                         val cut = group.cut
                         val listedInFull = group.listedInFull
-                        items(group.rows, key = { "${section.key}:${it.row.agent.id}" }) { (row, depth) ->
+                        items(group.rows, key = { "${section.key}:${it.row.agent.id}" }, contentType = { "agent" }) { (row, depth) ->
                             val id = row.agent.id
                             AgentRowItem(
                                 row = row,
                                 selected = id == selectedAgentId,
                                 prefs = state.prefs,
                                 actions = callbacks.rowActions,
-                                modifier = Modifier.animateItem().padding(vertical = CursorDimens.sidebarRowGap / 2),
+                                haptics = haptics,
+                                modifier = rowMotion(animateRows).padding(vertical = CursorDimens.sidebarRowGap / 2),
                                 nowMillis = state.nowMillis,
                                 depth = depth,
                                 shortcutNumber = if (showShortcutNumbers) shortcutNumbers[id] else null,
@@ -334,7 +361,7 @@ fun Sidebar(
                             )
                         }
                         if (cut != null) {
-                            item("more-${section.key}") {
+                            item(key = "more-${section.key}", contentType = "show-more") {
                                 val shownIds = cut.rows.mapTo(HashSet()) { it.agent.id }
                                 SidebarShowMoreRow(
                                     sectionKey = section.key,
@@ -342,7 +369,7 @@ fun Sidebar(
                                     hidden = cut.hidden,
                                     hasUnread = section.rows.any { it.agent.id !in shownIds && it.isUnread },
                                     onClick = { if (listedInFull) shortLists.collapse(section.key) else shortLists.expand(section.key) },
-                                    modifier = Modifier.animateItem().padding(vertical = CursorDimens.sidebarRowGap / 2),
+                                    modifier = rowMotion(animateRows).padding(vertical = CursorDimens.sidebarRowGap / 2),
                                 )
                             }
                         }
@@ -351,7 +378,7 @@ fun Sidebar(
                 // Past the last row, one row at most: the work in flight, the server's words with Retry, or the
                 // ask for the next page (see [SidebarTail]).
                 if (tail != SidebarTail.None) {
-                    item("tail") { SidebarTailRow(tail, onLoad = callbacks.onLoadMore, onRetry = callbacks.onRetryLoadMore) }
+                    item(key = "tail", contentType = "tail") { SidebarTailRow(tail, onLoad = callbacks.onLoadMore, onRetry = callbacks.onRetryLoadMore) }
                 }
             }
         }
@@ -462,6 +489,10 @@ internal fun sidebarGroups(
     }
     SidebarGroup(section, expanded, expandedIds, cut, shortLists.isExpanded(section.key))
 }
+
+/** How the sidebar's rows come, go and move: animated, or where [animate] is false put straight where they belong. */
+private fun LazyItemScope.rowMotion(animate: Boolean): Modifier =
+    if (animate) Modifier.animateItem() else Modifier.animateItem(fadeInSpec = null, placementSpec = null, fadeOutSpec = null)
 
 /** The lead of a draft row's key in the sidebar's list: never read as an agent's (see `onVisibleRows`). */
 private const val DRAFT_KEY_PREFIX = "draft:"

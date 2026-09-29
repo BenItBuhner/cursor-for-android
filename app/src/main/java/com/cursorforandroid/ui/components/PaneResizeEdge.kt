@@ -34,9 +34,9 @@ import androidx.compose.ui.node.DelegatingNode
 import androidx.compose.ui.node.ModifierNodeElement
 import androidx.compose.ui.node.PointerInputModifierNode
 import androidx.compose.ui.platform.InspectorInfo
-import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.semantics.CustomAccessibilityAction
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.customActions
@@ -100,7 +100,8 @@ fun PaneResizeEdge(
     val lit by animateFloatAsState(if (dragging) 1f else 0f, tween(if (dragging) LightMillis else DimMillis), label = "paneEdgeLit")
     val drag = remember { DragFromStart() }
     val haptics = rememberHaptics()
-    val reach = LocalConfiguration.current.screenWidthDp.dp
+    // The window's width, read as the mouse takes hold rather than in composition, which a live resize would redo a dp at a time.
+    val view = LocalView.current
     Box(
         modifier
             .fillMaxHeight()
@@ -128,7 +129,7 @@ fun PaneResizeEdge(
             // however far one move outruns the edge, and on past where the pane stops. What is drawn and what TalkBack
             // reads stay the strip.
             .layout { measurable, constraints ->
-                val extra = if (mouseHeld) reach.roundToPx() else 0
+                val extra = if (mouseHeld) view.resources.configuration.screenWidthDp.dp.roundToPx() else 0
                 val placeable = measurable.measure(constraints.offset(horizontal = 2 * extra))
                 layout(placeable.width - 2 * extra, placeable.height) { placeable.place(-extra, 0) }
             }

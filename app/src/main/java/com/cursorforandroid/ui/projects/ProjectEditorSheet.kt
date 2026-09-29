@@ -86,7 +86,12 @@ import com.cursorforandroid.ui.icons.ProjectIconGroup
 import com.cursorforandroid.ui.icons.ProjectIcons
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.ui.theme.ProjectPalette
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 
 /** What the Project editor is opened for; a `Serializable`, so `rememberSaveable` keeps it up across a rotation. */
@@ -115,7 +120,12 @@ data class ProjectEditorResult(val name: String, val appearance: ProjectAppearan
  */
 @Composable
 fun ProjectEditorHost(graph: AppGraph, target: ProjectEditorTarget, onOpenAgent: (String) -> Unit, onDismiss: () -> Unit) {
-    val list by graph.agents.state.collectAsStateWithLifecycle()
+    val projectId = (target as? ProjectEditorTarget.Edit)?.projectId
+    val project by remember(graph, projectId) { projectId?.let { graph.agents.row(it).flowOn(Dispatchers.Default) } ?: flowOf(null) }
+        .collectAsStateWithLifecycle(initialValue = remember(graph, projectId) { projectId?.let(graph.agents::agent) })
+    val newestAccountModel by remember(graph) {
+        graph.agents.state.map { ModelResolution.newestAccountModel(it.agents) }.distinctUntilChanged().flowOn(Dispatchers.Default)
+    }.collectAsStateWithLifecycle(initialValue = remember(graph) { ModelResolution.newestAccountModel(graph.agents.state.value.agents) })
     val repositories by graph.catalog.repositories.collectAsStateWithLifecycle()
     val models by graph.catalog.models.collectAsStateWithLifecycle()
     val pinnedModelIds by graph.prefs.pinnedModelIds.collectAsStateWithLifecycle(initialValue = emptyList())
@@ -126,7 +136,6 @@ fun ProjectEditorHost(graph: AppGraph, target: ProjectEditorTarget, onOpenAgent:
     var modelsLoading by remember { mutableStateOf(false) }
     var modelsUnavailable by remember { mutableStateOf(false) }
     var remembered by remember { mutableStateOf<ModelResolution.Candidate.Remembered?>(null) }
-    val project = (target as? ProjectEditorTarget.Edit)?.let { edit -> list.agents.firstOrNull { it.id == edit.projectId } }
     // The look the desktop would give a new Project at random, drawn up front so the preview shows it and it can be changed.
     val suggestedLook = remember { graph.projectEditor.defaultAppearance() }
     // The catalog's repositories, read once the sheet opens for a new Project; a refresh re-reads them.
@@ -163,8 +172,8 @@ fun ProjectEditorHost(graph: AppGraph, target: ProjectEditorTarget, onOpenAgent:
     }
     // The composer's resolution (see [ModelResolution.forNewChat]): the newer of the model this device last used
     // and the account's newest chat's model, else Auto — the row the desktop's dialog opens its Model picker on.
-    val defaultModel = remember(models, remembered, list.agents) {
-        ModelResolution.forNewChat(models, listOfNotNull(remembered, ModelResolution.newestAccountModel(list.agents)), settleOnAuto = true)?.choice
+    val defaultModel = remember(models, remembered, newestAccountModel) {
+        ModelResolution.forNewChat(models, listOfNotNull(remembered, newestAccountModel), settleOnAuto = true)?.choice
     }
     ProjectEditorSheet(
         target = target,
@@ -401,12 +410,8 @@ fun ProjectEditorSheet(
             models = models,
             selectedModel = model?.model,
             selectedVariant = model?.variant,
-            planMode = false,
-            autoCreatePr = false,
             loading = modelsLoading,
             unavailable = modelsUnavailable,
-            onPlanMode = null,
-            onAutoCreatePr = null,
             onRefresh = onRefreshModels,
             onSelect = { chosenModel, chosenVariant -> if (chosenModel != null) pickedModel = ModelChoice(chosenModel, chosenVariant) },
             onDismiss = { modelSheetOpen = false },

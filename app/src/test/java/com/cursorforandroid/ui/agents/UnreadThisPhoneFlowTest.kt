@@ -134,7 +134,7 @@ class UnreadThisPhoneFlowTest {
 
     @Test
     fun `a chat started here shows as unread when its run finishes`() = runBlocking {
-        val request = LaunchRequest(prompt = "Ship the release notes", repoUrl = "https://github.com/acme/app", ref = "main", modelId = null, modelParams = emptyList(), autoCreatePr = false, planMode = false)
+        val request = LaunchRequest(prompt = "Ship the release notes", repoUrl = "https://github.com/acme/app", ref = "main", modelId = null, modelParams = emptyList(), planMode = false)
         val launched = graph.agents.launch(request, null).getOrThrow().agent
         val local = graph.prefs.localAgentState.first()
         assertThat(local.launchedHereIds).contains(launched.id)

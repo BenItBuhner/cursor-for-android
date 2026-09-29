@@ -138,6 +138,42 @@ class RetryInterceptorTest {
         assertThat(sleeps).containsExactly(5_000L)
     }
 
+    /**
+     * A wait longer than a call sleeps here is the caller's: the refusal comes back at once rather than being retried
+     * inside the window, the host's other reads hear it without going out, a write still holds a bounded moment and
+     * goes out once, and past the window everything goes out again.
+     */
+    @Test
+    fun `a Retry-After longer than a call sleeps is handed back at once and held by the host's other reads`() {
+        server.enqueue(MockResponse().setResponseCode(429).setHeader("Retry-After", "30"))
+        client.newCall(get()).execute().use { response ->
+            assertThat(response.code).isEqualTo(429)
+            assertThat(response.header("Retry-After")).isEqualTo("30")
+        }
+        assertThat(server.requestCount).isEqualTo(1)
+        assertThat(sleeps).isEmpty()
+
+        now += 12_000
+        client.newCall(get("/v1/agents/other")).execute().use { response ->
+            assertThat(response.code).isEqualTo(429)
+            assertThat(response.header("Retry-After")).isEqualTo("18")
+        }
+        assertThat(server.requestCount).isEqualTo(1)
+
+        server.enqueue(MockResponse().setResponseCode(200))
+        val post = Request.Builder().url(server.url("/v1/agents")).post("{}".toRequestBody("application/json".toMediaType())).build()
+        client.newCall(post).execute().use { response -> assertThat(response.code).isEqualTo(200) }
+        assertThat(server.requestCount).isEqualTo(2)
+        assertThat(sleeps).containsExactly(10_000L)
+
+        now += 8_000
+        sleeps.clear()
+        server.enqueue(MockResponse().setResponseCode(200))
+        client.newCall(get()).execute().use { response -> assertThat(response.code).isEqualTo(200) }
+        assertThat(server.requestCount).isEqualTo(3)
+        assertThat(sleeps).isEmpty()
+    }
+
     @Test
     fun `a dropped connection is retried`() {
         server.enqueue(MockResponse().setSocketPolicy(SocketPolicy.DISCONNECT_AT_START))

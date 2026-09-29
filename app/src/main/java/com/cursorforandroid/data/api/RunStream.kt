@@ -24,6 +24,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import okhttp3.Call
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
@@ -338,9 +339,13 @@ class SseRunStreamer(
     private val now: () -> Long = System::currentTimeMillis,
     /** Seam for tests: the wait between attempts, so a honoured `Retry-After` is asserted without spending it. */
     private val waiter: suspend (Long) -> Unit = { delay(it) },
+    /** The host's pause a `429` asked for, shared with the REST calls (see [RetryInterceptor]): a connection waits it out first. */
+    private val pauses: HostPause = HostPause(now),
 ) : RunStreamer {
 
     override fun stream(agentId: String, runId: String, lastEventId: String?): Flow<RunStreamEvent> = flow {
+        val host = urlFor(agentId, runId).toHttpUrlOrNull()?.host.orEmpty()
+        pauses.remainingMs(host).takeIf { it > 0 }?.let { waiter(it) }
         var lastId = lastEventId
         var attempt = 0
         /** The reconnection time the server last asked for, which outlives the connection that carried it. */
@@ -385,6 +390,10 @@ class SseRunStreamer(
                 }
                 is Outcome.Retry -> {
                     attempt++
+                    val backoff = backoffMillis(attempt, outcome.retryAfterMs, serverRetryMs)
+                    // Kept for the host whether or not this pass goes on: the record read and the reconnect after a
+                    // give-up hold to it too.
+                    if (outcome.rateLimited) pauses.pause(host, backoff)
                     // Without a position to resume from, the next connection replays the run from its first event —
                     // into an accumulator that already holds part of it, which would read as the agent saying
                     // everything twice. Ending the pass hands that decision to the caller, which rebuilds from
@@ -396,7 +405,7 @@ class SseRunStreamer(
                         emit(RunStreamEvent.Error("stream_unavailable", outcome.reason, resumeFrom = lastId))
                         return@flow
                     }
-                    waiter(backoffMillis(attempt, outcome.retryAfterMs, serverRetryMs))
+                    waiter(maxOf(backoff, pauses.remainingMs(host)))
                 }
             }
         }
@@ -406,7 +415,7 @@ class SseRunStreamer(
         /** The run's `result` (and `done`) came through. */
         data object Terminal : Outcome
         /** Transport trouble; worth another connection right away. [retryAfterMs] is what the server asked for, if it did. */
-        data class Retry(val reason: String, val retryAfterMs: Long? = null) : Outcome
+        data class Retry(val reason: String, val retryAfterMs: Long? = null, val rateLimited: Boolean = false) : Outcome
         /** The server ended the stream on purpose: an in-band `error` frame, a `410`, a `4xx`. */
         data class Stopped(val code: String, val message: String) : Outcome
         /** `400 invalid_last_event_id`: only a connection without a `Last-Event-ID` can help. */
@@ -453,7 +462,7 @@ class SseRunStreamer(
                         } else {
                             Outcome.Stopped(error?.code ?: "http_400", error?.message?.ifBlank { null } ?: "Stream request failed (400)")
                         }
-                        408, 429, in 500..599 -> Outcome.Retry("HTTP ${resp.code}", resp.retryAfterMillis())
+                        408, 429, in 500..599 -> Outcome.Retry("HTTP ${resp.code}", resp.retryAfterMillis(), rateLimited = resp.code == 429)
                         else -> Outcome.Stopped(error?.code ?: "http_${resp.code}", error?.message?.ifBlank { null } ?: "Stream request failed (${resp.code})")
                     }
                 }

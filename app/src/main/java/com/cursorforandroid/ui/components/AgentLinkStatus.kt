@@ -24,7 +24,9 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.cursorforandroid.data.repo.AgentRepository
 import com.cursorforandroid.domain.Agent
 import com.cursorforandroid.domain.AgentLink
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 
 /**
@@ -43,7 +45,7 @@ val LocalAgentLinkStatuses = staticCompositionLocalOf<AgentLinkStatuses?> { null
 /** [AgentLinkStatuses] off [agents]' list, following it as runs start and finish. */
 @Composable
 fun rememberAgentLinkStatuses(agents: AgentRepository): AgentLinkStatuses {
-    val flow = remember(agents) { agents.state.map { s -> runningIds(s.agents) }.distinctUntilChanged() }
+    val flow = remember(agents) { agents.state.map { s -> runningIds(s.agents) }.distinctUntilChanged().flowOn(Dispatchers.Default) }
     val running = flow.collectAsStateWithLifecycle(initialValue = remember(agents) { runningIds(agents.state.value.agents) })
     return remember(running) { AgentLinkStatuses(running) }
 }

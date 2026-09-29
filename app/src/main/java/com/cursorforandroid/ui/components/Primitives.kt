@@ -1,12 +1,9 @@
 package com.cursorforandroid.ui.components
 
 import androidx.compose.animation.animateColorAsState
-import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.core.withInfiniteAnimationFrameMillis
 import androidx.compose.foundation.Canvas
@@ -35,9 +32,20 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.material3.ripple
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.FloatState
+import androidx.compose.runtime.IntState
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.LongState
+import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.produceState
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.staticCompositionLocalOf
+import androidx.compose.ui.MotionDurationScale
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -73,6 +81,12 @@ import com.cursorforandroid.domain.ProjectAppearance
 import com.cursorforandroid.domain.PullRequestState
 import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.isActive
+import kotlin.coroutines.coroutineContext
 
 /**
  * Fill + hairline stroke sharing one shape so the edge stays crisp. [clip] also clips the content to the shape — and
@@ -409,6 +423,104 @@ fun Dot(color: Color, size: Dp = CursorDimens.unreadDot, modifier: Modifier = Mo
     Box(modifier.size(size).background(color, CircleShape))
 }
 
+/** Test-only observation point for the number of frame-clock resumptions used by the shared indicators. */
+internal object SharedAnimationTickerTestHooks {
+    @Volatile
+    var onFrame: (() -> Unit)? = null
+    @Volatile
+    var onRunningChanged: ((Boolean) -> Unit)? = null
+
+    fun frame() {
+        onFrame?.invoke()
+    }
+
+    fun runningChanged(running: Boolean) {
+        onRunningChanged?.invoke(running)
+    }
+}
+
+/**
+ * One frame-clock continuation for every continuously drawn primitive in this composition. Readers only register
+ * while they are composed; the collector remains asleep, without requesting frames, when the last reader leaves.
+ */
+@Stable
+private class SharedAnimationTicker {
+    private val readers = MutableStateFlow(0)
+    private val pendingSpinnerStarts = LinkedHashSet<SpinnerPhase>()
+    private val mutableMillis = mutableLongStateOf(Long.MIN_VALUE)
+    private val mutableRunningStep = mutableIntStateOf(0)
+    private val mutableDurationScale = mutableFloatStateOf(1f)
+    val millis: LongState get() = mutableMillis
+    val runningStep: IntState get() = mutableRunningStep
+    val durationScale: FloatState get() = mutableDurationScale
+
+    fun attach(spinnerPhase: SpinnerPhase? = null) {
+        if (spinnerPhase != null) pendingSpinnerStarts += spinnerPhase
+        readers.update { it + 1 }
+    }
+
+    fun detach(spinnerPhase: SpinnerPhase? = null) {
+        if (spinnerPhase != null) pendingSpinnerStarts -= spinnerPhase
+        readers.update { count ->
+            check(count > 0) { "Shared animation ticker detached without a reader" }
+            count - 1
+        }
+    }
+
+    suspend fun run() {
+        SharedAnimationTickerTestHooks.runningChanged(true)
+        try {
+            while (currentCoroutineContext().isActive) {
+                readers.first { it > 0 }
+                val motionDurationScale = coroutineContext[MotionDurationScale]
+                while (readers.value > 0 && currentCoroutineContext().isActive) {
+                    withInfiniteAnimationFrameMillis { millis ->
+                        SharedAnimationTickerTestHooks.frame()
+                        val durationScale = motionDurationScale?.scaleFactor ?: 1f
+                        pendingSpinnerStarts.forEach { it.start(millis, durationScale) }
+                        pendingSpinnerStarts.clear()
+                        mutableMillis.longValue = millis
+                        mutableRunningStep.intValue = ((millis / RUNNING_STEP_MS) % RUNNING_FRAMES.size).toInt()
+                        mutableDurationScale.floatValue = durationScale
+                    }
+                }
+            }
+        } finally {
+            SharedAnimationTickerTestHooks.runningChanged(false)
+        }
+    }
+}
+
+private val LocalSharedAnimationTicker = staticCompositionLocalOf<SharedAnimationTicker?> { null }
+
+/** Installs the window-level animation ticker, reusing an outer provider when themes are nested. */
+@Composable
+internal fun ProvideSharedAnimationTicker(content: @Composable () -> Unit) {
+    if (LocalSharedAnimationTicker.current != null) {
+        content()
+        return
+    }
+    val ticker = remember { SharedAnimationTicker() }
+    LaunchedEffect(ticker) { ticker.run() }
+    CompositionLocalProvider(LocalSharedAnimationTicker provides ticker, content = content)
+}
+
+@Composable
+private fun sharedAnimationTicker(spinnerPhase: SpinnerPhase? = null): SharedAnimationTicker {
+    val providedTicker = LocalSharedAnimationTicker.current
+    val ticker = providedTicker ?: remember { SharedAnimationTicker() }
+    if (providedTicker == null) {
+        // Animated primitives have historically been safe to compose on their own (including in focused UI tests).
+        // Production roots install one shared ticker through CursorTheme; this fallback preserves standalone use.
+        LaunchedEffect(ticker) { ticker.run() }
+    }
+    DisposableEffect(ticker, spinnerPhase) {
+        ticker.attach(spinnerPhase)
+        onDispose { ticker.detach(spinnerPhase) }
+    }
+    return ticker
+}
+
 /**
  * The web sidebar's "working" glyph, reproduced frame for frame from the live app: dots on a 3x3 grid that step
  * through eight arrangements at 175ms per step (a 1.4s loop). Nothing moves, fades or rotates; each step simply
@@ -418,10 +530,9 @@ fun Dot(color: Color, size: Dp = CursorDimens.unreadDot, modifier: Modifier = Mo
  */
 @Composable
 fun RunningGlyph(modifier: Modifier = Modifier, color: Color = CursorTheme.colors.iconSecondary, size: Dp = 16.dp) {
-    val step by produceState(0) {
-        while (true) withInfiniteAnimationFrameMillis { value = ((it / RUNNING_STEP_MS) % RUNNING_FRAMES.size).toInt() }
-    }
+    val ticker = sharedAnimationTicker()
     Canvas(modifier.size(size)) {
+        val step = ticker.runningStep.intValue
         val box = this.size.minDimension
         val pitch = box * RUNNING_PITCH
         val radius = box * RUNNING_DOT_RADIUS
@@ -481,9 +592,7 @@ fun ShimmerText(
         Text(text, style = style, color = color, maxLines = maxLines, overflow = overflow, modifier = modifier)
         return
     }
-    val phase by produceState(0f) {
-        while (true) withInfiniteAnimationFrameMillis { value = (it % SHIMMER_PERIOD_MS) / SHIMMER_PERIOD_MS.toFloat() }
-    }
+    val ticker = sharedAnimationTicker()
     val restAlpha = if (highlight.alpha > 0f) (color.alpha / highlight.alpha).coerceIn(0f, 1f) else 1f
     val rest = Color.White.copy(alpha = restAlpha)
     val peak = Color.White
@@ -497,6 +606,8 @@ fun ShimmerText(
             .graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
             .drawWithContent {
                 drawContent()
+                val millis = ticker.millis.longValue
+                val phase = if (millis == Long.MIN_VALUE) 0f else (millis % SHIMMER_PERIOD_MS) / SHIMMER_PERIOD_MS.toFloat()
                 // The band is wider than the text and its peak travels from off the left edge to off the right, so
                 // every loop starts and ends with the caption fully at rest and the falloff is soft mid-word.
                 val band = size.width * SHIMMER_BAND
@@ -519,16 +630,42 @@ private const val SHIMMER_BAND = 1.4f
 /** Thin indeterminate ring for in-flight tool calls. */
 @Composable
 fun SpinnerRing(modifier: Modifier = Modifier, color: Color = CursorTheme.colors.iconTertiary, size: Dp = 11.dp, strokeWidth: Dp = 1.5.dp) {
-    val transition = rememberInfiniteTransition(label = "spinner")
-    val angle by transition.animateFloat(0f, 360f, infiniteRepeatable(tween(900, easing = LinearEasing)), label = "spin")
+    val phase = remember { SpinnerPhase() }
+    val ticker = sharedAnimationTicker(phase)
     Box(
         modifier.size(size).drawBehind {
+            val angle = phase.angle(ticker.millis.longValue, ticker.durationScale.floatValue)
             val stroke = Stroke(width = strokeWidth.toPx(), cap = StrokeCap.Round)
             drawArc(color.copy(alpha = 0.25f), 0f, 360f, false, style = stroke)
             drawArc(color, angle, 90f, false, style = stroke)
         },
     )
 }
+
+/** Per-ring origin preserves the old transition's start-relative phase while its frame source is shared. */
+private class SpinnerPhase {
+    private var startedAt = Long.MIN_VALUE
+    private var durationScale = 1f
+
+    fun start(millis: Long, scale: Float) {
+        startedAt = millis
+        durationScale = scale
+    }
+
+    fun angle(millis: Long, scale: Float): Float {
+        if (millis == Long.MIN_VALUE) return 0f
+        if (startedAt == Long.MIN_VALUE) return 0f
+        if (durationScale != scale) {
+            startedAt = millis
+            durationScale = scale
+        }
+        if (durationScale == 0f) return 0f
+        val playTime = (millis - startedAt) / durationScale
+        return (playTime % SPINNER_PERIOD_MS) / SPINNER_PERIOD_MS * 360f
+    }
+}
+
+private const val SPINNER_PERIOD_MS = 900f
 
 /** [SpinnerRing]'s determinate twin: the arc fills clockwise from the top with [progress] (0..1), for an upload under way. */
 @Composable

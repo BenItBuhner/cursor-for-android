@@ -46,6 +46,7 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.input.InputTransformation
 import androidx.compose.foundation.text.input.TextFieldLineLimits
+import androidx.compose.foundation.text.input.TextFieldState
 import androidx.compose.foundation.text.input.placeCursorAtEnd
 import androidx.compose.foundation.text.input.rememberTextFieldState
 import androidx.compose.foundation.text.input.setTextAndPlaceCursorAtEnd
@@ -55,6 +56,7 @@ import androidx.compose.material3.ripple
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.MutableIntState
 import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.derivedStateOf
@@ -115,7 +117,6 @@ import androidx.compose.ui.unit.lerp
 import com.cursorforandroid.data.media.MediaLoader
 import com.cursorforandroid.domain.ModelChoice
 import com.cursorforandroid.domain.ModelOption
-import com.cursorforandroid.domain.ModelSearch
 import com.cursorforandroid.domain.SlashCatalog
 import com.cursorforandroid.domain.SlashCommand
 import com.cursorforandroid.domain.SlashCommands
@@ -254,7 +255,6 @@ fun ComposerBox(
 ) {
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
-    val sendMotion = LocalSendMotion.current
     val shape = remember { RoundedCornerShape(CursorDimens.composerRadius) }
     // The owner's text split into what the field shows and the Multitask pill; the field never holds the token.
     val presented = remember(value) { ModePills.present(value) }
@@ -320,20 +320,26 @@ fun ComposerBox(
     SideEffect {
         if (value != adopted) {
             adopted = value
-            if (presented.text != field.text.toString()) field.setTextAndPlaceCursorAtEnd(presented.text)
+            if (!field.text.contentEquals(presented.text)) field.setTextAndPlaceCursorAtEnd(presented.text)
         }
     }
+    // Everything below the body that reaches the owner's text or callbacks reads them through these, so the lambdas
+    // handed to the field, the popover and the footer are the same ones from one keystroke to the next and skip.
+    val currentValue by rememberUpdatedState(value)
+    val currentOnValueChange by rememberUpdatedState(onValueChange)
+    // Whether the field holds anything to send, for the send slot: read as it flips, not on every keystroke.
+    val hasText by remember(field) { derivedStateOf { field.text.isNotBlank() } }
     val textScroll = rememberScrollState()
     // The field's layout, handed over as it is measured and read back as the command highlight draws.
     val textLayout = remember { TextLayoutHandle() }
-    var lineCount by remember { mutableIntStateOf(0) }
+    val lineCount = remember { mutableIntStateOf(0) }
     // Stretched from the first frame of expanding to the last of collapsing: the field then fills what the composer's
     // height leaves it instead of holding to its ten lines.
     val stretched by remember(expansion) { derivedStateOf { expansion.progress.value > 0f } }
     // Past ten lines — or squeezed by a short window into scrolling sooner — the field scrolls inside the composer.
     // Stretched, it may not scroll at all, so its line count is what says the text would overflow again collapsed.
     val overflowing by remember(expansion, textScroll) {
-        derivedStateOf { lineCount > CollapsedMaxLines || (expansion.progress.value == 0f && textScroll.maxValue > 0) }
+        derivedStateOf { lineCount.intValue > CollapsedMaxLines || (expansion.progress.value == 0f && textScroll.maxValue > 0) }
     }
     val density = LocalDensity.current
     val minGainPx = with(density) { ComposerExpansion.MinGain.roundToPx() }
@@ -350,7 +356,6 @@ fun ComposerBox(
             last = p
         }
     }
-    val commandTints = commandTints()
     val receiveImages = rememberImagePasteReceiver(
         enabled = onAddAttachments != null,
         currentCount = attachments.size,
@@ -359,26 +364,28 @@ fun ComposerBox(
     )
     // The `/` token under the cursor, while the field has focus: what the popover lists completions for. A token the
     // popover closed on (nothing matched) is not reopened until the cursor moves on to another. The state's text and
-    // selection are snapshot state, so the token follows every keystroke and cursor move.
+    // selection are snapshot state, so the token follows every keystroke and cursor move; it is derived, and looks
+    // only at the word or line the cursor is in, so a keystroke that leaves it as it was costs the body nothing.
     // A phrase ("/Opus 4") counts only while it names a model; otherwise it is the message typed after a command.
     val offeredModes = remember(onModePill != null, extendedModes) {
         ModePills.Pill.entries.filter { ModePills.pillFor(it.command, planEnabled = onModePill != null, extended = extendedModes) != null }
     }
     val pickableModels = if (onPickModel != null) models else emptyList()
-    val phrase = if (focused) SlashTokens.phraseAt(field.text.toString(), field.selection) else null
-    val phraseNamesModel = remember(phrase?.query, pickableModels) { phrase != null && ModelSearch.search(pickableModels, phrase.query).isNotEmpty() }
-    val slashToken = if (focused) SlashTokens.at(field.text.toString(), field.selection) ?: phrase?.takeIf { phraseNamesModel } else null
+    val multitask = presented.multitask
+    val wornPill = wornMode ?: ModePills.Pill.Multitask.takeIf { multitask }
+    val offer = remember(offeredModes, wornPill, pickableModels, currentModel) { SlashOffer(offeredModes, wornPill, pickableModels, currentModel) }
+    val tokenAtCursor by remember(field) { derivedStateOf { if (focused) SlashTokens.at(field.text, field.selection) else null } }
+    val phrase by remember(field) { derivedStateOf { if (focused) SlashTokens.phraseAt(field.text, field.selection) else null } }
+    val phraseNamesModel = remember(phrase?.query, offer) { phrase?.let { offer.modelSearch.search(it.query).isNotEmpty() } == true }
+    val slashToken = tokenAtCursor ?: phrase?.takeIf { phraseNamesModel }
     var dismissedToken by remember { mutableStateOf<SlashToken?>(null) }
     val recentSkills = plusMenu?.recentSkills.orEmpty()
     val popoverToken = slashToken?.takeIf { it != dismissedToken }
-    val wornPill = wornMode ?: ModePills.Pill.Multitask.takeIf { presented.multitask }
-    val offer = remember(offeredModes, wornPill, pickableModels, currentModel) { SlashOffer(offeredModes, wornPill, pickableModels, currentModel) }
     val slash = rememberSlashSuggestions(popoverToken, commands, recentSkills, offer)
     val slashOpen = slashPopoverOpen(popoverToken, slash, commands)
     // The app's shortcuts are read before this field sees a key; while the popover is up, Esc, Ctrl+N and Ctrl+K are
     // its (see `popoverKeys`) and not the shell's.
     val keyboardShortcuts = LocalKeyboardShortcuts.current
-    val shortcutBindings = LocalShortcutBindings.current
     if (slashOpen && keyboardShortcuts != null) {
         DisposableEffect(keyboardShortcuts) {
             val release = keyboardShortcuts.popoverOpened()
@@ -406,7 +413,7 @@ fun ComposerBox(
     /** Hands the owner the field's text in its own shape — `/multitask ` in front while that pill is on. */
     fun publish(text: String, multitask: Boolean = currentPresented.multitask) {
         val next = ModePills.compose(text, multitask)
-        if (next != value) onValueChange(next)
+        if (next != currentValue) currentOnValueChange(next)
     }
 
     /**
@@ -518,6 +525,24 @@ fun ComposerBox(
         publish(next.text)
     }
 
+    // A `/multitask `, `/plan ` (or, in Extended mode, `/ask ` or `/debug `) the reader has just closed with a space
+    // becomes its pill: the token leaves the text here, before the field ever shows it, and the caret stays on its
+    // characters. The last one typed is the one that stays on; the other mode goes off with it. Text with no slash in
+    // it holds no token, and is handed on without being copied a second time to look.
+    val pillsFromTyping = remember(haptics) {
+        InputTransformation {
+            val typed = if (asCharSequence().indexOf('/') < 0) null else ModePills.consumeTyped(asCharSequence().toString(), selection, planEnabled = currentOnMode != null, extended = currentExtended)
+            val turnedOn = typed?.turnedOn
+            if (typed != null && turnedOn != null) {
+                replace(0, length, typed.text)
+                selection = typed.selection
+                turnOn(turnedOn, toString())
+            } else {
+                publish(toString())
+            }
+        }
+    }
+
     val micTap = if (voice != null) rememberMicTap(voice, haptics, onTranscript = { dictate(it) }) else null
     // A send takes the composer back down with it: what is left is the next message, begun at the composer's own height.
     val send: () -> Unit = {
@@ -570,80 +595,31 @@ fun ComposerBox(
                 sendsNow -> send
                 else -> null
             }
-            ImeEnterFallback(onEnter = physicalEnter, composing = { field.composition != null }) {
-                BasicTextField(
-                    state = field,
-                    textStyle = type.input.copy(color = colors.textPrimary),
-                    keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
-                    cursorBrush = SolidColor(colors.textPrimary),
-                    lineLimits = TextFieldLineLimits.MultiLine(minHeightInLines = minLines, maxHeightInLines = if (stretched) Int.MAX_VALUE else CollapsedMaxLines),
-                    scrollState = textScroll,
-                    onTextLayout = { provider ->
-                        textLayout.get = provider
-                        provider()?.lineCount?.let { if (it != lineCount) lineCount = it }
-                    },
-                    inputTransformation = InputTransformation {
-                        // A `/multitask `, `/plan ` (or, in Extended mode, `/ask ` or `/debug `) the reader has just closed
-                        // with a space becomes its pill: the token leaves the text here, before the field ever shows it,
-                        // and the caret stays on its characters. The last one typed is the one that stays on; the other
-                        // mode goes off with it.
-                        val typed = ModePills.consumeTyped(asCharSequence().toString(), selection, planEnabled = onModePill != null, extended = extendedModes)
-                        val turnedOn = typed.turnedOn
-                        if (turnedOn != null) {
-                            replace(0, length, typed.text)
-                            selection = typed.selection
-                            turnOn(turnedOn, toString())
-                        } else {
-                            publish(toString())
-                        }
-                    },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        // One line of `input` at the default font scale, so the box does not shrink under a small system font.
-                        .heightIn(min = 22.dp)
-                        .then(if (stretched) Modifier.fillMaxHeight() else Modifier)
-                        .onSizeChanged { if (expansion.progress.value == 0f) expansion.fieldPx = it.height }
-                        // Painted, not dissolved: the field is resized every frame the composer expands or collapses,
-                        // and the composer's own fill is flat behind it.
-                        .scrollEdgeFade(textScroll, surface = colors.elevated)
-                        .onPhysicalKey { physicalKeys = true }
-                        .onPreviewKeyEvent { event ->
-                            val chord = event.type == KeyEventType.KeyDown && shortcutBindings.matches(
-                                Shortcut.ExpandComposer,
-                                event.nativeKeyEvent.keyCode,
-                                event.isCtrlPressed,
-                                event.isShiftPressed,
-                                event.isAltPressed,
-                                event.isMetaPressed,
-                            )
-                            if (chord && expandOffered) expansion.toggle()
-                            chord && expandOffered
-                        }
-                        .popoverKeys(slashOpen, slash.selection, composing = { field.composition != null }, onPick = { pick(it) }, onDismiss = { dismissedToken = slashToken })
-                        .modeCycleKeys { cycleMode(it) }
-                        .sendOnHardwareEnter(field, onSend = send.takeIf { sendsNow }, onEdited = { publish(it) })
-                        .then(if (receiveImages != null) Modifier.contentReceiver(receiveImages) else Modifier)
-                        .focusRequester(focus)
-                        .onFocusChanged { focused = it.isFocused },
-                    decorator = { inner ->
-                        Box {
-                            // The field's own text, not the owner's: a placeholder that follows a lagging owner blinks
-                            // back over the first character typed.
-                            if (field.text.isEmpty()) {
-                                Text(placeholder, style = type.input, color = colors.textTertiary, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.sendPlaceholder(sendMotion, anchor))
-                            }
-                            Box(
-                                Modifier
-                                    .then(if (anchor != null) Modifier.onPlaced { anchor.field = it } else Modifier)
-                                    .sendSource(sendMotion, anchor)
-                                    .slashCommandHighlight(layout = { textLayout.get?.invoke() }, scroll = textScroll, tints = commandTints),
-                            ) {
-                                inner()
-                            }
-                        }
-                    },
-                )
-            }
+            ComposerTextField(
+                field = field,
+                placeholder = placeholder,
+                minLines = minLines,
+                stretched = stretched,
+                textScroll = textScroll,
+                textLayout = textLayout,
+                lineCount = lineCount,
+                inputTransformation = pillsFromTyping,
+                expansion = expansion,
+                expandOffered = expandOffered,
+                popoverOpen = slashOpen,
+                popover = slash.selection,
+                onPick = { pick(it) },
+                onDismissPopover = { dismissedToken = slashToken },
+                onCycleMode = { cycleMode(it) },
+                onEnter = physicalEnter,
+                onHardwareSend = send.takeIf { sendsNow },
+                onEdited = { publish(it) },
+                receiveImages = receiveImages,
+                focus = focus,
+                onPhysicalKey = { physicalKeys = true },
+                onFocusChanged = { focused = it },
+                anchor = anchor,
+            )
             SlashCommandPopover(
                 token = popoverToken,
                 suggestions = slash,
@@ -670,9 +646,9 @@ fun ComposerBox(
                                 wantsKeyboard = true
                             }
                         },
-                        prompt = value,
+                        prompt = { currentValue },
                         onPromptChange = { next ->
-                            onValueChange(next)
+                            currentOnValueChange(next)
                             // The command goes in at the front of the prompt and the caret follows the adopted text
                             // to the end, which is where the reader carries on writing; the field is handed back with it.
                             wantsFocus = true
@@ -694,7 +670,7 @@ fun ComposerBox(
                 cancelOffered = cancelOffered && onCancelSend != null,
                 canStop = isRunning && onStop != null,
                 canSend = canSend,
-                hasContent = field.text.isNotBlank() || shownImages.isNotEmpty() || shownFiles.isNotEmpty(),
+                hasContent = hasText || shownImages.isNotEmpty() || shownFiles.isNotEmpty(),
                 voice = micTap != null,
             )
             val micBeside = buttons.micBeside && voice != null && micTap != null
@@ -711,49 +687,22 @@ fun ComposerBox(
                 else -> FooterSpacing.ChipToMain
             }
             val gap by animateDpAsState(gapTarget, tween(MicSlideMillis, easing = FastOutSlowInEasing), label = "footerGap")
-            AnimatedContent(
-                targetState = dictating,
-                transitionSpec = { fadeIn(tween(MicMotionMillis, easing = FastOutSlowInEasing)) togetherWith fadeOut(tween(MicMotionMillis * 2 / 3)) using SizeTransform(clip = false) },
-                contentAlignment = Alignment.CenterStart,
+            ComposerFooterMiddle(
+                dictating = dictating,
+                voice = voice,
+                micTap = micTap,
+                micBeside = micBeside,
+                wornMode = wornMode,
+                onClearMode = { haptics.perform(Haptic.ToggleOff); onModePill?.invoke(null) },
+                multitask = multitask,
+                onClearMultitask = { haptics.perform(Haptic.ToggleOff); publish(field.text.toString(), multitask = false) },
+                footerExtra = footerExtra,
+                sendHint = sendHint,
+                modelLabel = modelLabel,
+                onModel = onModel,
+                chipEnd = chipEnd,
                 modifier = Modifier.weight(1f),
-                label = "footerMiddle",
-            ) { showsStatus ->
-                if (showsStatus && voice != null && micTap != null) {
-                    VoiceStatus(voice, onTap = micTap, cancelTouchShift = if (micBeside) FooterSpacing.CancelTouchShift else 0.dp, modifier = Modifier.fillMaxWidth())
-                } else {
-                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                        if (wornMode != null) {
-                            ModePill(wornMode, onClear = { haptics.perform(Haptic.ToggleOff); onModePill?.invoke(null) })
-                            Spacer(Modifier.width(6.dp))
-                        }
-                        if (presented.multitask) {
-                            ModePill(ModePills.Pill.Multitask, onClear = { haptics.perform(Haptic.ToggleOff); publish(field.text.toString(), multitask = false) })
-                            Spacer(Modifier.width(6.dp))
-                        }
-                        Spacer(Modifier.weight(1f))
-                        footerExtra?.invoke(this)
-                        if (sendHint != null) {
-                            Text(
-                                sendHint,
-                                style = type.small,
-                                color = colors.textTertiary,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                                modifier = Modifier.padding(end = 6.dp).testTag("send-hint"),
-                            )
-                        }
-                        if (modelLabel != null) {
-                            SelectorChip(
-                                modelLabel,
-                                onClick = onModel ?: {},
-                                enabled = onModel != null,
-                                showChevron = onModel != null,
-                                endPadding = chipEnd,
-                            )
-                        }
-                    }
-                }
-            }
+            )
             Spacer(Modifier.width(gap))
             if (voice != null && micTap != null && micShown > 0f) {
                 VoiceMicBeside(
@@ -789,6 +738,184 @@ fun ComposerBox(
             }
             ComposerMainButton(face, voice = voice, touchShift = mainShift, modifier = Modifier.testTag("composer-main"))
         }
+    }
+}
+
+/**
+ * The composer's text field, its placeholder and its command highlight, with the key handlers that belong to it. Its
+ * own composable, taking nothing that changes as the text does, so a keystroke that reruns the composer's body skips
+ * it: the field redraws and relays out its text itself.
+ */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun ComposerTextField(
+    field: TextFieldState,
+    placeholder: String,
+    minLines: Int,
+    stretched: Boolean,
+    textScroll: ScrollState,
+    textLayout: TextLayoutHandle,
+    lineCount: MutableIntState,
+    inputTransformation: InputTransformation,
+    expansion: ComposerExpansion,
+    expandOffered: Boolean,
+    popoverOpen: Boolean,
+    popover: PopoverSelection<SlashItem>,
+    onPick: (SlashItem) -> Unit,
+    onDismissPopover: () -> Unit,
+    onCycleMode: (KeyEvent) -> Boolean,
+    onEnter: (() -> Unit)?,
+    onHardwareSend: (() -> Unit)?,
+    onEdited: (String) -> Unit,
+    receiveImages: ReceiveContentListener?,
+    focus: FocusRequester,
+    onPhysicalKey: () -> Unit,
+    onFocusChanged: (Boolean) -> Unit,
+    anchor: ComposerAnchor?,
+) {
+    val colors = CursorTheme.colors
+    val type = CursorTheme.typography
+    val sendMotion = LocalSendMotion.current
+    val shortcutBindings = LocalShortcutBindings.current
+    val commandTints = commandTints()
+    ImeEnterFallback(onEnter = onEnter, composing = { field.composition != null }) {
+        BasicTextField(
+            state = field,
+            textStyle = type.input.copy(color = colors.textPrimary),
+            keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
+            cursorBrush = SolidColor(colors.textPrimary),
+            lineLimits = TextFieldLineLimits.MultiLine(minHeightInLines = minLines, maxHeightInLines = if (stretched) Int.MAX_VALUE else CollapsedMaxLines),
+            scrollState = textScroll,
+            onTextLayout = { provider ->
+                textLayout.get = provider
+                provider()?.lineCount?.let { if (it != lineCount.intValue) lineCount.intValue = it }
+            },
+            inputTransformation = inputTransformation,
+            modifier = Modifier
+                .fillMaxWidth()
+                // One line of `input` at the default font scale, so the box does not shrink under a small system font.
+                .heightIn(min = 22.dp)
+                .then(if (stretched) Modifier.fillMaxHeight() else Modifier)
+                .onSizeChanged { if (expansion.progress.value == 0f) expansion.fieldPx = it.height }
+                // Painted, not dissolved: the field is resized every frame the composer expands or collapses,
+                // and the composer's own fill is flat behind it.
+                .scrollEdgeFade(textScroll, surface = colors.elevated)
+                .onPhysicalKey(onPhysicalKey)
+                .onPreviewKeyEvent { event ->
+                    val chord = event.type == KeyEventType.KeyDown && shortcutBindings.matches(
+                        Shortcut.ExpandComposer,
+                        event.nativeKeyEvent.keyCode,
+                        event.isCtrlPressed,
+                        event.isShiftPressed,
+                        event.isAltPressed,
+                        event.isMetaPressed,
+                    )
+                    if (chord && expandOffered) expansion.toggle()
+                    chord && expandOffered
+                }
+                .popoverKeys(popoverOpen, popover, composing = { field.composition != null }, onPick = onPick, onDismiss = onDismissPopover)
+                .modeCycleKeys(onCycleMode)
+                .sendOnHardwareEnter(field, onSend = onHardwareSend, onEdited = onEdited)
+                .then(if (receiveImages != null) Modifier.contentReceiver(receiveImages) else Modifier)
+                .focusRequester(focus)
+                .onFocusChanged { onFocusChanged(it.isFocused) },
+            decorator = { inner ->
+                Box {
+                    ComposerPlaceholder(field, placeholder, Modifier.sendPlaceholder(sendMotion, anchor))
+                    Box(
+                        Modifier
+                            .then(if (anchor != null) Modifier.onPlaced { anchor.field = it } else Modifier)
+                            .sendSource(sendMotion, anchor)
+                            .slashCommandHighlight(layout = { textLayout.get?.invoke() }, scroll = textScroll, tints = commandTints),
+                    ) {
+                        inner()
+                    }
+                }
+            },
+        )
+    }
+}
+
+/**
+ * The footer between the pills' left edge and the mic: the worn pills, [footerExtra], the upload hint and the model
+ * chip, or a dictation's status while one is under way. Its own composable so a keystroke, which changes none of it,
+ * leaves it alone.
+ */
+@Composable
+private fun ComposerFooterMiddle(
+    dictating: Boolean,
+    voice: VoiceInput?,
+    micTap: (() -> Unit)?,
+    micBeside: Boolean,
+    wornMode: ModePills.Pill?,
+    onClearMode: () -> Unit,
+    multitask: Boolean,
+    onClearMultitask: () -> Unit,
+    footerExtra: (@Composable RowScope.() -> Unit)?,
+    sendHint: String?,
+    modelLabel: String?,
+    onModel: (() -> Unit)?,
+    chipEnd: Dp,
+    modifier: Modifier = Modifier,
+) {
+    val colors = CursorTheme.colors
+    val type = CursorTheme.typography
+    AnimatedContent(
+        targetState = dictating,
+        transitionSpec = { fadeIn(tween(MicMotionMillis, easing = FastOutSlowInEasing)) togetherWith fadeOut(tween(MicMotionMillis * 2 / 3)) using SizeTransform(clip = false) },
+        contentAlignment = Alignment.CenterStart,
+        modifier = modifier,
+        label = "footerMiddle",
+    ) { showsStatus ->
+        if (showsStatus && voice != null && micTap != null) {
+            VoiceStatus(voice, onTap = micTap, cancelTouchShift = if (micBeside) FooterSpacing.CancelTouchShift else 0.dp, modifier = Modifier.fillMaxWidth())
+        } else {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                if (wornMode != null) {
+                    ModePill(wornMode, onClear = onClearMode)
+                    Spacer(Modifier.width(6.dp))
+                }
+                if (multitask) {
+                    ModePill(ModePills.Pill.Multitask, onClear = onClearMultitask)
+                    Spacer(Modifier.width(6.dp))
+                }
+                Spacer(Modifier.weight(1f))
+                footerExtra?.invoke(this)
+                if (sendHint != null) {
+                    Text(
+                        sendHint,
+                        style = type.small,
+                        color = colors.textTertiary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.padding(end = 6.dp).testTag("send-hint"),
+                    )
+                }
+                if (modelLabel != null) {
+                    SelectorChip(
+                        modelLabel,
+                        onClick = onModel ?: {},
+                        enabled = onModel != null,
+                        showChevron = onModel != null,
+                        endPadding = chipEnd,
+                    )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * The field's placeholder, shown while the field's own text is empty — not the owner's: a placeholder that follows a
+ * lagging owner blinks back over the first character typed. Only its emptiness is read, here, so a keystroke into
+ * text that was already there recomposes nothing.
+ */
+@Composable
+private fun ComposerPlaceholder(field: TextFieldState, placeholder: String, modifier: Modifier) {
+    val empty by remember(field) { derivedStateOf { field.text.isEmpty() } }
+    if (empty) {
+        val type = CursorTheme.typography
+        Text(placeholder, style = type.input, color = CursorTheme.colors.textTertiary, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = modifier)
     }
 }
 
@@ -989,13 +1116,14 @@ private class TextLayoutHandle {
  * node places that content at `-scroll` and draws there), so the repaint follows [scroll] the same way and is clipped
  * to the field's bounds like the field.
  */
-private fun Modifier.slashCommandHighlight(layout: () -> TextLayoutResult?, scroll: ScrollState, tints: CommandTints): Modifier =
-    clipToBounds().drawWithContent {
+private fun Modifier.slashCommandHighlight(layout: () -> TextLayoutResult?, scroll: ScrollState, tints: CommandTints): Modifier {
+    val ranges = TokenRangesCache()
+    return clipToBounds().drawWithContent {
         drawContent()
         val result = layout() ?: return@drawWithContent
         // The laid-out text rather than the state's: the two differ for the frame between an edit and its layout.
         val text = result.layoutInput.text.text
-        val tokens = SlashCommands.tokenRanges(text)
+        val tokens = ranges.of(text)
         if (tokens.isEmpty()) return@drawWithContent
         translate(top = -scroll.value.toFloat()) {
             for (token in tokens) {
@@ -1005,6 +1133,24 @@ private fun Modifier.slashCommandHighlight(layout: () -> TextLayoutResult?, scro
             }
         }
     }
+}
+
+/**
+ * The command highlight's [SlashCommands.tokenRanges], kept for the laid-out text they were found in: the field
+ * redraws for every caret blink and every frame of a send's flight, with the same text each time.
+ */
+internal class TokenRangesCache {
+    private var text: String? = null
+    private var ranges: List<IntRange> = emptyList()
+
+    fun of(text: String): List<IntRange> {
+        if (text !== this.text) {
+            ranges = SlashCommands.tokenRanges(text)
+            this.text = text
+        }
+        return ranges
+    }
+}
 
 /**
  * Saves whether the field had focus, rather than the state it is held in. `rememberSaveable { mutableStateOf(…) }`

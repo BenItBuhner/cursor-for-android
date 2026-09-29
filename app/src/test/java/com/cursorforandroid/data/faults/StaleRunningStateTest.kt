@@ -86,7 +86,11 @@ class StaleRunningStateTest {
         second.agents.refresh()
         second.awaitUntil(15_000) { second.agents.runningScan.value.accountWord[root]?.running == true }
         second.conversations.attach(root)
-        second.awaitUntil(30_000) { second.conversations.state(root).value.let { s -> !s.isLoading && s.runStatus == RunStatus.RUNNING } }
+        second.awaitUntil(30_000) {
+            second.conversations.state(root).value.let { s ->
+                !s.isLoading && s.activeRunId == liveRun && s.runStatus == RunStatus.RUNNING
+            }
+        }
         return second
     }
 

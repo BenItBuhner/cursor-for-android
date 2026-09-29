@@ -137,7 +137,6 @@ internal object DemoData {
         val durationMs: Long? = null,
         val prompt: String,
         val replies: List<String> = emptyList(),
-        val autoPr: Boolean = false,
         val liveScript: String? = null,
         /** The finished run's event log; empty for runs that are still live (they record their own) or too old. */
         val trace: List<Step> = emptyList(),
@@ -310,7 +309,6 @@ internal object DemoData {
             summary = "Rebuilt the house environment with modular rooms and baked lighting.", durationMs = 58 * MIN,
             prompt = "Overhaul the house environment: modular rooms, baked lighting, and a day/night cycle. Open a PR when done.",
             replies = listOf("Rebuilt the environment into 9 modular room prefabs with a shared material atlas, added baked lighting for both day and night states and wired the cycle to the existing `WorldClock`. PR is open with 67 files changed."),
-            autoPr = true,
             trace = listOf(
                 thought("The house is one monolithic scene. Split it into room prefabs first, then bake two lighting states and drive the swap from WorldClock instead of a new timer."),
                 list("assets/environments/house"), read("src/world/WorldClock.ts"), grep("bakeLighting"), read("assets/environments/house/house.scene"),
@@ -627,7 +625,6 @@ internal object DemoData {
         latestRunId = latestRunId,
         repos = seed.repo?.let { listOf(RepoConfigDto(url = it, startingRef = seed.ref)) } ?: emptyList(),
         workOnCurrentBranch = false,
-        autoCreatePR = seed.autoPr,
     )
 
     fun v0Dto(seed: Seed, now: Long): V0AgentDto = V0AgentDto(
@@ -635,7 +632,7 @@ internal object DemoData {
         name = seed.name,
         status = seed.runStatus,
         source = seed.repo?.let { V0SourceDto(repository = it, ref = seed.ref) },
-        target = V0TargetDto(branchName = seed.branch, url = "https://cursor.com/agents/${seed.id}", prUrl = seed.prUrl, autoCreatePr = seed.autoPr),
+        target = V0TargetDto(branchName = seed.branch, url = "https://cursor.com/agents/${seed.id}", prUrl = seed.prUrl),
         summary = seed.summary ?: seed.replies.lastOrNull(),
         createdAt = iso(chatStart(seed, now)),
     )

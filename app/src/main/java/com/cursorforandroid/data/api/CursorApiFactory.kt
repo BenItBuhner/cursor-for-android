@@ -4,6 +4,8 @@ import com.cursorforandroid.BuildConfig
 import com.cursorforandroid.data.api.dto.ApiErrorBodyDto
 import com.cursorforandroid.data.auth.SessionUnavailableException
 import kotlinx.serialization.json.Json
+import okhttp3.ConnectionPool
+import okhttp3.Dispatcher
 import okhttp3.Interceptor
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -218,7 +220,30 @@ class OneShotWritesInterceptor : Interceptor {
 
 object CursorApiFactory {
 
-    fun okHttp(apiKeyProvider: () -> String?): OkHttpClient = OkHttpClient.Builder()
+    /**
+     * The connection pool and the threads the clients below share: `AppGraph` builds one and hands it to each, so
+     * the process holds one pool and one thread pool instead of one per client, and a host two clients speak to (the
+     * API's, for [okHttp] and [originClient]) keeps one connection. A client built without one gets its own.
+     */
+    fun newRoot(): OkHttpClient = OkHttpClient.Builder()
+        .connectionPool(ConnectionPool(SHARED_IDLE_CONNECTIONS, 5, TimeUnit.MINUTES))
+        .build()
+
+    /** Room for the idle connections of every client on the root at once; OkHttp's default of five was per client. */
+    private const val SHARED_IDLE_CONNECTIONS = 16
+
+    /**
+     * A client on [this] root's pool and threads, with a dispatcher of its own: a client's per-host limit and queue
+     * stay its alone (the account client widens its own, see `AppGraph`), as when each client was built apart.
+     */
+    private fun OkHttpClient.derive(): OkHttpClient.Builder = newBuilder().dispatcher(Dispatcher(dispatcher.executorService))
+
+    fun okHttp(apiKeyProvider: () -> String?): OkHttpClient = okHttp(newRoot(), apiKeyProvider)
+
+    fun okHttp(root: OkHttpClient, apiKeyProvider: () -> String?): OkHttpClient = okHttp(root, HostPause(), apiKeyProvider)
+
+    /** [pauses]: the hosts' pauses this client's reads hold to, shared with the run streams (see [SseRunStreamer]). */
+    fun okHttp(root: OkHttpClient, pauses: HostPause, apiKeyProvider: () -> String?): OkHttpClient = root.derive()
         .connectTimeout(20, TimeUnit.SECONDS)
         .readTimeout(60, TimeUnit.SECONDS)
         .writeTimeout(30, TimeUnit.SECONDS)
@@ -232,7 +257,7 @@ object CursorApiFactory {
         .addInterceptor(AuthInterceptor(apiKeyProvider))
         // Writes go out once: a lost reply is reported, not resent behind the app's back (see the class).
         .addInterceptor(OneShotWritesInterceptor())
-        .addInterceptor(RetryInterceptor())
+        .addInterceptor(RetryInterceptor(pauses = pauses))
         .apply {
             if (BuildConfig.DEBUG) {
                 addInterceptor(HttpLoggingInterceptor().apply { level = HttpLoggingInterceptor.Level.BASIC })
@@ -246,7 +271,7 @@ object CursorApiFactory {
      * login, in its body, and in the query string of the GET an older backend falls back to, which even
      * [HttpLoggingInterceptor.Level.BASIC] would write to logcat as part of the request line.
      */
-    fun loginClient(): OkHttpClient = OkHttpClient.Builder()
+    fun loginClient(root: OkHttpClient = newRoot()): OkHttpClient = root.derive()
         .connectTimeout(20, TimeUnit.SECONDS)
         .readTimeout(30, TimeUnit.SECONDS)
         .callTimeout(45, TimeUnit.SECONDS)
@@ -273,7 +298,7 @@ object CursorApiFactory {
      * For media bytes: artifact downloads are presigned S3 URLs, which reject a request that also carries an
      * `Authorization` header, and the API key must never travel to arbitrary image hosts anyway.
      */
-    fun mediaClient(): OkHttpClient = OkHttpClient.Builder()
+    fun mediaClient(root: OkHttpClient = newRoot()): OkHttpClient = root.derive()
         .connectTimeout(20, TimeUnit.SECONDS)
         .readTimeout(60, TimeUnit.SECONDS)
         .apply {
@@ -288,7 +313,7 @@ object CursorApiFactory {
      * never leave for GitHub — and without a call timeout, since an APK download on a slow link takes what it takes;
      * the read timeout still catches a stalled connection, and GETs ride out blips through the retry interceptor.
      */
-    fun updateClient(): OkHttpClient = OkHttpClient.Builder()
+    fun updateClient(root: OkHttpClient = newRoot()): OkHttpClient = root.derive()
         .connectTimeout(20, TimeUnit.SECONDS)
         .readTimeout(60, TimeUnit.SECONDS)
         .callTimeout(0, TimeUnit.MILLISECONDS)
@@ -304,23 +329,32 @@ object CursorApiFactory {
         .build()
 
     /**
-     * For the anonymous reads of GitHub's REST API that stand in for the account service when Extended mode is off
-     * (pull request states, repository trees). No Cursor credential rides along, and no retry: GitHub's rate limit is
-     * hourly and a `429` retried in seconds only spends more of it; the repositories behind these calls have their
-     * own schedules.
-     */
-    /**
      * The client for a cloud agent's cursor-server (see [com.cursorforandroid.data.api.CursorServerApi]): a plain
      * client with no API-key interceptor — the request carries only the connection token and the headers the server
      * named — and bounded timeouts, since a picture off the machine should not hang a viewer.
      */
-    fun cursorServerClient(): OkHttpClient = OkHttpClient.Builder()
+    fun cursorServerClient(root: OkHttpClient = newRoot()): OkHttpClient = root.derive()
         .connectTimeout(20, TimeUnit.SECONDS)
         .readTimeout(30, TimeUnit.SECONDS)
         .callTimeout(60, TimeUnit.SECONDS)
         .build()
 
-    fun gitHubClient(): OkHttpClient = OkHttpClient.Builder()
+    /**
+     * For the anonymous reads of GitHub's REST API that stand in for the account service when Extended mode is off
+     * (pull request states, repository trees). No Cursor credential rides along, and no retry: GitHub's rate limit is
+     * hourly and a `429` retried in seconds only spends more of it; the repositories behind these calls have their
+     * own schedules.
+     */
+    fun gitHubClient(root: OkHttpClient = newRoot()): OkHttpClient = bareClient(root).build()
+
+    /**
+     * For Origin's REST API (`api.cursor.com/v1/origin`), which takes a user access token rather than the API key:
+     * the same bare client as GitHub's, so the stored key never rides along, and each call sets its own bearer. It
+     * looks the host up as the API client does, so on the same root its requests ride the API client's connection.
+     */
+    fun originClient(root: OkHttpClient = newRoot()): OkHttpClient = bareClient(root).dns(LastGoodDns.CURSOR).build()
+
+    private fun bareClient(root: OkHttpClient): OkHttpClient.Builder = root.derive()
         .connectTimeout(20, TimeUnit.SECONDS)
         .readTimeout(30, TimeUnit.SECONDS)
         .callTimeout(45, TimeUnit.SECONDS)
@@ -332,13 +366,6 @@ object CursorApiFactory {
                 addInterceptor(HttpLoggingInterceptor().apply { level = HttpLoggingInterceptor.Level.BASIC })
             }
         }
-        .build()
-
-    /**
-     * For Origin's REST API (`api.cursor.com/v1/origin`), which takes a user access token rather than the API key:
-     * the same bare client as GitHub's, so the stored key never rides along, and each call sets its own bearer.
-     */
-    fun originClient(): OkHttpClient = gitHubClient()
 
     fun retrofit(client: OkHttpClient, baseUrl: String = CursorEndpoints.BASE_URL): CursorApi = Retrofit.Builder()
         .baseUrl(baseUrl)

@@ -526,6 +526,35 @@ class CoordinatorRepliesStayTest {
         assertNeverLost(frames, first, previous, latest)
     }
 
+    /**
+     * The same chat opened while `/v0` is slow (megabytes, on a cell connection): the run list lands first and the
+     * finished turns' logs are replayed before any prompt is in hand. Each turn's reply is in its run's log, so drawn
+     * then, every reply stood stacked under no prompt until the transcript slid the prompts in between them.
+     */
+    @Test
+    fun `Stable - a chat opened on a slow transcript draws no reply before the prompt it answers`() = runBlocking<Unit> {
+        val turns = listOf(first, previous, latest)
+        serve(inRecord = turns, listed = turns + report, inV0 = turns, running = report)
+        server.outage(Route.Stream, Fault.StreamCut(events = 2), path = "/${report.runId}/")
+        val transcript = Fault.Held()
+        server.script(Route.Conversation, transcript)
+        val rig = rig(TranscriptEngine.STABLE)
+        val frames = Frames(rig)
+        try {
+            rig.agents.refresh()
+            rig.conversations.attach(AGENT_ID)
+            rig.until("the finished turns' logs replayed ahead of the transcript", 30_000) {
+                turns.all { t -> server.requests(Route.Stream).any { it.path.contains("/${t.runId}/") } } && rig.state().traceStatus.pending == 0
+            }
+            assertWithMessage("no prompt in hand yet, so no reply drawn:\n${describe(replies(rig.state()))}\n").that(replies(rig.state()).flatMap { it.second }).isEmpty()
+        } finally {
+            transcript.release()
+        }
+        rig.until("every turn's reply on screen once the transcript lands", 30_000) { replies(rig.state()).let { r -> r.size == 3 && r.all { it.second.isNotEmpty() } } }
+        assertReplies(rig.state(), first, previous, latest)
+        assertNeverLost(frames, first, previous, latest)
+    }
+
     /** `/v0` has the newest prompt and the run list has not listed its run yet: it takes no other turn's run. */
     @Test
     fun `Stable - a prompt whose run is not listed yet takes no other turn's run`() = runBlocking<Unit> {

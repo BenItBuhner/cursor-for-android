@@ -125,6 +125,10 @@ data class AccountList(
     val composers: List<ComposerSnapshot> = emptyList(),
     /** Where the next page of the account's list starts (see [PinsApi.listMore]); null when this page was the last. */
     val nextCursor: String? = null,
+    /** The service said more follows, whether or not it named where (see [nextCursor]). */
+    val hasMore: Boolean = nextCursor != null,
+    /** The newest page ([PinsApi.list]), which the root discovery pass would read first (see [RootScanApi.scanRoots]). */
+    val isFirstPage: Boolean = false,
 )
 
 /** The account's agent list and its pins, the ones the desktop Agents window and the iOS app share. An interface so the repositories can be faked. */
@@ -176,6 +180,12 @@ interface RootScanApi {
      * that cannot date their pages read as before.
      */
     suspend fun scanRoots(maxPages: Int, stopBelowActivityMillis: Long?): RootScan = scanRoots(maxPages)
+
+    /**
+     * The same pass, starting from [firstPage] — the newest page, read a moment ago for the list itself — rather than
+     * asking for it again. Sources that cannot take it read as before.
+     */
+    suspend fun scanRoots(maxPages: Int, stopBelowActivityMillis: Long?, firstPage: AccountList?): RootScan = scanRoots(maxPages, stopBelowActivityMillis)
 }
 
 interface PinsApi {
@@ -241,7 +251,12 @@ class BackgroundComposerApi(
         page(cursor)
     }
 
-    override suspend fun scanRoots(maxPages: Int, stopBelowActivityMillis: Long?): RootScan {
+    override suspend fun scanRoots(maxPages: Int, stopBelowActivityMillis: Long?): RootScan = scanRoots(maxPages, stopBelowActivityMillis, null)
+
+    /** One page of the pass: its records, whether the service said more follows, and where the next page starts. */
+    private class ScanPage(val snapshots: List<ComposerSnapshot>, val hasMore: Boolean, val next: ListCursor?)
+
+    override suspend fun scanRoots(maxPages: Int, stopBelowActivityMillis: Long?, firstPage: AccountList?): RootScan {
         val roots = ArrayList<ComposerSnapshot>()
         val children = ArrayList<ComposerSnapshot>()
         val all = ArrayList<ComposerSnapshot>()
@@ -252,13 +267,19 @@ class BackgroundComposerApi(
         var records = 0
         var failure: String? = null
         var stoppedEarly = false
+        // The newest page the list itself just read is the pass's first; one that said more follows without naming
+        // where is asked for again, so the pass reports that as it always has.
+        var seed = firstPage?.takeIf { it.isFirstPage && (it.nextCursor != null || !it.hasMore) }
         do {
             // Each page stands on its own: a page that fails leaves the ones before it read and the pass to be
             // finished later, rather than throwing away what the account already said. A page that failed in passing
             // (a dropped connection) is asked for once more first: a pass tried again later starts from the first
             // page, so one lost page of twenty-five cost the account list read twice over.
-            val response = try {
-                pageWithRetry(cursor)
+            val page = seed?.let { first ->
+                seed = null
+                ScanPage(first.composers, first.hasMore, first.nextCursor?.let { ListCursor.parse(it) })
+            } ?: try {
+                pageWithRetry(cursor).let { response -> ScanPage(response.composers.mapNotNull { snapshot(it) }, response.hasMore, response.cursor()) }
             } catch (e: CancellationException) {
                 throw e
             } catch (t: Throwable) {
@@ -268,8 +289,7 @@ class BackgroundComposerApi(
             pages++
             var added = 0
             var oldest: Long? = null
-            for (composer in response.composers) {
-                val snap = snapshot(composer) ?: continue
+            for (snap in page.snapshots) {
                 records++
                 snap.activityAtMillis?.let { oldest = minOf(oldest ?: it, it) }
                 if (!seen.add(snap.id)) continue
@@ -282,17 +302,17 @@ class BackgroundComposerApi(
             // knows, the pages behind it hold nothing newer, and the next page is not asked for. A page that dates
             // nothing is read as before.
             val floor = stopBelowActivityMillis
-            if (floor != null && oldest != null && oldest!! < floor && pages < maxPages && response.hasMore) {
+            if (floor != null && oldest != null && oldest!! < floor && pages < maxPages && page.hasMore) {
                 stoppedEarly = true
                 cursor = null
                 break
             }
             when {
-                !response.hasMore -> { cursor = null; complete = true }
+                !page.hasMore -> { cursor = null; complete = true }
                 // A page that brought nothing new is the list read to its end whatever the flag said.
                 added == 0 -> { cursor = null; complete = true }
                 else -> {
-                    cursor = response.cursor()
+                    cursor = page.next
                     if (cursor == null) failure = "page $pages: the service has more but named no page cursor"
                 }
             }
@@ -330,6 +350,8 @@ class BackgroundComposerApi(
             sources,
             composers,
             nextCursor = if (response.hasMore && response.composers.isNotEmpty()) response.cursor()?.encode() else null,
+            hasMore = response.hasMore,
+            isFirstPage = first,
         )
     }
 

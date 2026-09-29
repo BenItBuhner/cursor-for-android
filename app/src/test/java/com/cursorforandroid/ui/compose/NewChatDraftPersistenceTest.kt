@@ -138,7 +138,6 @@ class NewChatDraftPersistenceTest {
                 ref = "cursor/fix-login",
                 modelId = "composer-2.5",
                 modelParams = listOf(ModelParam("fast", "false")),
-                autoCreatePr = false,
                 planMode = true,
                 env = state.selectedDevice,
             ),

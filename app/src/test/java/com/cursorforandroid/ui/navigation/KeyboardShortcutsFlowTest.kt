@@ -14,7 +14,10 @@ import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsFocused
 import androidx.compose.ui.test.assertIsSelected
 import androidx.compose.ui.test.getBoundsInRoot
+import androidx.compose.ui.semantics.ProgressBarRangeInfo
+import androidx.compose.ui.test.ComposeTimeoutException
 import androidx.compose.ui.test.hasAnyAncestor
+import androidx.compose.ui.test.hasProgressBarRangeInfo
 import androidx.compose.ui.test.hasClickAction
 import androidx.compose.ui.test.hasContentDescription
 import androidx.compose.ui.test.hasSetTextAction
@@ -29,6 +32,7 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.test.performTextInput
+import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.lifecycleScope
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -38,6 +42,8 @@ import com.cursorforandroid.data.local.CachedConversation
 import com.cursorforandroid.domain.BuiltInSlashCommands
 import com.cursorforandroid.domain.CursorUser
 import com.cursorforandroid.ui.agents.AgentRowTags
+import com.cursorforandroid.ui.agents.AgentsViewModel
+import com.cursorforandroid.ui.conversation.CATCH_UP_TEST_TAG
 import com.cursorforandroid.ui.settings.KeyboardShortcutsCopy
 import com.cursorforandroid.ui.settings.KeyboardShortcutsTags
 import com.cursorforandroid.ui.settings.SettingsTags
@@ -50,7 +56,11 @@ import com.cursorforandroid.ui.shortcuts.ShortcutBindings
 import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.ui.theme.ThemeMode
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -284,6 +294,40 @@ class KeyboardShortcutsFlowTest {
     }
 
     @Test
+    fun `on a phone with the drawer shut, Ctrl+1 to 0 open the rows it would show, a chat's nested chats among them once listed there`() {
+        showShell(wide = false)
+        val list = ViewModelProvider(compose.activity, AgentsViewModel.Factory(graph))[AgentsViewModel::class.java].uiState
+        compose.waitUntil(30_000) { list.value.hasLoaded && !list.value.isRefreshing }
+        val project = list.value.sections.first().rows.first()
+        val worker = project.children.first().agent.name
+        val second = list.value.sections.flatMap { it.rows }.map { it.agent.name }.distinct()[1]
+        assertTrue(worker != second)
+
+        chord(KeyEvent.KEYCODE_1)
+        compose.waitUntil(20_000) { chatOpen(PROJECT) }
+        chord(KeyEvent.KEYCODE_2)
+        compose.waitUntil(20_000) { chatOpen(second) }
+
+        // The Project's workers listed in the drawer, and the drawer shut again: Ctrl+2 is the first of them.
+        chord(KeyEvent.KEYCODE_B)
+        compose.waitUntil(10_000) { displayed(SEARCH_CHATS) }
+        compose.onNode(hasContentDescription("Show chats under $PROJECT")).performClick()
+        compose.waitUntil(10_000) { exists(hasContentDescription("Hide chats under $PROJECT")) }
+        chord(KeyEvent.KEYCODE_B)
+        compose.waitUntil(10_000) { !displayed(SEARCH_CHATS) }
+        chord(KeyEvent.KEYCODE_2)
+        compose.waitUntil(20_000) { chatOpen(worker) }
+
+        // The list changed behind the screen, the Projects group folded: Ctrl+1 is the first row the drawer would show now.
+        val vm = ViewModelProvider(compose.activity, AgentsViewModel.Factory(graph))[AgentsViewModel::class.java]
+        vm.setSectionCollapsed(list.value.sections.first().key, true)
+        compose.waitUntil(10_000) { list.value.sections.first().key in list.value.collapsedSections }
+        compose.waitForIdle()
+        chord(KeyEvent.KEYCODE_1)
+        compose.waitUntil(20_000) { chatOpen(list.value.sections[1].rows.first().agent.name) }
+    }
+
+    @Test
     fun `Ctrl held numbers the rail's rows, Ctrl+1 opens the first, and letting go puts the numbers away`() {
         showShell(wide = true)
         compose.waitUntil(20_000) { displayed(hasContentDescription("Search chats")) }
@@ -419,12 +463,12 @@ class KeyboardShortcutsFlowTest {
     }
 
     @Test
-    fun `in a chat, Ctrl+R and Ctrl+Shift+R each say it is up to date`() {
+    fun `in a chat, Ctrl+R catches up and Ctrl+Shift+R reads the transcript again`() {
         showShell(wide = true)
         // Pressed as soon as the chat shows, while its first read may still be under way: that read is not counted.
         searchAndOpen("House environment", HOUSE)
-        assertTrue(showsWhileClockHeld(UP_TO_DATE) { chord(KeyEvent.KEYCODE_R) })
-        assertTrue(showsWhileClockHeld(UP_TO_DATE) { chord(KeyEvent.KEYCODE_R, shift = true) })
+        assertTrue(catchesUpWhileClockHeld { chord(KeyEvent.KEYCODE_R) })
+        assertTrue(reloadsTranscript { chord(KeyEvent.KEYCODE_R, shift = true) })
     }
 
     @Test
@@ -439,8 +483,8 @@ class KeyboardShortcutsFlowTest {
         chord(KeyEvent.KEYCODE_A)
         assertTrue(KeyEvent.KEYCODE_A in imeHeard)
 
-        assertTrue(showsWhileClockHeld(UP_TO_DATE) { chord(KeyEvent.KEYCODE_R) })
-        assertTrue(showsWhileClockHeld(UP_TO_DATE) { chord(KeyEvent.KEYCODE_R, shift = true) })
+        assertTrue(catchesUpWhileClockHeld { chord(KeyEvent.KEYCODE_R) })
+        assertTrue(reloadsTranscript { chord(KeyEvent.KEYCODE_R, shift = true) })
         assertFalse(KeyEvent.KEYCODE_R in imeHeard)
     }
 
@@ -730,14 +774,16 @@ class KeyboardShortcutsFlowTest {
      * snackbar through its whole showing inside one wait for idle. Ctrl+R's answer is the pull's, put away on the
      * main looper's clock, which the test clock does not move: it is moved here while the word is waited out.
      */
-    private fun showsWhileClockHeld(text: String, action: () -> Unit): Boolean {
+    /** Ctrl+R reached the chat: the catch-up's indicator spins, the clock held so the spin cannot pass unseen. */
+    private fun catchesUpWhileClockHeld(action: () -> Unit): Boolean {
+        val spinning = { exists(hasProgressBarRangeInfo(ProgressBarRangeInfo.Indeterminate) and hasAnyAncestor(hasTestTag(CATCH_UP_TEST_TAG))) }
         compose.mainClock.autoAdvance = false
         try {
             action()
             val deadline = System.currentTimeMillis() + 20_000
             while (System.currentTimeMillis() < deadline) {
                 compose.mainClock.advanceTimeByFrame()
-                if (onScreen(text)) return true
+                if (spinning()) return true
                 Thread.sleep(10)
             }
             return false
@@ -745,9 +791,27 @@ class KeyboardShortcutsFlowTest {
             compose.mainClock.autoAdvance = true
             compose.waitUntil(20_000) {
                 shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(100))
-                !onScreen(text)
+                !spinning()
             }
         }
+    }
+
+    /** Ctrl+Shift+R reached the chat: its transcript is emptied in place and read again. */
+    private fun reloadsTranscript(action: () -> Unit): Boolean {
+        val state = graph.conversations.state(HOUSE_ID)
+        compose.waitUntil(20_000) { state.value.items.isNotEmpty() }
+        val emptied = CompletableDeferred<Unit>()
+        val watch = CoroutineScope(Dispatchers.Unconfined).launch { state.first { it.items.isEmpty() }; emptied.complete(Unit) }
+        action()
+        try {
+            compose.waitUntil(20_000) { emptied.isCompleted }
+        } catch (_: ComposeTimeoutException) {
+            return false
+        } finally {
+            watch.cancel()
+        }
+        compose.waitUntil(20_000) { state.value.items.isNotEmpty() }
+        return true
     }
 
     private companion object {
@@ -757,7 +821,6 @@ class KeyboardShortcutsFlowTest {
         const val HOUSE = "House environment overhaul"
         const val CLI = "Cli exploration"
         const val PROJECT = "Cesium billing launch"
-        const val UP_TO_DATE = "Up to date"
         val SEARCH_CHATS = hasContentDescription("Search chats")
         val PANEL = hasTestTag("conversation-panel")
         val CHAT_HEADER = hasTestTag("chat-header")

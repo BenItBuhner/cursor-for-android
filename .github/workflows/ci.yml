@@ -6,10 +6,14 @@ on:
   pull_request:
   workflow_dispatch:
 
-# One active run per pull request / branch; a newer push cancels the previous run.
+# One active run per branch; a newer push cancels the previous run. Pull request runs and the dispatched runs
+# pr-commands.yml starts share the branch's group (head_ref for the one, ref_name for the other), so a dispatch on an
+# old head does not keep running beside the PR's own run. Every main commit gets its own group and is never cancelled:
+# release.yml's gate needs a green run on the commit it tags, and a cancelled run still held runners until its jobs
+# drained.
 concurrency:
-  group: ci-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.ref == 'refs/heads/main' && format('ci-main-{0}', github.sha) || format('ci-{0}', github.head_ref || github.ref_name) }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
   contents: read
@@ -222,11 +226,12 @@ jobs:
           if-no-files-found: ignore
 
   # The one status to require in branch protection: "CI". It succeeds only when every job above did, so the set of
-  # jobs (and the number of unit-test shards) can change without touching the protection rule. `always()` makes it run
-  # after failures too; without it a failed dependency would leave it skipped, which branch protection reads as pending.
+  # jobs (and the number of unit-test shards) can change without touching the protection rule. `!cancelled()` makes it
+  # run after failures too (without it a failed dependency would leave it skipped), but not in a cancelled run, where
+  # `always()` kept it queued for a runner that the superseding run was waiting on.
   ci:
     name: CI
-    if: always()
+    if: ${{ !cancelled() }}
     needs: [build, release-build, lint, unit-tests, screenshots]
     runs-on: ubuntu-latest
     timeout-minutes: 5

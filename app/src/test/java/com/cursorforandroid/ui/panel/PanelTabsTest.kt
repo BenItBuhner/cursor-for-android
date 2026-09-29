@@ -6,6 +6,7 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsNotSelected
 import androidx.compose.ui.test.assertIsSelected
@@ -480,22 +481,22 @@ class PanelTabsTest {
         state = projectPanel(open = listOf(tab), selected = tab).let { it.copy(context = it.context.copy(documents = it.context.documents + (tab.key to RemoteLoad.Loaded(long)))) }
         show()
         compose.onNodeWithTag("document-preview").performScrollToNode(hasText("Paragraph 80 of the long document."))
-        assertThat(firstParagraphTop()).isLessThan(0f)
+        assertThat(documentScrolled()).isGreaterThan(0f)
 
         compose.onNodeWithTag("panel-tab-details").performClick()
         compose.onNodeWithTag("panel-sections").assertIsDisplayed()
         compose.onNodeWithTag("panel-tab-${tab.key}").performClick()
         compose.onNodeWithTag("document-preview").assertIsDisplayed()
-        assertThat(firstParagraphTop()).isLessThan(0f)
+        assertThat(documentScrolled()).isGreaterThan(0f)
 
         compose.onNodeWithContentDescription("Close long.md").performClick()
         compose.onNodeWithTag("project-notes-tab").assertIsDisplayed()
         state = state.copy(tabs = PanelTabsState(listOf(tab), tab.key))
         compose.onNodeWithTag("document-preview").assertIsDisplayed()
-        assertThat(firstParagraphTop()).isAtLeast(0f)
+        assertThat(documentScrolled()).isEqualTo(0f)
     }
 
-    private fun firstParagraphTop(): Float = compose.onNode(hasText("Paragraph 1 of the long document.")).fetchSemanticsNode().positionInRoot.y
+    private fun documentScrolled(): Float = compose.onNodeWithTag("document-preview").fetchSemanticsNode().config[SemanticsProperties.VerticalScrollAxisRange].value()
 
     @Test
     fun `the tabs' helpers name, place and date what they show`() {

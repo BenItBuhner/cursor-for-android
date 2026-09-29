@@ -1,6 +1,10 @@
 package com.cursorforandroid.data.demo
 
 import com.cursorforandroid.domain.AgentSource
+import com.cursorforandroid.data.api.ComposerSnapshot
+import com.cursorforandroid.domain.AgentParent
+import com.cursorforandroid.domain.AgentParentKind
+import com.cursorforandroid.domain.ProjectAppearance
 import java.io.File
 
 /**
@@ -22,11 +26,17 @@ import java.io.File
  */
 internal object DemoPerfSeeds {
     const val MARKER = "perf-seed"
+    private const val SCALE_MARKER_PREFIX = "perf-scale-"
 
     const val COORDINATOR_ID = "bc-perf-coordinator"
     const val ORDINARY_ID = "bc-perf-ordinary"
+    const val SCALE_BIG_PROJECT_ID = "bc-scale-big-project"
 
     fun enabled(cacheDir: File?): Boolean = cacheDir != null && File(cacheDir, MARKER).exists()
+
+    /** The one requested scale fleet, or null. The largest marker wins if a caller forgot to clear an older one. */
+    fun scaleFleet(cacheDir: File?): Int? =
+        cacheDir?.let { dir -> listOf(500, 200, 50).firstOrNull { File(dir, "$SCALE_MARKER_PREFIX$it").exists() } }
 
     fun seeds(): List<DemoData.Seed> = listOf(coordinator(), ordinary())
 
@@ -153,6 +163,153 @@ internal object DemoPerfSeeds {
             prompt = "Prompt $ORDINARY_TURNS: refactor the last module and summarise every change made so far in this chat.",
             liveScript = "cesium",
             earlier = earlier,
+        )
+    }
+
+    data class ScaleDataset(
+        val seeds: List<DemoData.Seed>,
+        val composers: List<ComposerSnapshot>,
+        val sources: Map<String, AgentSource>,
+        val running: Int,
+        val bigChildren: Int,
+    )
+
+    private data class ScaleShape(
+        val total: Int,
+        val smallProjects: Int,
+        val smallChildren: Int,
+        val bigChildren: Int,
+        val running: Int,
+        val bigRunning: Int,
+    )
+
+    private val scaleDatasets = mutableMapOf<Int, ScaleDataset>()
+
+    @Synchronized
+    fun scaleDataset(size: Int): ScaleDataset = scaleDatasets.getOrPut(size) {
+        val shape = when (size) {
+            50 -> ScaleShape(50, 3, 5, 20, 15, 10)
+            200 -> ScaleShape(200, 6, 12, 120, 60, 40)
+            500 -> ScaleShape(500, 10, 15, 150, 120, 60)
+            else -> error("Unsupported demo scale fleet S$size")
+        }
+        buildScaleDataset(shape)
+    }
+
+    private fun buildScaleDataset(shape: ScaleShape): ScaleDataset {
+        val seeds = ArrayList<DemoData.Seed>(shape.total)
+        val composers = ArrayList<ComposerSnapshot>(shape.total)
+        var ordinal = 0
+        var otherRunningLeft = shape.running - shape.bigRunning
+
+        fun add(
+            id: String,
+            name: String,
+            running: Boolean,
+            parent: String? = null,
+            project: Boolean = false,
+            earlier: List<DemoData.Turn> = emptyList(),
+        ) {
+            val age = 2 * MIN + (ordinal++.toLong() * 30 * 24 * HOUR / shape.total)
+            seeds += DemoData.Seed(
+                id = id,
+                name = name,
+                repo = "https://github.com/BenItBuhner/cursor-for-android",
+                ageMillis = age,
+                runStatus = if (running) "RUNNING" else "FINISHED",
+                lifecycle = if (running) "ACTIVE" else "IDLE",
+                durationMs = if (running) null else 12 * MIN,
+                prompt = if (project) {
+                    "Coordinate this Project's agents, keep their work moving, and report each completed shard."
+                } else {
+                    "Implement shard $ordinal, run its checks, and report the result to the coordinator."
+                },
+                replies = if (running) emptyList() else listOf("Shard $ordinal is complete; checks passed and the branch is ready."),
+                // Finished rows can trade into RUNNING on the ten-second scale clock; if one is opened after that,
+                // it must stream the same one-step-per-second script as a row that started running.
+                liveScript = "scale",
+                earlier = earlier,
+            )
+            when {
+                project -> composers += ComposerSnapshot(
+                    id,
+                    isProject = true,
+                    projectAppearance = ProjectAppearance(icon = if (id == SCALE_BIG_PROJECT_ID) "rocket" else "folder", colorId = if (id == SCALE_BIG_PROJECT_ID) "orange" else "blue"),
+                )
+                parent != null -> composers += ComposerSnapshot(id, parent = AgentParent(parent, AgentParentKind.PROJECT_WORKER))
+            }
+        }
+
+        repeat(shape.smallProjects) { projectIndex ->
+            val root = "bc-scale-small-${projectIndex + 1}"
+            add(root, "Scale S${shape.total} Small Project ${projectIndex + 1}", running = false, project = true)
+            repeat(shape.smallChildren) { childIndex ->
+                val running = otherRunningLeft > 0
+                if (running) otherRunningLeft--
+                add(
+                    "$root-worker-${childIndex + 1}",
+                    "Small ${projectIndex + 1} worker ${childIndex + 1}",
+                    running = running,
+                    parent = root,
+                )
+            }
+        }
+
+        add(
+            SCALE_BIG_PROJECT_ID,
+            "Scale S${shape.total} Big Project",
+            running = true,
+            project = true,
+            earlier = scaleCoordinatorHistory(),
+        )
+        repeat(shape.bigChildren) { childIndex ->
+            add(
+                "bc-scale-big-worker-${childIndex + 1}",
+                "Big Project worker ${childIndex + 1}",
+                running = childIndex < shape.bigRunning - 1,
+                parent = SCALE_BIG_PROJECT_ID,
+            )
+        }
+
+        while (seeds.size < shape.total) {
+            val chat = seeds.size + 1
+            val running = otherRunningLeft > 0
+            if (running) otherRunningLeft--
+            add("bc-scale-chat-$chat", "Ordinary chat $chat", running = running)
+        }
+
+        check(seeds.size == shape.total)
+        check(otherRunningLeft == 0)
+        check(seeds.count { it.runStatus == "RUNNING" } == shape.running)
+        return ScaleDataset(
+            seeds = seeds,
+            composers = composers,
+            sources = seeds.associate { it.id to AgentSource.WEBSITE },
+            running = shape.running,
+            bigChildren = shape.bigChildren,
+        )
+    }
+
+    /** 1,999 historical turns plus the live turn on the seed: 2,000 turns without giant tool payloads. */
+    private fun scaleCoordinatorHistory(): List<DemoData.Turn> = (1 until 2_000).map { turn ->
+        DemoData.Turn(
+            prompt = "Coordinator turn $turn: check every shard, unblock the next worker, and summarize changed status.",
+            replies = listOf(
+                "Turn $turn: worker ${(turn % 150) + 1} reported progress; the next shard is assigned and the Project remains on plan.",
+            ),
+            durationMs = 2 * MIN,
+            trace = if (turn % 25 == 0) {
+                listOf(
+                    DemoData.Step.Call(
+                        "getAgentStatus",
+                        "{}",
+                        """{"success":{"workers":[{"name":"Scale worker","lifecycle":"RUNNING"}]}}""",
+                    ),
+                    DemoData.Step.Reply,
+                )
+            } else {
+                listOf(DemoData.Step.Reply)
+            },
         )
     }
 }

@@ -20,7 +20,7 @@ import org.robolectric.annotation.Config
 
 /**
  * Ctrl+R and Ctrl+Shift+R on a chat, against the demo backend. Ctrl+R is the pull's catch-up, answered where the pull
- * is (see [CatchUpStatus]); Ctrl+Shift+R reads the whole chat again and leaves its word on it. The demo's first paint
+ * is (see [CatchUpStatus]); Ctrl+Shift+R reads the whole chat again, and neither leaves a word behind. The demo's first paint
  * carries the conversation's own ids and the read again rebuilds the chat from its run's trace, under new ones — the
  * same reply, which is not new.
  */
@@ -44,8 +44,6 @@ class ChatRefreshWordTest {
     private fun opened(agentId: String): ConversationViewModel = ConversationViewModel(graph, agentId).also { vm ->
         runBlocking { withTimeout(20_000) { vm.conversation.first { !it.isLoading && it.items.isNotEmpty() } } }
     }
-
-    private fun ConversationViewModel.word(): String? = runBlocking { withTimeout(20_000) { toastMessage.first { it != null } } }
 
     private fun ConversationViewModel.answer(): CatchUpStatus = runBlocking {
         withTimeout(20_000) { catchUpStatus.first { it is CatchUpStatus.Done || it is CatchUpStatus.Failed } }
@@ -72,26 +70,21 @@ class ChatRefreshWordTest {
     }
 
     @Test
-    fun `the answer is told once the indicator is home, once, and put away, and an answer no longer up is not told`() {
+    fun `the answer is the indicator's alone - only a failure is told once it is home, once, and put away`() {
         val vm = opened(HOUSE_ID)
         vm.catchUp()
         val answer = vm.answer()
-        vm.catchUpSettled(CatchUpStatus.Failed("stale"))
-        assertThat(vm.toastMessage.value).isNull()
-        vm.catchUpSettled(answer)
-        assertThat(vm.toastMessage.value).isEqualTo(RefreshWord.UP_TO_DATE)
-        assertThat(vm.catchUpStatus.value).isEqualTo(CatchUpStatus.Idle)
-        vm.clearToast()
         vm.catchUpSettled(answer)
         assertThat(vm.toastMessage.value).isNull()
+        assertThat(vm.catchUpStatus.value).isEqualTo(answer)
     }
 
     @Test
-    fun `Ctrl+Shift+R reads the transcript again from nothing, and says it is up to date all the same`() {
+    fun `Ctrl+Shift+R reads the transcript again from nothing, and says nothing of it`() {
         val vm = opened(HOUSE_ID)
-        vm.reloadTranscriptWithWord()
-        assertThat(vm.word()).isEqualTo(RefreshWord.UP_TO_DATE)
-        assertThat(vm.conversation.value.items).isNotEmpty()
+        vm.reloadTranscript()
+        runBlocking { withTimeout(20_000) { vm.conversation.first { !it.isLoading && it.items.isNotEmpty() } } }
+        assertThat(vm.toastMessage.value).isNull()
     }
 
     private companion object {

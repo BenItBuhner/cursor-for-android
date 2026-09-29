@@ -17,6 +17,7 @@ import com.cursorforandroid.domain.ModelOption
 import com.cursorforandroid.domain.Repository
 import com.cursorforandroid.util.AppClock
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -88,6 +89,12 @@ class CatalogRepository(
     private val lastSeenWorkers = HashMap<String, MachineWorker>()
     @Volatile private var workersRestoredFor: CursorBackend? = null
     private val restoreMutex = Mutex()
+    private val devicesMutex = Mutex()
+    /** When the listing in [devices] was asked, and for whom; both under [publishLock]. */
+    private var devicesAskedAt = 0L
+    private var devicesFetchedFor: CursorBackend? = null
+    /** Listings published so far: a caller that waited on [devicesMutex] while one landed takes it. */
+    @Volatile private var deviceFetches = 0
     /**
      * Bumped by [reset]. The catalogs are fetched in the caller's scope, so a sign-out cannot cancel a request
      * already out; what it can do is make sure the answer belongs to the account that asked for it. Real accounts
@@ -229,22 +236,55 @@ class CatalogRepository(
     /**
      * Connected My Machines and team pools. Each fleet call is best-effort: a 403 from a user key, or a missing
      * endpoint, is "none listed", never a hard failure. The composer merges this with the agent list.
+     *
+     * The three calls go out side by side. The listing shown is kept for [DEVICES_FRESH_MS] from when it was asked —
+     * asked, not answered, so a fleet that refuses (a 403 key, a 429) is not asked again on every New chat — and
+     * callers arriving together share one listing; [force] (the picker's refresh) skips only the freshness.
      */
-    suspend fun loadDevices(): Result<List<DeviceOption>> {
+    suspend fun loadDevices(force: Boolean = false): Result<List<DeviceOption>> {
         val backend = session.current
+        if (!force && devicesFresh(backend)) return Result.success(_devices.value)
+        val fetchesSeen = deviceFetches
+        return devicesMutex.withLock {
+            // A caller that was waiting here may have just listed them.
+            if (deviceFetches != fetchesSeen && devicesFetchedFor === backend) return@withLock Result.success(_devices.value)
+            if (!force && devicesFresh(backend)) return@withLock Result.success(_devices.value)
+            fetchDevices(backend)
+        }
+    }
+
+    private fun devicesFresh(backend: CursorBackend): Boolean = synchronized(publishLock) {
+        devicesFetchedFor === backend && AppClock.now() - devicesAskedAt < DEVICES_FRESH_MS
+    }
+
+    private suspend fun fetchDevices(backend: CursorBackend): Result<List<DeviceOption>> {
         val startedIn = token()
         val cacheToken = cache?.token() ?: 0
-        restoreWorkers(backend, startedIn)
-        val personal = runCatching { backend.api.listWorkers(scope = "personal") }.getOrDefault(ListWorkersResponseDto())
-        val team = runCatching { backend.api.listWorkers(scope = "team_pool") }.getOrDefault(ListWorkersResponseDto())
-        val pools = runCatching { backend.api.listPools() }.getOrDefault(ListPoolsResponseDto())
+        val askedAt = AppClock.now()
+        val (personal, team, pools) = coroutineScope {
+            val personal = async { fleetCall(ListWorkersResponseDto()) { backend.api.listWorkers(scope = "personal") } }
+            val team = async { fleetCall(ListWorkersResponseDto()) { backend.api.listWorkers(scope = "team_pool") } }
+            val pools = async { fleetCall(ListPoolsResponseDto()) { backend.api.listPools() } }
+            restoreWorkers(backend, startedIn)
+            Triple(personal.await(), team.await(), pools.await())
+        }
         val listed = devicesOf(personal, team, pools)
         val seen = listed.mapNotNull { option -> option.worker?.let { option.key to it } }.toMap()
         // A sign-out or a backend swap while the fleet calls were out means this answer belongs to nobody.
-        if (!publish(startedIn, backend) { _devices.value = listed; lastSeenWorkers.putAll(seen) }) return Result.success(emptyList())
+        val landed = publish(startedIn, backend) {
+            _devices.value = listed
+            lastSeenWorkers.putAll(seen)
+            devicesAskedAt = askedAt
+            devicesFetchedFor = backend
+            deviceFetches++
+        }
+        if (!landed) return Result.success(emptyList())
         if (seen.isNotEmpty() && !backend.isDemo) cache?.writeWorkers(synchronized(publishLock) { HashMap(lastSeenWorkers) }, cacheToken)
         return Result.success(listed)
     }
+
+    private suspend fun <T> fleetCall(none: T, call: suspend () -> T): T =
+        runCatching { call() }.onFailure { t -> if (t is CancellationException) throw t }.getOrDefault(none)
 
     /**
      * [target]'s worker as the fleet endpoint last listed it, this session or an earlier one: what a machine that has
@@ -273,6 +313,7 @@ class CatalogRepository(
             restoredFor = null
             lastSeenWorkers.clear()
             workersRestoredFor = null
+            devicesFetchedFor = null
         }
     }
 
@@ -303,6 +344,9 @@ class CatalogRepository(
     companion object {
         /** The least time between two of [keepFresh]'s passes: a pass that finds nothing due costs nothing, but it still wakes the process. */
         const val MIN_CHECK_MS = 60 * 1000L
+
+        /** How long a device listing stands before New chat asks the fleet again. */
+        const val DEVICES_FRESH_MS = 60 * 1000L
 
         private fun devicesOf(
             personal: ListWorkersResponseDto,

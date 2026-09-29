@@ -13,9 +13,13 @@ import androidx.core.graphics.drawable.toBitmap
 import com.cursorforandroid.AppGraph
 import com.cursorforandroid.R
 import com.cursorforandroid.data.repo.SessionState
+import com.cursorforandroid.domain.Agent
 import com.cursorforandroid.domain.AgentListOrganizer
+import com.cursorforandroid.domain.KnownRoot
 import com.cursorforandroid.domain.LauncherShortcutPicks
 import com.cursorforandroid.domain.LauncherShortcutPicks.Pick
+import com.cursorforandroid.domain.ListPreferences
+import com.cursorforandroid.domain.LocalAgentState
 import com.cursorforandroid.domain.ShortcutTarget
 import com.cursorforandroid.ui.theme.ProjectPalette
 import com.cursorforandroid.widget.ShortcutIntents
@@ -24,11 +28,12 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import androidx.compose.ui.graphics.toArgb
@@ -40,6 +45,7 @@ import androidx.compose.ui.graphics.toArgb
  * and kept in step with the list, the pins and the Projects for as long as the process lives (the launcher keeps
  * what was last published). Signing out takes them down: the menu must not name another account's chats.
  */
+@OptIn(kotlinx.coroutines.FlowPreview::class)
 object LauncherShortcuts {
 
     /** A burst of changes (a refresh's pages, a pin toggled twice) settles into one publication. */
@@ -58,7 +64,6 @@ object LauncherShortcuts {
             if (job?.isActive == true) return
             job = scope.launch {
                 picks(graph, slots(app)).distinctUntilChanged().collectLatest { picks ->
-                    delay(SETTLE_MS)
                     // A publication under way is finished even if a newer change arrives; the next follows it.
                     withContext(NonCancellable) { publish(app, picks) }
                 }
@@ -77,12 +82,22 @@ object LauncherShortcuts {
         graph.prefs.localAgentState,
         graph.agents.knownRoots,
     ) { session, list, prefs, local, roots ->
-        when (session) {
-            is SessionState.SignedIn -> LauncherShortcutPicks.pick(AgentListOrganizer.organize(list.shownAgents, prefs, local, knownRoots = roots), max)
+        PicksInput(session, list.shownAgents, prefs, local, roots)
+    }.debounce(SETTLE_MS).map { input ->
+        when (input.session) {
+            is SessionState.SignedIn -> LauncherShortcutPicks.pick(AgentListOrganizer.organize(input.agents, input.prefs, input.local, knownRoots = input.roots), max)
             SessionState.SignedOut -> emptyList()
             SessionState.Loading -> null
         }
     }
+
+    private data class PicksInput(
+        val session: SessionState,
+        val agents: List<Agent>,
+        val prefs: ListPreferences,
+        val local: LocalAgentState,
+        val roots: List<KnownRoot>,
+    )
 
     /** How many dynamic entries to publish: the launcher's own cap less the two manifest entries, at most [MAX_DYNAMIC]. */
     private fun slots(context: Context): Int =

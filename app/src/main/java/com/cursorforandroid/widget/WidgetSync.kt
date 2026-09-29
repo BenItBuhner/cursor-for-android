@@ -43,7 +43,7 @@ object WidgetSync {
      * a list that keeps changing — a running row touched by every stream event — is rendered every so often rather
      * than never.
      */
-    internal const val SETTLE_MS = 300L
+    internal const val SETTLE_MS = 1_000L
 
     /** A render that failed (a launcher that would not answer, WorkManager mid-initialisation) is tried once more after this. */
     internal const val RETRY_MS = 1_000L

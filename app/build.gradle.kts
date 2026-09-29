@@ -272,6 +272,18 @@ android {
     }
 }
 
+// Domain types are immutable, so rows built from them skip when an emission leaves them equal; see the file itself.
+val composeStabilityConfig = layout.projectDirectory.file("compose-stability.conf")
+composeCompiler {
+    stabilityConfigurationFiles.add(composeStabilityConfig)
+}
+// The Kotlin compile's up-to-date check and cache key leave the file out, so a change to it (or to whether it is
+// used) would keep classes compiled without it, locally and from CI's build cache. As a declared input it is part
+// of the key, and a change to it recompiles everything.
+tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach {
+    inputs.file(composeStabilityConfig).withPropertyName("composeStabilityConfig").withPathSensitivity(PathSensitivity.NONE)
+}
+
 dependencies {
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.activity.compose)
@@ -282,6 +294,7 @@ dependencies {
     implementation(libs.androidx.security.crypto)
     implementation(libs.androidx.core.splashscreen)
     implementation(libs.androidx.browser)
+    implementation(libs.androidx.profileinstaller)
 
     implementation(platform(libs.compose.bom))
     implementation(libs.compose.ui)

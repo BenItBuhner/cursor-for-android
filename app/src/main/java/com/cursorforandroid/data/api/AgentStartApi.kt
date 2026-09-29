@@ -43,7 +43,6 @@ data class StartRequest(
     val modelParams: List<ModelParam> = emptyList(),
     /** Agent, Plan, Ask or Debug; a prompt led by `/multitask` goes out as Multitask unless another mode is asked for (see [AgentMode.onAccount]). */
     val mode: AgentMode = AgentMode.AGENT,
-    val autoCreatePr: Boolean = false,
     val name: String? = null,
     val mcpServers: List<McpServer> = emptyList(),
     /** One of the user's machines to start it on, with [repoUrl] its repository; null for Cursor's cloud. */
@@ -83,8 +82,9 @@ fun interface AgentStartApi {
  *   otherwise — an uploaded image as a `SelectedImage`, anything else as a `SelectedDocument`; pasted images stay inline.
  * - The model (`_buildStartRequestModelFields`): `requested_models: [agent.v1.RequestedModel {model_id, parameters[]}]`,
  *   `default` for Auto — the account refuses a start that names none.
- * - `auto_create_pr` (field 37) when asked for with a repository; `mcp_config_json` (field 95) with the enabled inline
- *   servers in the desktop's `{"mcpServers": {name: {url, headers} | {command, args, env}}}` shape (`csa`); `name` when set.
+ * - `auto_create_pr` (field 37) never set, which the account takes as off; `mcp_config_json` (field 95) with the
+ *   enabled inline servers in the desktop's `{"mcpServers": {name: {url, headers} | {command, args, env}}}` shape
+ *   (`csa`); `name` when set.
  *
  * On one of the user's machines ([StartRequest.machine]) the request is the desktop's for a machine picked with its
  * repository (3.21.18: the New Agent submit → `iZS` → `QPl` → `createAgent` → `_createAgentReal` →
@@ -181,7 +181,6 @@ class ConnectAgentStartApi(
             skills = emptyList(),
             name = request.name?.trim()?.takeIf { it.isNotEmpty() },
             requestedModels = listOf(requestedModel(request.modelId, request.modelParams)),
-            autoCreatePr = (request.autoCreatePr && repo != null).takeIf { it },
             mcpConfigJson = mcpConfigJson(request.mcpServers),
             labels = onMachine?.labels,
             privateWorkerOwnerFilter = onMachine?.ownerFilter,
@@ -276,7 +275,6 @@ class ConnectAgentStartApi(
         val skills: List<String>,
         val name: String? = null,
         val requestedModels: List<RequestedModelDto>,
-        val autoCreatePr: Boolean? = null,
         val mcpConfigJson: String? = null,
         /** Field 59, `aiserver.v1.PrivateWorkerLabel {key, value}`. */
         val labels: List<LabelDto>? = null,

@@ -77,6 +77,45 @@ class ModelResolutionTest {
         assertThat(current.label).isEqualTo("Composer 2.5")
     }
 
+    private val fastOn = listOf(ModelParam("effort", "high"), ModelParam("fast", "true"))
+
+    /**
+     * A record naming the model and no variant — `model_details`, a `requested_model` without parameters — says which
+     * model the chat runs on, not with what: the variant this device launched it with stands, Fast on included, rather
+     * than the catalogue's default. A record with parameters, a slug spelling them, or another model is the account's
+     * word as it is.
+     */
+    @Test
+    fun `a record naming the model alone keeps the variant this device launched the chat with`() {
+        val live = LiveModelCatalog.models
+        val opus = LiveModelCatalog.model("claude-opus-5.5")
+        fun launchedWithFast(account: AccountModel) =
+            ModelResolution.forChat(agent(accountModel = account, modelId = "claude-opus-5.5", modelParams = fastOn), live)
+
+        val bare = launchedWithFast(AccountModel("claude-opus-5.5"))
+        assertThat(bare.choice?.model).isEqualTo(opus)
+        assertThat(bare.choice?.params?.toSet()).isEqualTo(fastOn.toSet())
+        assertThat(bare.source).isEqualTo(Source.ACCOUNT)
+
+        val switched = launchedWithFast(AccountModel("claude-opus-5.5", listOf(ModelParam("effort", "high"), ModelParam("fast", "false"))))
+        assertThat(switched.choice?.params?.toSet()).isEqualTo(setOf(ModelParam("effort", "high"), ModelParam("fast", "false")))
+
+        val slug = launchedWithFast(AccountModel("claude-opus-5-5-xhigh"))
+        assertThat(slug.choice?.params?.toSet()).isEqualTo(setOf(ModelParam("effort", "xhigh"), ModelParam("fast", "false")))
+
+        val other = launchedWithFast(AccountModel("gpt-5.6-sol"))
+        assertThat(other.choice?.model?.id).isEqualTo("gpt-5.6-sol")
+        assertThat(other.choice?.params?.toSet()).isEqualTo(setOf(ModelParam("effort", "medium"), ModelParam("fast", "false")))
+
+        // Launched elsewhere, nothing recorded here: the record's model on its default variant.
+        val elsewhere = ModelResolution.forChat(agent(accountModel = AccountModel("claude-opus-5.5")), live)
+        assertThat(elsewhere.choice?.params?.toSet()).isEqualTo(setOf(ModelParam("effort", "high"), ModelParam("fast", "false")))
+
+        // An alias names the same model.
+        val alias = ModelResolution.forChat(agent(accountModel = AccountModel("composer-latest"), modelId = "composer-2.5", modelParams = slow.params), models)
+        assertThat(alias.choice).isEqualTo(ModelChoice(composer, slow))
+    }
+
     @Test
     fun `a record the catalogue cannot place labels the chip with the name its id spells, nothing checked`() {
         val current = ModelResolution.forChat(agent(accountModel = AccountModel("claude-9-preview"), modelId = "gpt-5.6", modelDisplayName = "GPT-5.6"), models)
@@ -213,6 +252,21 @@ class ModelResolutionTest {
         val newest = ModelResolution.forNewChat(live, listOfNotNull(ModelResolution.newestAccountModel(agents)), settleOnAuto = true)!!
         assertThat(newest.choice.model.id).isEqualTo("gpt-5.6-sol")
         assertThat(newest.choice.params.toSet()).isEqualTo(setOf(ModelParam("effort", "high"), ModelParam("fast", "true")))
+    }
+
+    /** The account's newest chat was launched here with Fast on and its record names the model alone, dated after the pick. */
+    @Test
+    fun `a new chat after one launched here with Fast keeps Fast when the account's record of it names the model alone`() {
+        val live = LiveModelCatalog.models
+        val mine = agent(id = "mine", accountModel = AccountModel("claude-opus-5.5"), modelId = "claude-opus-5.5", modelParams = fastOn, createdAtMillis = 9_000L)
+        val candidate = ModelResolution.newestAccountModel(listOf(mine))!!
+        assertThat(candidate).isEqualTo(Candidate.Account(AccountModel("claude-opus-5.5"), 9_000L, "claude-opus-5.5", fastOn))
+
+        val remembered = Candidate.Remembered("claude-opus-5.5", fastOn.associate { it.id to it.value }, atMillis = 5_000L)
+        val resolved = ModelResolution.forNewChat(live, listOf(remembered, candidate), settleOnAuto = true)!!
+        assertThat(resolved.source).isEqualTo(Source.ACCOUNT)
+        assertThat(resolved.choice.model.id).isEqualTo("claude-opus-5.5")
+        assertThat(resolved.choice.params.toSet()).isEqualTo(fastOn.toSet())
     }
 
     @Test

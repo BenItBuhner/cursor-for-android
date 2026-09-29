@@ -1,5 +1,7 @@
 package com.cursorforandroid.ui.conversation
 
+import androidx.compose.animation.core.CubicBezierEasing
+import androidx.compose.animation.core.LinearOutSlowInEasing
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.MutatePriority
 import androidx.compose.foundation.OverscrollEffect
@@ -26,6 +28,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.staticCompositionLocalOf
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.CustomAccessibilityAction
 import androidx.compose.ui.semantics.ScrollAxisRange
@@ -37,6 +40,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.verticalScrollAxisRange
 import com.cursorforandroid.domain.TranscriptRow
 import kotlin.math.abs
+import kotlin.math.roundToInt
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
@@ -101,17 +105,79 @@ internal class TranscriptScroll(val list: LazyListState, private val followingSt
         if (opening) pin()
     }
 
-    /** The jump button: follow again, then scroll to the newest row from where the reader is. */
+    /**
+     * The jump button: follow again, then glide to the newest row from where the reader is — one short eased scroll
+     * however far up that is (see [glideToNewest]). The reader's own scroll takes over from it wherever it has got to.
+     */
     suspend fun jumpToBottom() {
         isJumping = true
         try {
             list.stopScroll(MutatePriority.PreventUserInput)
             follow()
             snapshotFlow { list.layoutInfo.reverseLayout }.first { it }
-            list.animateScrollToItem(0)
+            glideToNewest()
         } finally {
             isJumping = false
         }
+    }
+
+    /**
+     * From more than [JUMP_SCREENS] screens up, the list first jumps to [LANDING_SCREENS] screens above the newest row
+     * (the rows between are never laid out), then glides the rest in [glideMillis]. Each frame aims at what is left
+     * to go as the list measures it then, so rows streaming in below mid-glide are glided to as well, and the glide
+     * ends exactly on the newest row's bottom.
+     */
+    private suspend fun glideToNewest() {
+        val screen = list.layoutInfo.viewportSize.height.toFloat()
+        if (screen <= 0f) return list.scrollToItem(0)
+        val reach = JUMP_SCREENS * screen
+        var known = distanceToNewest(list.layoutInfo)
+            ?: if (estimatedDistanceToNewest(list.layoutInfo) <= 2 * reach) measureDistanceToNewest(reach) else null
+        val jumped = (known ?: estimatedDistanceToNewest(list.layoutInfo)) > reach
+        if (jumped) {
+            // Offsets past item 0 are laid out through the items above it, so only the landing's screens are measured.
+            list.scrollToItem(0, (LANDING_SCREENS * screen).roundToInt())
+            known = distanceToNewest(list.layoutInfo) ?: (LANDING_SCREENS * screen)
+        }
+        val start = known ?: estimatedDistanceToNewest(list.layoutInfo)
+        val millis = glideMillis(start / screen)
+        // A glide the jump landed in is already moving: it only slows. One from rest eases in as well.
+        val easing = if (jumped) LandingEasing else GlideEasing
+        var settled = false
+        list.scroll {
+            var travelled = 0f
+            var done = 0f
+            val t0 = withFrameNanos { it }
+            while (done < 1f) {
+                val elapsed = (withFrameNanos { it } - t0) / 1_000_000f
+                val progress = if (elapsed >= millis) 1f else easing.transform(elapsed / millis)
+                val info = list.layoutInfo
+                val left = distanceToNewest(info) ?: known?.minus(travelled)?.takeIf { it > 0f } ?: estimatedDistanceToNewest(info)
+                val step = if (progress >= 1f) left else left * (progress - done) / (1f - done)
+                travelled += -scrollBy(-step)
+                done = progress
+            }
+            distanceToNewest(list.layoutInfo)?.let { left ->
+                if (left > 0f) scrollBy(-left)
+                settled = true
+            }
+        }
+        if (!settled) list.scrollToItem(0)
+    }
+
+    /**
+     * How far the newest row's bottom is, found by scrolling down by up to [reach] and back within the one frame, before
+     * anything is drawn; null when it is further. An estimate off the rows on screen is no good for a glide: the rows
+     * below them are often much shorter or taller, and the glide would lurch as the newest row came into view.
+     */
+    private suspend fun measureDistanceToNewest(reach: Float): Float? {
+        var found: Float? = null
+        list.scroll {
+            val went = -scrollBy(-reach)
+            found = distanceToNewest(list.layoutInfo)?.plus(went)
+            scrollBy(went)
+        }
+        return found
     }
 
     /**
@@ -194,6 +260,43 @@ internal class TranscriptScroll(val list: LazyListState, private val followingSt
 
         /** What an item above the viewport counts for in [screenOffset], as the lazy list's own estimate counts it. */
         private const val ESTIMATED_ITEM_PX = 500
+
+        /** How many screens up the jump button glides the whole way; from further, it jumps to [LANDING_SCREENS] first. */
+        const val JUMP_SCREENS = 3f
+
+        /** How many screens above the newest row a far jump lands, to glide the rest. */
+        const val LANDING_SCREENS = 2f
+
+        const val GLIDE_MIN_MILLIS = 300
+        const val GLIDE_MAX_MILLIS = 420
+
+        /** Material's emphasized easing: a quick start and a long, soft landing. */
+        private val GlideEasing = CubicBezierEasing(0.2f, 0f, 0f, 1f)
+
+        /** The same landing from full speed, for a glide that picks up where a jump left off. */
+        private val LandingEasing = LinearOutSlowInEasing
+
+        /** The glide's length for [screens] to go: the shortest for a screen or less, the longest from where a jump lands. */
+        fun glideMillis(screens: Float): Int {
+            val far = ((screens - 1f) / (LANDING_SCREENS - 1f)).coerceIn(0f, 1f)
+            return (GLIDE_MIN_MILLIS + (GLIDE_MAX_MILLIS - GLIDE_MIN_MILLIS) * far).roundToInt()
+        }
+
+        /** Following, how far (px) the list is scrolled up from the newest row's bottom, when that row is laid out. */
+        fun distanceToNewest(info: LazyListLayoutInfo): Float? {
+            if (!info.reverseLayout) return null
+            val newest = info.visibleItemsInfo.firstOrNull()?.takeIf { it.index == 0 } ?: return null
+            return (-newest.offset).coerceAtLeast(0).toFloat()
+        }
+
+        /** Following, how far (px) the newest row's bottom probably is: the rows below the screen as tall as those on it. */
+        fun estimatedDistanceToNewest(info: LazyListLayoutInfo): Float {
+            distanceToNewest(info)?.let { return it }
+            val items = info.visibleItemsInfo
+            val lowest = items.firstOrNull() ?: return 0f
+            val each = items.sumOf { it.size }.toFloat() / items.size + info.mainAxisItemSpacing
+            return (-lowest.offset).coerceAtLeast(0) + lowest.index * each
+        }
 
         /** The item's top edge in the list's own box, in either order: a reversed list measures offsets from its bottom. */
         fun top(item: LazyListItemInfo, info: LazyListLayoutInfo): Int =

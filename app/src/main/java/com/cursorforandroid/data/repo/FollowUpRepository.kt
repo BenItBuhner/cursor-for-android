@@ -22,6 +22,7 @@ import com.cursorforandroid.domain.RunningScan
 import com.cursorforandroid.domain.SendDiagnostics
 import com.cursorforandroid.domain.SendGate
 import com.cursorforandroid.domain.SteerOutcome
+import com.cursorforandroid.domain.SteerPhase
 import com.cursorforandroid.util.AppClock
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -113,14 +114,17 @@ class FollowUpRepository(
     data class AccountHandoff(val runId: String?, val followupId: String)
 
     /**
-     * The account's two steps for a steer from this device's queue: [handOff] files the message with the account's
-     * queue (`AddAsyncFollowupBackgroundComposer`) without reading the queue back, so the card shows it only once
-     * the transcript's placement does; [promote] delivers it into the turn under way (`InjectBackgroundComposerContext`
-     * with `promoteFollowupId`, `SteeringRepository.promotePending`), the call an account row's steer makes.
+     * The account's steps for a steer from this device's queue: [handOff] files the message with the account's
+     * queue (`AddAsyncFollowupBackgroundComposer`) without reading the queue back; [promote] delivers it into the
+     * turn under way (`InjectBackgroundComposerContext` with `promoteFollowupId`, `SteeringRepository.promotePending`),
+     * the call an account row's steer makes; [withdraw] takes it off the account's queue again when the promote was
+     * refused (`DeletePendingFollowup`), so the message goes back to waiting on this device's card. False from
+     * [withdraw]: the account keeps it.
      */
     interface AccountSteering {
         suspend fun handOff(agentId: String, item: QueuedFollowUp): AccountHandoff
         suspend fun promote(agentId: String, followupId: String): SteerOutcome
+        suspend fun withdraw(agentId: String, followupId: String): Boolean = false
     }
 
     private inner class Entry(val agentId: String) {
@@ -295,7 +299,7 @@ class FollowUpRepository(
         for (e in waiting) {
             e.saveJob?.cancel()
             val snapshot = e.state.value
-            runCatching { store.write(e.agentId, snapshot.draft, snapshot.queue) }.onFailure { if (it is CancellationException) throw it }
+            runCatching { store.write(e.agentId, snapshot.draft, snapshot.queue.onDisk()) }.onFailure { if (it is CancellationException) throw it }
         }
     }
 
@@ -352,8 +356,9 @@ class FollowUpRepository(
     }
 
     /**
-     * Hands a queued follow-up back to the composer to be reworked: it leaves the queue, and whatever the composer
-     * held takes its place in line so nothing typed is lost. Returns null when the message is gone or in flight.
+     * Hands a queued follow-up back to the composer to be reworked: it leaves the queue with its model and mode, and
+     * whatever the composer held takes its place in line — a new message on the composer's own model and mode — so
+     * nothing typed is lost. Returns null when the message is gone or in flight.
      */
     fun takeForEdit(agentId: String, id: String): QueuedFollowUp? {
         val e = entry(agentId)
@@ -363,13 +368,36 @@ class FollowUpRepository(
                 val item = queue.firstOrNull { it.id == id && !it.isSending && !it.isSteered } ?: return@update this
                 taken = item
                 val displaced = draft.takeUnless { it.isBlank }?.let { d ->
-                    item.copy(id = "queued-" + UUID.randomUUID(), text = d.text.trim(), images = d.images, files = d.files, queuedAtMillis = AppClock.now(), error = null)
+                    QueuedFollowUp(
+                        id = "queued-" + UUID.randomUUID(),
+                        text = d.text.trim(),
+                        images = d.images,
+                        files = d.files,
+                        queuedAtMillis = AppClock.now(),
+                        planMode = when (d.mode) {
+                            AgentMode.PLAN -> true
+                            AgentMode.AGENT -> false
+                            else -> null
+                        },
+                        modelId = d.model?.id,
+                        modelParams = d.model?.params.orEmpty(),
+                        modelDisplayName = d.model?.label,
+                    )
                 }
+                // A message queued on the chat's own model and mode leaves the composer's picks as they are.
+                val mode = when (item.planMode) {
+                    true -> AgentMode.PLAN
+                    false -> AgentMode.AGENT
+                    null -> draft.mode
+                }
+                val model = item.modelId?.let { DraftModel(it, item.modelParams, item.modelDisplayName) } ?: draft.model
                 copy(
-                    draft = draft.copy(text = item.text, images = item.images, files = item.files),
+                    draft = draft.copy(text = item.text, images = item.images, files = item.files, mode = mode, model = model),
                     queue = queue.flatMap { q -> if (q.id != id) listOf(q) else listOfNotNull(displaced) },
                 )
             }
+            // The dispatcher stops once only failed or unconfirmed messages are left: one taken off the head may leave a sendable one.
+            if (taken != null && e.state.value.queue.any { it.error == null && !it.needsConfirmation }) e.ensureDispatcher()
         }
         e.scheduleSave()
         return taken
@@ -380,7 +408,7 @@ class FollowUpRepository(
         val e = entry(agentId)
         synchronized(e) {
             e.update {
-                copy(queue = queue.map { if (it.id == id) it.copy(error = null, needsConfirmation = false, sendStartedAtMillis = null, heldSinceMillis = null, busyRefusals = 0, serverReason = null, notBeforeMillis = null, holdReason = null, throttleRefusals = 0) else it })
+                copy(queue = queue.map { if (it.id == id) it.copy(error = null, needsConfirmation = false, sendStartedAtMillis = null, heldSinceMillis = null, busyRefusals = 0, serverReason = null, notBeforeMillis = null, holdReason = null, throttleRefusals = 0, steerError = null) else it })
             }
             e.ensureDispatcher()
         }
@@ -395,7 +423,7 @@ class FollowUpRepository(
         val e = entry(agentId)
         synchronized(e) {
             val found = e.state.value.queue.firstOrNull { it.id == id && !it.isSending && !it.isSteered } ?: return false
-            val cleared = found.copy(error = null, needsConfirmation = false, sendStartedAtMillis = null, heldSinceMillis = null, busyRefusals = 0, serverReason = null, notBeforeMillis = null, holdReason = null, throttleRefusals = 0)
+            val cleared = found.copy(error = null, needsConfirmation = false, sendStartedAtMillis = null, heldSinceMillis = null, busyRefusals = 0, serverReason = null, notBeforeMillis = null, holdReason = null, throttleRefusals = 0, steerError = null)
             e.update { copy(queue = listOf(cleared) + queue.filterNot { it.id == id }) }
             e.ensureDispatcher()
         }
@@ -406,22 +434,24 @@ class FollowUpRepository(
     /**
      * Steers a queued follow-up into the turn under way without stopping it (Extended mode): the message is filed with
      * the account's queue ([AccountSteering.handOff]) and promoted into the running turn ([AccountSteering.promote]),
-     * as an account row's steer is. The card gives way to the account's placement — the row "being delivered" until
-     * the transcript files the message among the running turn's rows (`ConversationRepository.expectDelivery`) —
-     * so the message is in one place at a time, and the queue's delivery flight carries it there.
+     * as an account row's steer is. The card stays where it is the whole time — "steering", then "steered" — and
+     * stands for the account's row of the message (see [QueuedFollowUp.steerFollowupId]), which the transcript's
+     * placement tracks until the message is filed among the running turn's rows (`ConversationRepository.expectDelivery`).
+     * The card leaves once that placement lets the message go, so it is on the card until the frame the transcript
+     * shows it, and in exactly one place throughout.
      *
-     * Answers the line to show: the steer's outcome; "Sent." when the agent turned out to be free and the account
-     * started a turn on it. A failure before the account holds the message puts it back on this card with the reason;
-     * one after — the promote refused — leaves it waiting on the account's queue, where the card shows it, and says so.
-     * Runs in the repository's scope, so the screen's lifetime does not cut it short.
+     * A failure before the account holds the message, or a promote the account refuses and lets us take back, puts it
+     * back to waiting on this card with the reason ([QueuedFollowUp.steerError]). A refused promote the account keeps
+     * leaves it on the account's queue, whose row takes the card's place saying why. Runs in the repository's scope,
+     * so the screen's lifetime does not cut it short.
      */
-    suspend fun steerNow(agentId: String, id: String): Result<String> {
+    suspend fun steerNow(agentId: String, id: String): Result<Unit> {
         val steering = accountSteering ?: return Result.failure(IllegalStateException(STEER_NEEDS_EXTENDED))
         val startedIn = generation.get()
         val e = entry(agentId)
         val item = synchronized(e) {
             val found = e.state.value.queue.firstOrNull { it.id == id && !it.isSending && !it.isSteered } ?: return@synchronized null
-            val claimed = found.copy(error = null, needsConfirmation = false, isSending = true, sendStartedAtMillis = AppClock.now())
+            val claimed = found.copy(error = null, needsConfirmation = false, steerError = null, isSending = true, sendStartedAtMillis = AppClock.now(), steer = SteerPhase.STEERING)
             e.update { copy(queue = queue.map { if (it.id == id) claimed else it }) }
             claimed
         } ?: return Result.failure(IllegalStateException("That message is no longer queued."))
@@ -429,37 +459,81 @@ class FollowUpRepository(
         return work.async { steerInto(e, item, steering, startedIn) }.await()
     }
 
-    private suspend fun steerInto(e: Entry, item: QueuedFollowUp, steering: AccountSteering, startedIn: Int): Result<String> {
+    /** A waiting card's up arrow mid-turn with no account to steer through: the card says so, and the message keeps its place. */
+    fun noteSteerUnavailable(agentId: String, id: String) {
+        val e = entry(agentId)
+        e.update { copy(queue = queue.map { if (it.id == id && it.steer == null) it.copy(steerError = STEER_NEEDS_EXTENDED) else it }) }
+    }
+
+    private suspend fun steerInto(e: Entry, item: QueuedFollowUp, steering: AccountSteering, startedIn: Int): Result<Unit> {
         val handed = runCatching { steering.handOff(e.agentId, item) }
         if (generation.get() != startedIn) return Result.failure(IllegalStateException("Signed out."))
         val (runId, followupId) = handed.getOrElse { t ->
             if (t is CancellationException) throw t
             e.attempt(item, VIA_STEER, "failed", t.userMessage())
-            e.update { copy(queue = queue.map { if (it.id == item.id) it.copy(isSending = false, sendStartedAtMillis = null, error = t.userMessage()) else it }) }
-            e.scheduleSave()
+            unsteerCard(e, item.id, steerFailure(t))
             return Result.failure(t)
         }
         runId?.let { e.acceptedId(it) }
-        e.update { copy(queue = queue.filterNot { it.id == item.id }) }
         spendPickOf(e, item)
-        e.scheduleSave()
-        if (runId != null && !conversations.waitsBehindTurn(e.agentId, runId)) {
-            // The turn had ended by the time the account took it: it starts the next one, as a send on a free agent does.
-            e.attempt(item, VIA_STEER, "accepted", runId)
-            return Result.success("Sent.")
-        }
+        // The turn had ended by the time the account took it: it starts the next one, as a send on a free agent does.
+        val started = runId != null && !conversations.waitsBehindTurn(e.agentId, runId)
+        // The card takes the account's row for its own before the transcript's placement publishes that row, so the row never shows beside it.
+        e.update { copy(queue = queue.map { if (it.id == item.id) it.copy(steerFollowupId = followupId) else it }) }
         conversations.expectDelivery(e.agentId, item.previewText, item.images.map { it.image }, item.files.map { it.file }, followupId = followupId, runId = runId)
-        return runCatching { steering.promote(e.agentId, followupId) }.fold(
-            onSuccess = { outcome ->
-                e.attempt(item, VIA_STEER, "steered", outcome.name)
-                Result.success(outcome.message)
-            },
-            onFailure = { t ->
-                if (t is CancellationException) throw t
-                e.attempt(item, VIA_STEER, "queued-on-account", t.userMessage())
-                Result.failure(IllegalStateException("Couldn't steer it (${t.userMessage()}); it waits on your account's queue.", t))
-            },
-        )
+        e.scheduleSave()
+        if (started) {
+            e.attempt(item, VIA_STEER, "accepted", runId)
+            steered(e, item.id, followupId)
+            conversations.reload(e.agentId)
+            return Result.success(Unit)
+        }
+        val promoted = runCatching { steering.promote(e.agentId, followupId) }
+        if (generation.get() != startedIn) return Result.failure(IllegalStateException("Signed out."))
+        promoted.onSuccess { outcome ->
+            e.attempt(item, VIA_STEER, "steered", outcome.name)
+            steered(e, item.id, followupId)
+            return Result.success(Unit)
+        }
+        val t = promoted.exceptionOrNull()!!
+        if (t is CancellationException) throw t
+        val reason = steerFailure(t)
+        val withdrawn = runCatching { steering.withdraw(e.agentId, followupId) }.getOrElse { w -> if (w is CancellationException) throw w; false }
+        if (withdrawn) {
+            e.attempt(item, VIA_STEER, "withdrawn", t.userMessage())
+            unsteerCard(e, item.id, reason)
+        } else {
+            e.attempt(item, VIA_STEER, "queued-on-account", t.userMessage())
+            conversations.noteQueuedNote(e.agentId, followupId, "$reason It waits on your account's queue.")
+            e.update { copy(queue = queue.filterNot { it.id == item.id }) }
+            e.scheduleSave()
+        }
+        return Result.failure(IllegalStateException(reason, t))
+    }
+
+    /** A steer that did not go through: the card waits in its place as it did before the tap, saying why. */
+    private fun unsteerCard(e: Entry, id: String, reason: String) {
+        e.update {
+            copy(queue = queue.map {
+                if (it.id == id) it.copy(isSending = false, sendStartedAtMillis = null, steer = null, steerFollowupId = null, steerError = reason) else it
+            })
+        }
+        e.scheduleSave()
+    }
+
+    private fun steerFailure(t: Throwable): String = "Couldn't steer: ${t.userMessage().trimEnd('.')}."
+
+    /**
+     * The account has the steer: the card reads "steered" and stays until the transcript's placement no longer holds
+     * the message as waiting — the frame the transcript files it, or the account letting it go — then leaves the queue.
+     */
+    private fun steered(e: Entry, id: String, followupId: String) {
+        e.update { copy(queue = queue.map { if (it.id == id) it.copy(steer = SteerPhase.STEERED) else it }) }
+        work.launch {
+            conversations.state(e.agentId).first { s -> s.queuePlacement.waiting.none { it.id == followupId } }
+            e.update { copy(queue = queue.filterNot { it.id == id }) }
+            e.scheduleSave()
+        }
     }
 
     /**
@@ -715,6 +789,12 @@ class FollowUpRepository(
 
     // -- persistence -------------------------------------------------------------------------------------------------
 
+    /**
+     * The queue as the disk keeps it: a message a steer has filed with the account's queue is the account's to show
+     * after a restart (its row, placed by the transcript), not this card's as well.
+     */
+    private fun List<QueuedFollowUp>.onDisk(): List<QueuedFollowUp> = filter { it.steerFollowupId == null }
+
     private inline fun Entry.update(transform: FollowUpComposerState.() -> FollowUpComposerState) = state.update { it.transform() }
 
     /** [item] went out on the model the draft still has picked: the chat runs on it now, and the pick is spent (see [spendDraftModel]). */
@@ -795,7 +875,7 @@ class FollowUpRepository(
             // The file this would write belongs to an account that has been signed out, and whose directory the
             // sign-out has already deleted.
             if (generation.get() != startedIn) return@launch
-            runCatching { store.write(agentId, snapshot.draft, snapshot.queue) }.onFailure { if (it is CancellationException) throw it }
+            runCatching { store.write(agentId, snapshot.draft, snapshot.queue.onDisk()) }.onFailure { if (it is CancellationException) throw it }
         }
     }
 
@@ -806,7 +886,7 @@ class FollowUpRepository(
      * is actually streaming the run — a row a poll behind says idle then, and the chat knows better.
      */
     private fun isIdle(agentId: String): Flow<Boolean> = combine(
-        agents.state.map { s -> s.agents.firstOrNull { it.id == agentId } }.distinctUntilChanged(),
+        agents.row(agentId),
         conversations.state(agentId),
         agents.runningScan,
     ) { row, chat, scan -> gate(row, chat, scan).idle }.distinctUntilChanged()
@@ -841,8 +921,8 @@ class FollowUpRepository(
         )
 
     /** The run to follow while something is queued: the row's, while it is running. Never a prompt's local placeholder. */
-    private fun runToFollow(agentId: String): Flow<String?> = agents.state
-        .map { s -> s.agents.firstOrNull { it.id == agentId }?.takeIf { it.isRunning }?.latestRunId?.takeUnless { it.startsWith(LOCAL_RUN_PREFIX) } }
+    private fun runToFollow(agentId: String): Flow<String?> = agents.row(agentId)
+        .map { row -> row?.takeIf { it.isRunning }?.latestRunId?.takeUnless { it.startsWith(LOCAL_RUN_PREFIX) } }
         .distinctUntilChanged()
 
     /** Called under the entry's monitor. */

@@ -122,20 +122,25 @@ internal class ShellPanes(
         return widths.rail
     }
 
-    /** Open or shut as the window's size class was left; shut on a window with no room to pin it, a Fold's cover. */
-    override val open: Boolean?
-        get() = when {
+    /**
+     * Open or shut as the window's size class was left; shut on a window with no room to pin it, a Fold's cover. Read
+     * coarse, so what reads it in composition sees the window's class change and not every width.
+     */
+    override val open: Boolean? by derivedStateOf {
+        when {
             !PaneWidths.pinnable(window) -> false
             PaneWidthClass.of(window) == PaneWidthClass.Medium -> openMedium
             else -> openExpanded
         }
+    }
 
     override val width: Dp get() = widths.panel
 
     override val splits: Boolean get() = widths.splits
 
     /**
-     * The configuration's screen width, read in composition: a change drops the old measurement until the next. True
+     * The configuration's screen width, as the composition that sees it hears it ([ShellWindow.follow]): a change drops
+     * the old measurement until the next. True
      * where [width] is a change, the window folded, unfolded, turned or resized under the shell. A panel open over the
      * chat as a sheet ([sheetOpen], read once here) as the window widens into room to pin it stays open, pinned, from
      * this frame: the rail is laid out as the panel leaves it room, rather than standing beside the chat a frame and

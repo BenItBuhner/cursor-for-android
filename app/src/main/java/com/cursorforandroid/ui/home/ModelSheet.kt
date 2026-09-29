@@ -19,12 +19,10 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -58,10 +56,9 @@ import com.cursorforandroid.ui.theme.CursorTheme
 internal data class NoModelRow(val title: String, val subtitle: String?)
 
 /**
- * The composer's model picker: plan-mode / auto-PR, then one clean row per model from `GET /v1/models`. Tapping a
- * model selects it, lifts it to the top of the list and unfolds its parameters — effort, speed, context — under it.
- * Pinning keeps a model at the top after something else is selected. The auto-PR toggle is only shown with an
- * [onAutoCreatePr]: it is a setting of the agent, which a follow-up cannot change.
+ * The composer's model picker: one clean row per model from `GET /v1/models`. Tapping a model selects it, lifts it
+ * to the top of the list and unfolds its parameters — effort, speed, context — under it. Pinning keeps a model at the
+ * top after something else is selected.
  *
  * Tapping a model keeps the sheet open so its pickers can be set; dismissing the sheet keeps the last selection.
  *
@@ -74,13 +71,8 @@ internal fun ModelSheet(
     models: List<ModelOption>,
     selectedModel: ModelOption?,
     selectedVariant: ModelVariant?,
-    planMode: Boolean,
-    autoCreatePr: Boolean,
     loading: Boolean,
     unavailable: Boolean,
-    /** Null hides "Plan mode" (and, with no [onAutoCreatePr], the Options section): a Project's coordinator has neither. */
-    onPlanMode: ((Boolean) -> Unit)?,
-    onAutoCreatePr: ((Boolean) -> Unit)?,
     /** Fetches the list again, whether or not it is fresh: the header's refresh button, as on the repository picker. */
     onRefresh: () -> Unit,
     onSelect: (ModelOption?, ModelVariant?) -> Unit,
@@ -97,15 +89,8 @@ internal fun ModelSheet(
             onSelect(null, null)
             dismiss()
         }
-        val listState = rememberLazyListState()
-        LaunchedEffect(selectedModel?.id, noModelRow != null, ordered.isNotEmpty()) {
-            if (selectedModel == null || ordered.isEmpty()) return@LaunchedEffect
-            val offset = (if (noModelRow != null) 1 else 0) + (if (onPlanMode != null || onAutoCreatePr != null) 1 else 0) + 1
-            listState.scrollToItem(offset)
-        }
         RefreshableSheetHeader("Model", loading, "Refresh models", onRefresh, Modifier.testTag("model-sheet-header"))
         FadingLazyColumn(
-            state = listState,
             modifier = Modifier.fillMaxWidth().weight(1f, fill = false),
             contentPadding = PaddingValues(bottom = 12.dp),
         ) {
@@ -113,14 +98,6 @@ internal fun ModelSheet(
                 item("current") {
                     SheetRow(title = noModelRow.title, subtitle = noModelRow.subtitle, checked = selectedModel == null) { pickNone() }
                     HairlineDivider(Modifier.padding(horizontal = 20.dp, vertical = 4.dp))
-                }
-            }
-            if (onPlanMode != null || onAutoCreatePr != null) {
-                item("options") {
-                    SheetSectionLabel("Options")
-                    if (onPlanMode != null) OptionRow("Plan mode", planMode, onPlanMode)
-                    if (onAutoCreatePr != null) OptionRow("Auto-create PR", autoCreatePr, onAutoCreatePr)
-                    HairlineDivider(Modifier.padding(horizontal = 20.dp, vertical = 6.dp))
                 }
             }
             if (models.isEmpty()) {
@@ -161,18 +138,6 @@ internal fun ModelSheet(
                 }
             }
         }
-    }
-}
-
-@Composable
-private fun OptionRow(label: String, checked: Boolean, onChange: (Boolean) -> Unit) {
-    val haptics = rememberHaptics()
-    Row(
-        Modifier.fillMaxWidth().pressable({ haptics.toggle(!checked); onChange(!checked) }, CursorTheme.shapes.base).height(CursorDimens.listRow).padding(horizontal = 20.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(label, style = CursorTheme.typography.base, color = CursorTheme.colors.textPrimary, modifier = Modifier.weight(1f))
-        CursorToggle(checked, onChange)
     }
 }
 

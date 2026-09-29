@@ -57,6 +57,30 @@ class SlashTokensTest {
     }
 
     @Test
+    fun `finding the token or phrase under the cursor reads the text around it, not the whole draft`() {
+        val draft = "Refactor the transcript engine so replays share one parse; keep the golden files. ".repeat(60)
+        for (typed in listOf(draft, "$draft/opus 5", "$draft/rev")) {
+            val text = Reads(typed)
+            val cursor = TextRange(typed.length)
+            SlashTokens.at(text, cursor)
+            SlashTokens.phraseAt(text, cursor)
+            assertThat(text.reads).isAtMost(2 * 64)
+        }
+        assertThat(SlashTokens.phraseAt(Reads("$draft/opus 5"), TextRange(draft.length + 7))).isEqualTo(phrase("$draft/opus 5"))
+        assertThat(SlashTokens.at(Reads("$draft/rev"), TextRange(draft.length + 4))).isEqualTo(at("$draft/rev", draft.length + 4))
+    }
+
+    /** A draft that counts the characters read from it. */
+    private class Reads(private val text: String) : CharSequence {
+        var reads = 0
+            private set
+        override val length get() = text.length
+        override fun get(index: Int): Char { reads++; return text[index] }
+        override fun subSequence(startIndex: Int, endIndex: Int): CharSequence { reads += endIndex - startIndex; return text.subSequence(startIndex, endIndex) }
+        override fun toString(): String { reads += text.length; return text }
+    }
+
+    @Test
     fun `completing replaces the token with the command and one space, and puts the cursor after it`() {
         val typed = TextFieldValue("/go", TextRange(3))
         assertThat(SlashTokens.complete(typed, SlashTokens.at(typed)!!, "goal")).isEqualTo(TextFieldValue("/goal ", TextRange(6)))

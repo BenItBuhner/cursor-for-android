@@ -87,7 +87,8 @@ class IdleChatWatchTest {
     private suspend fun FaultRig.openAtRest() {
         agents.refresh()
         conversations.attach(worker)
-        awaitUntil(60_000) { state.let { shows(turns.last().prompt, it) && !it.isLoading && !it.isStreaming && it.runStatus?.isActive != true && it.traceStatus.pending == 0 } }
+        // The window whole, too: a cold open paints its newest turns and reads the rest behind them.
+        awaitUntil(60_000) { state.let { shows(turns.last().prompt, it) && !it.isLoading && !it.isLoadingOlder && !it.isStreaming && it.runStatus?.isActive != true && it.traceStatus.pending == 0 } }
     }
 
     /**

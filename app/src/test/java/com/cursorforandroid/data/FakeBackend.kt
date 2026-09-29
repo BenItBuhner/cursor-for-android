@@ -99,6 +99,8 @@ open class FakeCursorApi : CursorApi {
     @Volatile var poolsCalls = 0
     @Volatile var failWorkers: Throwable? = null
     @Volatile var failPools: Throwable? = null
+    /** Holds every `listWorkers` answer until completed. */
+    @Volatile var workersGate: CompletableDeferred<Unit>? = null
     var workers: List<WorkerDto> = emptyList()
     var pools: List<PoolDto> = emptyList()
 
@@ -205,6 +207,7 @@ open class FakeCursorApi : CursorApi {
     }
     override suspend fun listWorkers(status: String?, scope: String?, limit: Int, nextPageToken: String?): ListWorkersResponseDto {
         workersCalls++
+        workersGate?.await()
         failWorkers?.let { throw it }
         val listed = when (scope) {
             "personal" -> workers.filter { it.scope != "team_pool" }

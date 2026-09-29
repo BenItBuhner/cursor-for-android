@@ -50,7 +50,7 @@ fun <T> rememberPopoverSelection(items: List<T>, vararg resetKeys: Any?): Popove
         val held = if (items.isEmpty()) 0 else index.intValue.coerceIn(0, items.lastIndex)
         if (held != index.intValue) index.intValue = held
     }
-    return PopoverSelection(items, index)
+    return remember(items, index) { PopoverSelection(items, index) }
 }
 
 /**

@@ -234,6 +234,7 @@ class HeadlessConversationApi(
             FetchRequestDto.serializer(),
             FetchResponseDto.serializer(),
             retryRefusals = false,
+            lane = OnScreenChats.stateLane(agentId),
         )
         // One step per response, a blank one for a response this app reads nothing from (a status, a done marker):
         // the record is paged by index, and a page's steps must line up with the indices it was asked for.

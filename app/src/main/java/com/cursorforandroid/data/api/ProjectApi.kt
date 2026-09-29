@@ -38,6 +38,9 @@ interface ProjectLineageApi {
     /** The same pass stopped at the page older than [stopBelowActivityMillis] (see `RootScanApi.scanRoots`); sources that cannot date their pages read as [scanRoots]. */
     suspend fun scanRoots(maxPages: Int, stopBelowActivityMillis: Long?): RootScan? = scanRoots(maxPages)
 
+    /** The same pass starting from [firstPage], the newest page the list just read (see `RootScanApi.scanRoots`); sources that cannot take it read as before. */
+    suspend fun scanRoots(maxPages: Int, stopBelowActivityMillis: Long?, firstPage: AccountList?): RootScan? = scanRoots(maxPages, stopBelowActivityMillis)
+
     /** The chats branched off or spawned by [parentId], as the account's list would describe them. */
     suspend fun children(parentId: String): List<ComposerSnapshot>
 
@@ -88,7 +91,6 @@ data class WorkerLaunch(
     val repoUrl: String? = null,
     val baseBranch: String? = null,
     val modelId: String? = null,
-    val autoCreatePr: Boolean = false,
     /** Client-minted, so a retry after a lost reply creates nothing twice; the account keeps it as the worker's id. */
     val workerId: String = "bc-${UUID.randomUUID()}",
 )
@@ -215,7 +217,6 @@ class ProjectApi(
                 source = SOURCE,
                 repoUrl = launch.repoUrl?.takeIf { it.isNotBlank() },
                 baseBranch = launch.baseBranch?.takeIf { it.isNotBlank() },
-                autoCreatePr = launch.autoCreatePr.takeIf { it && launch.repoUrl != null },
                 // The account refuses a start that names no model; the desktop sends `default` (Auto) when none is chosen.
                 requestedModels = listOf(RequestedModelDto(launch.modelId?.trim()?.takeIf { it.isNotEmpty() } ?: "default")),
                 returnImmediately = true,
@@ -412,7 +413,6 @@ class ProjectApi(
         val source: String,
         val repoUrl: String? = null,
         val baseBranch: String? = null,
-        val autoCreatePr: Boolean? = null,
         val requestedModels: List<RequestedModelDto>? = null,
         val returnImmediately: Boolean,
     )

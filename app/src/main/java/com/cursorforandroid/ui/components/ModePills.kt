@@ -91,6 +91,8 @@ object ModePills {
      * under the popover, until a space or a pick closes it (see [consumeTyped]).
      */
     fun present(value: String): Presented {
+        // Run for every keystroke the owner hands back; almost no draft holds the token at all.
+        if (!value.contains(MULTITASK_TOKEN)) return Presented(value, multitask = false)
         val span = CLOSED_MULTITASK.find(value)?.range ?: return Presented(value, multitask = false)
         return Presented(without(value, span), multitask = true)
     }
@@ -153,6 +155,7 @@ object ModePills {
 
     private val CLOSED = Regex("(?<=^|\\s)/(${SlashCommands.MULTITASK}|${SlashCommands.PLAN}|${SlashCommands.ASK}|${SlashCommands.DEBUG})(?=\\s)")
     private val CLOSED_MULTITASK = Regex("(?<=^|\\s)/${SlashCommands.MULTITASK}(?=\\s)")
+    private const val MULTITASK_TOKEN = "/${SlashCommands.MULTITASK}"
 
     /** [index] once [removed] has left the text: unchanged before it, at its start inside it, moved up after it. */
     private fun shift(index: Int, removed: IntRange): Int = when {

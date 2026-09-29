@@ -48,13 +48,13 @@ object SlashTokens {
      */
     fun at(value: TextFieldValue): SlashToken? = at(value.text, value.selection)
 
-    /** The same for a `TextFieldState`'s text and selection. */
-    fun at(text: String, selection: TextRange): SlashToken? {
+    /** The same for a `TextFieldState`'s text and selection, read in place. */
+    fun at(text: CharSequence, selection: TextRange): SlashToken? {
         if (selection.collapsed.not()) return null
         return at(text, selection.start)
     }
 
-    fun at(text: String, cursor: Int): SlashToken? {
+    fun at(text: CharSequence, cursor: Int): SlashToken? {
         if (cursor < 1 || cursor > text.length) return null
         var start = cursor
         while (start > 0 && !text[start - 1].isWhitespace()) start--
@@ -72,15 +72,17 @@ object SlashTokens {
      * [at] token: from a slash that opens the text or follows whitespace, on the cursor's line, to the end of the word
      * the cursor is in, made of letters, digits, spaces, dots and dashes and no longer than a model's name with its
      * parameters. Whether it names a model is the caller's to ask ([com.cursorforandroid.domain.ModelSearch]); a
-     * phrase that names none is the message being written after a command.
+     * phrase that names none is the message being written after a command. Only the [PHRASE_MAX] characters before
+     * the cursor are looked at, since a slash further back could not start one, so a long draft costs what a short one does.
      */
-    fun phraseAt(text: String, selection: TextRange): SlashToken? {
+    fun phraseAt(text: CharSequence, selection: TextRange): SlashToken? {
         if (!selection.collapsed) return null
         val cursor = selection.start
         if (cursor < 2 || cursor > text.length) return null
-        val lineStart = text.lastIndexOf('\n', cursor - 1) + 1
-        val start = text.lastIndexOf('/', cursor - 1)
-        if (start < lineStart || (start > 0 && !text[start - 1].isWhitespace())) return null
+        var start = cursor - 1
+        val reach = maxOf(0, cursor - 1 - PHRASE_MAX)
+        while (start >= reach && text[start] != '/' && text[start] != '\n') start--
+        if (start < reach || text[start] != '/' || (start > 0 && !text[start - 1].isWhitespace())) return null
         var end = cursor
         while (end < text.length && !text[end].isWhitespace()) end++
         val body = text.substring(start + 1, end)
@@ -136,7 +138,10 @@ fun rememberSlashSuggestions(token: SlashToken?, catalog: SlashCatalog, recent: 
     val results = remember(query, catalog, recent, offer, open) {
         if (query == null) emptyList() else SlashMenu.items(query, catalog, recent, offer, open)
     }
-    return SlashSuggestions(rememberPopoverSelection(results, token?.start, query.isNullOrEmpty()), expanded)
+    val selection = rememberPopoverSelection(results, token?.start, query.isNullOrEmpty())
+    // The same instance while nothing it holds changes, so what captures it — the popover, the field's key handlers —
+    // skips a keystroke that leaves the list alone.
+    return remember(selection, expanded) { SlashSuggestions(selection, expanded) }
 }
 
 /**

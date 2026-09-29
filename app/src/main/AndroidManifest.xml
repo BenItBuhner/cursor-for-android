@@ -54,7 +54,7 @@
             android:exported="true"
             android:launchMode="singleTask"
             android:windowSoftInputMode="adjustResize"
-            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|uiMode"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|uiMode|density|fontScale|keyboard|keyboardHidden|navigation|touchscreen|colorMode|layoutDirection"
             android:theme="@style/Theme.Cursor.Splash">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
@@ -106,7 +106,7 @@
             android:taskAffinity=""
             android:theme="@style/Theme.Cursor.QuickComposer"
             android:windowSoftInputMode="adjustResize|stateVisible"
-            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|uiMode" />
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|uiMode|density|fontScale|keyboard|keyboardHidden|navigation|touchscreen|colorMode|layoutDirection" />
 
         <!-- The "New chat" shortcut widget: a round button that opens the composer over the launcher (or a chat, a Project, search). -->
         <receiver

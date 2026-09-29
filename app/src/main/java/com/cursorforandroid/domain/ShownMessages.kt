@@ -70,10 +70,14 @@ class ShownMessages(
             previous = item.id
         }
         while (shown.size > capacity) shown.remove(shown.keys.first())
-        if (byCall.size > 2 * capacity) byCall.values.retainAll(shown.keys)
+        // Only bounds memory ([reworded] reads a text back only while it is shown): a list sending more than that
+        // re-adds every call each build, and would be swept on every one.
+        if (byCall.size > 2 * maxOf(capacity, present?.size ?: 0)) byCall.values.retainAll(shown.keys)
         if (shown.isEmpty()) return items
         val have = present.orEmpty()
-        val missing = shown.values.filter { s -> have.none { it.sameAs(s.sent) } }
+        // The same words are the same message ([CoordinatorTranscript.Sent.sameAs]): only the rest need the scan.
+        val haveTexts = have.mapTo(HashSet(have.size * 2)) { it.text }
+        val missing = shown.values.filter { s -> s.sent.text !in haveTexts && have.none { it.sameAs(s.sent) } }
         if (missing.isEmpty()) return items
 
         val heads = items.indices.filter { items[it] is UserMessage || items[it] is SystemNotification }

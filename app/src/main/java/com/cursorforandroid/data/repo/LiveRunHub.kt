@@ -26,6 +26,7 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.emitAll
+import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
@@ -172,6 +173,17 @@ class LiveRunHub(
         @Volatile var resting = false
         /** Set by [lookNow]: the next pause between looks (or the one under way) ends at once. */
         val lookRequested = MutableStateFlow(false)
+        /**
+         * When a live pass heard the stream say the run ended, its `result` not come yet (System.nanoTime); 0 while it
+         * has not. Kept here, not in the pass, so a pass that rests and resumes keeps counting (see [terminalGraceMs]).
+         */
+        val endSaidAt = MutableStateFlow(0L)
+
+        /** The stream said the run ended at least [terminalGraceMs] ago and nothing has finished it. */
+        fun graceSpent(graceMs: Long): Boolean {
+            val at = endSaidAt.value
+            return at != 0L && !live.finished && System.nanoTime() - at >= graceMs * NANOS_PER_MS
+        }
 
         /** True while any subscriber is watched, or none has said (a replay riding along, a release's grace). */
         fun watched(): Boolean = synchronized(entries) { watchers.isEmpty() || watchers.any { it.value } }
@@ -424,6 +436,12 @@ class LiveRunHub(
                 if (!owns(entry, self)) break
                 if (entry.live.finished || historical) break
                 if (pass.rested) {
+                    // Said over a grace ago and resting on it: the record, or else the stream's word, ends it now
+                    // rather than at a look that may be minutes off.
+                    if (entry.graceSpent(terminalGraceMs)) {
+                        if (settleFromRecord(entry, self, backend) == Record.Over) break
+                        if (finishOnStreamWord(entry, self)) break
+                    }
                     // Nobody watches the run and the connection had said what there was: it is let go until the next
                     // look, which resumes from the position reached — or at once, when someone looks.
                     publish(entry)
@@ -433,7 +451,10 @@ class LiveRunHub(
                 }
                 if (pass.error?.isFatal == true) {
                     // This stream will never say more (its log expired, or we may not read it); only the record can
-                    // tell how the run ends.
+                    // tell how the run ends — or, when it said the run ended, its own word: a record lagging its stream
+                    // polled as running for as long as anyone looked.
+                    if (settleFromRecord(entry, self, backend) == Record.Over) break
+                    if (finishOnStreamWord(entry, self)) break
                     pollUntilTerminal(entry, self, backend)
                     break
                 }
@@ -487,14 +508,22 @@ class LiveRunHub(
                     if (!watched) while (true) { delay(lookQuietMs); emit(LookTick) }
                 }
             },
+            // The grace runs on the clock, not on the next event: a stream that falls silent after its terminal
+            // status sends only keep-alive comments, which are not events (Bennett's 0.4.15 coordinator, a stream at
+            // FINISHED with three events and no items, followed for minutes after the account moved on).
+            entry.endSaidAt.flatMapLatest { at ->
+                if (at == 0L) emptyFlow() else flow<Any> {
+                    val left = terminalGraceMs - (System.nanoTime() - at) / NANOS_PER_MS
+                    if (left > 0) delay(left)
+                    emit(GraceUp)
+                }
+            },
         )
         var unwatched = false
         var windowStartedAt = System.nanoTime()
         var lastEventAt = 0L
         var atPosition = true
         var restOwed = false
-        // When the stream said the run ended without its `result` yet (see [terminalGraceMs]); 0 while it has not.
-        var endSaidAt = 0L
         try {
             beats.collect { beat ->
                 if (!owns(entry, self)) return@collect
@@ -507,6 +536,10 @@ class LiveRunHub(
                         return@collect
                     }
                     Unwatched -> { unwatched = true; windowStartedAt = System.nanoTime(); return@collect }
+                    GraceUp -> {
+                        if (entry.graceSpent(terminalGraceMs)) throw EndOfPass
+                        return@collect
+                    }
                     LookTick -> {
                         val now = System.nanoTime()
                         val quiet = lastEventAt > 0 && now - lastEventAt >= lookQuietMs * NANOS_PER_MS
@@ -523,11 +556,14 @@ class LiveRunHub(
                     lastEventAt = System.nanoTime()
                     atPosition = false
                 }
-                if (event is RunStreamEvent.Status) endSaidAt = if (event.status.isTerminal) System.nanoTime() else 0L
+                if (event is RunStreamEvent.Status && !historical && live === entry.live) {
+                    if (!event.status.isTerminal) entry.endSaidAt.value = 0L
+                    else if (entry.endSaidAt.value == 0L) entry.endSaidAt.value = System.nanoTime()
+                }
                 // Said over, and nothing but the connection's keep-alives since for longer than a result takes: the
                 // `result` is not coming on this connection, and holding it open kept the chat on this run while the
                 // account had started the next (Bennett's 0.4.12 coordinator, a stream at FINISHED left unfinished).
-                if (endSaidAt != 0L && event !is RunStreamEvent.Result && !historical && System.nanoTime() - endSaidAt >= terminalGraceMs * NANOS_PER_MS) throw EndOfPass
+                if (event !is RunStreamEvent.Result && !historical && entry.graceSpent(terminalGraceMs)) throw EndOfPass
                 when (event) {
                     is RunStreamEvent.Error -> {
                         // The last event of the pass. An expired log is a fact about the run; the rest is about the
@@ -798,6 +834,7 @@ class LiveRunHub(
     private object Watched
     private object Unwatched
     private object LookTick
+    private object GraceUp
 
     /** A turn under way, parked off the table (see [park]). */
     @Serializable

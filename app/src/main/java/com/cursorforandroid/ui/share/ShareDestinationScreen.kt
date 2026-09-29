@@ -49,6 +49,7 @@ import com.cursorforandroid.ui.components.PullRefreshHaptics
 import com.cursorforandroid.ui.components.contentColumn
 import com.cursorforandroid.ui.components.hitTestBoundary
 import com.cursorforandroid.ui.components.pressable
+import com.cursorforandroid.ui.components.rememberHaptics
 import com.cursorforandroid.ui.components.scrollEdgeFade
 import com.cursorforandroid.ui.components.stylusWriting
 import com.cursorforandroid.ui.theme.CursorDimens
@@ -72,6 +73,7 @@ fun ShareDestinationScreen(
     BackHandler(onBack = onDismiss)
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
+    val haptics = rememberHaptics()
     var query by rememberSaveable { mutableStateOf("") }
     // The sidebar search is its own field; this list is the Chats filters plus the picker's query.
     val sections = remember(listState.allAgents, listState.prefs, listState.local, query, listState.nowMillis) {
@@ -143,6 +145,7 @@ fun ShareDestinationScreen(
                             selected = false,
                             prefs = listState.prefs,
                             actions = pickActions,
+                            haptics = haptics,
                             showMenu = false,
                             modifier = Modifier.contentColumn(gutter = 0.dp).padding(vertical = CursorDimens.sidebarRowGap / 2),
                             nowMillis = listState.nowMillis,

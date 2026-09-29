@@ -41,7 +41,7 @@ sealed interface TranscriptRow {
      * their own, and the most recent are what the reader came for.
      */
     data class Events(val rows: List<TranscriptRow>, val startsOpen: Boolean = false) : TranscriptRow {
-        override val key: String get() = "events:${rows.first().key}"
+        override val key: String by lazy(LazyThreadSafetyMode.PUBLICATION) { "events:${rows.first().key}" }
 
         val events: List<Event> get() = rows.filterIsInstance<Event>()
 
@@ -86,7 +86,8 @@ sealed interface TranscriptRow {
      */
     data class Stretch(val entries: List<Entry>, val live: Boolean = false) : TranscriptRow {
         // By its first step's own key: an event it opens with keeps it when the next event folds the two into a group.
-        override val key: String get() = "stretch:${entries.first().let { first -> (first as? Entry.Events)?.group?.rows?.first()?.key ?: first.key }}"
+        // Kept once built: the list and the open stretches read it for every row on every publication.
+        override val key: String by lazy(LazyThreadSafetyMode.PUBLICATION) { "stretch:${entries.first().let { first -> (first as? Entry.Events)?.group?.rows?.first()?.key ?: first.key }}" }
 
         /**
          * The one entry a stretch of one step is drawn as, or null for a stretch worth a summary. A failed run with
@@ -618,10 +619,11 @@ object TranscriptRows {
         if (entries.none { it is TranscriptRow.Entry.Event }) return entries.toList()
         val deduped = ArrayList<TranscriptRow.Entry>(entries.size)
         for (entry in entries) {
-            val previous = deduped.lastOrNull { it !is TranscriptRow.Entry.Footer }
+            val at = deduped.indexOfLast { it !is TranscriptRow.Entry.Footer }
+            val previous = deduped.getOrNull(at)
             if (entry is TranscriptRow.Entry.Event && previous is TranscriptRow.Entry.Event && sameNotice(previous.row.notification, entry.row.notification)) {
                 val merged = merged(previous.row.notification, entry.row.notification)
-                deduped[deduped.indexOf(previous)] = TranscriptRow.Entry.Event(TranscriptRow.Event(merged, previous.row.count + entry.row.count))
+                deduped[at] = TranscriptRow.Entry.Event(TranscriptRow.Event(merged, previous.row.count + entry.row.count))
             } else {
                 deduped += entry
             }
@@ -677,15 +679,25 @@ object TranscriptRows {
     }
 
     /** The newest group of events, when it is small enough to open: its stretch's index, the stretch, and the entry's index within it. */
-    internal fun newestGroupToOpen(rows: List<TranscriptRow>): Triple<Int, TranscriptRow.Stretch, Int>? {
-        for (r in rows.indices.reversed()) {
+    internal fun newestGroupToOpen(rows: List<TranscriptRow>): Triple<Int, TranscriptRow.Stretch, Int>? =
+        groupToOpen(rows, newestEventsStretch(rows, 0, rows.size))
+
+    /** The index of the newest stretch among `rows[from, to)` with a group of events among its entries, or -1. */
+    internal fun newestEventsStretch(rows: List<TranscriptRow>, from: Int, to: Int): Int {
+        for (r in to - 1 downTo from) {
             val stretch = rows[r] as? TranscriptRow.Stretch ?: continue
-            val e = stretch.entries.indexOfLast { it is TranscriptRow.Entry.Events }
-            if (e < 0) continue
-            val group = (stretch.entries[e] as TranscriptRow.Entry.Events).group
-            return if (group.count >= OPEN_BELOW || group.startsOpen) null else Triple(r, stretch, e)
+            if (stretch.entries.any { it is TranscriptRow.Entry.Events }) return r
         }
-        return null
+        return -1
+    }
+
+    /** The newest group of the stretch at [r] (see [newestEventsStretch]; -1 for none), when it is small enough to open. */
+    internal fun groupToOpen(rows: List<TranscriptRow>, r: Int): Triple<Int, TranscriptRow.Stretch, Int>? {
+        if (r < 0) return null
+        val stretch = rows[r] as TranscriptRow.Stretch
+        val e = stretch.entries.indexOfLast { it is TranscriptRow.Entry.Events }
+        val group = (stretch.entries[e] as TranscriptRow.Entry.Events).group
+        return if (group.count >= OPEN_BELOW || group.startsOpen) null else Triple(r, stretch, e)
     }
 
     /** [stretch] with the group at [entryIndex] marked as opening on its own. */

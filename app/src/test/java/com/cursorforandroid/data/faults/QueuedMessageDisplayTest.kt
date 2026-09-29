@@ -22,6 +22,7 @@ import com.cursorforandroid.ui.conversation.workingCaption
 import com.google.common.truth.Truth.assertThat
 import com.google.common.truth.Truth.assertWithMessage
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
@@ -34,6 +35,7 @@ import org.junit.rules.TemporaryFolder
 import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.Executors
 
 /**
  * A message sent while a chat is mid-turn waits on the queue card above the composer until its own run starts, then
@@ -65,6 +67,9 @@ class QueuedMessageDisplayTest {
     private val turns = LongProject.turns(firstAt, turns = TURNS)
     private val live get() = turns.last()
     private var recorder: Job? = null
+    // One thread, as the screen's main thread: the two flows' collectors on a pool race each other, so a frame could
+    // pair the transcript's newer publish with the queue value the repository had already replaced before it.
+    private val screenThread = Executors.newSingleThreadExecutor().asCoroutineDispatcher()
 
     /** What the screen pairs: the account's queue as last read and the transcript's frame, with when the pair was seen. */
     private class Frame(val controls: ConversationControls, val state: ConversationState, val atNanos: Long) {
@@ -98,6 +103,7 @@ class QueuedMessageDisplayTest {
         recorder?.cancel()
         rig?.let { it.steering.detach(agentId); it.close() }
         server.close()
+        screenThread.close()
     }
 
     private fun rig(engine: TranscriptEngine, root: java.io.File = folder.newFolder("rig-${System.nanoTime()}")): FaultRig = FaultRig(server.baseUrl, root, readTimeoutMs = 8_000L, extended = true, engine = engine, queuePollMs = 1_000L).also {
@@ -129,7 +135,7 @@ class QueuedMessageDisplayTest {
         awaitUntilOr(30_000, "the row placed") { agents.agent(agentId)?.isProjectRoot == project }
         conversations.attach(agentId)
         steering.attach(agentId)
-        recorder = scope.launch {
+        recorder = scope.launch(screenThread) {
             combine(steering.state(agentId), conversations.state(agentId)) { c, s -> c to s }.collect { (c, s) -> frames += Frame(c, s, System.nanoTime()) }
         }
         awaitUntilOr(60_000, "the chat open on its turn") { state.let { !it.isLoading && it.isStreaming && it.activeRunId == live.runId } && controls.isQueueAvailable }

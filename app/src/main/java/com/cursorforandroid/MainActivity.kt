@@ -13,6 +13,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.ProcessLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.lifecycleScope
 import com.cursorforandroid.data.repo.LoginProgress
@@ -51,6 +52,9 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
 
         val graph = appGraph
+        // The session the splash screen waits on is restored from here, not from the first composition: in the
+        // process's scope, so a recreation mid-restore does not start it over.
+        graph.startSession(ProcessLifecycleOwner.get().lifecycleScope)
         splash.setKeepOnScreenCondition { graph.session.state.value is SessionState.Loading }
         DeferredStartup.arm(this, graph)
         readRequests(intent)

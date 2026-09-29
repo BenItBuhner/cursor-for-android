@@ -1,13 +1,16 @@
 package com.cursorforandroid.data.api
 
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -163,6 +166,11 @@ class ApiThrottle(
     maxInFlight: Int = DEFAULT_MAX_IN_FLIGHT,
     private val now: () -> Long = System::currentTimeMillis,
     blobsInFlight: Int = BLOBS_IN_FLIGHT,
+    /** The longest a control, blob or media call keeps its permit (see [Gate]). */
+    controlHoldMs: Long = CONTROL_HOLD_MS,
+    /** Where the pause is kept, under [host]: shared with the app's other clients (see [HostPause]). */
+    private val pauses: HostPause = HostPause(now),
+    private val host: String = DEFAULT_HOST,
 ) {
     /**
      * Where a call waits for its permit: [CONTROL], the account's lists, queues and writes, a few at a time; [BLOBS],
@@ -172,12 +180,22 @@ class ApiThrottle(
      * which stays open for as long as the chat is on screen and would otherwise hold one of the control lane's few
      * permits the whole while; [MEDIA], the reads behind a figure on screen — which store a Project has, a store
      * file's presigned link, a file of the agent's machine — which someone is looking at a spinner for, and which
-     * waited behind a big Project's refresh and its record's blob prefetch when they shared the control lane. Every
-     * lane waits out the same pause, and a refusal on any of them pauses them all.
+     * waited behind a big Project's refresh and its record's blob prefetch when they shared the control lane;
+     * [STATE], a chat's whole conversation state (`StreamConversation`), which on a coordinator of thousands of turns
+     * takes a minute or more, and held the control lane's three permits for as long when a Project's kept-live chats
+     * each read theirs — the queue, the list and the chat on screen waiting behind them (Bennett's 0.4.15 dump,
+     * `control 3/3 +3 waiting` with nothing on the wire for a minute); [STATE_ON_SCREEN], the same read for a chat on
+     * screen (see [OnScreenChats]), so the chats nobody is looking at never hold the one someone is. Every lane waits
+     * out the same pause, and a refusal on any of them pauses them all.
      */
-    enum class Lane { CONTROL, BLOBS, WATCH, MEDIA }
+    enum class Lane { CONTROL, BLOBS, WATCH, MEDIA, STATE, STATE_ON_SCREEN }
 
-    private class Gate(val size: Int) {
+    /**
+     * [holdMs]: the longest one call keeps a permit — past it the call is cancelled and fails as a timeout, which
+     * its caller retries like any other — so no call, whatever it waits on (a resolver that does not answer after
+     * Doze is bounded by no socket timeout), keeps a lane taken; null for a lane whose calls are meant to stay open.
+     */
+    private class Gate(val size: Int, val holdMs: Long?) {
         val semaphore = Semaphore(size)
         val waiting = java.util.concurrent.atomic.AtomicInteger()
         val inFlight = java.util.concurrent.atomic.AtomicInteger()
@@ -191,7 +209,12 @@ class ApiThrottle(
             }
             inFlight.incrementAndGet()
             try {
-                return block()
+                if (holdMs == null) return block()
+                return try {
+                    withTimeout(holdMs) { block() }
+                } catch (e: TimeoutCancellationException) {
+                    throw java.io.InterruptedIOException("timeout").apply { initCause(e) }
+                }
             } finally {
                 inFlight.decrementAndGet()
                 semaphore.release()
@@ -200,37 +223,36 @@ class ApiThrottle(
     }
 
     private val gates = mapOf(
-        Lane.CONTROL to Gate(maxInFlight),
-        Lane.BLOBS to Gate(blobsInFlight),
-        Lane.WATCH to Gate(WATCHES_IN_FLIGHT),
-        Lane.MEDIA to Gate(MEDIA_IN_FLIGHT),
+        Lane.CONTROL to Gate(maxInFlight, controlHoldMs),
+        Lane.BLOBS to Gate(blobsInFlight, controlHoldMs),
+        Lane.WATCH to Gate(WATCHES_IN_FLIGHT, null),
+        Lane.MEDIA to Gate(MEDIA_IN_FLIGHT, controlHoldMs),
+        Lane.STATE to Gate(STATES_IN_FLIGHT, STATE_HOLD_MS),
+        Lane.STATE_ON_SCREEN to Gate(STATES_IN_FLIGHT, STATE_HOLD_MS),
     )
-    @Volatile private var pausedUntilMillis = 0L
     private val refusals = java.util.concurrent.atomic.AtomicInteger()
 
     /** Refusals (429) heard so far, for the diagnostics. */
     val refusalCount: Int get() = refusals.get()
 
     /** Until when every call waits, or null when none does. */
-    fun pausedUntil(): Long? = pausedUntilMillis.takeIf { it > now() }
+    fun pausedUntil(): Long? = pauses.until(host)
 
     /** The server asked for a pause: every call from here on waits it out first. */
-    fun pause(millis: Long) {
-        val until = now() + millis.coerceIn(MIN_PAUSE_MS, MAX_PAUSE_MS)
-        if (until > pausedUntilMillis) pausedUntilMillis = until
-    }
+    fun pause(millis: Long) = pauses.pause(host, millis.coerceIn(MIN_PAUSE_MS, MAX_PAUSE_MS))
 
     /**
      * [block] under a permit, once the pause (if any) has passed; a 429 pauses every caller and is retried once —
      * unless [retryRefusals] is off: a caller with another way to what it asked for (the transcript, which the
      * documented endpoints can also give) hears the refusal at once rather than waiting the pause out for a second
-     * try, and the pause still stands for everyone.
+     * try, and the pause still stands for everyone. A pause longer than [MAX_RETRY_WAIT_MS] is not waited out for the
+     * second try either: the caller hears the wait the server named (`retryAfterMillis`) and decides.
      */
     suspend fun <T> call(retryRefusals: Boolean = true, lane: Lane = Lane.CONTROL, block: suspend () -> T): T {
         var attempt = 0
         while (true) {
             attempt++
-            val wait = pausedUntilMillis - now()
+            val wait = pauses.remainingMs(host)
             if (wait > 0) delay(wait)
             try {
                 return gates.getValue(lane).run(block)
@@ -238,7 +260,7 @@ class ApiThrottle(
                 if (!e.isRateLimited) throw e
                 refusals.incrementAndGet()
                 pause(e.retryAfterMillis ?: DEFAULT_PAUSE_MS)
-                if (!retryRefusals || attempt >= MAX_ATTEMPTS) throw e
+                if (!retryRefusals || attempt >= MAX_ATTEMPTS || pauses.remainingMs(host) > MAX_RETRY_WAIT_MS) throw e
             }
         }
     }
@@ -266,14 +288,24 @@ class ApiThrottle(
         const val BLOBS_IN_FLIGHT = 8
         /** Open chats' live streams at once (see [Lane.WATCH]): one per chat on screen, two panes at most. */
         const val WATCHES_IN_FLIGHT = 2
+        /** Conversation states read at once, in each of [Lane.STATE] and [Lane.STATE_ON_SCREEN]: two panes on screen, two chats behind them. */
+        const val STATES_IN_FLIGHT = 2
+        /** The longest a control, blob or media call keeps its permit (see [Gate]): past every client's own call timeout, which is what normally ends one. */
+        const val CONTROL_HOLD_MS = 90_000L
+        /** The longest a conversation state read keeps its permit: the record client's call timeout (see `AppGraph`). */
+        const val STATE_HOLD_MS = 5 * 60_000L
         /**
          * Every lane's permits together with the defaults: the calls a client sharing one throttle can have on the wire
          * at once, which its dispatcher's per-host limit must let through, or the lanes queue behind each other there.
          */
-        const val ON_THE_WIRE = DEFAULT_MAX_IN_FLIGHT + BLOBS_IN_FLIGHT + WATCHES_IN_FLIGHT + MEDIA_IN_FLIGHT
+        const val ON_THE_WIRE = DEFAULT_MAX_IN_FLIGHT + BLOBS_IN_FLIGHT + WATCHES_IN_FLIGHT + MEDIA_IN_FLIGHT + 2 * STATES_IN_FLIGHT
         const val DEFAULT_PAUSE_MS = 1_500L
         const val MIN_PAUSE_MS = 250L
-        const val MAX_PAUSE_MS = 15_000L
+        const val MAX_PAUSE_MS = HostPause.MAX_MS
+        /** The longest pause the refused call itself waits out for its second try. */
+        const val MAX_RETRY_WAIT_MS = 15_000L
+        /** The account service's host, where the pause is kept when no other is named. */
+        val DEFAULT_HOST: String = com.cursorforandroid.data.auth.CursorLoginEndpoints.API_URL.toHttpUrl().host
         private const val MAX_ATTEMPTS = 2
     }
 }

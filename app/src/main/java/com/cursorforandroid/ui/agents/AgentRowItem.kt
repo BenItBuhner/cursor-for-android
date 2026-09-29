@@ -25,10 +25,12 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.ripple
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -59,12 +61,13 @@ import com.cursorforandroid.domain.ListPreferences
 import com.cursorforandroid.ui.components.CursorIcons
 import com.cursorforandroid.ui.components.CursorMenu
 import com.cursorforandroid.ui.components.CursorMenuItem
+import com.cursorforandroid.ui.components.Haptics
 import com.cursorforandroid.ui.components.ProjectGlyph
 import com.cursorforandroid.ui.components.RunningGlyph
 import com.cursorforandroid.ui.components.StateGlyph
+import com.cursorforandroid.ui.components.rememberHaptics
 import com.cursorforandroid.ui.components.stylusWriting
 import com.cursorforandroid.ui.components.Haptic
-import com.cursorforandroid.ui.components.rememberHaptics
 import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.util.AppClock
@@ -72,6 +75,7 @@ import com.cursorforandroid.util.TimeFormat
 import androidx.compose.ui.unit.IntOffset
 import com.cursorforandroid.ui.components.onContextClick
 
+@Immutable
 data class AgentRowActions(
     val onOpen: (AgentRow) -> Unit,
     val onTogglePin: (AgentRow) -> Unit,
@@ -105,6 +109,7 @@ fun AgentRowItem(
     selected: Boolean,
     prefs: ListPreferences,
     actions: AgentRowActions,
+    haptics: Haptics = rememberHaptics(),
     modifier: Modifier = Modifier,
     nowMillis: Long = AppClock.now(),
     /** The share picker only opens a chat; the pin / archive / delete menu stays on the sidebar. */
@@ -123,8 +128,14 @@ fun AgentRowItem(
     var menuOpen by rememberSaveable { mutableStateOf(false) }
     var menuAt by remember { mutableStateOf<IntOffset?>(null) }
     val interaction = remember { MutableInteractionSource() }
-    val haptics = rememberHaptics()
     val agent = row.agent
+    val currentRow by rememberUpdatedState(row)
+    val currentActions by rememberUpdatedState(actions)
+    val currentToggleChildren by rememberUpdatedState(onToggleChildren)
+    val openRow = remember { { currentActions.onOpen(currentRow) } }
+    val openContextMenu = remember { { at: IntOffset? -> menuAt = at; menuOpen = true } }
+    val openLongPressMenu = remember(haptics) { { haptics.perform(Haptic.LongPress); menuAt = null; menuOpen = true } }
+    val toggleChildren = remember { { currentToggleChildren() } }
 
     // A stand-in for a Project not loaded yet has nothing to act on: it opens (the chat loads by id) and nothing more.
     val placeholder = row.isPlaceholder
@@ -135,12 +146,12 @@ fun AgentRowItem(
                 .fillMaxWidth()
                 .clip(shape)
                 .background(if (selected) colors.fillSoft else Color.Transparent, shape)
-                .onContextClick(enabled = hasMenu) { at -> menuAt = at; menuOpen = true }
+                .onContextClick(enabled = hasMenu, onMenu = openContextMenu)
                 .combinedClickable(
                     interactionSource = interaction,
                     indication = ripple(color = colors.base),
-                    onClick = { actions.onOpen(row) },
-                    onLongClick = if (hasMenu) ({ haptics.perform(Haptic.LongPress); menuAt = null; menuOpen = true }) else null,
+                    onClick = openRow,
+                    onLongClick = if (hasMenu) openLongPressMenu else null,
                 )
                 .height(CursorDimens.sidebarRow)
                 .padding(start = 8.dp, end = 10.dp),
@@ -171,17 +182,25 @@ fun AgentRowItem(
             }
             if (childrenExpanded != null) {
                 Spacer(Modifier.width(6.dp))
-                ChildrenToggle(row, expanded = childrenExpanded, onToggle = onToggleChildren)
+                ChildrenToggle(row, expanded = childrenExpanded, onToggle = toggleChildren)
             }
         }
-        ChatRowMenu(row = row, expanded = menuOpen, onDismiss = { menuOpen = false }, actions = actions, at = menuAt)
+        if (menuOpen) {
+            ChatRowMenu(
+                row = row,
+                expanded = true,
+                onDismiss = { menuOpen = false },
+                actions = actions,
+                at = menuAt,
+            )
+        }
     }
 }
 
 /**
- * [ChatOverflowMenu] with the rename and snooze dialogs two of its items open: the long-press menu of a sidebar row,
- * a recent chat's card and a Project's shortcut on the New Chat page alike. Anchored to the layout it is placed in,
- * or at the pointer ([at], window coordinates) when a right-click opened it.
+ * [ChatOverflowMenu] with the rename and snooze dialogs two of its items open. Call only while [expanded] is true:
+ * closed rows then have no menu composition at all. The parent stays expanded while a dialog replaces the popup,
+ * preserving the dialog's saveable state until that dialog closes.
  */
 @Composable
 fun ChatRowMenu(row: AgentRow, expanded: Boolean, onDismiss: () -> Unit, actions: AgentRowActions, at: IntOffset? = null) {
@@ -189,24 +208,24 @@ fun ChatRowMenu(row: AgentRow, expanded: Boolean, onDismiss: () -> Unit, actions
     var snoozeOpen by rememberSaveable { mutableStateOf(false) }
     ChatOverflowMenu(
         row = row,
-        expanded = expanded,
+        expanded = expanded && !renameOpen && !snoozeOpen,
         onDismiss = onDismiss,
-        onRename = { onDismiss(); renameOpen = true },
-        onSnooze = { onDismiss(); snoozeOpen = true },
+        onRename = { renameOpen = true },
+        onSnooze = { snoozeOpen = true },
         actions = actions,
         at = at,
     )
     if (renameOpen) {
         RenameChatDialog(
             initialName = row.agent.name,
-            onConfirm = { name -> renameOpen = false; actions.onRename?.invoke(row, name) },
-            onDismiss = { renameOpen = false },
+            onConfirm = { name -> renameOpen = false; actions.onRename?.invoke(row, name); onDismiss() },
+            onDismiss = { renameOpen = false; onDismiss() },
         )
     }
     if (snoozeOpen) {
         SnoozeChatDialog(
-            onPick = { until -> snoozeOpen = false; actions.onSnooze(row, until) },
-            onDismiss = { snoozeOpen = false },
+            onPick = { until -> snoozeOpen = false; actions.onSnooze(row, until); onDismiss() },
+            onDismiss = { snoozeOpen = false; onDismiss() },
         )
     }
 }

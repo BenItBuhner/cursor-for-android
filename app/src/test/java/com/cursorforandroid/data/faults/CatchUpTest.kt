@@ -84,7 +84,7 @@ class CatchUpTest {
     private suspend fun FaultRig.openAtRest() {
         agents.refresh()
         conversations.attach(worker)
-        awaitUntil(60_000) { shows(turns.last().prompt) && !state.isLoading && !state.isStreaming && state.runStatus?.isActive != true && state.traceStatus.pending == 0 }
+        awaitUntil(60_000) { shows(turns.last().prompt) && !state.isLoading && !state.isLoadingOlder && !state.isStreaming && state.runStatus?.isActive != true && state.traceStatus.pending == 0 }
     }
 
     /** The open chat's watch hears nothing — its list entry is down — so only the catch-up can find a new turn. */
@@ -174,7 +174,8 @@ class CatchUpTest {
         val from = server.seen.size
         rig.conversations.reloadTranscript(worker)
         rig.conversations.awaitLoad(worker)
-        rig.awaitUntil(30_000) { shows(turns.last().prompt) && !state.isLoading }
+        // The newest turns painted first, the rest of the window read behind them.
+        rig.awaitUntil(30_000) { turns.all { shows(it.prompt) } && !state.isLoading && !state.isLoadingOlder }
         val read = asked(from)
         assertWithMessage("asked: $read").that(read[Route.RecordState] ?: 0).isAtLeast(1)
         assertThat(state.error).isNull()

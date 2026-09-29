@@ -118,7 +118,7 @@ class MappersTest {
             name = "Legacy name",
             status = "FINISHED",
             source = V0SourceDto("https://github.com/acme/app", "develop"),
-            target = V0TargetDto(branchName = "cursor/y", prUrl = "https://github.com/acme/app/pull/1", autoCreatePr = true),
+            target = V0TargetDto(branchName = "cursor/y", prUrl = "https://github.com/acme/app/pull/1"),
             summary = "Legacy summary",
         )
         // ACTIVE lifecycle, finished v0 status: the everyday shape of a finished agent on v1.
@@ -131,7 +131,6 @@ class MappersTest {
         assertThat(active.branchName).isEqualTo("cursor/y")
         assertThat(active.prUrl).isEqualTo("https://github.com/acme/app/pull/1")
         assertThat(active.summary).isEqualTo("Legacy summary")
-        assertThat(active.autoCreatePr).isTrue()
         assertThat(summary(status = "IDLE").toAgent(null).withLegacy(v0).runStatus).isEqualTo(RunStatus.FINISHED)
         assertThat(summary(status = "ACTIVE").toAgent(null).withLegacy(v0.copy(status = "ERROR")).isError).isTrue()
 

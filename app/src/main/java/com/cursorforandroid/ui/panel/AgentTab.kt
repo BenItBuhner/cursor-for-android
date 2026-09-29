@@ -17,6 +17,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.Stable
+import androidx.compose.runtime.State
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
@@ -28,6 +30,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.cursorforandroid.AppGraph
+import com.cursorforandroid.data.repo.AgentRepository
 import com.cursorforandroid.domain.Agent
 import com.cursorforandroid.domain.RunStatus
 import com.cursorforandroid.domain.StorePath
@@ -47,11 +50,13 @@ import com.cursorforandroid.ui.conversation.workingCaption
 import com.cursorforandroid.ui.media.ConversationMedia
 import com.cursorforandroid.ui.theme.CursorTheme
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.conflate
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.withContext
 
 /**
@@ -145,14 +150,13 @@ private fun AgentTranscript(graph: AppGraph, agentId: String, agent: Agent?, act
     val presented by presentations.collectAsStateWithLifecycle(initial)
     val conversation = presented.state
     val rows = presented.rows
-    val agentList by graph.agents.state.collectAsStateWithLifecycle()
-    val agentsById = remember(agentList.agents) { agentList.agents.associateBy { it.id } }
+    val linkedAgents = rememberLinkedAgents(graph.agents)
     val models by graph.catalog.models.collectAsStateWithLifecycle()
     val placement = SubagentPlacement.of(agent?.envType)
-    val controls = remember(actions, agentsById, presented.coordinatorMode, models, presented.subagents, conversation.subagentRuns, placement) {
+    val controls = remember(actions, linkedAgents, presented.coordinatorMode, models, presented.subagents, conversation.subagentRuns, placement) {
         TranscriptControls(
             onOpenAgent = actions::openAgent,
-            agentById = { id -> agentsById[id] },
+            agentById = linkedAgents::get,
             coordinatorMode = presented.coordinatorMode,
             models = models,
             subagents = presented.subagents,
@@ -219,6 +223,30 @@ private fun AgentTranscript(graph: AppGraph, agentId: String, agent: Agent?, act
             }
         }
     }
+}
+
+/**
+ * The list's rows of the agents the tab's transcript names — its workers, its subagents — by id: each id joins when a
+ * row first asks for it, and a row reading one follows that agent alone, not every change to the account's list.
+ */
+@Stable
+private class LinkedAgents(private val agents: AgentRepository, private val asked: MutableStateFlow<Set<String>>, private val rows: State<Map<String, Agent>>) {
+    fun get(id: String): Agent? {
+        val known = rows.value
+        if (id in known) return known[id]
+        if (id !in asked.value) asked.update { it + id }
+        return agents.agent(id)
+    }
+}
+
+@Composable
+private fun rememberLinkedAgents(agents: AgentRepository): LinkedAgents {
+    val asked = remember(agents) { MutableStateFlow<Set<String>>(emptySet()) }
+    val flow = remember(agents, asked) {
+        combine(asked, agents.state) { ids, s -> if (ids.isEmpty()) emptyMap() else s.agents.filter { it.id in ids }.associateBy { it.id } }.distinctUntilChanged()
+    }
+    val rows = flow.collectAsStateWithLifecycle(initialValue = emptyMap())
+    return remember(agents, asked, rows) { LinkedAgents(agents, asked, rows) }
 }
 
 /** The agent tab's second row, a line taller than a file's: the chat's name over where it stands. */

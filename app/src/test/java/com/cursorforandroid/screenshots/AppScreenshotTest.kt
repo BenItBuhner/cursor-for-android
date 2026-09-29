@@ -20,6 +20,8 @@ import androidx.compose.ui.test.hasScrollToNodeAction
 import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.isEnabled
+import androidx.compose.ui.test.isNotEnabled
 import androidx.compose.ui.test.isOn
 import androidx.compose.ui.test.isSelected
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
@@ -107,10 +109,17 @@ class AppScreenshotTest {
     /**
      * Robolectric has no Android Keystore, so the real [SecureKeyStore] would report itself unavailable and every
      * capture would carry the warning a device never shows. An ordinary private file stands in for the encrypted one.
+     * The agent list is organized on the main thread, so the sidebar and the Chats sheet never miss a state (see
+     * [AppGraph.agentListDispatcher]).
      */
     private fun appGraph(): AppGraph {
         val context = ApplicationProvider.getApplicationContext<Context>()
-        return AppGraph(context, SecureKeyStore(context) { context.getSharedPreferences("stand-in-secure", Context.MODE_PRIVATE) }, appVersion = SCREENSHOT_APP_VERSION)
+        return AppGraph(
+            context,
+            SecureKeyStore(context) { context.getSharedPreferences("stand-in-secure", Context.MODE_PRIVATE) },
+            appVersion = SCREENSHOT_APP_VERSION,
+            agentListDispatcher = Dispatchers.Main,
+        )
     }
 
     @OptIn(ExperimentalMaterial3Api::class)
@@ -135,8 +144,11 @@ class AppScreenshotTest {
      * first `waitForText` timed out. With the session already decided, the sign-in screen is composed on the first pass
      * (as it is in a process whose session was decided before its activity) and `restoreIfNeeded()` is a no-op.
      */
-    private fun launchApp(): AppGraph {
+    private fun launchApp(preferences: suspend (AppGraph) -> Unit = {}): AppGraph {
         val graph = appGraph()
+        // Preferences written once the app is composed reach it from the DataStore's worker thread, and a theme
+        // change arriving that way lays the window out off the main thread; seed them before the first frame.
+        runBlocking { preferences(graph) }
         runBlocking { graph.session.restoreIfNeeded() }
         compose.setContent { App(graph) }
         return graph
@@ -414,7 +426,7 @@ class AppScreenshotTest {
     fun deviceDrivesRepository() {
         val graph = launchApp()
         // The last launch on Cloud was against cursor-for-android: that is what the composer opens on.
-        runBlocking { graph.prefs.setComposerDefaults(repoUrl = "https://github.com/bennett/cursor-for-android", ref = "", modelId = null, params = emptyMap(), autoCreatePr = false) }
+        runBlocking { graph.prefs.setComposerDefaults(repoUrl = "https://github.com/bennett/cursor-for-android", ref = "", modelId = null, params = emptyMap()) }
         enterDemo(graph, repoChip = "cursor-for-android")
 
         compose.onNodeWithText("Cloud").performClick()
@@ -449,22 +461,78 @@ class AppScreenshotTest {
         compose.waitUntil(20_000) { compose.onAllNodes(hasContentDescription("New chat")).fetchSemanticsNodes().isNotEmpty() }
         waitForSidebarSections()
         compose.onNodeWithContentDescription("Filter and group chats").performClick()
-        // The Actions card leads the sheet: Read all, with the unread count under it.
-        waitForText("Read all")
-        waitForText("unread chats")
+        // Read all sits in the sheet's header, live while anything is unread; the sheet itself opens on Grouping.
+        awaitReadAll(enabled = true)
         capture("04_chats_filter")
 
-        compose.onNodeWithText("Read all").performClick()
-        // The row's own word is the UI's word that the write landed. Do not read DataStore from waitUntil:
-        // that blocks the main thread and the mark-all coroutine never finishes.
-        waitForText("Nothing unread")
-        compose.waitForIdle()
-        // Nothing left to read: the action stays listed, dimmed, so the sheet reads the same either way.
+        readAllAndSettle()
+        // Nothing left to read: the action stays in the header, dimmed, so the sheet reads the same either way.
         capture("58_chats_filter_all_read")
         Espresso.pressBack()
         compose.waitUntil(10_000) { compose.onAllNodesWithText("Grouping").fetchSemanticsNodes().isEmpty() }
         compose.waitForIdle()
         capture("28_sidebar_all_read")
+
+        // A changed preference brings Reset in beside it: the header's two actions, the dimmed one on the left.
+        runBlocking { graph.prefs.updateListPreferences { it.copy(showRuntime = true) } }
+        compose.onNodeWithContentDescription("Filter and group chats").performClick()
+        waitForText("Reset")
+        awaitReadAll(enabled = false)
+        capture("905_chats_filter_all_read_reset")
+    }
+
+    /** The Chats sheet in the light theme: Read all alone, then beside Reset, then with nothing left to read. */
+    @Test
+    fun chatsFilterReadAllLight() {
+        val graph = launchApp { it.prefs.setThemeMode(ThemeMode.Light) }
+        enterDemo(graph)
+        compose.onNodeWithContentDescription("Open sidebar").performClick()
+        compose.waitUntil(20_000) { compose.onAllNodes(hasContentDescription("New chat")).fetchSemanticsNodes().isNotEmpty() }
+        waitForSidebarSections()
+        compose.onNodeWithContentDescription("Filter and group chats").performClick()
+        awaitReadAll(enabled = true)
+        capture("900_chats_filter_light")
+
+        runBlocking { graph.prefs.updateListPreferences { it.copy(showRuntime = true) } }
+        waitForText("Reset")
+        compose.waitForIdle()
+        capture("901_chats_filter_light_reset")
+
+        readAllAndSettle()
+        capture("902_chats_filter_light_all_read")
+    }
+
+    /** The Chats sheet on a wide screen, with both header actions showing, before and after Read all. */
+    @Test
+    @Config(sdk = [35], qualifiers = "w1000dp-h720dp-night-320dpi")
+    fun chatsFilterReadAllWide() {
+        val graph = launchApp { graph -> graph.prefs.updateListPreferences { it.copy(showRuntime = true) } }
+        enterDemo(graph)
+        waitForSidebarSections()
+        compose.onNodeWithContentDescription("Filter and group chats").performClick()
+        waitForText("Reset")
+        awaitReadAll(enabled = true)
+        capture("903_chats_filter_wide")
+
+        readAllAndSettle()
+        capture("904_chats_filter_wide_all_read")
+    }
+
+    private val readAllControl: SemanticsMatcher = hasText("Read all") and hasClickAction()
+
+    private fun awaitReadAll(enabled: Boolean) {
+        val state = if (enabled) isEnabled() else isNotEnabled()
+        compose.waitUntil(30_000) { compose.onAllNodes(readAllControl and state).fetchSemanticsNodes().isNotEmpty() }
+        compose.waitForIdle()
+    }
+
+    /**
+     * Taps Read all and waits for the control to go off: the UI's word that the write landed. Do not read DataStore
+     * from waitUntil: that blocks the main thread and the mark-all coroutine never finishes.
+     */
+    private fun readAllAndSettle() {
+        compose.onNode(readAllControl).performClick()
+        awaitReadAll(enabled = false)
     }
 
     @Test

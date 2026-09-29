@@ -32,6 +32,7 @@ import com.cursorforandroid.domain.ProjectAppearance
 import com.cursorforandroid.domain.SteerOutcome
 import com.cursorforandroid.domain.WorkerMembership
 import com.cursorforandroid.domain.WorkerSpawnKind
+import com.cursorforandroid.util.AppClock
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -143,7 +144,7 @@ class ProjectRepositoryTest {
 
     private fun agents() = AgentRepository(session, prefs, AttachmentStore(context), cache = null, scope = scope, persistDelayMs = 10, capabilities = capabilities)
 
-    private fun projects(agents: AgentRepository) = ProjectRepository(session, agents, lineage, actions = lineage, store = lineage, scope = scope, pollIntervalMs = 60_000, capabilities = capabilities)
+    private fun projects(agents: AgentRepository, now: () -> Long = AppClock::now) = ProjectRepository(session, agents, lineage, actions = lineage, store = lineage, scope = scope, now = now, pollIntervalMs = 60_000, capabilities = capabilities)
 
     private suspend fun awaitUntil(timeoutMs: Long = 5_000, condition: suspend () -> Boolean) = withTimeout(timeoutMs) {
         while (!condition()) delay(10)
@@ -395,7 +396,8 @@ class ProjectRepositoryTest {
         api.addIdleAgent("bc-sub", "A subagent", "run-sub")
         val agents = agents()
         agents.refresh()
-        val projects = projects(agents)
+        var clock = 1_000_000L
+        val projects = projects(agents) { clock }
 
         // Started from here: the side chat hangs off the plain chat by its record's word; the chat stays one of the account's own.
         api.addIdleAgent("bc-side", "Pricing", "run-side")
@@ -421,7 +423,13 @@ class ProjectRepositoryTest {
         assertThat(agents.agent("bc-sub")?.parent).isEqualTo(AgentParent("bc-x", AgentParentKind.SUBAGENT))
         assertThat(agents.agent("bc-x")?.scope).isEqualTo(AgentScope.PRIMARY)
         lineage.children = mapOf("bc-x" to listOf(ComposerSnapshot("bc-s1", parent = AgentParent("bc-x", AgentParentKind.SIDE_CHAT))))
+        // Read moments ago: the panel's next open answers from the rows and asks nothing.
+        lineage.calls.clear()
+        assertThat(projects.refreshChildren("bc-x")).isEqualTo(VmRead.Loaded(3))
+        assertThat(lineage.calls).isEmpty()
+        clock += ProjectRepository.CHILDREN_FRESH_MS
         assertThat(projects.refreshChildren("bc-x")).isEqualTo(VmRead.Loaded(1))
+        assertThat(lineage.calls).containsExactly("children:bc-x")
         // bc-s2's own record named the parent: an answer that no longer lists it takes nothing back from the record
         // (the desktop keeps a header's subagentParentId until the record changes); its record saying otherwise does.
         assertThat(agents.agent("bc-s2")?.parent).isEqualTo(AgentParent("bc-x", AgentParentKind.SIDE_CHAT))
@@ -432,6 +440,7 @@ class ProjectRepositoryTest {
 
         // A refusal is a named failure, one that says the method is gone marked as such.
         lineage.failing = ConnectRpcException(404, "unimplemented", "gone")
+        clock += ProjectRepository.CHILDREN_FRESH_MS
         val failed = projects.refreshChildren("bc-x")
         assertThat(failed).isInstanceOf(VmRead.Failed::class.java)
         assertThat((failed as VmRead.Failed).endpointChanged).isTrue()

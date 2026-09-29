@@ -58,6 +58,19 @@ internal class OpenStretches(saved: Map<String, Boolean> = emptyMap()) {
         }
     }
 
+    /**
+     * [rows] with the steps of the open stretches listed after them (see [StretchSteps.list]). With nothing toggled
+     * open, only a lone thought being written can list anything ([of]), so without one the rows are listed as they are,
+     * no stretch asked.
+     */
+    fun listed(rows: List<TranscriptRow>, previous: Map<String, TranscriptRow.Step>): StretchSteps.Listed {
+        if (toggled.values.none { it } && rows.none(::writesThought)) return StretchSteps.Listed(rows, emptyMap())
+        return StretchSteps.list(rows, ::of, previous)
+    }
+
+    private fun writesThought(row: TranscriptRow): Boolean =
+        ((row as? TranscriptRow.Stretch)?.entries?.singleOrNull() as? TranscriptRow.Entry.Thought)?.block?.isStreaming == true
+
     /** Whether [stretchKey] reads as open: closed as soon as it is closing, while its steps are still fading. */
     fun isOpen(stretchKey: String): Boolean = toggled[stretchKey] == true && leaving != stretchKey
 

@@ -130,7 +130,8 @@ private enum class MenuPage { Root, Skills, McpServers }
 fun ComposerPlusMenu(
     expanded: Boolean,
     onDismiss: () -> Unit,
-    prompt: String,
+    /** The prompt as it stands, read only while a page that shows it is up, so typing leaves a closed menu alone. */
+    prompt: () -> String,
     onPromptChange: (String) -> Unit,
     actions: ComposerMenuActions,
     /** What the Skills page lists: the composer's `/` catalog, the same one its popover completes from. */
@@ -152,7 +153,7 @@ fun ComposerPlusMenu(
     var editingId by rememberSaveable { mutableStateOf<String?>(null) }
 
     fun toggleCommand(name: String) {
-        onPromptChange(SlashCommands.toggle(prompt, name))
+        onPromptChange(SlashCommands.toggle(prompt(), name))
         onDismiss()
     }
 
@@ -181,7 +182,7 @@ fun ComposerPlusMenu(
                         onMcpServers = { page = MenuPage.McpServers },
                     )
                     MenuPage.Skills -> SkillsPage(
-                        prompt = prompt,
+                        prompt = prompt(),
                         onSearchFocused = { searching = true },
                         catalog = commands,
                         recent = actions.recentSkills,

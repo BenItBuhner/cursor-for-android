@@ -68,7 +68,7 @@ class MachineLaunchWireTest {
         graph = AppGraph(ApplicationProvider.getApplicationContext<Context>(), real = CursorBackend(api, FakeRunStreamer(), isDemo = false))
         graph.session.signIn("key_test").getOrThrow()
         // Robolectric's preferences and files outlive a test: nothing of the one before is this one's last launch or draft.
-        graph.prefs.setComposerDefaults(repoUrl = null, ref = null, modelId = null, params = emptyMap(), autoCreatePr = false)
+        graph.prefs.setComposerDefaults(repoUrl = null, ref = null, modelId = null, params = emptyMap())
         graph.drafts.clear()
     }
 
@@ -191,7 +191,7 @@ class MachineLaunchWireTest {
     @Test
     fun `a machine that is not connected is refused in the server's words`() {
         runBlocking {
-            graph.prefs.setComposerDefaults(repoUrl = "https://github.com/acme/web", ref = "", modelId = null, params = emptyMap(), autoCreatePr = false, env = DeviceTarget.machine("studio"))
+            graph.prefs.setComposerDefaults(repoUrl = "https://github.com/acme/web", ref = "", modelId = null, params = emptyMap(), env = DeviceTarget.machine("studio"))
         }
         val vm = composer()
         assertThat(vm.state.value.selectedDevice).isEqualTo(DeviceTarget.machine("studio"))

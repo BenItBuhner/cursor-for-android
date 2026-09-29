@@ -8,11 +8,15 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.staticCompositionLocalOf
-import com.cursorforandroid.domain.TimelineItem
 import com.cursorforandroid.domain.UserMessage
+import com.cursorforandroid.ui.components.LocalSendMotion
+import com.cursorforandroid.ui.components.SendMotion
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
 /**
@@ -27,10 +31,15 @@ import kotlinx.coroutines.launch
  * its fade under way (or still sending) hands it to the new bubble saying the same words, which carries on from the
  * value it had. The fade runs here ([run], in the screen's scope), so neither a row scrolled off and back nor a row
  * recomposed starts it again, and a bubble with none is at full strength. With animations off there is no fade.
+ *
+ * A bubble the send's copy is still flying into is not drawn, so a fade begun under it would be spent unseen: the
+ * account often files a message within the flight's third of a second, and the copy then landed on a bubble at full
+ * strength. A fade waits at the sending look until no copy is on its way into its bubble (see [run]).
  */
 @Stable
 class SentFades(private val animatorsEnabled: () -> Boolean = ValueAnimator::areAnimatorsEnabled) {
-    private class Fade(val words: String) {
+    /** [id] is the bubble drawing the fade now: the sending bubble's, then the server's copy's once it has taken over. */
+    private class Fade(var id: String, val words: String) {
         val alpha = Animatable(PendingMessageAlpha)
     }
 
@@ -39,7 +48,7 @@ class SentFades(private val animatorsEnabled: () -> Boolean = ValueAnimator::are
     private val started = Channel<Fade>(Channel.UNLIMITED)
     private var sending: Map<String, String> = emptyMap()
     private var known: Set<String> = emptySet()
-    private var seen: List<TimelineItem>? = null
+    private var seen: List<UserMessage>? = null
 
     /**
      * [message]'s bubble's opacity: its sending look, under its fade, or whole. Read in the bubble's composition, so
@@ -59,13 +68,13 @@ class SentFades(private val animatorsEnabled: () -> Boolean = ValueAnimator::are
         // New since the last look, and saying what a sending bubble said, or one whose fade is under way: its copy.
         val words = words(message.text)
         sending.entries.firstOrNull { it.value == words }?.let { (was, _) -> sending = sending - was; return start(id, words) }
-        return fades.values.firstOrNull { it.words == words }?.also { fades[id] = it }
+        return fades.values.firstOrNull { it.words == words }?.also { fades[id] = it; it.id = id }
     }
 
     private fun start(id: String, words: String): Fade? {
         sending = sending - id
         if (!animatorsEnabled()) return null
-        return Fade(words).also {
+        return Fade(id, words).also {
             fades[id] = it
             started.trySend(it)
         }
@@ -75,13 +84,13 @@ class SentFades(private val animatorsEnabled: () -> Boolean = ValueAnimator::are
     fun fading(id: String): Boolean = id in fades
 
     /**
-     * The transcript as it is shown now. Called in the composition that shows it, before its rows compose, so a bubble
-     * composed in that frame already has its fade; a list looked at before is let be.
+     * The transcript's user messages as they are shown now (see [PresentedTranscript.userMessages]). Called in the
+     * composition that shows them, before its rows compose, so a bubble composed in that frame already has its fade; a
+     * list looked at before is let be.
      */
-    fun look(items: List<TimelineItem>) {
-        if (items === seen) return
-        seen = items
-        val messages = items.filterIsInstance<UserMessage>()
+    fun look(messages: List<UserMessage>) {
+        if (messages === seen) return
+        seen = messages
         val byId = messages.associateBy { it.id }
         // Bubbles new to this look, sent: where a message that left under one id reappears under the server's.
         val fresh = messages.filterTo(ArrayList()) { !it.isPending && it.id !in known }
@@ -93,7 +102,7 @@ class SentFades(private val animatorsEnabled: () -> Boolean = ValueAnimator::are
         for ((id, fade) in fades.entries.toList()) {
             if (id in byId) continue
             fades.remove(id)
-            successor(id, fade.words)?.let { fades[it.id] = fade }
+            successor(id, fade.words)?.let { fades[it.id] = fade; fade.id = it.id }
         }
         // A bubble that was sending and is not: its fade starts, on it or on the copy that took its place — unless that
         // bubble, composed first, has started it already.
@@ -106,10 +115,14 @@ class SentFades(private val animatorsEnabled: () -> Boolean = ValueAnimator::are
         known = byId.keys
     }
 
-    /** Runs each fade [look] starts, in the caller's scope: the screen's, which outlives any one row. */
-    suspend fun run() = coroutineScope {
+    /**
+     * Runs each fade [look] starts, in the caller's scope: the screen's, which outlives any one row. Each waits at the
+     * sending look while one of [motion]'s copies is still on its way into its bubble.
+     */
+    suspend fun run(motion: () -> SendMotion? = { null }) = coroutineScope {
         for (fade in started) {
             launch {
+                snapshotFlow { motion()?.landingOn(fade.id, fade.words) == true }.first { !it }
                 fade.alpha.animateTo(1f, tween(SentFadeMillis))
                 fades.values.removeAll { it === fade }
             }
@@ -123,9 +136,14 @@ class SentFades(private val animatorsEnabled: () -> Boolean = ValueAnimator::are
 }
 
 @Composable
-fun rememberSentFades(key: Any, animatorsEnabled: () -> Boolean = ValueAnimator::areAnimatorsEnabled): SentFades {
+fun rememberSentFades(
+    key: Any,
+    animatorsEnabled: () -> Boolean = ValueAnimator::areAnimatorsEnabled,
+    motion: SendMotion? = LocalSendMotion.current,
+): SentFades {
     val fades = remember(key) { SentFades(animatorsEnabled) }
-    LaunchedEffect(fades) { fades.run() }
+    val currentMotion = rememberUpdatedState(motion)
+    LaunchedEffect(fades) { fades.run { currentMotion.value } }
     return fades
 }
 

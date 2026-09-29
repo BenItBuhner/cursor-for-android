@@ -125,7 +125,7 @@ class CatchUpIndicatorTest {
     }
 
     @Test
-    fun `an armed release springs it to the threshold and holds it there while the pull is answered, then home, and only then is the answer told`() {
+    fun `an armed release springs it to the threshold and holds it there while the pull is answered, then home, telling nothing of an answer`() {
         screen()
         pull.stretch(pull.thresholdPx * 1.6f)
         frame()
@@ -145,7 +145,23 @@ class CatchUpIndicatorTest {
         settle()
         assertThat(pull.distanceFraction).isEqualTo(0f)
         assertThat(shot().drawn(14f, 46f, 74f)).containsExactly(false, false, false).inOrder()
-        assertThat(settled).containsExactly(CatchUpStatus.Done(newMessages = 2, changed = true))
+        assertThat(settled).isEmpty()
+    }
+
+    @Test
+    fun `a failure is told only once the indicator is home`() {
+        screen()
+        pull.stretch(pull.thresholdPx * 1.6f)
+        frame()
+        assertThat(pull.release()).isTrue()
+        status.value = CatchUpStatus.Checking
+        settle()
+        status.value = CatchUpStatus.Failed("Cursor couldn't be reached. Check your connection.")
+        frame()
+        assertThat(settled).isEmpty()
+        settle()
+        assertThat(pull.distanceFraction).isEqualTo(0f)
+        assertThat(settled).containsExactly(CatchUpStatus.Failed("Cursor couldn't be reached. Check your connection."))
     }
 
     @Test
@@ -162,7 +178,7 @@ class CatchUpIndicatorTest {
     }
 
     @Test
-    fun `a pause is told once the indicator is home, and the catch-up after it rises by itself`() {
+    fun `a pause is spun through at the threshold with nothing told, and the catch-up after it carries on there`() {
         AppClock.nowMillis = { 1_000_000L }
         try {
             screen()
@@ -171,9 +187,9 @@ class CatchUpIndicatorTest {
             assertThat(pull.release()).isTrue()
             status.value = CatchUpStatus.Waiting(untilMillis = 1_007_000L)
             settle()
-            assertThat(pull.distanceFraction).isEqualTo(0f)
-            assertThat(settled).containsExactly(CatchUpStatus.Waiting(untilMillis = 1_007_000L))
-            assertThat(settled.single().word()).isEqualTo("Cursor asked for a pause · catching up in 7 s")
+            assertThat(pull.distanceFraction).isWithin(0.01f).of(1f)
+            assertThat(settled).isEmpty()
+            assertThat(CatchUpStatus.Waiting(untilMillis = 1_007_000L).word()).isNull()
 
             status.value = CatchUpStatus.Checking
             settle()
@@ -201,10 +217,14 @@ class CatchUpIndicatorTest {
     }
 
     @Test
-    fun `an answer already there when the screen comes back is told once it is home`() {
-        status.value = CatchUpStatus.Done(newMessages = 0, changed = false)
+    fun `a failure already there when the screen comes back is told once it is home, and an answer is not`() {
+        status.value = CatchUpStatus.Failed("stale")
         screen()
-        assertThat(settled).containsExactly(CatchUpStatus.Done(newMessages = 0, changed = false))
+        assertThat(settled).containsExactly(CatchUpStatus.Failed("stale"))
+        settled.clear()
+        status.value = CatchUpStatus.Done(newMessages = 0, changed = false)
+        settle()
+        assertThat(settled).isEmpty()
     }
 
     private fun composeView(): View {

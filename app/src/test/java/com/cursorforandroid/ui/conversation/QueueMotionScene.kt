@@ -105,11 +105,13 @@ class QueueMotionScene(private val compose: AndroidComposeTestRule<ActivityScena
     /** The screen's fades of sent bubbles, when [show] was asked for them. */
     var sentFades: SentFades? = null
         private set
+    /** Whether the fades wait out the send's flight, as the screen's do; off, one runs under the copy as it once did. */
+    var sentFadesSeeFlights = true
 
     @OptIn(ExperimentalMaterial3Api::class)
     @Composable
     fun Content(motion: SendMotion, withSentFades: Boolean = false) {
-        val fades = if (withSentFades) rememberSentFades("queue-scene", animatorsEnabled = { true }) else null
+        val fades = if (withSentFades) rememberSentFades("queue-scene", animatorsEnabled = { true }, motion = motion.takeIf { sentFadesSeeFlights }) else null
         fades?.look(messages.toList())
         sentFades = fades
         CursorTheme(mode = ThemeMode.Dark) {

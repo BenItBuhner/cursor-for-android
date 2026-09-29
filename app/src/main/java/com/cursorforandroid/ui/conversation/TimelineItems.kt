@@ -1,7 +1,5 @@
 package com.cursorforandroid.ui.conversation
 
-import android.os.Build
-import android.widget.Toast
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.animateFloatAsState
@@ -50,7 +48,6 @@ import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.layout
 import androidx.compose.ui.platform.LocalClipboardManager
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.testTag
@@ -402,14 +399,11 @@ internal fun ContextMenuArea(text: String, copyLabel: String, modifier: Modifier
  */
 @Composable
 internal fun MessageMenu(text: String, expanded: Boolean, onDismiss: () -> Unit, at: IntOffset? = null, copyLabel: String = "Copy message") {
-    val context = LocalContext.current
     val clipboard = LocalClipboardManager.current
     CursorMenu(expanded = expanded, onDismissRequest = onDismiss, at = at) {
         CursorMenuItem(copyLabel, CursorIcons.Copy) {
             onDismiss()
             clipboard.setText(AnnotatedString(text))
-            // Android 13+ confirms clipboard writes with its own overlay; earlier versions show nothing.
-            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) Toast.makeText(context, "Copied", Toast.LENGTH_SHORT).show()
         }
     }
 }

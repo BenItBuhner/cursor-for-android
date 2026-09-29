@@ -89,7 +89,7 @@ class MachineStartWireTest {
             repositoryBranchesApi = ConnectRepositoryBranchesApi(rpc, tokens),
         )
         graph.session.signIn("key_test").getOrThrow()
-        graph.prefs.setComposerDefaults(repoUrl = null, ref = null, modelId = null, params = emptyMap(), autoCreatePr = false)
+        graph.prefs.setComposerDefaults(repoUrl = null, ref = null, modelId = null, params = emptyMap())
         graph.drafts.clear()
         graph.extendedMode.acknowledge()
         check(graph.extendedMode.enable()) { "Extended mode could not be turned on." }

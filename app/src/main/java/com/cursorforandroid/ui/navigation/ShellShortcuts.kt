@@ -16,6 +16,9 @@ import com.cursorforandroid.domain.PaletteEntry
 import com.cursorforandroid.domain.TranscriptHit
 import com.cursorforandroid.ui.agents.AgentListUiState
 import com.cursorforandroid.ui.agents.AgentRowGlyph
+import com.cursorforandroid.ui.agents.SidebarGroup
+import com.cursorforandroid.ui.agents.SidebarShortLists
+import com.cursorforandroid.ui.agents.sidebarGroups
 import com.cursorforandroid.ui.shortcuts.ChatShortcuts
 import com.cursorforandroid.ui.shortcuts.CommandPalette
 import com.cursorforandroid.ui.shortcuts.PaletteMode
@@ -102,6 +105,13 @@ internal class ShellShortcuts {
         /** What the switcher and the search find: every chat the list has, archived ones found by search alone. */
         fun entries(list: AgentListUiState, archived: Boolean): List<PaletteEntry> =
             list.allAgents.asSequence().filter { archived || !it.isArchived }.map(PaletteEntry::of).sortedByDescending { it.updatedAtMillis }.toList()
+
+        /**
+         * What Ctrl+1 … Ctrl+0 open for a sidebar that is not on screen: the rows it would number on opening, with the
+         * chats in [expandedParents] listing their nested chats and the chat on top, [current], picked out.
+         */
+        fun railRows(list: AgentListUiState, expandedParents: List<String>, current: String?, shortLists: SidebarShortLists): List<AgentRow> =
+            SidebarGroup.numbered(sidebarGroups(list, list.query, expandedParents, current, shortLists))
     }
 }
 

@@ -43,20 +43,31 @@ data class AgentRow(
     /** This row's children, their children and so on, depth first — what a collapsed parent stands for. */
     fun descendants(): List<AgentRow> = children.flatMap { listOf(it) + it.descendants() }
 
+    // Built once from the children's own counts, so a read in composition never walks the subtree. They must stay
+    // functions of the constructor's values alone: equals leaves them out.
+    private val descendantCount: Int = children.size + children.sumOf { it.descendantCount }
+
     /** What the Project's row counts: the chats loaded under it, or the account's own count when that is more. */
-    val shownCount: Int get() = maxOf(descendants().size, memberCount ?: 0)
+    val shownCount: Int = maxOf(descendantCount, memberCount ?: 0)
 
     /** A turn is going somewhere in the subtree: the working glyph on the collapsed parent's count. */
-    val hasRunningDescendant: Boolean get() = children.any { it.indicator == AgentIndicator.Running || it.hasRunningDescendant }
+    val hasRunningDescendant: Boolean = children.any { it.indicator == AgentIndicator.Running || it.hasRunningDescendant }
 
     /** The chats in this subtree with a turn going, this one included: what a Project's shortcut says is working. */
-    val workingCount: Int get() = (if (indicator == AgentIndicator.Running) 1 else 0) + children.sumOf { it.workingCount }
+    val workingCount: Int = (if (indicator == AgentIndicator.Running) 1 else 0) + children.sumOf { it.workingCount }
 }
 
 data class AgentSection(
     val key: String,
     val title: String,
     val rows: List<AgentRow>,
+)
+
+/** One organizer pass, including list-wide badges that would otherwise require allocating another row per agent. */
+data class OrganizedAgentList(
+    val sections: List<AgentSection>,
+    val unreadCount: Int,
+    val runningCount: Int,
 )
 
 /** One line of the sidebar's tree: the row and how many parents it sits under (0 for a chat of its own). */
@@ -271,10 +282,74 @@ object AgentListOrganizer {
         knownRoots: Collection<KnownRoot> = emptyList(),
         /** The account's member count per Project, from its membership answers, for the rows' counts. */
         memberCounts: Map<String, Int> = emptyMap(),
-    ): List<AgentSection> {
+    ): List<AgentSection> = organizeInternal(
+        agents = agents,
+        prefs = prefs,
+        local = local,
+        query = query,
+        nowMillis = nowMillis,
+        zone = zone,
+        unavailableProjects = unavailableProjects,
+        knownRoots = knownRoots,
+        memberCounts = memberCounts,
+        countAgents = null,
+    ).sections
+
+    /**
+     * [organize] plus the all-agent unread and running badge counts. [countAgents] can include rows held out of the
+     * visible list; counting them here avoids the former second `map(toRow)` and its N temporary [AgentRow]s.
+     */
+    fun organizeWithCounts(
+        agents: List<Agent>,
+        countAgents: List<Agent>,
+        prefs: ListPreferences,
+        local: LocalAgentState,
+        query: String = "",
+        nowMillis: Long = AppClock.now(),
+        zone: ZoneId = ZoneId.systemDefault(),
+        unavailableProjects: Set<String> = emptySet(),
+        knownRoots: Collection<KnownRoot> = emptyList(),
+        memberCounts: Map<String, Int> = emptyMap(),
+    ): OrganizedAgentList = organizeInternal(
+        agents = agents,
+        prefs = prefs,
+        local = local,
+        query = query,
+        nowMillis = nowMillis,
+        zone = zone,
+        unavailableProjects = unavailableProjects,
+        knownRoots = knownRoots,
+        memberCounts = memberCounts,
+        countAgents = countAgents,
+    )
+
+    private fun organizeInternal(
+        agents: List<Agent>,
+        prefs: ListPreferences,
+        local: LocalAgentState,
+        query: String,
+        nowMillis: Long,
+        zone: ZoneId,
+        unavailableProjects: Set<String>,
+        knownRoots: Collection<KnownRoot>,
+        memberCounts: Map<String, Int>,
+        countAgents: List<Agent>?,
+    ): OrganizedAgentList {
+        var unreadCount = 0
+        var runningCount = 0
+        fun countAgent(agent: Agent) {
+            if (isUnread(agent, local, nowMillis)) unreadCount++
+            if (indicatorFor(agent, local, nowMillis) == AgentIndicator.Running) runningCount++
+        }
+        fun countRow(row: AgentRow) {
+            if (row.isUnread) unreadCount++
+            if (row.indicator == AgentIndicator.Running) runningCount++
+        }
         val known = agents.mapTo(HashSet(agents.size)) { it.id }
         val standIns = knownRoots.filter { it.id !in known && it.id.isNotBlank() }.map { rootStandIn(it, nowMillis) }
-        val rows = sort((agents + standIns).map { toRow(it, local, nowMillis) }, prefs.sortOrder)
+        val agentRows = agents.map { agent -> toRow(agent, local, nowMillis).also { if (countAgents === agents) countRow(it) } }
+        if (countAgents != null && countAgents !== agents) countAgents.forEach(::countAgent)
+        val rows = sort(agentRows + standIns.map { toRow(it, local, nowMillis) }, prefs.sortOrder)
         // PJr / mQa: children and top level, by the parent link alone (ZOl: a link closing a loop is no link).
         val links = AgentsWindowList.parentLinks(rows.map { it.agent })
         val (children, topLevel) = rows.partition { it.agent.id in links }
@@ -324,7 +399,16 @@ object AgentListOrganizer {
                     if (list.isEmpty()) null else AgentSection("status:${indicator.name}", indicator.title(), list)
                 }
         }
-        return sections
+        return OrganizedAgentList(sections, unreadCount, runningCount)
+    }
+
+    /** Applies only the find-in-rail narrowing to sections already organized without a query. */
+    fun search(sections: List<AgentSection>, query: String): List<AgentSection> {
+        if (query.isBlank()) return sections
+        return sections.mapNotNull { section ->
+            val rows = section.rows.mapNotNull { it.matching(query) }
+            if (rows.isEmpty()) null else section.copy(rows = rows)
+        }
     }
 
     /**

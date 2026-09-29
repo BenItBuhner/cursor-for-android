@@ -5,11 +5,11 @@ import com.cursorforandroid.data.api.dto.AgentDto
 import com.cursorforandroid.data.api.dto.RunDto
 import com.cursorforandroid.data.api.dto.V0AgentDto
 import com.cursorforandroid.data.api.dto.V0ConversationMessageDto
-import com.cursorforandroid.data.faults.Meter.Companion.mb
 import com.cursorforandroid.data.repo.ConversationRepository
 import com.cursorforandroid.domain.ActivityGroup
 import com.cursorforandroid.domain.TranscriptEngine
 import com.google.common.truth.Truth.assertThat
+import com.google.common.truth.Truth.assertWithMessage
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.builtins.serializer
 import kotlinx.serialization.json.Json
@@ -18,7 +18,10 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
 import org.junit.runner.RunWith
+import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
+import android.os.Looper
+import java.lang.ref.WeakReference
 import java.time.Instant
 
 /**
@@ -58,6 +61,21 @@ class TrimMemoryTest {
         server.transcripts[id] = listOf(V0ConversationMessageDto("$runId-u", "user_message", "Read the files."), V0ConversationMessageDto("$runId-a", "assistant_message", "Done."))
     }
 
+    /** The chat's activity groups as its state holds them now, watched without holding them. */
+    private fun turnsOf(conversations: ConversationRepository, id: String): List<WeakReference<ActivityGroup>> =
+        conversations.state(id).value.items.filterIsInstance<ActivityGroup>().map(::WeakReference)
+
+    /** Until every referent has been collected, asking the collector again; fails naming how many are still reachable. */
+    private fun awaitCollected(refs: List<WeakReference<*>>, timeoutMs: Long = 10_000L) {
+        val until = System.nanoTime() + timeoutMs * 1_000_000
+        val looper = Looper.getMainLooper()
+        while (refs.any { it.get() != null } && System.nanoTime() < until) {
+            System.gc()
+            shadowOf(looper).idle()
+        }
+        assertWithMessage("activity groups of trimmed chats still reachable").that(refs.count { it.get() != null }).isEqualTo(0)
+    }
+
     private fun chats(conversations: ConversationRepository): Int = Regex("\\bchats=(\\d+)").find(conversations.stats())!!.groupValues[1].toInt()
 
     @Test
@@ -82,7 +100,10 @@ class TrimMemoryTest {
         rig.awaitUntil(10_000) { !conversations.state(ids[2]).value.isLoading }
         rig.awaitUntil(10_000) { conversations.stats().contains("loading=0") }
         assertThat(chats(conversations)).isEqualTo(24)
-        val before = Meter.retainedHeap()
+        // What each chat holds of its turn — the activity carrying the files it read — watched weakly: a chat let go
+        // must leave nothing reachable, whatever else the JVM is doing with its heap meanwhile.
+        val turns = ids.associateWith { id -> turnsOf(conversations, id) }
+        assertThat(turns.values.map { it.size }).doesNotContain(0)
 
         assertThat(conversations.trimMemory(hard = false)).isEqualTo(24 - 3 - KEPT_ON_TRIM)
         assertThat(chats(conversations)).isEqualTo(3 + KEPT_ON_TRIM)
@@ -92,10 +113,12 @@ class TrimMemoryTest {
         assertThat(conversations.isHeld(ids[1])).isTrue()
         assertThat(conversations.isAttached(ids[2])).isTrue()
         rig.hub.trimMemory()
-        val after = Meter.retainedHeap()
-        println("TRIM retained before=${before.mb} after=${after.mb} · ${conversations.stats()} · ${rig.hub.stats()}")
-        // Twenty-one chats let go, each holding its turn's results (some 120 KB of them as kept): megabytes back.
-        assertThat(before - after).isAtLeast(3L shl 19)
+        println("TRIM · ${conversations.stats()} · ${rig.hub.stats()}")
+        // Twenty-one chats let go, each holding its turn's results (some 120 KB of them as kept): all of it collectable.
+        val letGo = ids.drop(3)
+        awaitCollected(letGo.flatMap { turns.getValue(it) })
+        // The held and the shown keep theirs in memory.
+        ids.take(3).forEach { id -> assertThat(conversations.state(id).value.items.any { it is ActivityGroup }).isTrue() }
 
         // A chat let go opens again with its turn whole — from the disk, with no replay of its run.
         val replaysBefore = server.seen.count { it.route == FaultServer.Route.Stream }

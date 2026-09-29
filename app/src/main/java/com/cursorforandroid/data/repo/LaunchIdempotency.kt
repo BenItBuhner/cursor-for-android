@@ -34,7 +34,8 @@ object LaunchIdempotency {
         field(request.modelId)
         field(request.modelParams.size.toString())
         request.modelParams.forEach { field(it.id); field(it.value) }
-        field(request.autoCreatePr.toString())
+        // Where the auto-create PR switch was hashed; kept as its "off" so drafts written before keep their chat id.
+        field("false")
         field(request.planMode.toString())
         field(request.name)
         field(request.env.type.name)

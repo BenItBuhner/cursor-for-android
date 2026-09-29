@@ -57,9 +57,9 @@ import java.io.File
 /**
  * The pull to catch up at the bottom of a transcript, over the follow-up composer: the sidebar's pull-to-refresh
  * indicator turned to rise out of the transcript's bottom edge. Partway up with the finger, its arrow filling; past
- * the threshold, the arrow whole; let go and spinning at the threshold while the chat is caught up. Then home, and
- * the word in a toast as the screen gives it (see ConversationScreen): the server's pause being waited out, "1 new"
- * with the turn started elsewhere on screen, "Up to date", and a failure in the words the app has for it.
+ * the threshold, the arrow whole; let go and spinning at the threshold while the chat is caught up, through any pause
+ * the server asked for. Then home: the turn started elsewhere simply on screen, nothing said of an answer, and only a
+ * failure in a toast, in the words the app has for it (see ConversationScreen).
  */
 @RunWith(AndroidJUnit4::class)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
@@ -175,7 +175,7 @@ class CatchUpScreenshotTest {
         status.value = CatchUpStatus.Waiting(now + 7_000L)
         frame()
         capture("443_catch_up_waiting")
-        compose.onNodeWithText("Cursor asked for a pause · catching up in 7 s").assertExists()
+        compose.onNodeWithText("Cursor asked for a pause", substring = true).assertDoesNotExist()
 
         status.value = CatchUpStatus.Checking
         frame()
@@ -183,13 +183,13 @@ class CatchUpScreenshotTest {
         status.value = CatchUpStatus.Done(newMessages = 1, changed = true)
         frame()
         capture("444_catch_up_new")
-        compose.onNodeWithText("1 new").assertExists()
+        compose.onNodeWithText("1 new").assertDoesNotExist()
 
         items = shown
         status.value = CatchUpStatus.Done(newMessages = 0, changed = false)
         frame()
         capture("445_catch_up_up_to_date")
-        compose.onNodeWithText("Up to date").assertExists()
+        compose.onNodeWithText("Up to date").assertDoesNotExist()
 
         status.value = CatchUpStatus.Failed("Cursor couldn't be reached. Check your connection.")
         frame()

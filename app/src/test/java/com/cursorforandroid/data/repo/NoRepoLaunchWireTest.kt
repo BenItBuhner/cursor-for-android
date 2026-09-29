@@ -77,7 +77,6 @@ class NoRepoLaunchWireTest {
         ref = "main",
         modelId = "claude-fable-5-1",
         modelParams = listOf(ModelParam("thinking", "max")),
-        autoCreatePr = true,
         planMode = false,
     )
 
@@ -131,8 +130,8 @@ class NoRepoLaunchWireTest {
 
         val create = contract.creates.single()
         // Exactly the documented body: the prompt, the client-minted id, the model — and `repos: []` with no `env`,
-        // "Omit both repos and env (or pass repos: []) to start a no-repo agent". No branch, no autoCreatePR: neither
-        // has a repository to refer to.
+        // "Omit both repos and env (or pass repos: []) to start a no-repo agent". No branch: there is no repository
+        // for one to refer to.
         assertThat(create.path).isEqualTo("/v1/agents")
         assertThat(create.body).isEqualTo(
             """{"prompt":{"text":"Build a small calculator"},"agentId":"$id",""" +
@@ -152,13 +151,13 @@ class NoRepoLaunchWireTest {
 
     @Test
     fun `a repository launch is unchanged on the wire`() = runBlocking<Unit> {
-        val withRepo = fromScratch.copy(repoUrl = "https://github.com/acme/app", ref = "main", autoCreatePr = true)
+        val withRepo = fromScratch.copy(repoUrl = "https://github.com/acme/app", ref = "main")
         val id = launchAndSettle(withRepo)
 
         assertThat(contract.creates.single().body).isEqualTo(
             """{"prompt":{"text":"Build a small calculator"},"agentId":"$id",""" +
                 """"model":{"id":"claude-fable-5-1","params":[{"id":"thinking","value":"max"}]},""" +
-                """"repos":[{"url":"https://github.com/acme/app","startingRef":"main"}],"autoCreatePR":true}""",
+                """"repos":[{"url":"https://github.com/acme/app","startingRef":"main"}]}""",
         )
         assertThat(failures).isEmpty()
         assertThat(agents.agent(id)!!.repoUrl).isEqualTo("https://github.com/acme/app")
@@ -392,7 +391,8 @@ class DocumentedCloudAgentsServer : Dispatcher() {
             // Agent.repos: "Empty for no-repo agents."
             putJsonArray("repos") { repos?.forEach { add(it) } }
             put("workOnCurrentBranch", false)
-            put("autoCreatePR", (json["autoCreatePR"] as? JsonPrimitive)?.content == "true")
+            // The API's default, since nothing asks otherwise; the app reads past it.
+            put("autoCreatePR", false)
             put("url", "https://cursor.com/agents/$id")
             put("createdAt", NOW)
             put("updatedAt", NOW)

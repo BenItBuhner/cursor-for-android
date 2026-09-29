@@ -4,8 +4,10 @@ import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.cursorforandroid.AppGraph
+import com.cursorforandroid.data.api.ComposerSnapshot
 import com.cursorforandroid.data.api.CursorApi
 import com.cursorforandroid.data.api.CursorApiException
+import com.cursorforandroid.data.api.CursorJson
 import com.cursorforandroid.data.api.dto.CreateAgentRequestDto
 import com.cursorforandroid.data.api.dto.CreateAgentResponseDto
 import com.cursorforandroid.data.api.dto.ListModelsResponseDto
@@ -19,19 +21,23 @@ import com.cursorforandroid.data.repo.CursorBackend
 import com.cursorforandroid.data.repo.LaunchIdempotency
 import com.cursorforandroid.data.repo.LaunchRequest
 import com.cursorforandroid.data.repo.NewChatDrafts
+import com.cursorforandroid.domain.AccountModel
 import com.cursorforandroid.domain.AgentMode
 import com.cursorforandroid.domain.DeviceTarget
 import com.cursorforandroid.domain.ModelChoice
 import com.cursorforandroid.domain.PromptImage
 import com.cursorforandroid.domain.RunStatus
 import com.cursorforandroid.domain.UserMessage
+import com.cursorforandroid.fixtures.LiveModelCatalog
 import com.cursorforandroid.ui.agents.DraftRow
 import com.cursorforandroid.ui.components.ModePills
 import com.cursorforandroid.ui.components.PendingAttachment
+import com.cursorforandroid.ui.conversation.ConversationViewModel
 import com.cursorforandroid.util.AppClock
 import com.cursorforandroid.util.HeldDispatcher
 import com.cursorforandroid.util.MainDispatcherRule
 import com.google.common.truth.Truth.assertThat
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
@@ -45,6 +51,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * The composer remembers what the last agent was launched with, opens the chat it launches before the server has
@@ -72,6 +79,10 @@ class NewAgentViewModelTest {
     @Volatile private var announcedModels: List<ModelListItemDto> = emptyList()
     @Volatile private var connectedRepos: List<String> = emptyList()
 
+    /** Every `GET /v1/models` the API received; while [modelsHeld] is set, each waits on it before answering. */
+    private val modelsAsked = AtomicInteger()
+    @Volatile private var modelsHeld: CompletableDeferred<Unit>? = null
+
     @Before
     fun setUp() {
         graph = process()
@@ -88,7 +99,11 @@ class NewAgentViewModelTest {
                 failNextCreate?.let { failNextCreate = null; throw it }
                 return demoApi.createAgent(body)
             }
-            override suspend fun models(): ListModelsResponseDto = demoApi.models().let { it.copy(items = it.items + announcedModels) }
+            override suspend fun models(): ListModelsResponseDto {
+                modelsAsked.incrementAndGet()
+                modelsHeld?.await()
+                return demoApi.models().let { it.copy(items = it.items + announcedModels) }
+            }
             override suspend fun repositories(): ListRepositoriesResponseDto =
                 demoApi.repositories().let { it.copy(items = it.items + connectedRepos.map(::RepositoryDto)) }
         }
@@ -157,6 +172,44 @@ class NewAgentViewModelTest {
         }
         assertThat(vm.state.value.selectedModel?.id).isEqualTo(selected)
         assertThat(vm.state.value.modelsUnavailable).isFalse()
+    }
+
+    @Test
+    fun `refresh taps while the model list is loading wait on that load, and the spinner stays until it answers`() = runBlocking {
+        val vm = loaded()
+        awaitUntil { !vm.state.value.isLoadingModels }
+        val clock = AppClock.nowMillis
+        try {
+            // Past the catalog's pause between asks, so each tap would be free to ask again.
+            var now = System.currentTimeMillis() + CatalogRefresher.STALE_AFTER_MS
+            AppClock.nowMillis = { now }
+            val held = CompletableDeferred<Unit>().also { modelsHeld = it }
+            val asked = modelsAsked.get()
+            announcedModels = listOf(ModelListItemDto(id = "claude-opus-6", displayName = "Claude Opus 6"))
+
+            val first = vm.refreshModels()
+            awaitUntil { modelsAsked.get() == asked + 1 }
+            now += CatalogRefresher.STALE_AFTER_MS
+            val again = List(3) { vm.refreshModels() }
+            assertThat(again).containsExactly(first, first, first)
+            assertThat(vm.state.value.isLoadingModels).isTrue()
+
+            held.complete(Unit)
+            first.join()
+            assertThat(vm.state.value.isLoadingModels).isFalse()
+            assertThat(vm.state.value.models.map { it.id }).contains("claude-opus-6")
+            delay(200)
+            assertThat(modelsAsked.get()).isEqualTo(asked + 1)
+            assertThat(vm.state.value.isLoadingModels).isFalse()
+
+            // Once it has answered, a tap asks again.
+            modelsHeld = null
+            vm.refreshModels().join()
+            assertThat(modelsAsked.get()).isEqualTo(asked + 2)
+        } finally {
+            modelsHeld = null
+            AppClock.nowMillis = clock
+        }
     }
 
     @Test
@@ -575,7 +628,7 @@ class NewAgentViewModelTest {
     fun `plan mode and multitask are one slot, whichever way round they are set`() {
         val vm = loaded()
         vm.setPrompt("/multitask fan the suites out")
-        vm.setPlanMode(true)
+        vm.setModePill(ModePills.Pill.Plan)
         // Asking for a plan takes the command out of the prompt.
         assertThat(vm.state.value.planMode).isTrue()
         assertThat(vm.state.value.prompt).isEqualTo("fan the suites out")
@@ -587,7 +640,7 @@ class NewAgentViewModelTest {
 
         // Shared-in text carrying the command does the same; text without it leaves a plan alone.
         vm.setPrompt("")
-        vm.setPlanMode(true)
+        vm.setModePill(ModePills.Pill.Plan)
         vm.applyShare("plain text", emptyList())
         assertThat(vm.state.value.planMode).isTrue()
         vm.applyShare("/multitask more", emptyList())
@@ -652,6 +705,16 @@ class NewAgentViewModelTest {
         assertThat(loaded().state.value.ref).isEmpty()
     }
 
+    /** Auto-create PR is gone from the app: a launch never asks for a pull request, leaving it to the API's default of off. */
+    @Test
+    fun `a launch never asks for a pull request`() = runBlocking {
+        loaded().launchAndWait()
+        awaitUntil { created.isNotEmpty() }
+        val body = CursorJson.encodeToString(CreateAgentRequestDto.serializer(), created.single())
+        assertThat(body).doesNotContain("autoCreatePR")
+        assertThat(body).doesNotContain("auto_create_pr")
+    }
+
     @Test
     fun `a never-launched composer starts from the repository's default branch, not from main`() {
         val vm = loaded()
@@ -673,7 +736,7 @@ class NewAgentViewModelTest {
 
     /**
      * The composer as the phone leaves it: a repository and branch on a team pool, a model with its variant, plan
-     * mode, the PR switch, a line and an image. Written as the app leaves the screen.
+     * mode, a line and an image. Written as the app leaves the screen.
      */
     private fun writeEverything(vm: NewAgentViewModel, bytes: ByteArray) {
         vm.selectDevice(DeviceTarget.pool("gpu"))
@@ -681,8 +744,7 @@ class NewAgentViewModelTest {
         vm.setRef("cursor/cli-exploration-9c1d")
         val grok = vm.state.value.models.first { it.id == "cursor-grok-4.6" }
         vm.selectModel(grok, grok.variantWithParams(mapOf("effort" to "medium", "fast" to "false")))
-        vm.setPlanMode(true)
-        vm.setAutoCreatePr(true)
+        vm.setModePill(ModePills.Pill.Plan)
         vm.setPrompt("Half a thought")
         vm.addAttachments(listOf(PendingAttachment("picked-1", PromptImage(bytes, "image/png"), null)))
     }
@@ -697,7 +759,6 @@ class NewAgentViewModelTest {
         assertThat(selectedModel?.id).isEqualTo("cursor-grok-4.6")
         assertThat(selectedVariant?.params?.associate { it.id to it.value }).containsExactly("effort", "medium", "fast", "false")
         assertThat(planMode).isTrue()
-        assertThat(autoCreatePr).isTrue()
     }
 
     /**
@@ -734,7 +795,6 @@ class NewAgentViewModelTest {
                 ref = "cursor/cli-exploration-9c1d",
                 modelId = "cursor-grok-4.6",
                 modelParams = state.selectedVariant!!.params,
-                autoCreatePr = true,
                 planMode = true,
                 env = DeviceTarget.pool("gpu"),
             ),
@@ -1144,5 +1204,55 @@ class NewAgentViewModelTest {
         assertThat(request.env?.type).isEqualTo("machine")
         assertThat(request.env?.name).isEqualTo("bennett")
         assertThat(request.repos?.single()?.url).isEqualTo(codexUrl)
+    }
+
+    /**
+     * Fast turned on, then the chat started from scratch: the create carries `fast=true` as a repository's does, and
+     * the chat and the next composer keep Fast on once the account's record lands naming the model alone
+     * (`model_details`, or a `requested_model` without parameters) — whose nearest variant, the catalogue's default,
+     * has Fast off. The record is dated after the pick, as the server's clock may date it.
+     */
+    @Test
+    fun `Fast turned on for a chat started from scratch goes out and stays on once the account's record names the model alone`() {
+        launchWithFastAndSeeItStay(scratch = true)
+    }
+
+    @Test
+    fun `Fast turned on for a chat on a repository goes out and stays on once the account's record names the model alone`() {
+        launchWithFastAndSeeItStay(scratch = false)
+    }
+
+    private fun launchWithFastAndSeeItStay(scratch: Boolean) = runBlocking<Unit> {
+        announcedModels = listOf(LiveModelCatalog.items.first { it.id == "claude-opus-5.5" })
+        val vm = loadedWithAgents()
+        if (vm.state.value.models.none { it.id == "claude-opus-5.5" }) vm.refreshModels()
+        awaitUntil { vm.state.value.models.any { it.id == "claude-opus-5.5" } }
+        val opus = vm.state.value.models.first { it.id == "claude-opus-5.5" }
+        assertThat(opus.defaultVariant?.param("fast")).isEqualTo("false")
+        vm.selectModel(opus, opus.defaultVariant)
+        vm.selectModel(opus, opus.variantWith(vm.state.value.selectedVariant, "fast", "true"))
+        if (scratch) vm.selectRepo(null) else vm.selectRepo(vm.repo("cesium"))
+        assertThat(vm.state.value.noRepo).isEqualTo(scratch)
+        val fastOn = mapOf("effort" to "high", "fast" to "true")
+
+        val id = vm.launchAndWait("Fast, please")
+        awaitUntil { accepted(id) }
+        val sent = created.last()
+        if (scratch) assertThat(sent.repos).isEmpty() else assertThat(sent.repos?.single()?.url).contains("cesium")
+        assertThat(sent.model?.id).isEqualTo("claude-opus-5.5")
+        assertThat(sent.model?.params?.associate { it.id to it.value }).isEqualTo(fastOn)
+
+        graph.agents.applyAccountSnapshots(listOf(ComposerSnapshot(id, model = AccountModel("claude-opus-5.5"))))
+        graph.agents.patch(id) { it.copy(createdAtMillis = AppClock.now() + 60_000) }
+        assertThat(graph.agents.agent(id)?.accountModel).isEqualTo(AccountModel("claude-opus-5.5"))
+
+        val chat = ConversationViewModel(graph, id)
+        val picker = withTimeout(10_000) { chat.modelPicker.first { it.current?.model?.id == "claude-opus-5.5" } }
+        assertThat(picker.currentAssumed).isFalse()
+        assertThat(picker.selected?.params?.associate { it.id to it.value }).isEqualTo(fastOn)
+
+        val next = loaded()
+        assertThat(next.state.value.selectedModel?.id).isEqualTo("claude-opus-5.5")
+        assertThat(next.state.value.selectedVariant?.params?.associate { it.id to it.value }).isEqualTo(fastOn)
     }
 }

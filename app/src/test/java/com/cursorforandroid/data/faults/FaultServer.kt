@@ -10,12 +10,16 @@ import com.cursorforandroid.data.api.dto.CreateRunRequestDto
 import com.cursorforandroid.data.api.dto.CreateRunResponseDto
 import com.cursorforandroid.data.api.dto.IdResponseDto
 import com.cursorforandroid.data.api.dto.ListAgentsResponseDto
+import com.cursorforandroid.data.api.dto.ListPoolsResponseDto
+import com.cursorforandroid.data.api.dto.ListWorkersResponseDto
+import com.cursorforandroid.data.api.dto.PoolDto
 import com.cursorforandroid.data.api.dto.ListRunsResponseDto
 import com.cursorforandroid.data.api.dto.RunDto
 import com.cursorforandroid.data.api.dto.V0AgentDto
 import com.cursorforandroid.data.api.dto.V0ConversationMessageDto
 import com.cursorforandroid.data.api.dto.V0ConversationResponseDto
 import com.cursorforandroid.data.api.dto.V0ListAgentsResponseDto
+import com.cursorforandroid.data.api.dto.WorkerDto
 import com.cursorforandroid.fixtures.BlobFixtures
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.builtins.serializer
@@ -192,7 +196,7 @@ class FaultServer(
     private val resets = AtomicInteger()
 
     /** [Live] is `StreamConversation` asked with `purpose = LIVE` (an open chat's watch); [RecordState] the same method's state read. */
-    enum class Route { Me, ListAgents, ListAgentsV0, GetAgent, ListRuns, GetRun, CreateRun, CancelRun, Conversation, Stream, Auth, Record, RecordState, Live, Blob, QueueAdd, QueueList, QueueDelete, QueueUpdate, QueueReorder, QueueSendNow, QueueEditing, Steer, AccountList, Workers, Children, Pins, Other }
+    enum class Route { Me, ListAgents, ListAgentsV0, GetAgent, ListRuns, GetRun, CreateRun, CancelRun, Conversation, Stream, Auth, Record, RecordState, Live, Blob, QueueAdd, QueueList, QueueDelete, QueueUpdate, QueueReorder, QueueSendNow, QueueEditing, Steer, AccountList, Workers, Children, Pins, FleetWorkers, FleetPools, Other }
 
     /**
      * One row of the account's own list (`ListBackgroundComposers`, Extended mode): the record the sidebar's rows
@@ -215,8 +219,14 @@ class FaultServer(
     val composerReads = CopyOnWriteArrayList<String>()
     /** The account's list, by id; served newest first (see [Composer.activityMs]). */
     val composers: MutableMap<String, Composer> = ConcurrentHashMap()
+    /** Chats the account's state calls a Project's root whatever their prompts' mode: a coordinator whose newest turns are all injected reports. */
+    val rootProjects: MutableSet<String> = ConcurrentHashMap.newKeySet()
     /** `ListWorkersForManager`: each coordinator's workers, as (workerId, spawnKind). */
     val workers: MutableMap<String, List<Pair<String, String>>> = ConcurrentHashMap()
+    /** `GET /v0/private-workers`: the self-hosted workers, served by the `scope` asked (`team_pool` or the rest). */
+    @Volatile var fleetWorkers: List<WorkerDto> = emptyList()
+    /** `GET /v0/private-workers/pools`. */
+    @Volatile var fleetPools: List<PoolDto> = emptyList()
     /**
      * While above zero, a running run's stream is held open about this long after what its log has so far, a
      * keep-alive at a time, as the API holds a turn under way, rather than answered whole and closed: each running
@@ -353,6 +363,8 @@ class FaultServer(
             segments.size == 2 && segments[0] == "v1" && segments[1] == "me" -> Route.Me
             segments.size == 2 && v1Agents -> Route.ListAgents
             segments.size == 2 && segments[0] == "v0" && segments[1] == "agents" -> Route.ListAgentsV0
+            segments.size == 2 && segments[0] == "v0" && segments[1] == "private-workers" -> Route.FleetWorkers
+            segments.size == 3 && segments[0] == "v0" && segments[1] == "private-workers" && segments[2] == "pools" -> Route.FleetPools
             segments.size == 3 && v1Agents && request.method == "GET" -> Route.GetAgent
             segments.size == 4 && v1Agents && segments[3] == "runs" && request.method == "GET" -> Route.ListRuns
             segments.size == 4 && v1Agents && segments[3] == "runs" && request.method == "POST" -> Route.CreateRun
@@ -455,6 +467,11 @@ class FaultServer(
                 json(200, """{"composers":[${composers.values.filter { it.sideChatOf == parent }.sortedByDescending { it.activityMs }.joinToString(",") { it.json() }}]}""")
             }
             Route.Pins -> json(200, "{}")
+            Route.FleetWorkers -> {
+                val teamPool = url.queryParameter("scope") == "team_pool"
+                json(200, encode(ListWorkersResponseDto.serializer(), ListWorkersResponseDto(workers = fleetWorkers.filter { (it.scope == "team_pool") == teamPool })))
+            }
+            Route.FleetPools -> json(200, encode(ListPoolsResponseDto.serializer(), ListPoolsResponseDto(pools = fleetPools)))
             Route.Other -> json(404, error("not_found", "No such route in the fault server: ${request.method} ${url.encodedPath}"))
         }
         answer.getBody()?.size?.let { size -> bytesByRoute.merge(route, size, Long::plus) }
@@ -818,8 +835,8 @@ class FaultServer(
             """{"durationMs":"${run?.durationMs ?: 0}","timestampMs":"$ended"}"""
         }
         val ids = record.turnIds.joinToString(",") { "\"$it\"" }
-        // A Project's root when its prompts were sent in Project mode, as the account marks it.
-        val root = records[agentId].orEmpty().any { step -> (step["humanMessage"] as? JsonObject)?.get("agentMode")?.jsonPrimitive?.contentOrNull == "AGENT_MODE_PROJECT" }
+        // A Project's root when its prompts were sent in Project mode, as the account marks it, or when the test says so.
+        val root = agentId in rootProjects || records[agentId].orEmpty().any { step -> (step["humanMessage"] as? JsonObject)?.get("agentMode")?.jsonPrimitive?.contentOrNull == "AGENT_MODE_PROJECT" }
         """{"turns":[$ids],"turnTimings":[$timings]${if (root) ",\"isRootProjectConversation\":true" else ""}}"""
     }
 

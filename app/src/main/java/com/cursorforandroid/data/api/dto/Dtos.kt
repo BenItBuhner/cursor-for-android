@@ -55,7 +55,6 @@ data class AgentDto(
     val latestRunId: String? = null,
     val repos: List<RepoConfigDto> = emptyList(),
     val workOnCurrentBranch: Boolean? = null,
-    val autoCreatePR: Boolean? = null,
     val skipReviewerRequest: Boolean? = null,
 )
 
@@ -143,7 +142,6 @@ data class CreateAgentRequestDto(
     val env: AgentEnvDto? = null,
     val repos: List<RepoConfigDto>? = null,
     val workOnCurrentBranch: Boolean? = null,
-    val autoCreatePR: Boolean? = null,
     val skipReviewerRequest: Boolean? = null,
     val mcpServers: List<McpServerDto>? = null,
     val mode: String? = null,
@@ -415,7 +413,6 @@ data class V0TargetDto(
     val branchName: String? = null,
     val url: String? = null,
     val prUrl: String? = null,
-    val autoCreatePr: Boolean? = null,
 )
 
 @Serializable

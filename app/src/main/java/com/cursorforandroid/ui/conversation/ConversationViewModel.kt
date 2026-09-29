@@ -40,8 +40,8 @@ import com.cursorforandroid.domain.choiceFor
 import com.cursorforandroid.domain.SlashCatalog
 import com.cursorforandroid.domain.SlashCommand
 import com.cursorforandroid.domain.SlashCommands
-import com.cursorforandroid.domain.SnoozeDuration
 import com.cursorforandroid.domain.SubagentRows
+import com.cursorforandroid.domain.TimelineItem
 import com.cursorforandroid.domain.ToolPayload
 import com.cursorforandroid.domain.TranscriptPresenter
 import com.cursorforandroid.domain.TranscriptRow
@@ -69,6 +69,7 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.conflate
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
@@ -135,12 +136,32 @@ data class FollowUpModelState(
     val modePill: ModePills.Pill? get() = ModePills.Pill.of(mode)
 }
 
-/** One published state of the chat with the rows the screen draws for it (see [ConversationViewModel.presented]). */
-class PresentedTranscript(val state: ConversationState, val presented: TranscriptPresenter.Presented) {
+/**
+ * One published state of the chat with the rows the screen draws for it (see [ConversationViewModel.presented]).
+ * [previous] is the presentation before it, whose [userMessages] are kept while they are the same messages.
+ */
+class PresentedTranscript(val state: ConversationState, val presented: TranscriptPresenter.Presented, previous: PresentedTranscript? = null) {
     val rows: List<TranscriptRow> get() = presented.rows
     val items get() = presented.items
     val coordinatorMode: Boolean get() = presented.coordinatorMode
     val subagents: SubagentRows.Index get() = presented.subagents
+
+    /**
+     * The user's messages among [items], in order: the list the last presentation had while they are its instances,
+     * so a reply streaming under them leaves the screen's readers of the messages alone (see [SentFades.look]).
+     */
+    val userMessages: List<UserMessage> = userMessagesOf(presented.items, previous)
+
+    private companion object {
+        fun userMessagesOf(items: List<TimelineItem>, previous: PresentedTranscript?): List<UserMessage> {
+            val kept = previous?.userMessages
+            if (kept != null && previous.presented.items === items) return kept
+            val messages = items.filterIsInstance<UserMessage>()
+            if (kept == null || kept.size != messages.size) return messages
+            for (i in messages.indices) if (messages[i] !== kept[i]) return messages
+            return kept
+        }
+    }
 }
 
 /** Where every screen's transcript is presented: one thread at a time, off the main one, in the order the states came. */
@@ -184,7 +205,7 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
     /** Decoded previews of the images the queue cards and a restored draft show, by [DraftImage.id]. */
     private val thumbnails = MutableStateFlow<Map<String, ImageBitmap>>(emptyMap())
 
-    val agent: StateFlow<Agent?> = graph.agents.state.map { s -> s.agents.firstOrNull { it.id == agentId } }
+    val agent: StateFlow<Agent?> = graph.agents.row(agentId).flowOn(Dispatchers.Default)
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), graph.agents.agent(agentId))
 
     val conversation: StateFlow<ConversationState> = graph.conversations.state(agentId)
@@ -198,6 +219,9 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
      * travels with it, so what the screen reads of the chat (loading, running, older turns) agrees with its rows.
      */
     private val presenter = graph.presenters.forAgent(agentId)
+    /** The last presentation made, for the next to keep what has not changed (see [PresentedTranscript.userMessages]). */
+    @Volatile
+    private var lastPresented: PresentedTranscript? = null
 
     val presented: StateFlow<PresentedTranscript> = combine(conversation, agent.map { it?.looksLikeProject == true }.distinctUntilChanged()) { c, project -> c to project }
         .conflate()
@@ -221,7 +245,7 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
         // The newest rows are what the first frame composes: their markdown is parsed here, not on that frame.
         presented.rows.asReversed().asSequence().take(PRIMED_ROWS).forEach { row ->
             when (row) {
-                is TranscriptRow.Message -> (row.call.payload as? ToolPayload.CoordinatorMessage)?.message?.let(MarkdownCache::prime)
+                is TranscriptRow.Message -> if (!row.call.isRunning) (row.call.payload as? ToolPayload.CoordinatorMessage)?.message?.let(MarkdownCache::prime)
                 is TranscriptRow.Item -> when (val item = row.item) {
                     is UserMessage -> MarkdownCache.prime(item.text)
                     is AssistantMessage -> if (!item.isStreaming) MarkdownCache.prime(item.markdown)
@@ -230,7 +254,7 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
                 else -> Unit
             }
         }
-        return PresentedTranscript(state, presented)
+        return PresentedTranscript(state, presented, lastPresented).also { lastPresented = it }
     }
 
     val draftText: StateFlow<String> = draft.asStateFlow()
@@ -318,7 +342,6 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
     init {
         outgoing.listener = outgoingListener
         graph.conversations.attach(agentId)
-        graph.steering.attach(agentId)
         viewModelScope.launch { graph.prefs.markTouchedHere(agentId) }
         viewModelScope.launch { loadModels() }
         viewModelScope.launch {
@@ -349,7 +372,9 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
             // Read now, not when the disk was: anything picked while the setting was read is in it too.
             if (!allowed && graph.followUps.state(agentId).value.draft.mode?.needsAccountService == true) graph.followUps.setDraftMode(agentId, null)
             val restored = graph.followUps.state(agentId).value.draft
-            picker.update { it.adopting(restored) }
+            // A model picked in memory stands over the disk copy's, as the repository folds them (`FollowUpDraft.over`):
+            // a pick landing between the read above and this update is not written over by the draft read before it.
+            picker.update { it.copy(mode = restored.mode, override = it.override ?: restored.model?.let(::choiceOf)) }
             if (restored.isBlank) return@launch
             if (composerIsEmpty()) adoptDraft(restored, unlessWrittenInto = true)
         }
@@ -390,7 +415,7 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
         // The sends go on in the graph's scope; only this composer stops hearing of them.
         if (outgoing.listener === outgoingListener) outgoing.listener = null
         graph.conversations.detach(agentId)
-        graph.steering.detach(agentId)
+        if (steeringAttached) graph.steering.detach(agentId)
         graph.followUps.flush(agentId)
         super.onCleared()
     }
@@ -480,9 +505,6 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
         }
     }
 
-    /** The model sheet's plan toggle: on is plan mode, off asks for agent mode explicitly. */
-    fun setPlanMode(value: Boolean) = setMode(if (value) AgentMode.PLAN else AgentMode.AGENT)
-
     /** The composer's pill: Plan, Ask or Debug on; the cross (null) puts the next run back to agent mode explicitly. */
     fun setModePill(pill: ModePills.Pill?) = setMode(pill?.agentMode ?: AgentMode.AGENT)
 
@@ -570,8 +592,7 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
     private fun composerIsEmpty(): Boolean = draft.value.isEmpty() && attachments.value.isEmpty() && files.value.isEmpty()
 
     /**
-     * Puts the repository's draft in the composer: a restored one, or a queued message taken back for editing. The
-     * previews are decoded off the main thread first; with [unlessWrittenInto], a composer written into meanwhile —
+     * Puts the repository's draft in the composer: a restored one. The previews are decoded off the main thread first; with [unlessWrittenInto], a composer written into meanwhile —
      * a word typed, a file attached — keeps what it has, and the restored draft stays on disk for the next time.
      * Nor is a draft that is no longer the repository's put back: [saved] was read before the decode (and the
      * repository's draft is the composer's own as typed), so an empty composer by now may be one a send emptied.
@@ -738,7 +759,6 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
         setAttachments(message.images)
         message.files.forEach { graph.attachmentUploads.start(it.id, it.file) }
         setFiles(message.files)
-        if (displaced) toast.value = "Your draft was queued in its place."
     }
 
     /** Sends a failed message again, in its bubble. */
@@ -767,29 +787,51 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
         graph.attachmentUploads.forget(attached.map { it.id })
     }
 
-    /** Takes a queued follow-up back into the composer; a draft already there is queued in its place, so nothing is lost. */
+    /**
+     * Takes a queued follow-up back into the composer; a draft already there is queued in its place, so nothing is lost.
+     * Its text and chips are the composer's before this returns: a send the moment after acts on them, never on the
+     * draft just queued (which went out a second time, and emptied the repository's copy of the edited text). Only the
+     * chips' previews wait on a decode off the main thread, filled in once it is done.
+     */
     fun editQueued(id: String) {
-        val displaced = !draft.value.isBlank() || attachments.value.isNotEmpty() || files.value.isNotEmpty()
         graph.followUps.takeForEdit(agentId, id) ?: return
-        viewModelScope.launch {
-            adoptDraft(graph.followUps.state(agentId).value.draft)
-            if (displaced) toast.value = "Your draft was queued in its place."
+        val taken = graph.followUps.state(agentId).value.draft
+        picker.update { it.adopting(taken) }
+        draft.value = taken.text
+        val images = taken.images.map { PendingAttachment(it.id, it.image, thumbnails.value[it.id]) }
+        val takenFiles = taken.files.map { PendingFile(it.id, it.file) }
+        attachments.value = images
+        files.value = takenFiles
+        // A file that came back with its reference is up already; one without goes up now.
+        takenFiles.forEach { graph.attachmentUploads.start(it.id, it.file) }
+        keepModesExclusive(taken.text)
+        if (images.isNotEmpty() || takenFiles.isNotEmpty()) viewModelScope.launch { fillPreviews(images, takenFiles) }
+    }
+
+    /** The thumbnails of chips put in the composer without one, decoded off the main thread, onto the chips still there. */
+    private suspend fun fillPreviews(images: List<PendingAttachment>, taken: List<PendingFile>) {
+        val decoded = withContext(Dispatchers.Default) { images.map { PendingAttachment.of(it.image, it.id, it.thumbnail) } }
+        val decodedFiles = withContext(Dispatchers.Default) { taken.map { PendingFile.of(it.file, it.id) } }
+        thumbnails.update { cache -> cache + decoded.mapNotNull { a -> a.thumbnail?.let { a.id to it } } }
+        attachments.value = attachments.value.map { a ->
+            decoded.firstOrNull { it.id == a.id }?.thumbnail?.takeIf { a.thumbnail == null }?.let { PendingAttachment(a.id, a.image, it) } ?: a
         }
+        files.value = files.value.map { f -> decodedFiles.firstOrNull { it.id == f.id }?.let { f.withPreview(it.thumbnail, null) } ?: f }
     }
 
     fun removeQueued(id: String) = graph.followUps.remove(agentId, id)
 
     /**
      * A waiting card's up arrow. With a turn under way it steers the message into that turn, never stopping it — in
-     * Extended mode through the account ([FollowUpRepository.steerNow]), the outcome in the snackbar; with no account
-     * to steer through the message keeps its place and the snackbar says it goes when the turn ends. With nothing
-     * running it goes next ([FollowUpRepository.sendNext]).
+     * Extended mode through the account ([FollowUpRepository.steerNow]), where it stands and any failure shown on the
+     * card itself; with no account to steer through the message keeps its place and its card says it goes when the
+     * turn ends. With nothing running it goes next ([FollowUpRepository.sendNext]).
      */
     fun steerQueued(id: String, turnUnderWay: Boolean) {
         when {
             !turnUnderWay -> graph.followUps.sendNext(agentId, id)
-            canSteer() -> control { graph.followUps.steerNow(agentId, id) }
-            else -> toast.value = FollowUpRepository.STEER_NEEDS_EXTENDED
+            canSteer() -> viewModelScope.launch { graph.followUps.steerNow(agentId, id) }
+            else -> graph.followUps.noteSteerUnavailable(agentId, id)
         }
     }
 
@@ -800,29 +842,30 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
 
     // -- the account's controls (Extended mode) ----------------------------------------------------------------------
 
-    /** One account-service action: its outcome, or the reason it did not happen, in the snackbar. */
-    private fun control(block: suspend () -> Result<String?>) = viewModelScope.launch {
-        block().fold(onSuccess = { message -> if (!message.isNullOrBlank()) toast.value = message }, onFailure = { toast.value = it.userMessage() })
+    /**
+     * One account-service action. What it did shows where it did it — the question answered, the step stopping, the
+     * row's ring — so only the reason it did not happen goes in the snackbar.
+     */
+    private fun control(block: suspend () -> Result<*>) = viewModelScope.launch {
+        block().onFailure { toast.value = it.userMessage() }
     }
 
     /** Answers the question the agent is waiting on (`ask_question` call [callId]). */
     fun answerQuestion(callId: String, answers: List<ToolPayload.Question.Answer>) = control {
-        graph.steering.answerQuestion(agentId, callId, answers).map { it.message }
+        graph.steering.answerQuestion(agentId, callId, answers)
     }
 
-    /** Steers the turn under way without stopping it; the account's outcome is what shows. */
-    fun steer(text: String) = control { graph.steering.steer(agentId, text).map { it.message } }
+    /** Steers the turn under way without stopping it. */
+    fun steer(text: String) = control { graph.steering.steer(agentId, text) }
 
-    fun pauseRun() = control { graph.steering.pause(agentId).map { "Paused; resume when you're ready." } }
+    fun pauseRun() = control { graph.steering.pause(agentId) }
 
-    fun resumeRun() = control { graph.steering.resume(agentId).map { "Resumed." } }
+    fun resumeRun() = control { graph.steering.resume(agentId) }
 
     /** Stops one tool call of the turn under way. */
-    fun cancelToolCall(callId: String) = control {
-        graph.steering.cancelToolCall(agentId, callId).map { accepted -> if (accepted) "Stopping that step." else "That step had already finished." }
-    }
+    fun cancelToolCall(callId: String) = control { graph.steering.cancelToolCall(agentId, callId) }
 
-    fun wake() = control { graph.steering.wake(agentId).map { signalled -> if (signalled) "Waking the agent's machine." else "The machine was already awake." } }
+    fun wake() = control { graph.steering.wake(agentId) }
 
     /**
      * The account's queue: steer, take away, move, reword. An account row's up arrow steers the message into the turn
@@ -830,18 +873,18 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
      * sent now (`SubmitPendingFollowupNow`), there being no turn for it to take the place of.
      */
     fun queueSteer(id: String, turnUnderWay: Boolean) = control {
-        if (turnUnderWay) graph.steering.promotePending(agentId, id).map { it.message } else graph.steering.submitPendingNow(agentId, id).map { null }
+        if (turnUnderWay) graph.steering.promotePending(agentId, id) else graph.steering.submitPendingNow(agentId, id)
     }
 
-    fun queueDelete(id: String) = control { graph.steering.deletePending(agentId, id).map { null } }
+    fun queueDelete(id: String) = control { graph.steering.deletePending(agentId, id) }
 
-    fun queueMove(id: String, up: Boolean) = control { graph.steering.movePending(agentId, id, up).map { null } }
+    fun queueMove(id: String, up: Boolean) = control { graph.steering.movePending(agentId, id, up) }
 
     fun queueUpdate(id: String, text: String) = control {
-        graph.steering.updatePending(agentId, id, text).map { null }.also { graph.steering.markEditing(agentId, id, editing = false) }
+        graph.steering.updatePending(agentId, id, text).also { graph.steering.markEditing(agentId, id, editing = false) }
     }
 
-    fun queueMarkEditing(id: String, editing: Boolean) = control { graph.steering.markEditing(agentId, id, editing).map { null } }
+    fun queueMarkEditing(id: String, editing: Boolean) = control { graph.steering.markEditing(agentId, id, editing) }
 
     fun refreshQueue() = viewModelScope.launch { graph.steering.refreshQueue(agentId) }
 
@@ -849,8 +892,6 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
     /** Where the reader's pull to catch up stands (see [catchUp]). */
     val catchUpStatus: StateFlow<CatchUpStatus> = catchUpState.asStateFlow()
     private var catchUpJob: Job? = null
-    /** The pause already told for the pull under way (see [catchUpSettled]). */
-    private var toldWait: CatchUpStatus.Waiting? = null
 
     private fun catchingUp(): Boolean = catchUpState.value.let { it is CatchUpStatus.Checking || it is CatchUpStatus.Waiting }
 
@@ -861,13 +902,12 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
      * The reader pulled up past the newest message, or pressed Ctrl+R: only what is new since the last thing this
      * device has (see `ConversationRepository.catchUp`, which waits out a load still under way — a chat just opened —
      * and counts nothing it brought), and the account's queue read again beside it. A pause the server asked the
-     * account's calls to take (a `429`, see `ApiThrottle`) is waited out first. The screen tells the pause and the
-     * answer as its indicator settles ([catchUpSettled]); an answer it never tells is put away after a while.
+     * account's calls to take (a `429`, see `ApiThrottle`) is waited out first, the indicator spinning through it. The
+     * answer is the indicator's alone; only a failure is told, as it settles ([catchUpSettled]).
      */
     fun catchUp() {
         if (catchingUp()) return
         catchUpJob?.cancel()
-        toldWait = null
         catchUpJob = viewModelScope.launch {
             val pause = graph.accountPauseMillis()
             if (pause > 0) {
@@ -894,23 +934,12 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
         }
     }
 
-    /**
-     * The pull's indicator went home over [shown], which is the reader's now, once, as a toast (see
-     * [CatchUpStatus.word]): the pause being waited out, or the answer — which is then put away.
-     */
+    /** The pull's indicator went home over [shown]: a failure is the reader's now, once (see [CatchUpStatus.word]), and put away. */
     fun catchUpSettled(shown: CatchUpStatus) {
         if (catchUpState.value != shown) return
         val word = shown.word() ?: return
-        when (shown) {
-            is CatchUpStatus.Waiting -> {
-                if (toldWait == shown) return
-                toldWait = shown
-            }
-            else -> {
-                catchUpJob?.cancel()
-                catchUpState.value = CatchUpStatus.Idle
-            }
-        }
+        catchUpJob?.cancel()
+        catchUpState.value = CatchUpStatus.Idle
         toast.value = word
     }
 
@@ -922,28 +951,6 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
 
     /** Clears this chat's cached transcript and traces and fetches it again (see `ConversationRepository.reloadTranscript`). */
     fun reloadTranscript() = graph.conversations.reloadTranscript(agentId)
-
-    private var refreshWordJob: Job? = null
-
-    /** Ctrl+Shift+R: [reloadTranscript], then a word on it once the chat has been read again — "Up to date", "2 new" (see [RefreshWord]). */
-    fun reloadTranscriptWithWord() {
-        refreshWordJob?.cancel()
-        refreshWithWord { reloadTranscript() }
-    }
-
-    /**
-     * A load already under way — the chat's first read, just opened — is waited for before the chat is taken as it
-     * was: what that load brings was never the refresh's to count, as [catchUp] counts it.
-     */
-    private fun refreshWithWord(start: () -> Unit) {
-        refreshWordJob = viewModelScope.launch {
-            graph.conversations.awaitLoad(agentId)
-            val before = conversation.value
-            start()
-            graph.conversations.awaitLoad(agentId)
-            toast.value = RefreshWord.of(before, conversation.value)
-        }
-    }
 
     /** The reader neared the oldest turn shown: the turns before it are paged in (see [ConversationState.hasOlder]). */
     fun loadOlder() = graph.conversations.loadOlder(agentId)
@@ -958,23 +965,41 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
      */
     suspend fun loadDiagnosticsReport(): String = graph.transcriptDiagnosticsReport(agentId)
 
-    /** The screen is back in the foreground: pick the run back up and catch up on what it did while away. */
-    fun resume() = graph.conversations.resume(agentId)
+    private var steeringAttached = false
 
-    /** The screen stopped. The run keeps going — the notification service is what watches it now. */
-    fun pause() = graph.conversations.pause(agentId)
-
-    fun togglePinned() = viewModelScope.launch {
-        // The pin is applied either way; the toast only says when the account has not been told yet.
-        graph.pins.toggle(agentId).onFailure { toast.value = "Saved on this device; it syncs with your Cursor account when it's reachable." }
+    /**
+     * The screen is back in the foreground: pick the run back up and catch up on what it did while away, and read the
+     * account's queue again (and keep reading it) while the chat is on screen.
+     */
+    fun resume() {
+        graph.conversations.resume(agentId)
+        if (!steeringAttached) {
+            steeringAttached = true
+            graph.steering.attach(agentId)
+        }
     }
 
+    /**
+     * The screen stopped. The run keeps going — the notification service is what watches it now — and the account's
+     * queue is no longer polled for a chat nobody can see.
+     */
+    fun pause() {
+        graph.conversations.pause(agentId)
+        if (steeringAttached) {
+            steeringAttached = false
+            graph.steering.detach(agentId)
+        }
+    }
+
+    // The pin is applied on this device either way and syncs with the account once it's reachable.
+    fun togglePinned() = viewModelScope.launch { graph.pins.toggle(agentId) }
+
     fun archive(onDone: () -> Unit) = viewModelScope.launch {
-        graph.agents.archive(agentId).onSuccess { toast.value = "Chat archived"; onDone() }.onFailure { toast.value = it.userMessage() }
+        graph.agents.archive(agentId).onSuccess { onDone() }.onFailure { toast.value = it.userMessage() }
     }
 
     fun unarchive() = viewModelScope.launch {
-        graph.agents.unarchive(agentId).onSuccess { toast.value = "Chat unarchived" }.onFailure { toast.value = it.userMessage() }
+        graph.agents.unarchive(agentId).onFailure { toast.value = it.userMessage() }
     }
 
     fun rename(name: String) = viewModelScope.launch {
@@ -983,12 +1008,10 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
 
     fun snooze(untilMillis: Long) = viewModelScope.launch {
         graph.prefs.snooze(agentId, untilMillis)
-        toast.value = if (untilMillis == SnoozeDuration.FOREVER) "Snoozed" else "Chat snoozed"
     }
 
     fun unsnooze() = viewModelScope.launch {
         graph.prefs.unsnooze(agentId)
-        toast.value = "Chat unsnoozed"
     }
 
     fun clearToast() { toast.value = null }

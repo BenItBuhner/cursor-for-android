@@ -86,6 +86,8 @@ class ToolDropdownScrollFlickerTest {
     private val agentId = "bc-dropdown-flicker"
     private val live = "run-$TURNS"
     private lateinit var graph: AppGraph
+    /** How many files the oldest turn reads, when not as many as the others (10 + its turn). */
+    private var firstTurnReads: Int? = null
 
     @Before
     fun setUp() {
@@ -119,7 +121,7 @@ class ToolDropdownScrollFlickerTest {
             val runId = "run-$turn"
             streamer.emit(runId, RunStreamEvent.Status(runId, RunStatus.RUNNING))
             streamer.emit(runId, RunStreamEvent.Thinking("Turn $turn: reading the modules before saying anything."))
-            repeat(10 + turn) { n -> streamer.emit(runId, read(turn, n + 1)) }
+            repeat(firstTurnReads?.takeIf { turn == 1 } ?: (10 + turn)) { n -> streamer.emit(runId, read(turn, n + 1)) }
             streamer.emit(runId, RunStreamEvent.Assistant("Reply $turn"))
             streamer.emit(runId, RunStreamEvent.Result(runId, RunStatus.FINISHED, "Reply $turn", turn * 60_000L, null))
             streamer.emit(runId, RunStreamEvent.Done)
@@ -161,13 +163,15 @@ class ToolDropdownScrollFlickerTest {
     /**
      * What must stay drawn, by name: the open stretch's steps (its tool calls' lines) wholly inside the viewport, clear
      * of the bands at its edges, where the list dissolves its rows while there is more transcript past them, and above
-     * its bottom fifth, where the catch-up word and the jump button come up over the rows once it is scrolled up.
+     * its bottom fifth, where the catch-up word and the jump button come up over the rows once it is scrolled up. Rows
+     * the list composed off screen and did not place keep the bounds they last had, and are not drawn anywhere.
      */
     private fun watched(): Map<String, Rect> {
         val list = listBounds()
         val band = with(compose.density) { CursorDimens.scrollFade.toPx() }
         return compose.onAllNodes(hasAnyAncestor(transcript) and hasText("Turn${TURNS - 1}File", substring = true), useUnmergedTree = true)
             .fetchSemanticsNodes()
+            .filter { it.layoutInfo.isPlaced }
             .associate { node -> node.config[SemanticsProperties.Text].joinToString(" ") to node.boundsInRoot }
             .filterValues { it.height > 0f && it.top >= list.top + band && it.bottom <= list.bottom - maxOf(band, list.height / 5) }
     }
@@ -248,6 +252,47 @@ class ToolDropdownScrollFlickerTest {
                 assertWithMessage("$way: \"${dip.name}\" drawn at ${"%.2f".format(dip.ratio)} of its ink at rest on frame ${dip.frame}; all: ${dips.map { "${it.name.take(18)}=${"%.2f".format(it.ratio)}@${it.frame}" }}")
                     .that(dip.ratio).isAtLeast(STEP_FLOOR)
             }
+        }
+    }
+
+    /**
+     * The jump button from the top of the transcript, the oldest turn's 150 reads open under it: the list jumps to a
+     * few screens above the newest row and glides the rest (see [TranscriptScroll.jumpToBottom]). The jump re-anchors
+     * the list as the order's switches do, so the open group's rows it glides onto must come in drawn, never fading in
+     * from nothing.
+     */
+    @Test
+    fun `an open tool group's rows stay drawn as the jump button glides onto them`() {
+        firstTurnReads = 150
+        open()
+        compose.onNode(SemanticsMatcher("node") { it.id == summary("150 files").id }, useUnmergedTree = true).performClick()
+        compose.waitForIdle()
+        repeat(40) { if (runCatching { summary(STRETCH) }.isFailure) { scrollBy(SCROLL_PX * 4); compose.waitForIdle() } }
+        compose.onNode(SemanticsMatcher("node") { it.id == summary(STRETCH).id }, useUnmergedTree = true).performClick()
+        compose.waitForIdle()
+        repeat(6) { compose.onNode(transcript).performTouchInput { swipeUp(startY = bottom - 200f, endY = top + 40f, durationMillis = 120) } }
+        compose.waitForIdle()
+        compose.mainClock.advanceTimeBy(1_000)
+        compose.waitForIdle()
+        assertThat(following()).isTrue()
+
+        compose.mainClock.autoAdvance = false
+        val atRest = screen()
+        val rest = watched().mapValues { (_, area) -> ink(atRest, area) }.filterValues { it > 0 }
+        assertWithMessage("step rows on screen at rest: ${rest.keys}").that(rest.size).isAtLeast(4)
+
+        // Up to the top of the transcript, screens away, and let it settle pinned there.
+        repeat(60) { scrollBy(-SCROLL_PX * 8) }
+        repeat(30) { compose.mainClock.advanceTimeByFrame() }
+        assertThat(following()).isFalse()
+        assertWithMessage("scrolled off the open group").that(watched()).isEmpty()
+
+        val glide = watch("jump", rest) { compose.onNode(hasContentDescription("Scroll to latest")).performClick() }
+        assertThat(following()).isTrue()
+        assertWithMessage("rows watched on the way in").that(glide).isNotEmpty()
+        for (dip in glide) {
+            assertWithMessage("\"${dip.name}\" drawn at ${"%.2f".format(dip.ratio)} of its ink at rest on frame ${dip.frame}; all: ${glide.map { "${it.name.take(18)}=${"%.2f".format(it.ratio)}@${it.frame}" }}")
+                .that(dip.ratio).isAtLeast(STEP_FLOOR)
         }
     }
 

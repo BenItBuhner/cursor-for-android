@@ -19,7 +19,6 @@ class LaunchIdempotencyTest {
         ref = "main",
         modelId = "claude-fable-5.1-thinking",
         modelParams = listOf(ModelParam("effort", "high")),
-        autoCreatePr = true,
         planMode = false,
     )
 
@@ -43,7 +42,6 @@ class LaunchIdempotencyTest {
             request.copy(ref = "develop"),
             request.copy(modelId = "composer-2.5"),
             request.copy(modelParams = listOf(ModelParam("effort", "max"))),
-            request.copy(autoCreatePr = false),
             request.copy(planMode = true),
             request.copy(name = "Login fix"),
             request.copy(env = DeviceTarget.machine("studio")),

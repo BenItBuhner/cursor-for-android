@@ -1,6 +1,7 @@
 package com.cursorforandroid.domain
 
 import com.google.common.truth.Truth.assertThat
+import com.google.common.truth.Truth.assertWithMessage
 import org.junit.Test
 
 class MediaMarkupTest {
@@ -73,6 +74,85 @@ class MediaMarkupTest {
         assertThat(MediaMarkup.trimPartialTail("Proof: ![x](a.png)")).isEqualTo("Proof: ![x](a.png)")
         assertThat(MediaMarkup.trimPartialTail("plain")).isEqualTo("plain")
     }
+
+    @Test
+    fun `trimPartialTail reaches back as far as an unfinished tag or image does`() {
+        val prose = "word ".repeat(2_000)
+        // No `>` since the tag opened: everything from it is hidden, however far back it is.
+        assertThat(MediaMarkup.trimPartialTail("Intro <img alt=\"a < b\" $prose")).isEqualTo("Intro")
+        // No `]` since the image opened, or no `)` since its `](`.
+        assertThat(MediaMarkup.trimPartialTail("Intro ![a) $prose")).isEqualTo("Intro")
+        assertThat(MediaMarkup.trimPartialTail("Intro ![a]($prose")).isEqualTo("Intro")
+        // A long run of attributes before the `>` of a video whose body is still short.
+        assertThat(MediaMarkup.trimPartialTail("Intro <video title=\"$prose\">clip")).isEqualTo("Intro")
+    }
+
+    @Test
+    fun `trimPartialTail gives an unclosed video 160 characters of body, plus a final line break`() {
+        val open = "Intro <video src=\"a.mp4\">"
+        assertThat(MediaMarkup.trimPartialTail(open + "x".repeat(160))).isEqualTo("Intro")
+        assertThat(MediaMarkup.trimPartialTail(open + "x".repeat(160) + "\n")).isEqualTo("Intro")
+        assertThat(MediaMarkup.trimPartialTail(open + "x".repeat(160) + "\r\n")).isEqualTo("Intro")
+        assertThat(MediaMarkup.trimPartialTail(open + "x".repeat(161))).isEqualTo(open + "x".repeat(161))
+        assertThat(MediaMarkup.trimPartialTail(open + "x>".repeat(80))).isEqualTo("Intro")
+        assertThat(MediaMarkup.trimPartialTail(open + "x>".repeat(81))).isEqualTo(open + "x>".repeat(81))
+    }
+
+    @Test
+    fun `trimPartialTail matches a whole-text scan on every prefix of random markup`() {
+        val fragments = listOf(
+            "<img", "<IMG", "<video", "<Video ", "<audio", "<a href=\"x\">", "<source src=\"s.mp4\">", "</video>", "</AUDIO>",
+            "<", ">", "/>", "![", "]", "](", "(", ")", "!", "[", " src=\"a.png\"", " alt='x'", "\n", "\r\n", "\r", "\u2028",
+            " ", "a", "word ", "img", "video",
+        )
+        val random = kotlin.random.Random(8)
+        repeat(400) {
+            val text = buildString {
+                repeat(random.nextInt(1, 40)) {
+                    if (random.nextInt(6) == 0) {
+                        append("xy> ]) ".random(random).toString().repeat(random.nextInt(0, 220)))
+                    } else {
+                        append(fragments.random(random))
+                    }
+                }
+            }
+            for (end in 0..text.length) {
+                val partial = text.substring(0, end)
+                assertWithMessage("prefix %s", partial).that(MediaMarkup.trimPartialTail(partial)).isEqualTo(wholeScanTrim(partial))
+            }
+        }
+    }
+
+    @Test
+    fun `trimPartialTail matches a whole-text scan while a long reply streams`() {
+        val reply = buildString {
+            repeat(60) { i ->
+                append("Paragraph $i with `code` and a [link](https://x.test/$i) (aside) -> next.\n\n")
+                when (i % 6) {
+                    0 -> append("<img alt=\"Shot $i\" src=\"/opt/cursor/artifacts/s$i.png\" />\n\n")
+                    1 -> append("![Diagram $i](https://x.test/d$i.png \"title\")\n\n")
+                    2 -> append("<video controls poster=\"p.png\">\n<source src=\"clip$i.mp4\" type=\"video/mp4\">\nNo video.\n</video>\n\n")
+                    3 -> append("> quoted a < b and [![Badge](b$i.svg)](https://x.test)\n\n")
+                    else -> append("- item\n- item [x]\n\n")
+                }
+            }
+        }
+        for (end in 0..reply.length) {
+            val partial = reply.substring(0, end)
+            assertWithMessage("prefix of length %s", end).that(MediaMarkup.trimPartialTail(partial)).isEqualTo(wholeScanTrim(partial))
+        }
+    }
+
+    /** The trim as it was first written: the tail pattern searched for from the text's first character. */
+    private fun wholeScanTrim(text: String): String {
+        val m = wholeScanTail.find(text) ?: return text
+        return text.substring(0, m.range.first).trimEnd()
+    }
+
+    private val wholeScanTail = Regex(
+        """(?:<img\b[^>]*|<(?:video|audio)\b[^>]*|<(?:video|audio)\b[^>]*>(?:(?!</(?:video|audio)>).){0,160}|!\[[^\]]*(?:]\([^)]*)?)$""",
+        setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL),
+    )
 }
 
 class ArtifactPathsTest {

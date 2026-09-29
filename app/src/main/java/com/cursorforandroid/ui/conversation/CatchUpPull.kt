@@ -29,7 +29,6 @@ import com.cursorforandroid.ui.components.Haptic
 import com.cursorforandroid.ui.components.PullRefreshHaptics
 import com.cursorforandroid.ui.components.rememberHaptics
 import com.cursorforandroid.util.AppClock
-import kotlin.math.roundToInt
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -204,8 +203,8 @@ private sealed interface CatchUpRest {
  * The pull's indicator: the sidebar's own — Material's pull-to-refresh indicator, its colours, its arrow and its
  * spinner — turned upside down, so it rises out of the transcript's bottom edge, just above the composer's stack,
  * where the sidebar's drops from its top. Its own clip is that edge. With the finger it follows [pull]; let go armed,
- * it springs to the threshold and spins until [status] answers, then springs home, and only once it is home is the
- * answer told ([onSettled]), so the word never lands on the indicator. As it starts to rise, [onRise]: whatever
+ * it springs to the threshold and spins until [status] answers (through any pause the server asked for), then springs
+ * home, and only once it is home is a failure told ([onSettled]), so the word never lands on the indicator. As it starts to rise, [onRise]: whatever
  * word is up gives way to it. Every frame of all this is the indicator's layer; nothing is recomposed for it.
  *
  * The finger feels it as it does the sidebar's ([PullRefreshHaptics], so only as Settings › Haptic feedback
@@ -222,7 +221,7 @@ internal fun CatchUpIndicator(
     onRise: () -> Unit = {},
 ) {
     val answer = status.collectAsStateWithLifecycle()
-    val refreshing = pull.awaiting || answer.value is CatchUpStatus.Checking
+    val refreshing = pull.awaiting || answer.value.underWay()
     PullRefreshHaptics(pull, refreshing)
     CatchUpHapticCues(pull, answer)
     val settled by rememberUpdatedState(onSettled)
@@ -235,7 +234,7 @@ internal fun CatchUpIndicator(
             val shown = answer.value
             when {
                 pull.holding -> null
-                pull.awaiting || shown is CatchUpStatus.Checking -> CatchUpRest.Threshold
+                pull.awaiting || shown.underWay() -> CatchUpRest.Threshold
                 else -> CatchUpRest.Home(shown)
             }
         }.distinctUntilChanged().collectLatest { rest ->
@@ -266,22 +265,14 @@ internal fun CatchUpIndicator(
     )
 }
 
-/** The answer's words: the new messages counted, else whether anything moved at all. */
-internal fun CatchUpStatus.Done.label(): String = when {
-    newMessages > 0 -> "$newMessages new"
-    changed -> "Updated"
-    else -> "Up to date"
-}
+/**
+ * What the reader is told once the indicator is home: only a failure, in the server's words. The answer is the
+ * indicator's own going home, with its tick; a pause the server asked for is spun through at the threshold.
+ */
+internal fun CatchUpStatus.word(): String? = (this as? CatchUpStatus.Failed)?.message
 
-/** What the reader is told once the indicator is home: the answer, the failure in the server's words, or the pause being waited out. */
-internal fun CatchUpStatus.word(): String? = when (this) {
-    is CatchUpStatus.Done -> label()
-    is CatchUpStatus.Failed -> message
-    is CatchUpStatus.Waiting -> "Cursor asked for a pause · catching up in ${secondsLeft(untilMillis)} s"
-    CatchUpStatus.Checking, CatchUpStatus.Idle -> null
-}
-
-private fun secondsLeft(untilMillis: Long): Int = ((untilMillis - AppClock.now()) / 1_000.0).roundToInt().coerceAtLeast(0)
+/** The pull is being answered, the indicator spinning at the threshold: checking, or waiting out a pause the server asked for. */
+private fun CatchUpStatus.underWay(): Boolean = this is CatchUpStatus.Checking || this is CatchUpStatus.Waiting
 
 /**
  * What the finger feels beyond the sidebar's threshold pair: a [Haptic.Confirm] for each armed release, and each

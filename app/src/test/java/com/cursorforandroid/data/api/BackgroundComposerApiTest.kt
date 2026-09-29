@@ -22,6 +22,7 @@ import okhttp3.mockwebserver.RecordedRequest
 import org.junit.After
 import org.junit.Before
 import org.junit.Test
+import java.util.concurrent.TimeUnit
 
 /** The pin, archive and rename RPCs of `aiserver.v1.BackgroundComposerService` over Connect JSON, against a fake api2 that also plays the token exchange. */
 class BackgroundComposerApiTest {
@@ -339,6 +340,33 @@ class BackgroundComposerApiTest {
         assertThat(whole.complete).isTrue()
     }
 
+    /** The pass that follows a list read starts from the page that read brought: page one is not asked for twice. */
+    @Test
+    fun `the discovery pass starts from the newest page the list just read`() = runBlocking<Unit> {
+        server.enqueue(session("s"))
+        server.enqueue(MockResponse().setBody("""{"composers":[{"bcId":"bc-r1","projectMetadata":{}},{"bcId":"bc-w","managerAgentId":"bc-r1"}],"hasMore":true,"nextPageToken":"p2","pinnedBcIds":[],"didLoadPinnedState":true}"""))
+        server.enqueue(MockResponse().setBody("""{"composers":[{"bcId":"bc-r2","projectMetadata":{}}],"hasMore":false}"""))
+        val first = api.list()
+        assertThat(first.isFirstPage).isTrue()
+
+        val scan = api.scanRoots(maxPages = 10, stopBelowActivityMillis = null, firstPage = first)
+        assertThat(scan.pagesRead).isEqualTo(2)
+        assertThat(scan.complete).isTrue()
+        assertThat(scan.roots.map { it.id }).containsExactly("bc-r1", "bc-r2").inOrder()
+        assertThat(scan.children.map { it.id }).containsExactly("bc-w")
+        server.takeRequest(5, TimeUnit.SECONDS) // the exchange
+        server.takeRequest(5, TimeUnit.SECONDS)
+        val second = server.takeRequest(5, TimeUnit.SECONDS)!!.json()
+        assertThat(second["pageToken"]?.jsonPrimitive?.content).isEqualTo("p2")
+        assertThat(server.requestCount).isEqualTo(3)
+
+        // A later page is no first page: the pass reads from the top as before.
+        server.enqueue(MockResponse().setBody("""{"composers":[{"bcId":"bc-r1","projectMetadata":{}}],"hasMore":false}"""))
+        val again = api.scanRoots(maxPages = 10, stopBelowActivityMillis = null, firstPage = first.copy(isFirstPage = false))
+        assertThat(again.pagesRead).isEqualTo(1)
+        assertThat(server.takeRequest(5, TimeUnit.SECONDS)!!.json()["pageToken"]).isNull()
+    }
+
     @Test
     fun `a list with more behind it hands back the service's cursor, and the pages behind it are read on demand`() = runBlocking<Unit> {
         server.enqueue(session("s"))
@@ -417,7 +445,7 @@ class BackgroundComposerApiTest {
         server.enqueue(session("s"))
         server.enqueue(MockResponse().setBody("""{"composers":[],"didLoadStatus":true,"hasMore":false}"""))
 
-        assertThat(api.list()).isEqualTo(AccountList(PinnedIds(emptySet(), loaded = false), emptyMap()))
+        assertThat(api.list()).isEqualTo(AccountList(PinnedIds(emptySet(), loaded = false), emptyMap(), isFirstPage = true))
     }
 
     @Test

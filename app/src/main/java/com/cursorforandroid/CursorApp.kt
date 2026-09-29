@@ -36,6 +36,7 @@ class CursorApp : Application(), Configuration.Provider {
         crashLog.install { CrashContext.runtime(activityManager) }
         DeviceNetwork.install(this)
         graph = AppGraph(this, crashLog = crashLog)
+        graph.warmUp()
         crashLog.install { graph.crashContext() }
         crashLog.watchMemory()
         // How the last processes ended, by Android's own record: the deaths no handler sees (the low-memory killer,

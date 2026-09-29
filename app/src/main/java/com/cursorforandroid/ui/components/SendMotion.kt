@@ -163,6 +163,10 @@ class SendMotion(
     fun hides(id: String, text: String, landing: SendLanding = SendLanding.Bubble): Boolean =
         inAir.any { it.accepts(id, text, landing) && it.phase != SendFlight.Phase.Fading && it.progress.value < HandOff }
 
+    /** Whether a flight is still on its way into the bubble for [id] saying [text], its copy not yet gone from over it. */
+    fun landingOn(id: String, text: String): Boolean =
+        inAir.any { it.accepts(id, text, SendLanding.Bubble) && it.phase != SendFlight.Phase.Fading }
+
     /** The placeholder of the composer at [anchor], held back while the text it held is still over it. */
     fun placeholderAlpha(anchor: ComposerAnchor): Float {
         // Attachments sent alone left the placeholder where it was: there was no text over it.

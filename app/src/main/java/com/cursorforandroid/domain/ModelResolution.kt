@@ -36,7 +36,8 @@ object ModelResolution {
 
     /**
      * What [agent] runs on, in order: the account's record (`requested_model`, else `model_details`; the desktop's
-     * `default` is Auto), what this device recorded at launch or on a switch — by id, else by the label rows kept
+     * `default` is Auto; a record naming no variant of the model this device recorded takes the device's, see
+     * [accountChoice]), what this device recorded at launch or on a switch — by id, else by the label rows kept
      * before ids were — and, with neither, Auto. Every id is read by [ModelSlugs.resolve], so a slug a Project's
      * coordinator or another client wrote (`claude-opus-5-5-max-fast`) lands on the entry and parameters picking it
      * here would give. One the catalog cannot place is named by [ModelSlugs.readableName], never blank, and left
@@ -44,7 +45,7 @@ object ModelResolution {
      */
     fun forChat(agent: Agent?, models: List<ModelOption>): Current {
         agent?.accountModel?.let { account ->
-            val choice = models.choiceFor(account)
+            val choice = models.accountChoice(account, agent.modelId, agent.modelParams)
             if (choice != null) return Current(choice, choice.label, Source.ACCOUNT)
             val label = ModelSlugs.readableName(models, account.modelId)
             return Current(null, label, Source.ACCOUNT, unplacedDetail(models, account.modelId, label))
@@ -74,8 +75,16 @@ object ModelResolution {
             override val source: Source get() = Source.DEVICE
         }
 
-        /** The model of the account's newest chat, as its record names it (Extended mode). */
-        data class Account(val model: AccountModel, override val atMillis: Long) : Candidate {
+        /**
+         * The model of the account's newest chat, as its record names it (Extended mode), with what this device
+         * recorded for that chat ([deviceModelId], [deviceParams]) for a record that names no variant (see [accountChoice]).
+         */
+        data class Account(
+            val model: AccountModel,
+            override val atMillis: Long,
+            val deviceModelId: String? = null,
+            val deviceParams: List<ModelParam> = emptyList(),
+        ) : Candidate {
             override val source: Source get() = Source.ACCOUNT
         }
     }
@@ -112,7 +121,23 @@ object ModelResolution {
         val newest = agents.asSequence()
             .filter { it.scope == AgentScope.PRIMARY && it.accountModel != null && it.createdAtMillis > 0L }
             .maxByOrNull { it.createdAtMillis } ?: return null
-        return Candidate.Account(newest.accountModel!!, newest.createdAtMillis)
+        return Candidate.Account(newest.accountModel!!, newest.createdAtMillis, newest.modelId, newest.modelParams)
+    }
+
+    /**
+     * The picker entry the account's record of a chat names, its variant the one this device recorded for the chat
+     * when the record names the same model by its id or an alias and no parameters of its own — `model_details`, or a
+     * `requested_model` written without them. Such a record says which model, not which variant: the nearest variant
+     * to no parameters is the catalog's default, which read a chat launched with Fast on as Fast off. A record with
+     * parameters, a slug that spells them, or another model is the account's word as it is.
+     */
+    private fun List<ModelOption>.accountChoice(account: AccountModel, deviceModelId: String?, deviceParams: List<ModelParam>): ModelChoice? {
+        val choice = choiceFor(account) ?: return null
+        if (account.params.isNotEmpty() || deviceModelId == null || deviceParams.isEmpty()) return choice
+        val raw = account.modelId.trim()
+        if (none { it.id == raw || raw in it.aliases }) return choice
+        val recorded = choiceFor(deviceModelId, deviceParams) ?: return choice
+        return if (recorded.model.id == choice.model.id) recorded else choice
     }
 
     /**
@@ -123,6 +148,6 @@ object ModelResolution {
     private fun List<ModelOption>.resolve(candidate: Candidate): ModelChoice? = when (candidate) {
         is Candidate.Remembered -> named(candidate.modelId)?.let { ModelChoice(it, it.variantWithParams(candidate.params) ?: it.defaultVariant) }
             ?: ModelSlugs.resolve(this, candidate.modelId, candidate.params.map { (id, value) -> ModelParam(id, value) })
-        is Candidate.Account -> choiceFor(candidate.model)
+        is Candidate.Account -> accountChoice(candidate.model, candidate.deviceModelId, candidate.deviceParams)
     }
 }

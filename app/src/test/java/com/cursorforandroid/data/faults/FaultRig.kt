@@ -3,6 +3,7 @@ package com.cursorforandroid.data.faults
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import com.cursorforandroid.data.api.AccountFollowup
+import com.cursorforandroid.data.api.AccountList
 import com.cursorforandroid.data.api.ApiThrottle
 import com.cursorforandroid.data.api.BlobCache
 import com.cursorforandroid.data.local.BlobDiskStore
@@ -191,7 +192,7 @@ class FaultRig(
     val attachments = AttachmentStore(context)
     /** The list's work in flight, shared by the list and the account layer (see `PendingWork`): what the sidebar's one loading row stands for. */
     val pending = PendingWork()
-    val agents = AgentRepository(session, prefs, attachments, AgentListCache(disk.child("agents")), scope, persistDelayMs = 10, capabilities = { capabilities }, recordOf = { id -> if (this.capabilities.accountSession) accountAgents.record(id) else null }, pending = pending)
+    val agents = AgentRepository(session, prefs, attachments, AgentListCache(disk.child("agents")), scope, persistDelayMs = 10, capabilities = { capabilities }, recordOf = { id -> if (this.capabilities.accountSession) accountAgents.record(id) else null }, accountPaused = { accountRpc.throttle.pausedUntil() != null }, pending = pending)
     val hub = LiveRunHub(session, agents, nowProvider = { now }, pollIntervalMs = 500, releaseGraceMs = 200, reconnectBaseMs = 200, reconnectMaxMs = 800, parking = disk.child("liveruns"), terminalGraceMs = terminalGraceMs, scope = scope)
     val conversationCache = ConversationCache(disk.child("conversations"))
     val traces = TraceCache(JsonDiskCache(File(root, "traces").apply { mkdirs() }, nowProvider = { now }, dispatcher = Dispatchers.Unconfined))
@@ -211,7 +212,8 @@ class FaultRig(
         .build()
         // As `AppGraph` widens the account client: every lane of the throttle on the wire at once.
         .also { it.dispatcher.maxRequestsPerHost = ApiThrottle.ON_THE_WIRE + 2 }
-    private val accountRpc = ConnectJsonClient(accountClient, baseUrl)
+    /** The account service's Connect client, its throttle's lanes with it. */
+    val accountRpc = ConnectJsonClient(accountClient, baseUrl)
     private val sessionTokens = SessionTokenProvider(accountClient, key, apiUrl = baseUrl, now = { now })
     /** The account's list, pins and records (`BackgroundComposerService`), over [accountClient] on the same host. */
     val accountAgents: BackgroundComposerApi = BackgroundComposerApi(accountRpc, sessionTokens)
@@ -227,13 +229,15 @@ class FaultRig(
         override suspend fun record(id: String): ComposerSnapshot? = accountAgents.record(id)
         override suspend fun scanRoots(maxPages: Int): RootScan = accountAgents.scanRoots(maxPages)
         override suspend fun scanRoots(maxPages: Int, stopBelowActivityMillis: Long?): RootScan = accountAgents.scanRoots(maxPages, stopBelowActivityMillis)
+        override suspend fun scanRoots(maxPages: Int, stopBelowActivityMillis: Long?, firstPage: AccountList?): RootScan =
+            accountAgents.scanRoots(maxPages, stopBelowActivityMillis, firstPage)
     }
     val projects: ProjectRepository = ProjectRepository(session, agents, lineageApi, actions = projectApi, store = projectApi, scope = scope, pollIntervalMs = 60_000, capabilities = { capabilities }, retryDelaysMs = listOf(500L, 500L, 500L)).also { it.watchList() }
     val pins: PinRepository = PinRepository(
         session, prefs, agents, accountAgents, scope = scope, capabilities = { capabilities }, retryDelaysMs = listOf(500L, 1_000L, 2_000L), pending = pending,
         onList = { list, token ->
             agents.applySources(list.sources, token)
-            projects.scheduleRootDiscovery(list.composers.filter { it.scope == AgentScope.PROJECT_ROOT }.map { it.id }, deep = agents.lastRefreshDepth == RefreshDepth.Deep)
+            projects.scheduleRootDiscovery(list.composers.filter { it.scope == AgentScope.PROJECT_ROOT }.map { it.id }, deep = agents.lastRefreshDepth == RefreshDepth.Deep, firstPage = list.takeIf { it.isFirstPage })
         },
     ).also { pins ->
         agents.accountPrime = { pins.primeForFetch() }
@@ -317,6 +321,10 @@ class FaultRig(
 
     override fun close() {
         scope.cancel()
+        // Executor shutdown does not cancel calls that are already running. A live poll/stream can therefore keep
+        // MockWebServer.shutdown() in the owning test's teardown indefinitely after the test scope is cancelled.
+        client.dispatcher.cancelAll()
+        accountClient.dispatcher.cancelAll()
         client.dispatcher.executorService.shutdownNow()
         client.connectionPool.evictAll()
         accountClient.dispatcher.executorService.shutdownNow()

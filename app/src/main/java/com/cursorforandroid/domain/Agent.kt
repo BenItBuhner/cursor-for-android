@@ -238,7 +238,6 @@ data class Agent(
     val startingRef: String?,
     val branches: List<GitBranch> = emptyList(),
     val summary: String? = null,
-    val autoCreatePr: Boolean? = null,
     val workOnCurrentBranch: Boolean? = null,
     /**
      * The model the chat runs on, as far as this device knows. The API never reports an agent's model, so these are

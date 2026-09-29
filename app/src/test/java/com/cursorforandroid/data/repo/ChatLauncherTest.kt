@@ -58,7 +58,6 @@ class ChatLauncherTest {
         ref = "main",
         modelId = "auto-smart",
         modelParams = emptyList(),
-        autoCreatePr = false,
         planMode = false,
     ).let { it.copy(agentId = LaunchIdempotency.agentId(it, "nonce-1")) }
     private val id get() = request.agentId!!

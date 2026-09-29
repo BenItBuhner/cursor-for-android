@@ -1,7 +1,10 @@
 package com.cursorforandroid.data.api
 
 import okhttp3.Interceptor
+import okhttp3.Protocol
+import okhttp3.Request
 import okhttp3.Response
+import okhttp3.ResponseBody.Companion.toResponseBody
 import java.io.IOException
 import java.io.InterruptedIOException
 import java.net.UnknownHostException
@@ -11,7 +14,8 @@ import java.util.concurrent.ThreadLocalRandom
 
 /**
  * Retries idempotent requests (GET / HEAD) that fail transiently — a dropped connection, a `429` or a `5xx` — with
- * jittered exponential backoff, honouring `Retry-After` when the server sends one. Anything else (a POST, a `4xx`,
+ * jittered exponential backoff, honouring `Retry-After` when the server sends one — a wait longer than a call sleeps
+ * here is handed back to the caller with the response, and held by the host's other reads. Anything else (a POST, a `4xx`,
  * being offline, a cancelled call, or an event stream) goes straight through, so a retry can never duplicate a
  * launch or stall a UI that is waiting for a definite answer. Bounded to a few short attempts: the point is to
  * ride out a blip, not to hide an outage.
@@ -23,19 +27,25 @@ class RetryInterceptor(
     private val now: () -> Long = System::currentTimeMillis,
     private val sleeper: (Long, () -> Boolean) -> Unit = ::sleepInSlices,
     private val random: () -> Double = { ThreadLocalRandom.current().nextDouble() },
-) : Interceptor {
-
     /**
-     * Until when the host asked every call to wait: a `429` on one call pauses the others before they go out, rather
-     * than each of them meeting the same refusal and backing off on its own. Shared by every call through this client.
+     * Until when each host asked every call to wait: a `429` on one call pauses the others before they go out, rather
+     * than each of them meeting the same refusal and backing off on its own. Shared with the run streams (see
+     * [SseRunStreamer]), which wait it out themselves.
      */
-    @Volatile private var pausedUntilMs = 0L
+    private val pauses: HostPause = HostPause(now),
+) : Interceptor {
 
     override fun intercept(chain: Interceptor.Chain): Response {
         val request = chain.request()
         if (request.header("Accept") == "text/event-stream") return chain.proceed(request)
-        holdForPause(chain)
-        if (!request.isIdempotent()) return chain.proceed(request)
+        val host = request.url.host
+        val held = pauses.remainingMs(host)
+        // A read the host asked to wait longer than a call sleeps here hears the refusal at once, with the wait left,
+        // rather than going out into the window or holding an OkHttp thread for it. A write keeps its bounded hold and
+        // goes out once, as ever.
+        if (held > MAX_RETRY_AFTER_MS && request.isIdempotent()) return refused(request, held)
+        if (held > 0) sleeper(held.coerceAtMost(MAX_RETRY_AFTER_MS)) { chain.call().isCanceled() }
+        if (!request.isIdempotent()) return chain.proceed(request).also { if (it.code == 429) pauses.pause(host, it.retryAfterMs() ?: baseDelayMs) }
         var attempt = 1
         while (true) {
             val response = try {
@@ -48,24 +58,27 @@ class RetryInterceptor(
             }
             // A refusal pauses the other calls of this client for what the server asked; this call's own backoff
             // below covers the same wait, so it does not hold twice.
-            if (response.code == 429) pauseAll(response.retryAfterMs() ?: baseDelayMs)
+            if (response.code == 429) pauses.pause(host, response.retryAfterMs() ?: baseDelayMs)
             if (attempt >= maxAttempts || !response.isTransientFailure() || chain.call().isCanceled()) return response
             val retryAfter = response.retryAfterMs()
+            // Asked to wait longer than a call sleeps here: another try inside the window would only be refused again.
+            // The caller hears the wait (`retryAfterMillis`), and the pause holds this client's other reads meanwhile.
+            if (retryAfter != null && retryAfter > MAX_RETRY_AFTER_MS) return response
             response.close()
             wait(chain, backoff(attempt, retryAfter))
             attempt++
         }
     }
 
-    private fun pauseAll(ms: Long) {
-        val until = now() + ms.coerceIn(0L, MAX_RETRY_AFTER_MS)
-        if (until > pausedUntilMs) pausedUntilMs = until
-    }
-
-    private fun holdForPause(chain: Interceptor.Chain) {
-        val wait = pausedUntilMs - now()
-        if (wait > 0) sleeper(wait) { chain.call().isCanceled() }
-    }
+    /** The refusal the host would give a read inside its pause, said without asking it: a `429` naming the wait left. */
+    private fun refused(request: Request, waitMs: Long): Response = Response.Builder()
+        .request(request)
+        .protocol(Protocol.HTTP_1_1)
+        .code(429)
+        .message("Too Many Requests")
+        .header("Retry-After", ((waitMs + 999) / 1000).toString())
+        .body("".toResponseBody(null))
+        .build()
 
     private fun wait(chain: Interceptor.Chain, delayMs: Long) = sleeper(delayMs) { chain.call().isCanceled() }
 
@@ -98,6 +111,7 @@ class RetryInterceptor(
     }
 
     private companion object {
+        /** The longest a call sleeps in here, for a pause or a `Retry-After`; a longer wait is the caller's. */
         const val MAX_RETRY_AFTER_MS = 10_000L
     }
 }

@@ -88,7 +88,6 @@ class ModelSheetTest {
         loading: Boolean = false,
         unavailable: Boolean = false,
         onRefresh: () -> Unit = {},
-        onAutoCreatePr: ((Boolean) -> Unit)? = {},
         pinnedIds: List<String> = emptyList(),
         noModelRow: NoModelRow? = null,
         referenceLine: Boolean = false,
@@ -107,12 +106,8 @@ class ModelSheetTest {
                     models = models,
                     selectedModel = selectedModel,
                     selectedVariant = selectedVariant,
-                    planMode = false,
-                    autoCreatePr = false,
                     loading = loading,
                     unavailable = unavailable,
-                    onPlanMode = {},
-                    onAutoCreatePr = onAutoCreatePr,
                     onRefresh = onRefresh,
                     onSelect = { model, variant ->
                         picked = model to variant
@@ -282,12 +277,15 @@ class ModelSheetTest {
     }
 
     @Test
-    fun `the picker has no Default row, and both agent options are still offered`() {
+    fun `the picker has no Default row and no Options section, and starts at the models`() {
         show(listOf(sonnet))
         assertAbsent("Default")
         assertAbsent("Your Cursor default model")
-        compose.onNodeWithText("Plan mode").assertIsDisplayed()
-        compose.onNodeWithText("Auto-create PR").assertIsDisplayed()
+        assertAbsent("Options")
+        assertAbsent("Plan mode")
+        assertAbsent("Auto-create PR")
+        compose.onNodeWithText("Models").assertIsDisplayed()
+        compose.onNodeWithText("Claude 4.6 Sonnet").assertIsDisplayed()
     }
 
     /** On a follow-up the row stands for the chat's current model, and picking it reports no model at all. */
@@ -301,13 +299,11 @@ class ModelSheetTest {
         assertThat(picked).isEqualTo(null to null)
     }
 
-    /** A follow-up cannot change an agent's auto-PR setting, and a chat whose model the catalog lists needs no extra row. */
+    /** A chat whose model the catalog lists needs no extra row. */
     @Test
-    fun `without an auto-PR handler or a no-model row neither is shown`() {
-        show(listOf(sonnet), onAutoCreatePr = null, noModelRow = null)
-        compose.onNodeWithText("Plan mode").assertIsDisplayed()
+    fun `without a no-model row none is shown`() {
+        show(listOf(sonnet), noModelRow = null)
         compose.onNodeWithText("Claude 4.6 Sonnet").assertIsDisplayed()
-        assertAbsent("Auto-create PR")
         assertAbsent("Default")
         assertAbsent("Current model")
     }

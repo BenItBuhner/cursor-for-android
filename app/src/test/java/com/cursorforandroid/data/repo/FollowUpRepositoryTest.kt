@@ -29,6 +29,7 @@ import com.cursorforandroid.domain.SteerOutcome
 import com.cursorforandroid.domain.UserMessage
 import com.cursorforandroid.util.AppClock
 import com.cursorforandroid.util.HeldSettings
+import com.cursorforandroid.domain.SteerPhase
 import com.google.common.truth.Truth.assertThat
 import com.google.common.truth.Truth.assertWithMessage
 import kotlinx.coroutines.CompletableDeferred
@@ -426,11 +427,21 @@ class FollowUpRepositoryTest {
         assertThat(diagnostics.attempts.map { it.outcome }).containsExactly("busy", "queued-on-account").inOrder()
     }
 
-    /** The account's side of a steer, as a fake: what was handed over and promoted, and whether either refuses. */
-    private class FakeSteering(var failHandOff: Boolean = false, var failPromote: Boolean = false) : FollowUpRepository.AccountSteering {
+    /**
+     * The account's side of a steer, as a fake: what was handed over, promoted and withdrawn, and whether each refuses.
+     * [gate], when set, holds the hand-over until completed, for a test to see the card mid-steer.
+     */
+    private inner class FakeSteering(
+        var failHandOff: Boolean = false,
+        var failPromote: Boolean = false,
+        var withdrawable: Boolean = false,
+        var gate: CompletableDeferred<Unit>? = null,
+    ) : FollowUpRepository.AccountSteering {
         val handed = mutableListOf<String>()
         val promoted = mutableListOf<String>()
+        val withdrawn = mutableListOf<String>()
         override suspend fun handOff(agentId: String, item: QueuedFollowUp): FollowUpRepository.AccountHandoff {
+            gate?.await()
             if (failHandOff) error("account unreachable")
             handed += item.previewText
             return FollowUpRepository.AccountHandoff(null, "fu-${handed.size}")
@@ -441,11 +452,21 @@ class FollowUpRepositoryTest {
             promoted += followupId
             return SteerOutcome.QUEUED
         }
+
+        // As the app's own does: the account deletes the pending message, and the transcript stops waiting for it.
+        override suspend fun withdraw(agentId: String, followupId: String): Boolean {
+            if (!withdrawable) return false
+            withdrawn += followupId
+            conversations.queuedDeleted(agentId, followupId)
+            return true
+        }
     }
 
-    private fun steeringRepository(steering: FollowUpRepository.AccountSteering?) = FollowUpRepository(
+    private fun steeringRepository(steering: FollowUpRepository.AccountSteering?, persist: Boolean = false) = FollowUpRepository(
         conversations, agents, hub,
         mcpServers = { emptyList() },
+        store = store.takeIf { persist },
+        persist = { true },
         accountQueueAvailable = { steering != null },
         accountSteering = steering,
         scope = scope,
@@ -453,6 +474,8 @@ class FollowUpRepositoryTest {
         idleSettleMs = 20_000,
         retryBaseMs = 20,
     )
+
+    private fun waitingIds(agentId: String) = conversations.state(agentId).value.queuePlacement.waiting.map { it.id }
 
     @Test
     fun `steering a queued message mid-turn hands it to the account and promotes it into the turn, cancelling nothing`() = runBlocking<Unit> {
@@ -468,7 +491,6 @@ class FollowUpRepositoryTest {
         assertThat(result.isSuccess).isTrue()
         assertThat(steering.handed).containsExactly("Also check the release build")
         assertThat(steering.promoted).containsExactly("fu-1")
-        assertThat(followUps.state("bc-1").value.queue.map { it.text }).containsExactly("First in line")
         delay(200)
         assertThat(api.cancelled).isEmpty()
         assertThat(api.runRequests).isEmpty()
@@ -477,7 +499,64 @@ class FollowUpRepositoryTest {
     }
 
     @Test
-    fun `a steer the account will not promote leaves the message on the account's queue, and still cancels nothing`() = runBlocking<Unit> {
+    fun `a steered card stays in its place, steering then steered, and leaves only once the transcript stops waiting for it`() = runBlocking<Unit> {
+        api.addRunningAgent("bc-1", "Agent", "run-1")
+        agents.refresh()
+        val gate = CompletableDeferred<Unit>()
+        val steering = FakeSteering(gate = gate)
+        val followUps = steeringRepository(steering)
+        followUps.enqueue("bc-1", "First in line")
+        val item = followUps.enqueue("bc-1", "Also check the release build")
+
+        val steer = scope.async { followUps.steerNow("bc-1", item.id) }
+        awaitUntil { followUps.state("bc-1").value.queue.any { it.steer == SteerPhase.STEERING } }
+        val steeringCard = followUps.state("bc-1").value.queue.single { it.id == item.id }
+        assertThat(followUps.state("bc-1").value.queue.map { it.text }).containsExactly("First in line", "Also check the release build").inOrder()
+        assertThat(steeringCard.isSending).isTrue()
+        assertThat(steeringCard.steerFollowupId).isNull()
+
+        gate.complete(Unit)
+        assertThat(steer.await().isSuccess).isTrue()
+
+        // Still on the device's queue, in its place, and standing for the account's row the transcript now waits on.
+        val steered = followUps.state("bc-1").value.queue.single { it.id == item.id }
+        assertThat(steered.steer).isEqualTo(SteerPhase.STEERED)
+        assertThat(steered.steerFollowupId).isEqualTo("fu-1")
+        assertThat(followUps.state("bc-1").value.queue.map { it.text }).containsExactly("First in line", "Also check the release build").inOrder()
+        assertThat(waitingIds("bc-1")).contains("fu-1")
+        delay(300)
+        assertThat(followUps.state("bc-1").value.queue.map { it.id }).contains(item.id)
+
+        // The placement lets the message go (filed as a bubble, or let go by the account): the card goes with it.
+        conversations.queuedDeleted("bc-1", "fu-1")
+        awaitUntil { followUps.state("bc-1").value.queue.none { it.id == item.id } }
+        assertThat(followUps.state("bc-1").value.queue.map { it.text }).containsExactly("First in line")
+        assertThat(api.cancelled).isEmpty()
+    }
+
+    @Test
+    fun `the account's waiting row for a steer is published only after the card has taken it for its own`() = runBlocking<Unit> {
+        api.addRunningAgent("bc-1", "Agent", "run-1")
+        agents.refresh()
+        val followUps = steeringRepository(FakeSteering())
+        val item = followUps.enqueue("bc-1", "Steer me")
+        // What the card said of the account's row at each frame the transcript's placement named that row.
+        val seen = java.util.Collections.synchronizedList(mutableListOf<String?>())
+        val watcher = scope.launch(Dispatchers.Unconfined) {
+            conversations.state("bc-1").collect { s ->
+                if (s.queuePlacement.waiting.any { it.id == "fu-1" }) {
+                    seen += followUps.state("bc-1").value.queue.firstOrNull { it.id == item.id }?.steerFollowupId
+                }
+            }
+        }
+        followUps.steerNow("bc-1", item.id)
+        awaitUntil { seen.isNotEmpty() }
+        watcher.cancel()
+        assertThat(seen.distinct()).containsExactly("fu-1")
+    }
+
+    @Test
+    fun `a steer the account will not promote nor give back leaves the message on the account's queue, saying why`() = runBlocking<Unit> {
         api.addRunningAgent("bc-1", "Agent", "run-1")
         agents.refresh()
         val steering = FakeSteering(failPromote = true)
@@ -486,11 +565,42 @@ class FollowUpRepositoryTest {
 
         val result = followUps.steerNow("bc-1", item.id)
 
-        assertThat(result.exceptionOrNull()?.message).contains("waits on your account's queue")
+        assertThat(result.exceptionOrNull()?.message).isEqualTo("Couldn't steer: rejected.")
         assertThat(steering.handed).containsExactly("Steer me")
         assertThat(followUps.state("bc-1").value.queue).isEmpty()
+        assertThat(waitingIds("bc-1")).contains("fu-1")
+        assertThat(conversations.state("bc-1").value.queuePlacement.returned["fu-1"]).isEqualTo("Couldn't steer: rejected. It waits on your account's queue.")
         assertThat(api.cancelled).isEmpty()
         assertThat(api.runRequests).isEmpty()
+    }
+
+    @Test
+    fun `a steer the account will not promote but gives back returns the card to waiting in its place, the reason inline`() = runBlocking<Unit> {
+        api.addRunningAgent("bc-1", "Agent", "run-1")
+        agents.refresh()
+        val steering = FakeSteering(failPromote = true, withdrawable = true)
+        val followUps = steeringRepository(steering)
+        followUps.enqueue("bc-1", "First in line")
+        val item = followUps.enqueue("bc-1", "Steer me")
+
+        assertThat(followUps.steerNow("bc-1", item.id).isFailure).isTrue()
+
+        assertThat(steering.withdrawn).containsExactly("fu-1")
+        val back = followUps.state("bc-1").value.queue.single { it.id == item.id }
+        assertThat(followUps.state("bc-1").value.queue.map { it.text }).containsExactly("First in line", "Steer me").inOrder()
+        assertThat(back.steer).isNull()
+        assertThat(back.steerFollowupId).isNull()
+        assertThat(back.isSending).isFalse()
+        assertThat(back.error).isNull()
+        assertThat(back.steerError).isEqualTo("Couldn't steer: rejected.")
+        assertThat(waitingIds("bc-1")).doesNotContain("fu-1")
+
+        // The up arrow tries again, and the reason goes with the new try.
+        steering.failPromote = false
+        assertThat(followUps.steerNow("bc-1", item.id).isSuccess).isTrue()
+        val again = followUps.state("bc-1").value.queue.single { it.id == item.id }
+        assertThat(again.steerError).isNull()
+        assertThat(again.steer).isEqualTo(SteerPhase.STEERED)
     }
 
     @Test
@@ -505,8 +615,41 @@ class FollowUpRepositoryTest {
         val back = followUps.state("bc-1").value.queue.single()
         assertThat(back.id).isEqualTo(item.id)
         assertThat(back.isSending).isFalse()
-        assertThat(back.error).isNotNull()
+        assertThat(back.steer).isNull()
+        assertThat(back.error).isNull()
+        assertThat(back.steerError).isEqualTo("Couldn't steer: account unreachable.")
         assertThat(api.cancelled).isEmpty()
+    }
+
+    @Test
+    fun `the up arrow mid-turn without the account says so on the card, and the message keeps its place`() = runBlocking<Unit> {
+        api.addRunningAgent("bc-1", "Agent", "run-1")
+        agents.refresh()
+        val followUps = steeringRepository(null)
+        val item = followUps.enqueue("bc-1", "Steer me")
+
+        followUps.noteSteerUnavailable("bc-1", item.id)
+
+        val card = followUps.state("bc-1").value.queue.single()
+        assertThat(card.steerError).isEqualTo(FollowUpRepository.STEER_NEEDS_EXTENDED)
+        assertThat(card.steer).isNull()
+        assertThat(api.runRequests).isEmpty()
+    }
+
+    @Test
+    fun `a card the account holds is not written to disk, so a restart never sends it twice`() = runBlocking<Unit> {
+        api.addRunningAgent("bc-1", "Agent", "run-1")
+        agents.refresh()
+        val followUps = steeringRepository(FakeSteering(), persist = true)
+        followUps.state("bc-1").first { it.restored }
+        followUps.enqueue("bc-1", "Stays")
+        val item = followUps.enqueue("bc-1", "Steered away")
+        awaitUntil { store.read("bc-1")?.queue?.size == 2 }
+
+        assertThat(followUps.steerNow("bc-1", item.id).isSuccess).isTrue()
+
+        assertThat(followUps.state("bc-1").value.queue.map { it.text }).containsExactly("Stays", "Steered away").inOrder()
+        awaitUntil { store.read("bc-1")?.queue?.map { it.text } == listOf("Stays") }
     }
 
     @Test
@@ -921,7 +1064,7 @@ class FollowUpRepositoryTest {
 
     @Test
     fun `steering while the chat is still being created waits for its first turn rather than stopping the launch`() = runBlocking<Unit> {
-        val request = LaunchRequest(prompt = "Do the thing", repoUrl = "https://github.com/acme/app", ref = "main", modelId = "auto-smart", modelParams = emptyList(), autoCreatePr = false, planMode = false)
+        val request = LaunchRequest(prompt = "Do the thing", repoUrl = "https://github.com/acme/app", ref = "main", modelId = "auto-smart", modelParams = emptyList(), planMode = false)
             .let { it.copy(agentId = LaunchIdempotency.agentId(it, "nonce")) }
         val id = request.agentId!!
         api.createGate = CompletableDeferred()
@@ -1122,6 +1265,104 @@ class FollowUpRepositoryTest {
         assertThat(state.queue.map { it.text }).containsExactly("Half-typed", "Second").inOrder()
         // The displaced draft keeps the taken message's place, with its own id.
         assertThat(state.queue.first().id).isNotEqualTo(first.id)
+    }
+
+    @Test
+    fun `a draft queued in place of a failed head it was edited from goes out`() = runBlocking<Unit> {
+        api.addIdleAgent("bc-1", "Agent", "run-0")
+        agents.refresh()
+        val followUps = repository()
+        api.failCreateRun = true
+        val failed = followUps.enqueue("bc-1", "Fails once")
+        awaitUntil { followUps.state("bc-1").value.queue.singleOrNull()?.error != null }
+        awaitUntil { !FollowUpRepositoryTestHelper.dispatcherActive(followUps, "bc-1") }
+        api.failCreateRun = false
+        val before = sent().size
+        followUps.setDraftText("bc-1", "Fresh words")
+
+        followUps.takeForEdit("bc-1", failed.id)
+
+        awaitUntil { sent().drop(before) == listOf("Fresh words") && followUps.state("bc-1").value.queue.isEmpty() }
+        assertThat(followUps.state("bc-1").value.draft.text).isEqualTo("Fails once")
+    }
+
+    @Test
+    fun `a draft queued in place of a held message starts fresh on the composer's own model and mode`() = runBlocking<Unit> {
+        api.addRunningAgent("bc-1", "Agent", "run-1")
+        agents.refresh()
+        val followUps = repository()
+        val held = followUps.enqueue("bc-1", "Queued on GPT", modelId = "gpt-5", modelDisplayName = "GPT-5", planMode = true, refusedAsBusy = true)
+        followUps.setDraftText("bc-1", "Fresh words on the chat's model")
+
+        followUps.takeForEdit("bc-1", held.id)
+
+        val displaced = followUps.state("bc-1").value.queue.single()
+        assertThat(displaced.text).isEqualTo("Fresh words on the chat's model")
+        assertThat(displaced.queuedAtMillis).isEqualTo(now)
+        assertThat(displaced.isHeld).isFalse()
+        assertThat(displaced.heldSinceMillis).isNull()
+        assertThat(displaced.busyRefusals).isEqualTo(0)
+        assertThat(displaced.notBeforeMillis).isNull()
+        assertThat(displaced.throttleRefusals).isEqualTo(0)
+        assertThat(displaced.serverReason).isNull()
+        assertThat(displaced.holdReason).isNull()
+        assertThat(displaced.modelId).isNull()
+        assertThat(displaced.modelParams).isEmpty()
+        assertThat(displaced.modelDisplayName).isNull()
+        assertThat(displaced.planMode).isNull()
+    }
+
+    @Test
+    fun `a draft queued in place of a message that may have been sent is not asked to be confirmed`() = runBlocking<Unit> {
+        api.addIdleAgent("bc-1", "Agent", "run-0")
+        agents.refresh()
+        val orphan = QueuedFollowUp(id = "queued-orphan", text = "Sent just before the process died", queuedAtMillis = now - 60_000, sendStartedAtMillis = now - 55_000)
+        store.write("bc-1", FollowUpDraft.EMPTY, listOf(orphan))
+        val followUps = repository(persist = true)
+        followUps.state("bc-1").first { it.restored }
+        awaitUntil { followUps.state("bc-1").value.queue.singleOrNull()?.needsConfirmation == true }
+        followUps.setDraftText("bc-1", "A brand-new message")
+
+        followUps.takeForEdit("bc-1", orphan.id)
+
+        awaitUntil { sent() == listOf("A brand-new message") && followUps.state("bc-1").value.queue.isEmpty() }
+    }
+
+    @Test
+    fun `a draft queued in place of a message carries the composer's own pick and pill`() = runBlocking<Unit> {
+        api.addRunningAgent("bc-1", "Agent", "run-1")
+        agents.refresh()
+        val followUps = repository()
+        followUps.state("bc-1").first { it.restored }
+        val queued = followUps.enqueue("bc-1", "Queued plainly")
+        val picked = DraftModel("composer-2.5", listOf(ModelParam("fast", "true")), "Composer 2.5")
+        followUps.setDraftText("bc-1", "Typed with a pick")
+        followUps.setDraftMode("bc-1", AgentMode.PLAN)
+        followUps.setDraftModel("bc-1", picked)
+
+        followUps.takeForEdit("bc-1", queued.id)
+
+        val displaced = followUps.state("bc-1").value.queue.single()
+        assertThat(displaced.planMode).isTrue()
+        assertThat(displaced.modelId).isEqualTo("composer-2.5")
+        assertThat(displaced.modelParams).containsExactly(ModelParam("fast", "true"))
+        assertThat(displaced.modelDisplayName).isEqualTo("Composer 2.5")
+    }
+
+    @Test
+    fun `a message taken back to edit brings its model and Plan mode into the composer`() = runBlocking<Unit> {
+        api.addRunningAgent("bc-1", "Agent", "run-1")
+        agents.refresh()
+        val followUps = repository()
+        followUps.state("bc-1").first { it.restored }
+        val queued = followUps.enqueue("bc-1", "Queued on GPT", modelId = "gpt-5", modelParams = listOf(ModelParam("effort", "high")), modelDisplayName = "GPT-5", planMode = true)
+
+        followUps.takeForEdit("bc-1", queued.id)
+
+        val draft = followUps.state("bc-1").value.draft
+        assertThat(draft.text).isEqualTo("Queued on GPT")
+        assertThat(draft.mode).isEqualTo(AgentMode.PLAN)
+        assertThat(draft.model).isEqualTo(DraftModel("gpt-5", listOf(ModelParam("effort", "high")), "GPT-5"))
     }
 
     @Test

@@ -19,10 +19,10 @@ import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -147,19 +147,23 @@ class SessionManager(
      * the wait for it is bounded even when nothing is cached, so a slow network never holds the splash screen.
      */
     suspend fun restore() {
+        // The encrypted key store initialises the Android Keystore on first access — the slowest read of a cold
+        // start, and never on the main thread — so it is begun at once, beside the settings read, rather than after
+        // it. The key itself is read only once the tombstone and the demo flag below have had their say.
+        val storedKey = scope.async(Dispatchers.IO) { keyStore.apiKey() }
+        val stored = prefs.sessionSnapshot()
         // A sign-out that could not prove the key was gone left a tombstone behind. The key stays withheld while it
         // stands, and the removal and the preference cleanup it could not finish are retried now.
         if (withContext(Dispatchers.IO) { keyStore.signOutPending() }) {
             finishPendingSignOut()
             return
         }
-        if (prefs.demoMode.first()) {
+        if (stored.demoMode) {
             _backend.value = demoBackend
             _state.value = SessionState.SignedIn(demoUser(), isDemo = true)
             return
         }
-        // The encrypted key store initialises the Android Keystore on first access; never on the main thread.
-        val key = withContext(Dispatchers.IO) { keyStore.apiKey() }
+        val key = storedKey.await()
         if (key.isNullOrBlank()) {
             // No key and not the demo: no account owns the settings a sign-out clears, so a clear that could not be
             // written last time is tried again here rather than being inherited by whoever signs in next.
@@ -173,14 +177,14 @@ class SessionManager(
             return
         }
         // Keys stored before the method was recorded were all pasted.
-        val credential = prefs.credentialInfo.first() ?: CredentialInfo(SignInMethod.ApiKey, expiresAtMs = null)
+        val credential = stored.credentialInfo ?: CredentialInfo(SignInMethod.ApiKey, expiresAtMs = null)
         if (credential.isExpiredAt(AppClock.now())) {
             // A key the app minted has lapsed; the API would only say 401. Skip the doomed request.
             signOut()
             return
         }
         _backend.value = realBackend
-        val cached = prefs.cachedUser.first()
+        val cached = stored.cachedUser
         if (cached != null) _state.value = SessionState.SignedIn(cached, isDemo = false, credential = credential)
         val validation: Job = scope.launch { validateStoredKey(cached, credential) }
         if (cached == null) {

@@ -251,4 +251,18 @@ class EventGroupsTest {
         val close = groups(TranscriptRows.of(listOf(events[1].copy(timestampMillis = 10_000L), events[2].copy(timestampMillis = 40_000L)), coordinatorMode = true)).single()
         assertThat(close.summary.span).isNull()
     }
+
+    @Test
+    fun `a replayed notice folds into the one just before it, not an equal one further up the stretch`() {
+        val report = notice("n1", "Subagent completed", "Render", SystemNotification.Kind.Subagent, at = 1_000L, body = "first report")
+        val again = notice("n2", "Subagent completed", "Render", SystemNotification.Kind.Subagent, at = 3_000L, body = "second report")
+        val read = ActivityGroup("g", listOf(ToolCall("c", "read_file", ToolKind.Read, ToolCall.STATUS_COMPLETED, "notes.md")))
+        // The notice, a call that keeps what follows apart, the notice replayed (the same notification again), then the next report of it.
+        val rows = TranscriptRows.of(listOf(report, read, report, again), coordinatorMode = true)
+        val events = loneEvents(rows)
+        assertThat(events.map { it.count }).containsExactly(1, 2).inOrder()
+        assertThat(events[0].notification).isEqualTo(report)
+        assertThat(events[1].notification.body).isEqualTo("second report")
+        assertThat(events[1].notification.id).isEqualTo("n1")
+    }
 }

@@ -1,0 +1,82 @@
+# Baseline profile: the classes and methods ART compiles ahead of time, so a fresh install or update does not run the
+# startup path interpreted until the device's idle+charging background dexopt. The app is sideloaded from GitHub
+# Releases, so there are no Play cloud profiles to fall back on; androidx.profileinstaller installs this one from the
+# APK (assets/dexopt/baseline.prof) on first launch.
+#
+# Hand-written wildcard rules in the human-readable profile format (H = hot, S = startup, P = post-startup; `L...;` lines
+# are classes to preload). R8 rewrites them to the obfuscated names at build time. The Compose, lifecycle and activity
+# AARs already ship their own profiles, which AGP merges in; the Compose rules below widen those to everything the app
+# reaches through them. Keep the app rules to what cold start, the sidebar and the first chat open touch: a rule for
+# the whole of com/cursorforandroid would also compile settings, the media viewer and the widgets.
+
+# --- App: process start, graph, session restore, activity, root and navigation -----------------------------------------
+HSPLcom/cursorforandroid/*;->**(**)**
+Lcom/cursorforandroid/*;
+HSPLcom/cursorforandroid/crash/**;->**(**)**
+Lcom/cursorforandroid/crash/**;
+HSPLcom/cursorforandroid/util/**;->**(**)**
+Lcom/cursorforandroid/util/**;
+HSPLcom/cursorforandroid/ui/theme/**;->**(**)**
+Lcom/cursorforandroid/ui/theme/**;
+HSPLcom/cursorforandroid/ui/navigation/**;->**(**)**
+Lcom/cursorforandroid/ui/navigation/**;
+HSPLcom/cursorforandroid/ui/*;->**(**)**
+Lcom/cursorforandroid/ui/*;
+
+# --- App: repositories, API clients, DTOs, disk caches and the domain models they build --------------------------------
+HSPLcom/cursorforandroid/data/**;->**(**)**
+Lcom/cursorforandroid/data/**;
+HSPLcom/cursorforandroid/domain/**;->**(**)**
+Lcom/cursorforandroid/domain/**;
+
+# --- App: the sidebar, the new-chat home and the conversation (timeline rows, markdown) --------------------------------
+HSPLcom/cursorforandroid/ui/agents/**;->**(**)**
+Lcom/cursorforandroid/ui/agents/**;
+HSPLcom/cursorforandroid/ui/home/**;->**(**)**
+Lcom/cursorforandroid/ui/home/**;
+HSPLcom/cursorforandroid/ui/compose/**;->**(**)**
+Lcom/cursorforandroid/ui/compose/**;
+HSPLcom/cursorforandroid/ui/projects/**;->**(**)**
+Lcom/cursorforandroid/ui/projects/**;
+HSPLcom/cursorforandroid/ui/icons/**;->**(**)**
+Lcom/cursorforandroid/ui/icons/**;
+HSPLcom/cursorforandroid/ui/components/**;->**(**)**
+Lcom/cursorforandroid/ui/components/**;
+HSPLcom/cursorforandroid/ui/conversation/**;->**(**)**
+Lcom/cursorforandroid/ui/conversation/**;
+HSPLcom/cursorforandroid/ui/onboarding/**;->**(**)**
+Lcom/cursorforandroid/ui/onboarding/**;
+HSPLcom/cursorforandroid/ui/auth/**;->**(**)**
+Lcom/cursorforandroid/ui/auth/**;
+
+# --- Compose -------------------------------------------------------------------------------------------------------------
+HSPLandroidx/compose/runtime/**;->**(**)**
+Landroidx/compose/runtime/**;
+HSPLandroidx/compose/ui/**;->**(**)**
+Landroidx/compose/ui/**;
+HSPLandroidx/compose/foundation/**;->**(**)**
+Landroidx/compose/foundation/**;
+HSPLandroidx/compose/animation/**;->**(**)**
+Landroidx/compose/animation/**;
+HSPLandroidx/compose/material3/**;->**(**)**
+Landroidx/compose/material3/**;
+
+# --- Networking: OkHttp, Okio, Retrofit ----------------------------------------------------------------------------------
+HSPLokhttp3/**;->**(**)**
+Lokhttp3/**;
+HSPLokio/**;->**(**)**
+Lokio/**;
+HSPLretrofit2/**;->**(**)**
+Lretrofit2/**;
+
+# --- kotlinx.serialization and coroutines --------------------------------------------------------------------------------
+HSPLkotlinx/serialization/**;->**(**)**
+Lkotlinx/serialization/**;
+HSPLkotlinx/coroutines/**;->**(**)**
+Lkotlinx/coroutines/**;
+
+# --- Session restore: DataStore and the encrypted key store --------------------------------------------------------------
+HSPLandroidx/datastore/**;->**(**)**
+Landroidx/datastore/**;
+HSPLandroidx/security/crypto/**;->**(**)**
+Landroidx/security/crypto/**;

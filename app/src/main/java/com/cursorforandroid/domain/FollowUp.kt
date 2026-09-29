@@ -51,6 +51,14 @@ fun attachmentOnlyText(images: Int, files: Int): String = when {
     else -> QueuedFollowUp.ATTACHMENTS_ONLY_TEXT
 }
 
+/** A queued message being steered into the turn under way: on its way to the agent, then with the agent until the transcript shows it. */
+enum class SteerPhase {
+    /** Filed with the account's queue and being promoted into the turn. */
+    STEERING,
+    /** The account took the steer (or started a turn on it); the card waits for the transcript to show the message. */
+    STEERED,
+}
+
 /**
  * A follow-up sent while the agent was still on its previous turn. The Cloud Agents API takes one run at a time —
  * `POST /v1/agents/{id}/runs` answers `409 agent_busy` for anything more, and the SDK's `steer` resolves
@@ -113,6 +121,21 @@ data class QueuedFollowUp(
     val holdReason: String? = null,
     /** Attempts the server refused with a wait it named, in a row: one is waited out; the second is the user's to hear. */
     val throttleRefusals: Int = 0,
+    /**
+     * Where a steer into the turn under way stands (see `FollowUpRepository.steerNow`): the card stays in its place,
+     * saying so, until the transcript shows the message. Null when the message is not being steered.
+     */
+    val steer: SteerPhase? = null,
+    /**
+     * The account's id for the message once the steer has filed it with the account's queue: the account's row for
+     * it is this card for as long as the card stands, and is not shown beside it.
+     */
+    val steerFollowupId: String? = null,
+    /**
+     * Why the last steer did not go through. The message waits in its place as before — nothing about its own send
+     * failed — and the card says why under it until the next steer or send.
+     */
+    val steerError: String? = null,
 ) {
     /** The text a card shows: the message itself, or what the request will say for an attachment-only follow-up. */
     val previewText: String get() = text.ifBlank { attachmentOnlyText(images.size, files.size) }
@@ -122,6 +145,12 @@ data class QueuedFollowUp(
 
     /** The message is waiting on a server that keeps calling the agent busy (see [heldSinceMillis]); its card says so, steadily, attempts included. */
     val isHeld: Boolean get() = heldSinceMillis != null && warning == null
+
+    /**
+     * Its request is out — a first send, a held message's retry, or a steer ([steer] claims the message as sending
+     * until the transcript shows it) — so it can be neither removed, edited nor sent again until the server answers.
+     */
+    val isOnItsWay: Boolean get() = isSending || isSteered
 
     companion object {
         /** What an image-only follow-up says in its prompt, the same as when the composer sends one directly. */

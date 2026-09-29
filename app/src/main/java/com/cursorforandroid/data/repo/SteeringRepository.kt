@@ -77,10 +77,14 @@ class SteeringRepository(
     private val pollIntervalMs: Long = POLL_INTERVAL_MS,
     /** Whether the account's calls may be made (Extended mode). Everything, for tests of the calls themselves. */
     private val capabilities: suspend () -> Capabilities = { Capabilities.EXTENDED },
+    /** A clock that only moves forward, for how long ago the goal was read. */
+    private val monotonicMillis: () -> Long = { System.nanoTime() / 1_000_000 },
 ) {
     private val states = ConcurrentHashMap<String, MutableStateFlow<ConversationControls>>()
     private val attached = ConcurrentHashMap<String, Int>()
     private val pollers = ConcurrentHashMap<String, Job>()
+    /** Per chat: when the goal was last asked for, by [monotonicMillis]. */
+    private val goalReadAt = ConcurrentHashMap<String, Long>()
     /** Per chat: how many reads of its queue have begun, and the newest of them applied (see [applyQueueRead]). */
     private val queueReads = ConcurrentHashMap<String, AtomicLong>()
     private val queueApplied = HashMap<String, Long>()
@@ -98,9 +102,10 @@ class SteeringRepository(
     suspend fun capabilities(): Capabilities = capabilities.invoke()
 
     /**
-     * A chat's screen is up: its queue is read now and every [pollIntervalMs] while it is (the account's list is
-     * edited from every client, and `StreamBackgroundComposerUpdates` would replace the poll once a Connect streaming
-     * client exists). Balanced by [detach].
+     * A chat's screen is on screen (started, not merely alive on the back stack or behind a backgrounded app): its
+     * queue is read now and every [pollIntervalMs] while it is (the account's list is edited from every client, and
+     * `StreamBackgroundComposerUpdates` would replace the poll once a Connect streaming client exists); its goal now
+     * too unless read within the goal's own interval. Balanced by [detach] when the screen stops.
      */
     fun attach(agentId: String) {
         val count = attached.merge(agentId, 1, Int::plus) ?: 1
@@ -115,12 +120,18 @@ class SteeringRepository(
                         .collect { delivered -> if (delivered.isNotEmpty()) refreshQueue(agentId) }
                 }
             }
-            var polls = 0
             while (isActive) {
                 refreshQueue(agentId)
-                // The goal moves slowly and its record is the conversation's whole state structure: read on the
-                // first poll and every few after, the transcript's own reading carrying the strip in between.
-                if (polls++ % GOAL_POLL_EVERY == 0) refreshGoal(agentId)
+                // The goal moves slowly and its record is the conversation's whole state structure: read once it is
+                // [GOAL_POLL_EVERY] polls old — on the first poll unless a screen that just stopped read it — the
+                // transcript's own reading carrying the strip in between.
+                val lastGoal = goalReadAt[agentId]
+                val now = monotonicMillis()
+                // Half a poll short of the interval, so the poll that lands on it is never skipped for a rounded millisecond.
+                if (lastGoal == null || now - lastGoal >= GOAL_POLL_EVERY * pollIntervalMs - pollIntervalMs / 2) {
+                    goalReadAt[agentId] = now
+                    refreshGoal(agentId)
+                }
                 delay(pollIntervalMs)
             }
         }
@@ -297,6 +308,7 @@ class SteeringRepository(
         pollers.values.forEach { it.cancel() }
         pollers.clear()
         attached.clear()
+        goalReadAt.clear()
     }
 
     /** The run the account is on as far as this device knows; never a prompt's local placeholder. */

@@ -12,7 +12,7 @@ object SlashCommands {
     const val MULTITASK = "multitask"
     /**
      * `/plan`: the composer's shorthand for plan mode. Never part of the prompt — typing or picking it turns the plan
-     * pill on, and the run is asked for `mode: "plan"` the same way the model picker's toggle asks for it.
+     * pill on, and the run is asked for `mode: "plan"` the same way the "+" menu's Plan asks for it.
      */
     const val PLAN = "plan"
     /**

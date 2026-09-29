@@ -24,10 +24,12 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
@@ -48,6 +50,35 @@ class PreferencesStoreTest {
         assertThat(prefs.oledBlack.first()).isTrue()
         prefs.setOledBlack(false)
         assertThat(prefs.oledBlack.first()).isFalse()
+    }
+
+    @Test
+    fun `a write to one setting is not a new value of the others`() = runBlocking {
+        val prefs = PreferencesStore(ApplicationProvider.getApplicationContext())
+        val lists = mutableListOf<Any>()
+        val locals = mutableListOf<Any>()
+        val defaults = mutableListOf<Any>()
+        val themes = mutableListOf<Any>()
+        val widths = mutableListOf<Int?>()
+        val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
+        listOf(prefs.listPreferences to lists, prefs.localAgentState to locals, prefs.composerDefaults to defaults, prefs.themeMode to themes)
+            .forEach { (flow, seen) -> scope.launch { flow.collect { synchronized(seen) { seen += it } } } }
+        scope.launch { prefs.railWidthDp.collect { synchronized(widths) { widths += it } } }
+        try {
+            withTimeout(5_000) { while (listOf(lists, locals, defaults, themes).any { synchronized(it) { it.isEmpty() } }) delay(10) }
+            val width = 200 + (System.nanoTime() % 100).toInt()
+            prefs.setRailWidthDp(width)
+            prefs.setOledBlack(true)
+            withTimeout(5_000) { while (synchronized(widths) { width !in widths }) delay(10) }
+            delay(200)
+            listOf(lists, locals, defaults, themes).forEach { seen -> assertThat(synchronized(seen) { seen.size }).isEqualTo(1) }
+
+            prefs.markRead("agent-${System.nanoTime()}", 1_000L)
+            withTimeout(5_000) { while (synchronized(locals) { locals.size } < 2) delay(10) }
+            assertThat(synchronized(lists) { lists.size }).isEqualTo(1)
+        } finally {
+            scope.coroutineContext[Job]!!.cancelAndJoin()
+        }
     }
 
     @Test
@@ -283,7 +314,7 @@ class PreferencesStoreTest {
     }
 
     @Test
-    fun `the pre-release, haptic and voice input switches and the panel's width in dp an earlier build stored are deleted, and nothing else is`() = runBlocking<Unit> {
+    fun `the pre-release, haptic, voice input and auto-create PR switches and the panel's width in dp an earlier build stored are deleted, and nothing else is`() = runBlocking<Unit> {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val store = PreferenceDataStoreFactory.create(
             scope = CoroutineScope(Dispatchers.IO + SupervisorJob()),
@@ -294,6 +325,7 @@ class PreferencesStoreTest {
             p[booleanPreferencesKey("haptic_feedback")] = false
             p[booleanPreferencesKey("voice_input")] = true
             p[intPreferencesKey("panel_width_dp")] = 400
+            p[booleanPreferencesKey("auto_create_pr")] = true
             p[booleanPreferencesKey("auto_update")] = false
             p[stringPreferencesKey("theme_mode")] = ThemeMode.Light.name
             p[intPreferencesKey("rail_width_dp")] = 240
@@ -418,7 +450,6 @@ class PreferencesStoreTest {
             ref = "main",
             modelId = "auto-smart",
             params = emptyMap(),
-            autoCreatePr = true,
         )
         prefs.rememberModel("composer-2.5", mapOf("fast" to "false"))
         val defaults = prefs.composerDefaults.first()
@@ -427,7 +458,6 @@ class PreferencesStoreTest {
         assertThat(defaults.modelChosen).isTrue()
         assertThat(defaults.repoUrl).isEqualTo("https://github.com/acme/app")
         assertThat(defaults.ref).isEqualTo("main")
-        assertThat(defaults.autoCreatePr).isTrue()
     }
 
     /**

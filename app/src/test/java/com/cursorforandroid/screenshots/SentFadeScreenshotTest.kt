@@ -14,6 +14,7 @@ import androidx.compose.material3.LocalRippleConfiguration
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshots.Snapshot
 import androidx.compose.ui.Modifier
@@ -78,7 +79,7 @@ class SentFadeScreenshotTest {
         compose.mainClock.autoAdvance = false
         compose.setContent {
             val fades = rememberSentFades("chat", animatorsEnabled = { true })
-            fades.look(items)
+            fades.look(remember(items) { items.filterIsInstance<UserMessage>() })
             CursorTheme(mode = ThemeMode.Dark) {
                 val controls = TranscriptControls(outgoing = outgoing, onRetryOutgoing = {}, onEditOutgoing = {})
                 CompositionLocalProvider(LocalRippleConfiguration provides null, LocalTranscriptControls provides controls, LocalSentFades provides fades) {

@@ -1,7 +1,6 @@
 package com.cursorforandroid.ui.panel
 
 import android.content.Intent
-import android.os.Build
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
@@ -351,7 +350,7 @@ val LocalPanelGraph = staticCompositionLocalOf<AppGraph?> { null }
 
 /**
  * The [PanelActions] for a live panel: the view model's loads and tabs, and the platform's clipboard, browser and
- * share sheet. [onToast] surfaces confirmations on the screen's own snackbar; [onOpenAgent] is the host's navigation,
+ * share sheet. [onToast] surfaces what could not be done on the screen's own snackbar; [onOpenAgent] is the host's navigation,
  * absent where the screen cannot navigate — another chat opens as a tab of the panel, and as the conversation itself
  * through that navigation.
  */
@@ -382,11 +381,7 @@ fun rememberPanelActions(
             override fun openUrl(url: String) {
                 runCatching { uriHandler.openUri(url) }.onFailure { onToast("Nothing on this device can open that link.") }
             }
-            override fun copyText(text: String, confirmation: String) {
-                clipboard.setText(AnnotatedString(text))
-                // Android 13+ confirms clipboard writes itself.
-                if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) onToast(confirmation)
-            }
+            override fun copyText(text: String, confirmation: String) = clipboard.setText(AnnotatedString(text))
             override fun shareText(text: String) {
                 val send = Intent(Intent.ACTION_SEND).apply {
                     type = "text/plain"
@@ -426,11 +421,9 @@ fun rememberPanelActions(
             override fun closeDesktop() = viewModel.closeDesktop()
             override fun createPullRequest() = viewModel.createPullRequest()
 
-            /** One account-service control: what it came back with goes on the screen's snackbar, as does the reason it did not happen. */
+            /** One account-service control: its outcome shows where it lands (the run, the card); only the reason it did not happen goes on the screen's snackbar. */
             private fun control(block: suspend () -> Result<String?>) {
-                scope.launch {
-                    block().fold(onSuccess = { message -> if (!message.isNullOrBlank()) onToast(message) }, onFailure = { onToast(it.userMessage()) })
-                }
+                scope.launch { block().onFailure { onToast(it.userMessage()) } }
             }
             override fun answerQuestion(callId: String, answers: List<ToolPayload.Question.Answer>) = control { viewModel.answerQuestion(callId, answers) }
             override fun pauseRun() = control { viewModel.pauseRun() }

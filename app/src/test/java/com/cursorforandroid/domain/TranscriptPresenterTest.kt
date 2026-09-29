@@ -125,6 +125,56 @@ class TranscriptPresenterTest {
     }
 
     @Test
+    fun `the same items presented again answer with the last presentation, and say nothing was cut`() {
+        val presenter = TranscriptPresenter()
+        val items = coordinatorItems() + ordinaryTurns(from = 0, count = 5, random = Random(5))
+        val first = presenter.present(items, coordinatorMode = true, runActive = true)
+        assertThat(first.segmentsBuilt).isGreaterThan(0)
+        // A state that moved only a flag hands the presenter the very list, or a new list of the very instances.
+        val second = presenter.present(ArrayList(items), coordinatorMode = true, runActive = true)
+        assertThat(second.rows).isSameInstanceAs(first.rows)
+        assertThat(second.items).isSameInstanceAs(first.items)
+        assertThat(second.subagents).isSameInstanceAs(first.subagents)
+        assertThat(second.goal).isEqualTo(first.goal)
+        assertThat(second.coordinatorMode).isEqualTo(first.coordinatorMode)
+        assertThat(second.segmentsBuilt).isEqualTo(0)
+        assertThat(second.segmentsReused).isEqualTo(first.segmentsBuilt + first.segmentsReused)
+        assertThat(presenter.present(items, coordinatorMode = true, runActive = true)).isSameInstanceAs(second)
+        assertParity(items, coordinatorMode = true, runActive = true, presenter = presenter)
+    }
+
+    @Test
+    fun `any input that moved is presented afresh, never answered with the last presentation`() {
+        val presenter = TranscriptPresenter()
+        val items = ArrayList(ordinaryTurns(from = 0, count = 6, random = Random(6)) + UserMessage("u-live", "Go on", 99_000L) +
+            ActivityGroup("g-live", listOf(ToolCall("c-live", "read_file", ToolKind.Read, "running", "Live.kt"))))
+        var last = assertParity(items, coordinatorMode = false, runActive = true, presenter = presenter)
+        fun changed(items: List<TimelineItem>, coordinatorMode: Boolean, runActive: Boolean) {
+            val next = assertParity(items, coordinatorMode, runActive, presenter)
+            assertThat(next).isNotSameInstanceAs(last)
+            last = next
+        }
+        // The run ends and starts again: the newest stretch stops and starts reading as live.
+        changed(items, coordinatorMode = false, runActive = false)
+        changed(items, coordinatorMode = false, runActive = true)
+        // The list's word that the chat is a coordinator's, given and taken back.
+        changed(items, coordinatorMode = true, runActive = true)
+        changed(items, coordinatorMode = false, runActive = true)
+        // One item a new instance, equal or not: its segment is matched afresh.
+        changed(items.map { if (it is RunFooter && it.id == "f3") it.copy() else it }, coordinatorMode = false, runActive = true)
+        changed(items.map { if (it is AssistantMessage && it.id == "a2") it.copy(markdown = "Reworded") else it }, coordinatorMode = false, runActive = true)
+        // The caller's own list changed in place after it was presented: an item replaced, then one added.
+        changed(items, coordinatorMode = false, runActive = true)
+        items[items.lastIndex] = ActivityGroup("g-live", listOf(ToolCall("c-live", "read_file", ToolKind.Read, "completed", "Live.kt")))
+        changed(items, coordinatorMode = false, runActive = true)
+        items += AssistantMessage("a-live", "Done", isStreaming = true)
+        changed(items, coordinatorMode = false, runActive = true)
+        // Emptied in place (Reload transcript) and filled again.
+        changed(emptyList(), coordinatorMode = false, runActive = true)
+        changed(items, coordinatorMode = false, runActive = true)
+    }
+
+    @Test
     fun `a run the next message cuts short reads as interrupted once that message lands, across the turn boundary`() {
         val presenter = TranscriptPresenter()
         val ended = 1_000_000L

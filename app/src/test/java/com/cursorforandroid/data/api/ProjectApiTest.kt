@@ -124,7 +124,7 @@ class ProjectApiTest {
         server.enqueue(session("s"))
         server.enqueue(MockResponse().setBody("""{"composer":{"bcId":"bc-new","name":"Webhooks","managerAgentId":"bc-m"},"initialRunId":"run-1"}"""))
 
-        val created = api.createWorker("bc-m", WorkerLaunch(prompt = "Handle the webhooks", name = "Webhooks", repoUrl = "https://github.com/acme/app", baseBranch = "main", modelId = "claude-4", autoCreatePr = true, workerId = "bc-new"))
+        val created = api.createWorker("bc-m", WorkerLaunch(prompt = "Handle the webhooks", name = "Webhooks", repoUrl = "https://github.com/acme/app", baseBranch = "main", modelId = "claude-4", workerId = "bc-new"))
 
         assertThat(created.copy(record = null)).isEqualTo(ComposerSnapshot("bc-new", name = "Webhooks", parent = AgentParent("bc-m", AgentParentKind.PROJECT_WORKER)))
         server.takeRequest()
@@ -139,7 +139,7 @@ class ProjectApiTest {
         assertThat(start["source"]?.jsonPrimitive?.content).isEqualTo("BACKGROUND_COMPOSER_SOURCE_API")
         assertThat(start["repoUrl"]?.jsonPrimitive?.content).isEqualTo("https://github.com/acme/app")
         assertThat(start["baseBranch"]?.jsonPrimitive?.content).isEqualTo("main")
-        assertThat(start["autoCreatePr"]?.jsonPrimitive?.content).isEqualTo("true")
+        assertThat(start.containsKey("autoCreatePr")).isFalse()
         assertThat(start["returnImmediately"]?.jsonPrimitive?.content).isEqualTo("true")
         assertThat(start["requestedModels"]?.jsonArray?.single()?.jsonObject?.get("modelId")?.jsonPrimitive?.content).isEqualTo("claude-4")
 

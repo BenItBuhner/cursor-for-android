@@ -368,7 +368,7 @@ class ComposerExpandFlowTest {
 }
 
 /** A stand-in for the on-screen keyboard over the inset the app was given, which Robolectric leaves blank. */
-private fun paintKeyboard(bitmap: Bitmap, heightPx: Int, density: Float) {
+internal fun paintKeyboard(bitmap: Bitmap, heightPx: Int, density: Float) {
     val canvas = Canvas(bitmap)
     val top = (bitmap.height - heightPx).toFloat()
     val paint = Paint(Paint.ANTI_ALIAS_FLAG)

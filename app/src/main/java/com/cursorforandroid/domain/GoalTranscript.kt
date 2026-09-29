@@ -63,10 +63,30 @@ object GoalTranscript {
      * turns shown, the goal was cleared, or it was completed and a later turn has begun since. A goal completed in
      * the newest turn is still returned, so the strip can say so where the goal used to be.
      */
-    fun derive(items: List<TimelineItem>): Goal? {
+    fun derive(items: List<TimelineItem>): Goal? = Fold().apply { for (i in items.indices) add(items[i]) }.goal
+
+    /**
+     * The items of [items] that [derive] reads, in order: the prompts and notices that turn the turn over, and the
+     * groups that hold a goal call. [derive] over them is [derive] over [items], so a turn's can be kept and folded
+     * again without reading the rest of it.
+     */
+    fun goalItems(items: List<TimelineItem>): List<TimelineItem> {
+        var out: MutableList<TimelineItem>? = null
+        for (i in items.indices) {
+            val item = items[i]
+            val read = item is UserMessage || item is SystemNotification || (item is ActivityGroup && item.calls.any(::isGoalCall))
+            if (read) (out ?: ArrayList<TimelineItem>(2).also { out = it }) += item
+        }
+        return out ?: emptyList()
+    }
+
+    /** [derive] read one item at a time: [goal] is the goal the items added so far leave the chat with. */
+    class Fold {
         var goal: Goal? = null
-        var turnStart: Long? = null
-        for (item in items) {
+            private set
+        private var turnStart: Long? = null
+
+        fun add(item: TimelineItem) {
             when (item) {
                 is UserMessage -> {
                     turnStart = item.timestampMillis
@@ -87,7 +107,6 @@ object GoalTranscript {
                 else -> Unit
             }
         }
-        return goal
     }
 
     /**

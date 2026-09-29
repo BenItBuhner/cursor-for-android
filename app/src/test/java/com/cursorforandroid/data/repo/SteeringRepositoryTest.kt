@@ -8,6 +8,7 @@ import com.cursorforandroid.data.FakeRunStreamer
 import com.cursorforandroid.data.api.AccountFollowup
 import com.cursorforandroid.data.api.ConnectRpcException
 import com.cursorforandroid.data.api.FollowupQueueApi
+import com.cursorforandroid.data.api.GoalStateApi
 import com.cursorforandroid.data.api.InteractionApi
 import com.cursorforandroid.data.api.RunControlApi
 import com.cursorforandroid.data.local.AttachmentStore
@@ -35,6 +36,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * A chat's controls on the account, under both settings: with Extended mode off nothing is called and every control
@@ -127,16 +129,18 @@ class SteeringRepositoryTest {
 
     private fun agents() = AgentRepository(session, prefs, AttachmentStore(context), cache = null, scope = scope, persistDelayMs = 10, capabilities = capabilities)
 
-    private fun steering(agents: AgentRepository, pollIntervalMs: Long = 60_000) = SteeringRepository(
+    private fun steering(agents: AgentRepository, pollIntervalMs: Long = 60_000, goals: GoalStateApi? = null, clock: () -> Long = { System.nanoTime() / 1_000_000 }) = SteeringRepository(
         session,
         agents,
         interactions = account,
         queueApi = account,
         runs = account,
+        goals = goals,
         afterAction = { revalidated += it },
         scope = scope,
         pollIntervalMs = pollIntervalMs,
         capabilities = capabilities,
+        monotonicMillis = clock,
     )
 
     private suspend fun awaitUntil(timeoutMs: Long = 5_000, condition: suspend () -> Boolean) = withTimeout(timeoutMs) {
@@ -299,6 +303,36 @@ class SteeringRepositoryTest {
         val after = account.calls.size
         delay(150)
         assertThat(account.calls.size).isEqualTo(after)
+    }
+
+    @Test
+    fun `a screen coming back reads the queue at once and the goal only once it is an interval old`() = runBlocking<Unit> {
+        extended = true
+        api.addRunningAgent("bc-1", "Chat", "run-9")
+        val agents = agents()
+        agents.refresh()
+        val clock = AtomicLong(0)
+        val goals = GoalStateApi { id -> account.calls += "goal:$id"; null }
+        val steering = steering(agents, pollIntervalMs = 10_000, goals = goals, clock = clock::get)
+        fun count(call: String) = account.calls.count { it == call }
+
+        steering.attach("bc-1")
+        awaitUntil { count("list:bc-1") == 1 && count("goal:bc-1") == 1 }
+        steering.detach("bc-1")
+        // Back 10 s later: the queue is read again at once; the goal, read 10 s ago, is left for the poll.
+        clock.addAndGet(10_000)
+        steering.attach("bc-1")
+        awaitUntil { count("list:bc-1") == 2 }
+        delay(100)
+        assertThat(count("goal:bc-1")).isEqualTo(1)
+        steering.detach("bc-1")
+        // Back 40 s after the goal was read: both at once.
+        clock.addAndGet(30_000)
+        steering.attach("bc-1")
+        awaitUntil { count("list:bc-1") == 3 && count("goal:bc-1") == 2 }
+        steering.detach("bc-1")
+        delay(100)
+        assertThat(account.calls).containsExactly("list:bc-1", "goal:bc-1", "list:bc-1", "list:bc-1", "goal:bc-1").inOrder()
     }
 
     @Test

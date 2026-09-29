@@ -322,6 +322,7 @@ class PinRepository(
         if (generation.get() != startedIn) return null
         accountCursor = list.nextCursor
         agents.applyAccountSnapshots(list.composers, agentsToken)
+        agents.accountListAnswered()
         runCatching { onList(list, agentsToken) }.onFailure { if (it is CancellationException) throw it }
         return list
     }
@@ -329,19 +330,22 @@ class PinRepository(
     /**
      * The account's list read ahead of a fetch of the public list, so the page the fetch publishes is placed by the
      * account's word at once (see [AgentRepository.accountPrime]): nothing without the session or the mode, and a
-     * failure is the round's to retry — the round that follows the fetch reuses this read while it is fresh.
+     * failure is the round's to retry — the round that follows the fetch reuses this read while it is fresh. False
+     * when the list was asked for and could not be read; true otherwise, nothing to read included.
      */
-    suspend fun primeForFetch() {
+    suspend fun primeForFetch(): Boolean {
         val allowed = capabilities()
-        if (!sessionUsable() || !allowed.accountSession) return
+        if (!sessionUsable() || !allowed.accountSession) return true
         val startedIn = generation.get()
-        serverMutex.withLock {
-            if (generation.get() != startedIn) return
+        return serverMutex.withLock {
+            if (generation.get() != startedIn) return@withLock true
             try {
                 readList(startedIn)?.let { primed = Primed(it, now()) }
+                true
             } catch (t: Throwable) {
                 if (t is CancellationException) throw t
                 if (generation.get() == startedIn) noteFailure(t)
+                false
             }
         }
     }

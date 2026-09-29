@@ -331,10 +331,10 @@ class SidebarLoadingFaultsTest {
         val recording = TailRecording()
         val statuses = CopyOnWriteArrayList<Pair<Long, RootScanRecord.Status?>>()
         val watcher = rig.scope.launch(start = CoroutineStart.UNDISPATCHED) { rig.projects.lastRootScan.collect { statuses += server.nowMillis() to it?.status } }
-        // The account's list read ahead of the fetch goes through (the scan is cued by it); the scan's first page
-        // goes through; its second is refused twice — the throttle's one retry included — so the pass stops there.
+        // The account's list read ahead of the fetch goes through (the scan is cued by it, and starts from the page it
+        // brought); the scan's second page is refused twice — the throttle's one retry included — so the pass stops there.
         val refusal = Fault.Status(429, "rate_limited", "Too many requests from this key.", retryAfter = "1")
-        server.script(Route.AccountList, Fault.Pass, Fault.Pass, refusal, refusal)
+        server.script(Route.AccountList, Fault.Pass, refusal, refusal)
         rig.agents.refresh()
         // The scan ran into the refusals: a partial pass of one page, with a retry scheduled — and not Running. The
         // record is read in the one reading that found it partial: the retry is a second away, and a record read

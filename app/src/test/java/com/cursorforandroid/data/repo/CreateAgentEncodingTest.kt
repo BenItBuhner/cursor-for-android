@@ -9,9 +9,9 @@ import com.google.common.truth.Truth.assertThat
 import org.junit.Test
 
 /**
- * The target half of the Create An Agent body — `repos`, `env`, `autoCreatePR` — as it goes out on the wire, checked
- * against the API reference: a repository is the target; a no-repo agent is started by sending neither `repos` nor
- * `env`; a pool, a machine or a named cloud environment is `env` with its `type`.
+ * The target half of the Create An Agent body — `repos`, `env` — as it goes out on the wire, checked against the API
+ * reference: a repository is the target; a no-repo agent is started by sending neither `repos` nor `env`; a pool, a
+ * machine or a named cloud environment is `env` with its `type`. `autoCreatePR` never goes out: the API's default is off.
  */
 class CreateAgentEncodingTest {
 
@@ -21,7 +21,6 @@ class CreateAgentEncodingTest {
         ref = "main",
         modelId = "composer-2",
         modelParams = listOf(ModelParam("fast", "true")),
-        autoCreatePr = true,
         planMode = false,
         agentId = "bc-00000000-0000-0000-0000-000000000001",
     )
@@ -29,13 +28,12 @@ class CreateAgentEncodingTest {
     private fun encode(request: LaunchRequest): String = CursorJson.encodeToString(CreateAgentRequestDto.serializer(), request.toCreateAgentDto())
 
     @Test
-    fun `a repository is the target, and env is left to the default`() {
+    fun `a repository is the target, env is left to the default, and no pull request is asked for`() {
         assertThat(encode(request)).isEqualTo(
             """{"prompt":{"text":"Add a README with setup instructions"},""" +
                 """"agentId":"bc-00000000-0000-0000-0000-000000000001",""" +
                 """"model":{"id":"composer-2","params":[{"id":"fast","value":"true"}]},""" +
-                """"repos":[{"url":"https://github.com/your-org/your-repo","startingRef":"main"}],""" +
-                """"autoCreatePR":true}""",
+                """"repos":[{"url":"https://github.com/your-org/your-repo","startingRef":"main"}]}""",
         )
     }
 
@@ -91,7 +89,7 @@ class CreateAgentEncodingTest {
 
     @Test
     fun `plan mode and an unset model or id are encoded as the reference shows`() {
-        val bare = encode(request.copy(modelId = null, modelParams = emptyList(), agentId = null, autoCreatePr = false, planMode = true))
+        val bare = encode(request.copy(modelId = null, modelParams = emptyList(), agentId = null, planMode = true))
         assertThat(bare).isEqualTo(
             """{"prompt":{"text":"Add a README with setup instructions"},""" +
                 """"repos":[{"url":"https://github.com/your-org/your-repo","startingRef":"main"}],"mode":"plan"}""",

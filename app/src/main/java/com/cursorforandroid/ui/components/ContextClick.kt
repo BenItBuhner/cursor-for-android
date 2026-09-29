@@ -17,9 +17,11 @@ import androidx.compose.ui.input.pointer.isPrimaryPressed
 import androidx.compose.ui.input.pointer.isSecondaryPressed
 import androidx.compose.ui.node.DelegatingNode
 import androidx.compose.ui.node.ModifierNodeElement
+import androidx.compose.ui.node.PointerInputModifierNode
 import androidx.compose.ui.node.requireLayoutCoordinates
 import androidx.compose.ui.platform.InspectorInfo
 import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.round
 
 /**
@@ -51,28 +53,34 @@ private data class ContextClickElement(val onMenu: (IntOffset?) -> Unit) : Modif
     }
 }
 
-private class ContextClickNode(var onMenu: (IntOffset?) -> Unit) : DelegatingNode(), KeyInputModifierNode {
-    init {
-        delegate(
-            SuspendingPointerInputModifierNode {
-                awaitPointerEventScope {
+/**
+ * A [PointerInputModifierNode] itself, handing its events to [input]: Compose 1.7 casts every node that takes pointer
+ * input to one when the density changes (a font scale or display density taken in place), delegate or not.
+ */
+private class ContextClickNode(var onMenu: (IntOffset?) -> Unit) : DelegatingNode(), KeyInputModifierNode, PointerInputModifierNode {
+    private val input = delegate(
+        SuspendingPointerInputModifierNode {
+            awaitPointerEventScope {
+                while (true) {
+                    val press = awaitPointerEvent(PointerEventPass.Initial)
+                    if (!isContextPress(press)) continue
+                    press.changes.forEach { it.consume() }
+                    val at = press.changes.first().position
+                    // The menu opens on the release, as the desktop's context menus do; everything up to it is ours.
                     while (true) {
-                        val press = awaitPointerEvent(PointerEventPass.Initial)
-                        if (!isContextPress(press)) continue
-                        press.changes.forEach { it.consume() }
-                        val at = press.changes.first().position
-                        // The menu opens on the release, as the desktop's context menus do; everything up to it is ours.
-                        while (true) {
-                            val next = awaitPointerEvent(PointerEventPass.Initial)
-                            next.changes.forEach { it.consume() }
-                            if (next.changes.none { it.pressed }) break
-                        }
-                        open(at)
+                        val next = awaitPointerEvent(PointerEventPass.Initial)
+                        next.changes.forEach { it.consume() }
+                        if (next.changes.none { it.pressed }) break
                     }
+                    open(at)
                 }
-            },
-        )
-    }
+            }
+        },
+    )
+
+    override fun onPointerEvent(pointerEvent: PointerEvent, pass: PointerEventPass, bounds: IntSize) = input.onPointerEvent(pointerEvent, pass, bounds)
+
+    override fun onCancelPointerInput() = input.onCancelPointerInput()
 
     private fun open(at: Offset) {
         if (!isAttached) return

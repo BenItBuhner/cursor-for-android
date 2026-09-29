@@ -81,7 +81,8 @@ internal fun File.head(max: Int = 4096): ByteArray = inputStream().use { input -
  */
 class MediaLoader(
     private val context: Context,
-    private val okHttp: OkHttpClient,
+    /** Asked for on the first fetch, so that building the loader — which the first frame does — builds no HTTP client. */
+    private val http: () -> OkHttpClient,
     private val artifacts: ArtifactRepository,
     /** The reads behind a path of the agent's own machine or repository ([MediaRef.Workspace]); null where none is wired. */
     private val files: () -> AgentFileRepository? = { null },
@@ -91,21 +92,39 @@ class MediaLoader(
      */
     private val stores: () -> StoreFileRepository? = { null },
 ) {
+    constructor(
+        context: Context,
+        okHttp: OkHttpClient,
+        artifacts: ArtifactRepository,
+        files: () -> AgentFileRepository? = { null },
+        stores: () -> StoreFileRepository? = { null },
+    ) : this(context, { okHttp }, artifacts, files, stores)
+
+    private val okHttp: OkHttpClient by lazy { http() }
+
     // BitmapFactory for every raster decode, registered ahead of Coil's ImageDecoder default: the bitmaps are software
     // ones anyway (allowHardware false), the downsampling is the same, and it is the one path that also runs under the
     // JVM test renderer, so a fetched URL — cached as a file, which ImageDecoder there cannot open — decodes like an
     // asset. The SVG decoder goes first: it answers only for SVG, which BitmapFactory would refuse.
-    private val imageLoader: ImageLoader = ImageLoader.Builder(context)
-        .components {
-            add(SvgDecoder.Factory())
-            add(BitmapFactoryDecoder.Factory())
-            add(OkHttpNetworkFetcherFactory(okHttp))
-        }
-        .diskCache { imageDiskCache(context.cacheDir) }
-        // Coil's default is a share of the device's memory class, which a large heap doubles; decoded images are
-        // cheap to decode again from the disk cache, a heap they fill is not.
-        .memoryCache { MemoryCache.Builder().maxSizeBytes(minOf(MEMORY_CACHE_BYTES, Runtime.getRuntime().maxMemory() / 8)).build() }
-        .build()
+    // Built by the first image rather than with the loader: Coil and its HTTP client are most of a launch's graph.
+    private val lazyImageLoader = lazy {
+        ImageLoader.Builder(context)
+            .components {
+                add(SvgDecoder.Factory())
+                add(BitmapFactoryDecoder.Factory())
+                add(OkHttpNetworkFetcherFactory(okHttp))
+            }
+            .diskCache { imageDiskCache(context.cacheDir) }
+            // Coil's default is a share of the device's memory class, which a large heap doubles; decoded images are
+            // cheap to decode again from the disk cache, a heap they fill is not.
+            .memoryCache { MemoryCache.Builder().maxSizeBytes(minOf(MEMORY_CACHE_BYTES, Runtime.getRuntime().maxMemory() / 8)).build() }
+            .build()
+    }
+    private val imageLoader: ImageLoader get() = lazyImageLoader.value
+
+    /** [imageLoader], built on a worker thread the first time, so the first image does not build it on the main thread. */
+    private suspend fun images(): ImageLoader =
+        if (lazyImageLoader.isInitialized()) lazyImageLoader.value else withContext(Dispatchers.IO) { lazyImageLoader.value }
 
     private val posters = LruCache<String, VideoPoster>(12)
 
@@ -275,7 +294,7 @@ class MediaLoader(
             return@withContext OnDisk(it)
         }
         if (ref !is MediaRef.Remote && ref !is MediaRef.Artifact) return@withContext null
-        val snapshot = imageLoader.diskCache?.openSnapshot(ref.cacheKey) ?: return@withContext null
+        val snapshot = imageDiskCache(context.cacheDir).openSnapshot(ref.cacheKey) ?: return@withContext null
         val data = snapshot.data.toFile()
         // Only the file itself: a wrapper or a web page the decoder was handed is fetched again and named for what it is.
         if (data.isFile && FileFormat.sniff(data.head())?.isMedia == true) OnDisk(data) { snapshot.close() } else null.also { snapshot.close() }
@@ -468,6 +487,7 @@ class MediaLoader(
      */
     fun trimMemory(hard: Boolean) {
         posters.evictAll()
+        if (!lazyImageLoader.isInitialized()) return
         val cache = imageLoader.memoryCache ?: return
         if (hard) cache.clear() else cache.trimToSize(cache.size / 2)
     }
@@ -476,9 +496,10 @@ class MediaLoader(
     suspend fun clearCaches() {
         posters.evictAll()
         loads.clear()
-        imageLoader.memoryCache?.clear()
+        if (lazyImageLoader.isInitialized()) imageLoader.memoryCache?.clear()
         withContext(Dispatchers.IO) {
-            imageLoader.diskCache?.clear()
+            // The disk cache outlives the process that filled it, so it is wiped whether or not this one built Coil.
+            imageDiskCache(context.cacheDir).clear()
             DiskSweep.deleteTree(File(context.cacheDir, MEDIA_DIR))
         }
     }
@@ -566,7 +587,7 @@ class MediaLoader(
 
     private fun unavailableDetail(ref: MediaRef.Unavailable): String? = ref.src.takeIf { it.isNotBlank() && !it.startsWith("data:") }
 
-    private suspend fun decode(ref: MediaRef, data: Any, maxWidthPx: Int, maxHeightPx: Int) = imageLoader.execute(
+    private suspend fun decode(ref: MediaRef, data: Any, maxWidthPx: Int, maxHeightPx: Int) = images().execute(
         ImageRequest.Builder(context)
             .data(data)
             .size(maxWidthPx.coerceAtLeast(1), maxHeightPx.coerceAtLeast(1))

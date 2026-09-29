@@ -27,8 +27,8 @@ import java.util.concurrent.TimeUnit
  * `CloudAgentRepository._createAgentReal` @20.543M → `StartBackgroundComposerFromSnapshot`), for a first prompt that
  * carries files: `conversation_action.user_message_action.user_message.selected_context.selected_documents[]` as
  * `_buildSelectedContextForComposer` (@20.750M) fills it from `WKy`, the images inline beside them, `base_branch` and
- * `devcontainer_starting_point.ref` for the branch, `requested_models` for the model, `auto_create_pr` (field 37) and
- * `mcp_config_json` (field 95) in the desktop's plugin shape.
+ * `devcontainer_starting_point.ref` for the branch, `requested_models` for the model, and `mcp_config_json` (field 95)
+ * in the desktop's plugin shape. `auto_create_pr` (field 37) is never set.
  */
 class AgentStartApiTest {
 
@@ -70,7 +70,6 @@ class AgentStartApiTest {
                 modelId = "claude-4",
                 modelParams = listOf(ModelParam("effort", "high")),
                 mode = AgentMode.PLAN,
-                autoCreatePr = true,
                 name = "Spec work",
                 mcpServers = listOf(
                     McpServer("1", "linear", McpTransport.Http, url = "https://mcp.linear.app/mcp", headers = mapOf("Authorization" to "Bearer t")),
@@ -102,7 +101,8 @@ class AgentStartApiTest {
         assertThat(body["source"]?.jsonPrimitive?.content).isEqualTo("BACKGROUND_COMPOSER_SOURCE_API")
         assertThat(body["startingMessageType"]?.jsonPrimitive?.content).isEqualTo("STARTING_MESSAGE_TYPE_USER_MESSAGE")
         assertThat(body["name"]?.jsonPrimitive?.content).isEqualTo("Spec work")
-        assertThat(body["autoCreatePr"]?.jsonPrimitive?.content).isEqualTo("true")
+        // Never asked for: the account takes a missing field 37 as off.
+        assertThat(body.containsKey("autoCreatePr")).isFalse()
         assertThat(body["skills"]!!.jsonArray).isEmpty()
         assertThat(body["repositoryInfo"]!!.jsonObject).isEmpty()
         // Nothing that marks a Project.
@@ -165,7 +165,6 @@ class AgentStartApiTest {
                 files = listOf(UploadedFile("data.csv", "text/csv", uploadId = "up-4", uuid = "doc-4")),
                 repoUrl = null,
                 ref = "main",
-                autoCreatePr = true,
             ),
         )
 

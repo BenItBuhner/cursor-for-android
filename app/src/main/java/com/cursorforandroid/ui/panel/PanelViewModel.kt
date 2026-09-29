@@ -6,6 +6,8 @@ import androidx.lifecycle.viewModelScope
 import com.cursorforandroid.AppGraph
 import com.cursorforandroid.data.api.userMessage
 import com.cursorforandroid.data.repo.AgentFileRepository
+import com.cursorforandroid.data.repo.AgentListState
+import com.cursorforandroid.data.repo.ConversationState
 import com.cursorforandroid.data.repo.DesktopOpen
 import com.cursorforandroid.data.repo.FileRead
 import com.cursorforandroid.data.repo.PullRequestLoad
@@ -46,10 +48,14 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingCommand
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.mapLatest
 import kotlinx.coroutines.flow.stateIn
@@ -282,36 +288,47 @@ class PanelViewModel(private val graph: AppGraph, val agentId: String) : ViewMod
     private var creationJob: Job? = null
     private var sideChatsJob: Job? = null
 
-    private val agent: StateFlow<Agent?> = graph.agents.state.map { s -> s.agents.firstOrNull { it.id == agentId } }
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), graph.agents.agent(agentId))
+    // The flows [state] folds are cold: they run while it is collected, and [snapshot] reads what they would say at once.
+    // Each read off the agent list on the default dispatcher: the panel's fold on the main thread runs only when its row moved.
+    private val agent = graph.agents.row(agentId).flowOn(Dispatchers.Default)
 
     /** The chats the list hangs off this one as side chats, newest first — in either mode, from whatever placed them. */
-    private val sideChats: StateFlow<List<Agent>> = graph.agents.state
-        .map { s -> s.agents.filter { it.parent?.id == agentId && it.parent.kind == AgentParentKind.SIDE_CHAT }.sortedByDescending { it.listedAtMillis } }
-        .distinctUntilChanged()
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+    private val sideChats = graph.agents.state.map { s -> sideChatsOf(s) }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     /** The row of the chat this one hangs off, once the list holds it (a side chat's parent, a worker's coordinator). */
-    private val parentAgent: StateFlow<Agent?> = graph.agents.state
-        .map { s -> s.agents.firstOrNull { it.id == agentId }?.parent?.id?.let { parentId -> s.agents.firstOrNull { it.id == parentId } } }
-        .distinctUntilChanged()
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+    private val parentAgent = graph.agents.state.map { s -> parentOf(s) }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
     /** The rows of the chats open as tabs, kept current by the agent list. */
-    private val tabAgents: StateFlow<Map<String, Agent>> = combine(openTabs, graph.agents.state) { tabs, s ->
-        val ids = tabs.mapNotNullTo(HashSet()) { (it as? PanelTab.Agent)?.agentId }
-        if (ids.isEmpty()) emptyMap() else s.agents.filter { it.id in ids }.associateBy { it.id }
-    }
-        .distinctUntilChanged()
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyMap())
+    private val tabAgents = combine(openTabs, graph.agents.state) { tabs, s -> tabAgentsOf(tabs, s) }.distinctUntilChanged().flowOn(Dispatchers.Default)
 
-    /** The tool payloads read off the timeline, recomputed only when the items change and off the main thread. */
+    private fun sideChatsOf(list: AgentListState): List<Agent> =
+        list.childrenOf[agentId].orEmpty().filter { it.parent?.kind == AgentParentKind.SIDE_CHAT }.sortedByDescending { it.listedAtMillis }
+
+    private fun parentOf(list: AgentListState): Agent? = list.agent(agentId)?.parent?.id?.let(list::agent)
+
+    private fun tabAgentsOf(tabs: List<PanelTab>, list: AgentListState): Map<String, Agent> {
+        val ids = tabs.mapNotNullTo(LinkedHashSet()) { (it as? PanelTab.Agent)?.agentId }
+        return if (ids.isEmpty()) emptyMap() else ids.mapNotNull(list::agent).associateBy { it.id }
+    }
+
+    private val capabilities: StateFlow<Capabilities> = graph.extendedMode.capabilities.stateIn(viewModelScope, SharingStarted.Eagerly, Capabilities.DOCUMENTED)
+
+    /** The last items [contentOf] read, and what it read off them. */
+    @Volatile
+    private var contentCache: Pair<List<TimelineItem>, Pair<TranscriptContent, List<MessageAttachment>>>? = null
+
+    /** The tool payloads and prompt images of [items], read once per list. */
+    private fun contentOf(items: List<TimelineItem>): Pair<TranscriptContent, List<MessageAttachment>> {
+        contentCache?.let { (read, content) -> if (read === items) return content }
+        return (TranscriptContent.of(items) to promptImagesOf(items)).also { contentCache = items to it }
+    }
+
+    /** The tool payloads read off the timeline, recomputed only when the items change, off the main thread. */
     @OptIn(ExperimentalCoroutinesApi::class)
-    private val content: StateFlow<Pair<TranscriptContent, List<MessageAttachment>>> = graph.conversations.state(agentId)
+    private val content = graph.conversations.state(agentId)
         .map { it.items }
         .distinctUntilChanged { a, b -> a === b }
-        .mapLatest { items -> withContext(Dispatchers.Default) { TranscriptContent.of(items) to promptImagesOf(items) } }
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), TranscriptContent.EMPTY to emptyList())
+        .mapLatest { items -> withContext(Dispatchers.Default) { contentOf(items) } }
 
     /** The reads of the agent's VM and of the account, folded so the main combine stays within its arity. */
     private val vmLoads = combine(diff, workspace, machine, desktop, pullRequestCreation) { d, w, m, dk, c -> VmLoads(d, w, m, dk, c) }
@@ -322,14 +339,54 @@ class PanelViewModel(private val graph: AppGraph, val agentId: String) : ViewMod
     /** [vmLoads] with what the account has said about the chat's controls, its side chats, the reader's expanded sections and tabs. */
     private val extendedLoads = combine(vmLoads, graph.steering.state(agentId), sideChatLoads, expandedSections, tabLoads) { vm, controls, side, expanded, tabs -> ExtendedLoads(vm, controls, side, expanded, tabs) }
 
-    val state: StateFlow<PanelState> = combine(
+    private val states = combine(
         agent,
         graph.conversations.state(agentId),
         content,
-        graph.extendedMode.capabilities,
+        capabilities,
         combine(pullRequest, artifacts, usage, browser, extendedLoads) { pr, art, use, br, extended -> Loads(pr, art, use, br, extended) },
-    ) { a, conversation, (transcript, prompts), capabilities, loads ->
-        PanelState(
+    ) { a, conversation, transcript, capabilities, loads -> stateOf(a, conversation, transcript, capabilities, loads) }
+
+    private val _state = MutableStateFlow(PanelState(agentId, agent = graph.agents.agent(agentId), isDemo = graph.session.isDemo))
+    private var live = false
+
+    /**
+     * Everything the panel's sections read, followed only while it is collected (and for 5 s after): a closed panel
+     * reads nothing off the transcript. Collect it through [opened], which brings it up to date for the first frame.
+     */
+    val state: StateFlow<PanelState> = _state.asStateFlow()
+
+    /** [state], first brought up to date when nothing has been following it: what an opening panel collects. */
+    fun opened(): StateFlow<PanelState> {
+        if (!live) _state.value = snapshot()
+        return state
+    }
+
+    /** The artifacts list as the panel last read it; the chat's media viewer pages through it too. */
+    val artifactsLoad: StateFlow<RemoteLoad<List<Artifact>>> = artifacts.asStateFlow()
+
+    /** The desktop viewer's state, for the dialog the chat's screen draws over itself. */
+    val desktopState: StateFlow<DesktopState> = desktop.asStateFlow()
+
+    /** What [states] would fold now, read at once. */
+    private fun snapshot(): PanelState {
+        val list = graph.agents.state.value
+        val conversation = graph.conversations.state(agentId).value
+        val open = openTabs.value
+        val extended = ExtendedLoads(
+            VmLoads(diff.value, workspace.value, machine.value, desktop.value, pullRequestCreation.value),
+            graph.steering.state(agentId).value,
+            SideChatLoads(parentOf(list), sideChatsOf(list), sideChatsLoad.value, sideChatCreation.value),
+            expandedSections.value,
+            TabLoads(PanelTabsState(open, selectedTabKey.value), files.value, tabAgentsOf(open, list), context.value),
+        )
+        val loads = Loads(pullRequest.value, artifacts.value, usage.value, browser.value, extended)
+        return stateOf(list.agent(agentId), conversation, contentOf(conversation.items), capabilities.value, loads)
+    }
+
+    private fun stateOf(a: Agent?, conversation: ConversationState, content: Pair<TranscriptContent, List<MessageAttachment>>, capabilities: Capabilities, loads: Loads): PanelState {
+        val (transcript, prompts) = content
+        return PanelState(
             agentId = agentId,
             agent = a,
             runStatus = conversation.runStatus,
@@ -358,7 +415,7 @@ class PanelViewModel(private val graph: AppGraph, val agentId: String) : ViewMod
             tabAgents = loads.extended.tabs.agents,
             context = loads.extended.tabs.context,
         )
-    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), PanelState(agentId, agent = graph.agents.agent(agentId), isDemo = graph.session.isDemo))
+    }
 
     private data class Loads(
         val pullRequest: RemoteLoad<PullRequestView>,
@@ -403,13 +460,30 @@ class PanelViewModel(private val graph: AppGraph, val agentId: String) : ViewMod
         val pullRequestCreation: RemoteLoad<String>,
     )
 
-    init {
-        // The account's queue is kept current while the panel lives, like while the chat's screen does.
+    private var steeringAttached = false
+
+    /** The panel's chat is on screen: the account's queue is kept current while it is, like for the chat's screen. */
+    fun resume() {
+        if (steeringAttached) return
+        steeringAttached = true
         graph.steering.attach(agentId)
+        viewModelScope.launch {
+            SharingStarted.WhileSubscribed(5_000).command(_state.subscriptionCount).distinctUntilChanged().collectLatest { command ->
+                live = command == SharingCommand.START
+                if (live) states.collect { _state.value = it }
+            }
+        }
+    }
+
+    /** The panel's chat stopped (backgrounded, or covered by another screen): no more polling for it. */
+    fun pause() {
+        if (!steeringAttached) return
+        steeringAttached = false
+        graph.steering.detach(agentId)
     }
 
     override fun onCleared() {
-        graph.steering.detach(agentId)
+        pause()
         super.onCleared()
     }
 
@@ -681,7 +755,7 @@ class PanelViewModel(private val graph: AppGraph, val agentId: String) : ViewMod
     // -- the pull request --------------------------------------------------------------------------------------------
 
     fun loadPullRequest(force: Boolean = false) {
-        val url = agent.value?.prUrl ?: return
+        val url = graph.agents.agent(agentId)?.prUrl ?: return
         if (!force && pullRequest.value !is RemoteLoad.Idle && pullRequest.value !is RemoteLoad.Failed) return
         if (pullRequestJob?.isActive == true && !force) return
         readPullRequest(url, force)
@@ -818,7 +892,7 @@ class PanelViewModel(private val graph: AppGraph, val agentId: String) : ViewMod
 
     /** Where a Remote Control chat's machine stands (`GET /v0/private-workers`); nothing for a chat in the cloud. */
     fun loadMachine(force: Boolean = false) {
-        val current = agent.value ?: return
+        val current = graph.agents.agent(agentId) ?: return
         if (current.envType != EnvType.MACHINE) {
             machine.value = RemoteLoad.Idle
             return
@@ -841,7 +915,7 @@ class PanelViewModel(private val graph: AppGraph, val agentId: String) : ViewMod
      * answered. [viewOnly] decides whether the viewer's touches reach the VM; it can be changed while open.
      */
     fun openDesktop(viewOnly: Boolean = true) {
-        val current = agent.value ?: return
+        val current = graph.agents.agent(agentId) ?: return
         if (desktop.value is DesktopState.Opening) return
         desktopJob?.cancel()
         desktop.value = DesktopState.Opening(DesktopTrace(agentId), viewOnly)
@@ -875,7 +949,7 @@ class PanelViewModel(private val graph: AppGraph, val agentId: String) : ViewMod
     /** Asks Cursor to open the agent's pull request (`MakePRBackgroundComposer`); the chat row and the section follow. */
     fun createPullRequest() {
         if (pullRequestCreation.value is RemoteLoad.Loading) return
-        val current = agent.value ?: return
+        val current = graph.agents.agent(agentId) ?: return
         creationJob?.cancel()
         pullRequestCreation.value = RemoteLoad.Loading
         creationJob = viewModelScope.launch {

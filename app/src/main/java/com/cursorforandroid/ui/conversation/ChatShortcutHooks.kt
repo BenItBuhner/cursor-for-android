@@ -45,7 +45,7 @@ internal fun ChatKeyboardShortcuts(agentId: String, viewModel: ConversationViewM
 
             override fun catchUp() = viewModel.catchUp()
 
-            override fun reloadTranscript() = viewModel.reloadTranscriptWithWord()
+            override fun reloadTranscript() = viewModel.reloadTranscript()
 
             // A panel pinned beside the chat is part of the layout, like the rail: Esc leaves the field, not the panel.
             override fun escape(): Boolean {

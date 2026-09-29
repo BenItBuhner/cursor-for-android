@@ -14,13 +14,16 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.InlineTextContent
 import androidx.compose.foundation.text.appendInlineContent
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -62,6 +65,8 @@ import com.cursorforandroid.ui.components.TableBlock
 import com.cursorforandroid.ui.components.VideoBlock
 import com.cursorforandroid.ui.theme.CursorColors
 import com.cursorforandroid.ui.theme.CursorTheme
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 /** The store a document came from and the folder it sits in: what its relative links are read against. */
 internal data class StoreBase(val storeId: String, val folder: String) {
@@ -75,15 +80,48 @@ internal data class StoreBase(val storeId: String, val folder: String) {
  * body text at 14/21 in the text's own colour, semibold headings with air above each new one, task items behind
  * rings (a done one ticked), and links bold and underlined in the text's colour, each led by what it points at —
  * GitHub's mark before a release or a repository, the pull-request glyph before a pull request, the markdown glyph
- * before a document. A relative link is read against [base], so the notes' `[Project context](docs/project-context.md)`
- * is that document of the same store. A tapped link goes where the chat's would ([rememberPanelLinkOpener]) unless
- * [onOpenLink] takes it.
+ * before a document. A relative link is read against the document's store ([rememberPanelBlocks]), so the notes'
+ * `[Project context](docs/project-context.md)` is that document of the same store. A tapped link goes to [open]
+ * (the chat's routes: [rememberPanelLinkOpener]).
+ *
+ * One lazy item per block, [key]ed by its place, each padded by [modifier] and the first also by [first] and [top],
+ * so a long document's first frame composes what shows rather than the whole file.
+ */
+internal fun LazyListScope.panelMarkdownItems(
+    blocks: List<MdBlock>,
+    open: (String) -> Unit,
+    key: String,
+    modifier: Modifier = Modifier,
+    top: Dp = 0.dp,
+    first: Modifier = Modifier,
+) {
+    items(blocks.size, key = { "$key:$it" }, contentType = { blocks[it]::class }) { index ->
+        val block = blocks[index]
+        val lead = when {
+            index == 0 -> top
+            block is MdBlock.Heading -> BlockGap + HeadingLead
+            else -> BlockGap
+        }
+        Box(modifier.padding(top = lead).then(if (index == 0) first else Modifier)) {
+            PanelBlock(block, open, CursorTheme.colors.textPrimary)
+        }
+    }
+}
+
+/**
+ * The blocks of [markdown] with its relative links read against [base], for [panelMarkdownItems]: at once when they
+ * were parsed before or the text is short, else parsed off the main thread and null until then. Null for no text.
  */
 @Composable
-internal fun PanelMarkdown(markdown: String, modifier: Modifier = Modifier, base: StoreBase? = null, onOpenLink: ((String) -> Unit)? = null) {
-    val routed = rememberPanelLinkOpener()
-    val blocks = remember(markdown, base) { MarkdownCache.parse(if (base == null) markdown else PanelLinks.resolve(markdown, base)) }
-    PanelBlocks(blocks, onOpenLink ?: routed, modifier, gap = BlockGap, color = CursorTheme.colors.textPrimary)
+internal fun rememberPanelBlocks(markdown: String?, base: StoreBase?): List<MdBlock>? {
+    val resolved = remember(markdown, base) { markdown?.let { if (base == null) it else PanelLinks.resolve(it, base) } }
+    val blocks = remember(resolved) {
+        mutableStateOf(resolved?.let { MarkdownCache.cached(it) ?: if (it.length <= InlineParseChars) MarkdownCache.parse(it) else null })
+    }
+    LaunchedEffect(resolved) {
+        if (resolved != null && blocks.value == null) blocks.value = withContext(Dispatchers.Default) { MarkdownCache.parse(resolved) }
+    }
+    return blocks.value
 }
 
 /**
@@ -335,6 +373,8 @@ internal object PanelType {
 /** GitHub's pull-request violet, as the web's notes tint the glyph before a pull request's number. */
 private val PullRequestViolet = Color(0xFF8C86FA)
 
+/** About half a millisecond of parsing: shorter text is parsed where it is drawn rather than behind a loading row. */
+private const val InlineParseChars = 4_000
 private val BlockGap = 14.dp
 private val HeadingLead = 22.dp
 private val ItemGap = 14.dp

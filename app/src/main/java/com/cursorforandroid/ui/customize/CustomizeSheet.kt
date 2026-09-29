@@ -73,9 +73,9 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 
 /**
- * The "Chats" filter menu (the filter icon in the sidebar's account row) as a bottom sheet: the quick actions first
- * (Read all, in a card of its own — see [ActionsSection]), then grouping, sort, the Repo / Status / Git / Source /
- * Environment filters, and the metadata toggles. Flat 40dp rows, 13sp, desktop-size toggles.
+ * The "Chats" filter menu (the filter icon in the sidebar's account row) as a bottom sheet: Read all and Reset in
+ * the header (see [SheetHeaderAction]), then grouping, sort, the Repo / Status / Git / Source / Environment filters,
+ * and the metadata toggles. Flat 40dp rows, 13sp, desktop-size toggles.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -120,13 +120,13 @@ fun CustomizeSheet(viewModel: AgentsViewModel, onDismiss: () -> Unit) {
                         Spacer(Modifier.width(4.dp))
                     }
                     Text(current?.label ?: "Chats", style = type.sectionTitle, color = colors.textPrimary, modifier = Modifier.weight(1f))
-                    if (current == null && !state.prefs.isDefault) {
-                        Text(
-                            "Reset",
-                            style = type.baseMedium,
-                            color = colors.link,
-                            modifier = Modifier.pressable(viewModel::resetPrefs, CursorTheme.shapes.base).padding(horizontal = 10.dp, vertical = 8.dp),
-                        )
+                    if (current == null) {
+                        // Acting on the list rather than arranging it, so it rides the header, not a section of its own.
+                        SheetHeaderAction(readAllAction(state.unreadCount, viewModel::markAllRead))
+                        if (!state.prefs.isDefault) {
+                            Spacer(Modifier.width(4.dp))
+                            SheetHeaderAction(SheetAction("Reset", onClick = viewModel::resetPrefs))
+                        }
                     }
                 }
             }
@@ -146,7 +146,7 @@ fun CustomizeSheet(viewModel: AgentsViewModel, onDismiss: () -> Unit) {
             ) { current ->
                 FadingLazyColumn(Modifier.fillMaxWidth(), contentPadding = PaddingValues(bottom = 12.dp)) {
                     when (current) {
-                        null -> rows { RootPage(state.prefs, state.unreadCount, viewModel, onOpen = { page = it }) }
+                        null -> rows { RootPage(state.prefs, viewModel, onOpen = { page = it }) }
                         FilterKind.Repo -> repoPage(state.repoSlugs, state.prefs.repos, onSelectAll = { viewModel.setRepos(null) }) { slug ->
                             val selected = state.prefs.repos ?: state.repoSlugs.toSet()
                             val next = if (slug in selected) selected - slug else selected + slug
@@ -172,10 +172,7 @@ private const val PageTransitionMillis = 300
 private fun LazyListScope.rows(content: @Composable ColumnScope.() -> Unit) = item { Column(content = content) }
 
 @Composable
-private fun RootPage(prefs: ListPreferences, unreadCount: Int, viewModel: AgentsViewModel, onOpen: (FilterKind) -> Unit) {
-    // The quick actions lead: one card, above everything that merely arranges the list (see SheetActions.kt).
-    ActionsSection(listOf(readAllAction(unreadCount, viewModel::markAllRead)))
-
+private fun RootPage(prefs: ListPreferences, viewModel: AgentsViewModel, onOpen: (FilterKind) -> Unit) {
     SectionLabel("Grouping")
     PickerRow(CursorIcons.Layers, "Group by", GroupBy.entries.map { it.label }, prefs.groupBy.ordinal) { viewModel.setGroupBy(GroupBy.entries[it]) }
     PickerRow(CursorIcons.Filter, "Sort by", SortOrder.entries.map { it.label }, prefs.sortOrder.ordinal) { viewModel.setSortOrder(SortOrder.entries[it]) }

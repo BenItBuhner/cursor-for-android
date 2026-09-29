@@ -2,8 +2,6 @@ package com.cursorforandroid.ui.files
 
 import android.content.Context
 import android.content.Intent
-import android.os.Build
-import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
@@ -278,10 +276,7 @@ fun FullFileScreen(
             trailing = {
                 val text = (file as? FullFile.Text)?.text
                 if (text != null) {
-                    FlatIconButton(CursorIcons.Copy, "Copy file", onClick = {
-                        clipboard.setText(AnnotatedString(text))
-                        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) Toast.makeText(context, "Copied", Toast.LENGTH_SHORT).show()
-                    }, modifier = Modifier.testTag("full-file-copy"))
+                    FlatIconButton(CursorIcons.Copy, "Copy file", onClick = { clipboard.setText(AnnotatedString(text)) }, modifier = Modifier.testTag("full-file-copy"))
                     FlatIconButton(CursorIcons.Share, "Share file", onClick = { shareText(context, name, text) }, modifier = Modifier.testTag("full-file-share"))
                 }
             },

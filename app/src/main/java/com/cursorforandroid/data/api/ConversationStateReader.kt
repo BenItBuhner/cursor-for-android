@@ -301,7 +301,7 @@ class ConversationStateReader(
         var prefetchedBytes = 0L
         val prefetchedIds = ArrayList<String>()
         val kinds = ArrayList<String>()
-        rpc.serverStreamWithSession(SERVICE, METHOD, tokens, request, StreamConversationRequestDto.serializer(), retryRefusals = false) { message ->
+        rpc.serverStreamWithSession(SERVICE, METHOD, tokens, request, StreamConversationRequestDto.serializer(), retryRefusals = false, lane = OnScreenChats.stateLane(agentId)) { message ->
             val case = message.keys.firstOrNull { it != "@type" } ?: "empty"
             kinds += case
             when (case) {

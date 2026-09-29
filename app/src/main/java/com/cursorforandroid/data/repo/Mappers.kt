@@ -149,7 +149,6 @@ fun AgentSummaryDto.toAgent(previous: Agent?): Agent {
         startingRef = previous?.startingRef,
         branches = previous?.branches ?: emptyList(),
         summary = previous?.summary,
-        autoCreatePr = previous?.autoCreatePr,
         workOnCurrentBranch = previous?.workOnCurrentBranch,
         modelDisplayName = previous?.modelDisplayName,
         modelId = previous?.modelId,
@@ -198,7 +197,6 @@ fun Agent.withLegacy(v0: V0AgentDto): Agent {
             else -> emptyList()
         },
         summary = v0.summary ?: summary,
-        autoCreatePr = v0.target?.autoCreatePr ?: autoCreatePr,
     )
 }
 
@@ -229,7 +227,6 @@ fun AgentDto.mergeInto(previous: Agent?, latestRun: RunDto?): Agent {
         startingRef = repo?.startingRef ?: previous?.startingRef,
         branches = if (runBranches.isNotEmpty()) runBranches else previous?.branches ?: emptyList(),
         summary = latestRun?.result?.takeIf { it.isNotBlank() } ?: previous?.summary,
-        autoCreatePr = autoCreatePR ?: previous?.autoCreatePr,
         workOnCurrentBranch = workOnCurrentBranch ?: previous?.workOnCurrentBranch,
         modelDisplayName = previous?.modelDisplayName,
         modelId = previous?.modelId,

@@ -45,8 +45,13 @@ import com.cursorforandroid.data.repo.parseIsoMillis
 import com.cursorforandroid.domain.RunStatus
 import com.cursorforandroid.domain.SlashCommands
 import com.cursorforandroid.util.AppClock
+import kotlinx.coroutines.CoroutineName
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.FlowCollector
@@ -88,6 +93,7 @@ internal class DemoStore(seeds: List<DemoData.Seed> = DemoData.seeds) {
     /** Each run's retained event log: pre-built for finished seeds, recorded as live scripts play. */
     private val eventLogs: MutableMap<String, MutableList<RunStreamEvent>> = linkedMapOf()
     private var counter = 100
+    private var scaleTick = 0L
 
     init {
         seeds.forEach { seed ->
@@ -290,6 +296,79 @@ internal class DemoStore(seeds: List<DemoData.Seed> = DemoData.seeds) {
             )
         }
     }
+
+    /**
+     * One second of the marker-gated scale demo. Every running row gets a retained stream step and a fresh activity
+     * time; every ten seconds about five percent of the fleet trades running/finished state while the total stays
+     * stable. The Big Project's coordinator is deliberately not traded: its open stream is the benchmark's clock.
+     */
+    @Synchronized
+    fun tickScale() {
+        scaleTick++
+        val running = agents.values.mapNotNull { agent ->
+            val runId = agent.latestRunId ?: return@mapNotNull null
+            val list = runs[agent.id] ?: return@mapNotNull null
+            val index = list.indexOfFirst { it.id == runId }
+            if (index < 0 || list[index].status != "RUNNING") return@mapNotNull null
+            Triple(agent.id, index, runId)
+        }
+        val now = AppClock.now()
+        running.forEachIndexed { index, (agentId, runIndex, runId) ->
+            val stamp = iso(now - ((index + scaleTick.toInt()) % running.size.coerceAtLeast(1)))
+            runs[agentId]?.let { it[runIndex] = it[runIndex].copy(updatedAt = stamp) }
+            agents[agentId]?.let { agents[agentId] = it.copy(status = "ACTIVE", updatedAt = stamp) }
+            eventLogs.getOrPut(runId) { mutableListOf() } += RunStreamEvent.Thinking(
+                "Scale tick $scaleTick for $agentId: reading the next shard, checking its tests, and reporting progress to the coordinator. ".padEnd(200, '.'),
+            )
+        }
+        if (scaleTick % 10L == 0L) tradeScaleStatuses()
+    }
+
+    private fun tradeScaleStatuses() {
+        val eligible = agents.keys.filter { id ->
+            id.startsWith("bc-scale-big-worker-") || id.contains("-worker-") || id.startsWith("bc-scale-chat-")
+        }
+        if (eligible.isEmpty()) return
+        val trades = (agents.size / 40).coerceAtLeast(1)
+        val big = eligible.filter { it.startsWith("bc-scale-big-worker-") }
+        val other = eligible - big.toSet()
+        val bigTrades = if (big.isEmpty()) 0 else ((trades * big.size) / eligible.size).coerceAtLeast(1).coerceAtMost(trades)
+        tradeScalePool(big, bigTrades)
+        tradeScalePool(other, trades - bigTrades)
+    }
+
+    private fun tradeScalePool(ids: List<String>, count: Int) {
+        if (count <= 0) return
+        fun isRunning(id: String): Boolean {
+            val runId = agents[id]?.latestRunId ?: return false
+            return runs[id]?.firstOrNull { it.id == runId }?.status == "RUNNING"
+        }
+        val running = ids.filter(::isRunning).sorted()
+        val finished = ids.filterNot(::isRunning).sorted()
+        val swaps = minOf(count, running.size, finished.size)
+        if (swaps == 0) return
+        val rotation = (scaleTick / 10L).toInt()
+        repeat(swaps) { offset ->
+            setScaleStatus(running[(rotation + offset) % running.size], false)
+            setScaleStatus(finished[(rotation + offset) % finished.size], true)
+        }
+    }
+
+    private fun setScaleStatus(agentId: String, running: Boolean) {
+        val runId = agents[agentId]?.latestRunId ?: return
+        val list = runs[agentId] ?: return
+        val index = list.indexOfFirst { it.id == runId }
+        if (index < 0) return
+        val stamp = iso()
+        list[index] = list[index].copy(status = if (running) "RUNNING" else "FINISHED", updatedAt = stamp)
+        agents[agentId]?.let { agents[agentId] = it.copy(status = if (running) "ACTIVE" else "IDLE", updatedAt = stamp) }
+        v0[agentId]?.let { v0[agentId] = it.copy(status = if (running) "RUNNING" else "FINISHED") }
+        if (running) {
+            eventLogs.getOrPut(runId) { mutableListOf() } += RunStreamEvent.Status(runId, RunStatus.RUNNING)
+        } else {
+            eventLogs.getOrPut(runId) { mutableListOf() } += RunStreamEvent.Result(runId, RunStatus.FINISHED, "Scale shard completed.", 10_000, null)
+        }
+    }
 }
 
 /**
@@ -443,12 +522,11 @@ internal class DemoCursorApi(private val store: DemoStore) : CursorApi {
             latestRunId = runId,
             repos = body.repos ?: emptyList(),
             workOnCurrentBranch = body.workOnCurrentBranch ?: false,
-            autoCreatePR = body.autoCreatePR,
         )
         val run = RunDto(id = runId, agentId = id, status = "CREATING", createdAt = nowIso, updatedAt = nowIso)
         store.addAgent(
             agent = agent,
-            legacy = V0AgentDto(id, agent.name, "CREATING", repo?.let { V0SourceDto(it.url, it.startingRef) }, V0TargetDto(url = agent.url, autoCreatePr = body.autoCreatePR), null, nowIso),
+            legacy = V0AgentDto(id, agent.name, "CREATING", repo?.let { V0SourceDto(it.url, it.startingRef) }, V0TargetDto(url = agent.url), null, nowIso),
             run = run,
             firstMessage = body.prompt.text,
             script = scriptFor(body.prompt.text, body.mode),
@@ -567,6 +645,7 @@ internal class DemoRunStreamer(private val store: DemoStore, private val pace: D
                 "cesium" -> recorder.cesium()
                 "codex" -> recorder.codex()
                 "limbs" -> recorder.limbs()
+                "scale" -> recorder.scale(agentId)
                 "plan" -> recorder.plan(store.prompt(runId))
                 "multitask" -> recorder.multitask(store.prompt(runId), store.mcpServersOf(runId))
                 else -> recorder.generic(store.prompt(runId), store.mcpServersOf(runId))
@@ -608,13 +687,13 @@ internal class DemoRunStreamer(private val store: DemoStore, private val pace: D
 
     private fun tool(id: String, name: String, status: String, vararg args: Pair<String, String>) = toolEvent(id, name, status, *args)
 
-    private suspend fun kotlinx.coroutines.flow.FlowCollector<RunStreamEvent>.type(text: String) {
+    private suspend fun kotlinx.coroutines.flow.FlowCollector<RunStreamEvent>.type(text: String, chunk: Int = pace.typeChunk, delayMs: Long = pace.typeDelayMs) {
         var i = 0
         while (i < text.length) {
-            val end = (i + pace.typeChunk).coerceAtMost(text.length)
+            val end = (i + chunk).coerceAtMost(text.length)
             emit(RunStreamEvent.Assistant(text.substring(i, end)))
             i = end
-            delay(pace.typeDelayMs)
+            delay(delayMs)
         }
     }
 
@@ -691,6 +770,26 @@ internal class DemoRunStreamer(private val store: DemoStore, private val pace: D
         return Outcome(finalText = text, branch = "cursor/limb-rigging-3e4f")
     }
 
+    /** A scale seed remains live, adding one realistic-sized stream step per second until its collector is stopped. */
+    private suspend fun kotlinx.coroutines.flow.FlowCollector<RunStreamEvent>.scale(agentId: String): Outcome {
+        var step = 0
+        while (true) {
+            step++
+            if (step % 2 == 0) {
+                val id = "scale-$step"
+                emit(tool(id, "read_file", "running", "path" to "app/src/main/scale/Shard$step.kt"))
+                emit(tool(id, "read_file", "completed", "path" to "app/src/main/scale/Shard$step.kt"))
+            } else {
+                type(
+                    "Scale step $step for $agentId: checked the current shard, advanced its test pass, and sent a concise status update to the Project coordinator. ".padEnd(200, '.'),
+                    chunk = 200,
+                    delayMs = 0,
+                )
+            }
+            delay(1_000)
+        }
+    }
+
     private suspend fun kotlinx.coroutines.flow.FlowCollector<RunStreamEvent>.generic(prompt: String, mcpServers: List<String>): Outcome {
         think("Let me look at the relevant files before changing anything.")
         emit(tool("g1", "list_dir", "running", "path" to ".")); delay(pace.step(400))
@@ -739,9 +838,25 @@ internal class DemoRunStreamer(private val store: DemoStore, private val pace: D
 
 /** Assembles the demo backend. */
 object DemoBackendFactory {
-    /** [perfSeeds] adds the two long chats of [DemoPerfSeeds] (a debug build with the marker file, for measuring the transcript on a device). */
-    fun create(perfSeeds: Boolean = false, pace: DemoPace = DemoPace.Brisk): Pair<CursorApi, RunStreamer> {
-        val store = DemoStore(if (perfSeeds) DemoData.seeds + DemoPerfSeeds.seeds() else DemoData.seeds)
+    /**
+     * [perfSeeds] keeps the original two-chat transcript fixture. [scaleFleet], set only from a debug marker, replaces
+     * the ordinary demo with an exact S50/S200/S500 fleet and starts its one-second in-memory backend clock.
+     */
+    fun create(perfSeeds: Boolean = false, scaleFleet: Int? = null, pace: DemoPace = DemoPace.Brisk): Pair<CursorApi, RunStreamer> {
+        val seeds = when {
+            scaleFleet != null -> DemoPerfSeeds.scaleDataset(scaleFleet).seeds
+            perfSeeds -> DemoData.seeds + DemoPerfSeeds.seeds()
+            else -> DemoData.seeds
+        }
+        val store = DemoStore(seeds)
+        if (scaleFleet != null) {
+            CoroutineScope(SupervisorJob() + Dispatchers.Default + CoroutineName("demo-scale-ticker")).launch {
+                while (isActive) {
+                    delay(1_000)
+                    store.tickScale()
+                }
+            }
+        }
         return DemoCursorApi(store) to DemoRunStreamer(store, pace)
     }
 }

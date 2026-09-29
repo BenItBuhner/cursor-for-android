@@ -23,6 +23,10 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.test.SemanticsNodeInteraction
 import androidx.compose.ui.test.TouchInjectionScope
+import androidx.compose.ui.semantics.ProgressBarRangeInfo
+import androidx.compose.ui.test.hasAnyAncestor
+import androidx.compose.ui.test.hasProgressBarRangeInfo
+import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithTag
@@ -85,7 +89,7 @@ import java.time.Instant
  * the platform's: no frame of it recomposes a row, and it recomposes on no more frames than the sidebar's own pull.
  * Its frames are held to the chat's scroll, frame for frame, with the budget widened by what the machine cannot
  * repeat of its own measurement (see KeyboardFrameBenchmarkTest). Then an armed pull is let go and the frames of the
- * catch-up are counted to the word: the spring, the spin, the answer and the spring home recompose no row either.
+ * catch-up are counted to the indicator's return home: the spring, the spin, the answer and the spring home recompose no row either.
  *
  * Robolectric composes, measures, lays out and records on the JVM and draws nothing on a GPU: these are the main
  * thread's costs, the JVM's numbers rather than a phone's. Every number is printed as a `BENCHMARK pull` line.
@@ -310,14 +314,17 @@ class PullToCatchUpFrameBenchmarkTest {
         val scrolls = passes.map { it.second }
         val refreshes = passes.map { it.third }
 
-        // Let go armed: the spring to the threshold, the spin through the catch-up, the answer, the spring home, the word.
-        val settle = Stroke("armed pull let go, to the word")
+        // Let go armed: the spring to the threshold, the spin through the catch-up, the answer, the spring home.
+        val settle = Stroke("armed pull let go, to home")
         val rowsBeforeSettle = rowsComposed()
         transcript.performTouchInput { down(Offset(centerX, bottom - 60f)); moveBy(Offset(0f, -(viewConfiguration.touchSlop + 1f))) }
         repeat(STEPS) { frame(transcript, settle) { moveBy(Offset(0f, -STEP)) } }
         frame(transcript, settle) { up() }
         val deadline = System.currentTimeMillis() + 30_000
-        while (System.currentTimeMillis() < deadline && compose.onAllNodes(hasText("Up to date")).fetchSemanticsNodes().isEmpty()) {
+        val spinning = { compose.onAllNodes(hasProgressBarRangeInfo(ProgressBarRangeInfo.Indeterminate) and hasAnyAncestor(hasTestTag(CATCH_UP_TEST_TAG))).fetchSemanticsNodes().isNotEmpty() }
+        var spun = false
+        while (System.currentTimeMillis() < deadline && !(spun && !spinning())) {
+            if (spinning()) spun = true
             val scopes = recompositions.scopes
             val started = System.nanoTime()
             compose.mainClock.advanceTimeByFrame()
@@ -328,7 +335,7 @@ class PullToCatchUpFrameBenchmarkTest {
             Thread.sleep(2)
         }
         settle.rowsComposed = rowsComposed() - rowsBeforeSettle
-        val told = compose.onAllNodes(hasText("Up to date")).fetchSemanticsNodes().isNotEmpty()
+        val told = spun && !spinning()
 
         val pairRatios = passes.map { (pull, scroll, _) -> pull.median / scroll.median }
         val sidebarRatios = passes.map { (pull, _, refresh) -> pull.median / refresh.median }

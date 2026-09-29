@@ -58,6 +58,7 @@ import com.cursorforandroid.ui.components.CursorIcons
 import com.cursorforandroid.ui.components.FadingLazyColumn
 import com.cursorforandroid.ui.components.FlatIconButton
 import com.cursorforandroid.ui.components.LocalMarkdownMedia
+import com.cursorforandroid.ui.components.MdBlock
 import com.cursorforandroid.ui.components.cursorSurface
 import com.cursorforandroid.ui.components.pressable
 import com.cursorforandroid.ui.theme.CursorTheme
@@ -81,13 +82,17 @@ internal fun ProjectTabContent(state: PanelState, actions: PanelActions, modifie
     val root = state.projectRoot
     val name = root?.name ?: state.parentAgent?.name?.takeIf { state.agent?.parent != null } ?: state.agent?.name ?: "Project"
     val allFiles = state.context.allFiles
+    val notes = (state.context.notes as? RemoteLoad.Loaded)?.value
+    val notesText = remember(notes) { notes?.let { withoutLeadingTitle(it.text) } }
+    val notesBlocks = rememberPanelBlocks(notesText, notes?.let { StoreBase.of(it.store.storeId, it.path) })
+    val open = rememberPanelLinkOpener()
     BoxWithConstraints(modifier.fillMaxSize()) {
         val inset = contentInset(maxWidth)
         // Each face keeps its own scroll: the notes and the files are different pages that share a header.
         key(allFiles) {
             FadingLazyColumn(Modifier.fillMaxSize().testTag(if (allFiles) "all-files-tab" else "project-notes-tab"), contentPadding = PaddingValues(bottom = 28.dp)) {
                 item("header") { ProjectHeader(name, root, allFiles, inset, onToggle = { actions.openProject(allFiles = !allFiles) }) }
-                if (allFiles) allFilesItems(state, actions, inset) else notesItems(state, actions, inset)
+                if (allFiles) allFilesItems(state, actions, inset) else notesItems(state, actions, inset, notesBlocks, open)
             }
         }
     }
@@ -128,26 +133,24 @@ private fun ProjectHeader(name: String, root: Agent?, allFiles: Boolean, inset: 
     }
 }
 
-/** The notes under the header, in the panel's markdown (see [PanelMarkdown]); a title line repeating the header is left out. */
-private fun LazyListScope.notesItems(state: PanelState, actions: PanelActions, inset: Dp) {
-    item("notes") {
-        val edge = Modifier.padding(horizontal = inset - PanelGutter, vertical = 10.dp)
-        when (val notes = state.context.notes) {
-            RemoteLoad.Idle, RemoteLoad.Loading -> LoadingRow("Reading the Project's notes…", edge)
-            is RemoteLoad.Unsupported -> ContextUnavailable(notes.reason, state, actions, edge)
-            is RemoteLoad.Failed -> FailedRow(notes.message, onRetry = if (notes.retryable) ({ actions.loadContext(force = true) }) else null, modifier = edge)
-            is RemoteLoad.Loaded -> {
-                val document = notes.value
-                if (document == null) {
-                    EmptyRow("No notes yet", "The coordinator writes the Project's notes to notes.md in its Context as the work moves.", edge)
-                } else {
-                    PanelMarkdown(
-                        withoutLeadingTitle(document.text),
-                        base = StoreBase.of(document.store.storeId, document.path),
-                        modifier = Modifier.fillMaxWidth().padding(start = inset, end = inset, top = 26.dp).testTag("project-notes-body"),
-                    )
-                }
-            }
+/** The notes under the header, in the panel's markdown (see [panelMarkdownItems]), [blocks] once read; a title line repeating the header is left out. */
+private fun LazyListScope.notesItems(state: PanelState, actions: PanelActions, inset: Dp, blocks: List<MdBlock>?, open: (String) -> Unit) {
+    val edge = Modifier.padding(horizontal = inset - PanelGutter, vertical = 10.dp)
+    when (val notes = state.context.notes) {
+        RemoteLoad.Idle, RemoteLoad.Loading -> item("notes") { LoadingRow("Reading the Project's notes…", edge) }
+        is RemoteLoad.Unsupported -> item("notes") { ContextUnavailable(notes.reason, state, actions, edge) }
+        is RemoteLoad.Failed -> item("notes") { FailedRow(notes.message, onRetry = if (notes.retryable) ({ actions.loadContext(force = true) }) else null, modifier = edge) }
+        is RemoteLoad.Loaded -> when {
+            notes.value == null -> item("notes") { EmptyRow("No notes yet", "The coordinator writes the Project's notes to notes.md in its Context as the work moves.", edge) }
+            blocks == null -> item("notes") { LoadingRow("Reading the Project's notes…", edge) }
+            else -> panelMarkdownItems(
+                blocks,
+                open,
+                key = "notes",
+                modifier = Modifier.fillMaxWidth().padding(horizontal = inset),
+                top = 26.dp,
+                first = Modifier.testTag("project-notes-body"),
+            )
         }
     }
 }
@@ -437,19 +440,25 @@ internal fun DocumentTab(tab: PanelTab.Document, state: PanelState, actions: Pan
                 RemoteLoad.Idle, RemoteLoad.Loading -> LoadingRow("Reading ${tab.name}…", edge)
                 is RemoteLoad.Unsupported -> ContextUnavailable(load.reason, state, actions, edge)
                 is RemoteLoad.Failed -> FailedRow(load.message, onRetry = if (load.retryable) ({ actions.loadDocument(tab, force = true) }) else null, modifier = edge)
-                is RemoteLoad.Loaded -> DocumentBody(load.value, source, inset)
+                is RemoteLoad.Loaded -> DocumentBody(load.value, source, inset, reading = { LoadingRow("Reading ${tab.name}…", edge) })
             }
         }
     }
 }
 
 @Composable
-private fun DocumentBody(document: ContextDocument, source: Boolean, inset: Dp) {
+private fun DocumentBody(document: ContextDocument, source: Boolean, inset: Dp, reading: @Composable () -> Unit) {
     if (source) {
         TextFile(document.text, truncated = false, modifier = Modifier.testTag("document-source"))
     } else {
-        FadingLazyColumn(Modifier.fillMaxSize().testTag("document-preview"), contentPadding = PaddingValues(start = inset, end = inset, top = 18.dp, bottom = 28.dp)) {
-            item { PanelMarkdown(document.text, base = StoreBase.of(document.store.storeId, document.path)) }
+        val blocks = rememberPanelBlocks(document.text, StoreBase.of(document.store.storeId, document.path))
+        val open = rememberPanelLinkOpener()
+        if (blocks == null) {
+            reading()
+        } else {
+            FadingLazyColumn(Modifier.fillMaxSize().testTag("document-preview"), contentPadding = PaddingValues(start = inset, end = inset, top = 18.dp, bottom = 28.dp)) {
+                panelMarkdownItems(blocks, open, key = "document")
+            }
         }
     }
 }

@@ -95,7 +95,7 @@ import kotlin.math.roundToInt
  * chrome stays without a touch before it goes on its own; null leaves it until tapped.
  *
  * [saves] are the Save button's, the app's own so that a save outlives the viewer; without them the host keeps its
- * own. Each save's end is felt, and — with the viewer closed by then — told in a toast.
+ * own. Each save's end is felt, and a failure — with the viewer closed by then — is told in a toast.
  */
 @Composable
 fun MediaViewerHost(
@@ -112,7 +112,7 @@ fun MediaViewerHost(
     LaunchedEffect(mediaSaves) {
         mediaSaves.outcomes.collect { outcome ->
             haptics.perform(if (outcome.saved) Haptic.Confirm else Haptic.Reject)
-            if (!state.isOpen) Toast.makeText(context.applicationContext, outcome.message, Toast.LENGTH_SHORT).show()
+            if (!outcome.saved && !state.isOpen) Toast.makeText(context.applicationContext, outcome.message, Toast.LENGTH_SHORT).show()
         }
     }
     val startSave = rememberSaveStarter(mediaSaves)

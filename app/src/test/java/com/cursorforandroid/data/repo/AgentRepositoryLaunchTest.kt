@@ -78,7 +78,6 @@ class AgentRepositoryLaunchTest {
         ref = "main",
         modelId = "auto-smart",
         modelParams = emptyList(),
-        autoCreatePr = false,
         planMode = false,
     )
 
@@ -235,7 +234,6 @@ class AgentRepositoryLaunchTest {
             files = listOf(PromptFile(byteArrayOf(1, 2, 3), "spec.pdf", "application/pdf")),
             images = listOf(PromptImage(byteArrayOf(9), "image/png")),
             planMode = true,
-            autoCreatePr = true,
         )
         val id = LaunchIdempotency.agentId(withFiles, "nonce")
         // The account creates the chat; the API lists it under the minted id a moment later.
@@ -252,7 +250,6 @@ class AgentRepositoryLaunchTest {
         assertThat(sent.ref).isEqualTo("main")
         assertThat(sent.modelId).isEqualTo("auto-smart")
         assertThat(sent.mode).isEqualTo(AgentMode.PLAN)
-        assertThat(sent.autoCreatePr).isTrue()
         assertThat(sent.environmentName).isNull()
         assertThat(sent.images).hasSize(1)
         assertThat(sent.files.single().filename).isEqualTo("spec.pdf")
@@ -547,20 +544,17 @@ class AgentRepositoryLaunchTest {
 
     @Test
     fun `a chat started from scratch sends an empty repos list and no env, and still launches`() = runBlocking<Unit> {
-        // Auto-PR left on from an earlier launch: there is no repository for a pull request, so it stays out too.
-        val noRepo = request.copy(repoUrl = null, ref = null, autoCreatePr = true)
+        val noRepo = request.copy(repoUrl = null, ref = null)
         val id = LaunchIdempotency.agentId(noRepo, "nonce")
         val provisional = agents.beginLaunch(noRepo.copy(agentId = id), "Auto")!!
         assertThat(provisional.repoUrl).isNull()
         assertThat(provisional.envType).isEqualTo(EnvType.CLOUD)
-        assertThat(provisional.autoCreatePr).isFalse()
 
         val (agent, run) = agents.launch(noRepo.copy(agentId = id), "Auto").getOrThrow()
 
         val sent = api.createRequests.single()
         assertThat(sent.repos).isEmpty()
         assertThat(sent.env).isNull()
-        assertThat(sent.autoCreatePR).isNull()
         assertThat(agent.id).isEqualTo(id)
         assertThat(agent.repoUrl).isNull()
         assertThat(agent.envType).isEqualTo(EnvType.CLOUD)

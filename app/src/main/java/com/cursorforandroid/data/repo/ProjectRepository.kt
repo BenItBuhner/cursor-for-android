@@ -1,6 +1,8 @@
 package com.cursorforandroid.data.repo
 
+import androidx.annotation.VisibleForTesting
 import com.cursorforandroid.crash.Breadcrumbs
+import com.cursorforandroid.data.api.AccountList
 import com.cursorforandroid.data.api.AgentStoreApi
 import com.cursorforandroid.data.api.ConnectRpcException
 import com.cursorforandroid.data.api.ProjectActionsApi
@@ -41,6 +43,7 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
@@ -51,6 +54,7 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.sync.withPermit
 import java.io.IOException
 import java.util.concurrent.ConcurrentHashMap
+import kotlin.random.Random
 
 /** A Project's shared context (Agent Store) as its view shows it. */
 sealed interface ContextState {
@@ -199,6 +203,9 @@ class ProjectRepository(
     private val attached = ConcurrentHashMap<String, Int>()
     private val pollers = ConcurrentHashMap<String, Job>()
 
+    /** When each parent's children list last answered, by either read; see [refreshChildren]. */
+    private val childrenReadAt = ConcurrentHashMap<String, Long>()
+
     private var watcher: Job? = null
 
     init {
@@ -234,11 +241,12 @@ class ProjectRepository(
     /**
      * [discoverRoots] then [syncLineage], on this repository's own scope: what follows every account list read.
      * [deep] reads the whole account list, as the user asked for by a deep refresh; otherwise the pass stops at the
-     * page older than every Project the registry knows.
+     * page older than every Project the registry knows. [firstPage] is the newest page that read just brought, which
+     * the pass starts from rather than asking for it again.
      */
-    fun scheduleRootDiscovery(rootIds: Collection<String>, deep: Boolean = false) {
+    fun scheduleRootDiscovery(rootIds: Collection<String>, deep: Boolean = false, firstPage: AccountList? = null) {
         scope.launch {
-            discoverRoots(deep = deep)
+            discoverRoots(deep = deep, firstPage = firstPage)
             syncLineage(rootIds)
             // The roots the memberships admitted have their rows fetched like the ones the pass named.
             agents.materializeRoots(budget = ROOT_FETCH_BUDGET)
@@ -290,7 +298,7 @@ class ProjectRepository(
      * stopped it are in [lastRootScan] for the diagnostics. Default mode has no list to scan: its registry is what
      * earlier sessions and the coordinators' transcripts filled, and its roots are fetched by id all the same.
      */
-    suspend fun discoverRoots(force: Boolean = false, deep: Boolean = false) {
+    suspend fun discoverRoots(force: Boolean = false, deep: Boolean = false, firstPage: AccountList? = null) {
         if (session.isDemo) return
         if (!capabilities().projects) {
             agents.materializeRoots()
@@ -306,7 +314,7 @@ class ProjectRepository(
             _lastRootScan.update { (it ?: RootScanRecord()).copy(status = RootScanRecord.Status.Running, attempts = attempt) }
             runningJob.set(currentCoroutineContext()[Job])
             try {
-                scan(token, attempt, deep)
+                scan(token, attempt, deep, firstPage)
             } finally {
                 runningJob.set(null)
                 // A pass that left any other way — cut short between its Running and its outcome — is no pass in
@@ -320,7 +328,7 @@ class ProjectRepository(
     }
 
     /** One discovery pass, under the mutex and past its Running mark (see [discoverRoots]). */
-    private suspend fun scan(token: Int, attempt: Int, deep: Boolean) {
+    private suspend fun scan(token: Int, attempt: Int, deep: Boolean, firstPage: AccountList?) {
         // The list is read newest first; once a page is older than every live Project the registry knows, the
         // pages behind it can name no Project newer than those — only one older, which a deep refresh reads for.
         // Archived Projects are left out of the floor: they sit far down the list and are not what a pull is
@@ -334,7 +342,7 @@ class ProjectRepository(
         val floor = if (deep || !complete) null else floorOfRegistry(token)
         val scanStartedAt = now()
         val scan = try {
-            api.scanRoots(ROOT_SCAN_PAGES, floor)
+            api.scanRoots(ROOT_SCAN_PAGES, floor, firstPage)
         } catch (e: CancellationException) {
             throw e
         } catch (t: Throwable) {
@@ -521,6 +529,7 @@ class ProjectRepository(
             agents.applyLineage(rootId, lineage.workers.associate { it.workerId to AgentParentKind.PROJECT_WORKER }, LineageSignal.MEMBERSHIP, retract = setOf(AgentParentKind.PROJECT_WORKER), startedIn = token)
         }
         if (lineage.childrenRead) {
+            childrenReadAt[rootId] = now()
             // The children's own records first — each names its parent the desktop's way — then the answer's word
             // for what the records did not carry, and the release of the side chats and subagents it no longer names.
             if (lineage.childRecords.isNotEmpty()) agents.applyAccountSnapshots(lineage.childRecords, token)
@@ -594,13 +603,31 @@ class ProjectRepository(
 
     // ---- the Project view -------------------------------------------------------------------------------------------
 
-    /** The Project as its view shows it, kept current from the agent list and the account's reads. */
-    fun view(projectId: String): Flow<ProjectViewState> = combine(agents.state, extrasOf(projectId), unavailableParents) { list, extra, unavailable ->
-        val root = list.agents.firstOrNull { it.id == projectId }
-        val members = list.agents.filter { it.parent?.id == projectId }
+    /**
+     * The Project as its view shows it, kept current from the agent list and the account's reads. Derived off the main
+     * thread: the list publishes many times a second while a Project's workers stream, and a view of a hundred members
+     * is not rebuilt on the frame's thread for each.
+     */
+    fun view(projectId: String): Flow<ProjectViewState> =
+        combine(agents.state, extrasOf(projectId), unavailableParents) { list, extra, unavailable -> derive(projectId, list, extra, unavailable) }
+            .distinctUntilChanged()
+            .flowOn(Dispatchers.Default)
+
+    /** [view]'s state as it stands now, for a view's first frame. */
+    fun viewNow(projectId: String): ProjectViewState = derive(projectId, agents.state.value, extrasOf(projectId).value, unavailableParents.value)
+
+    /** Told how long each derivation of a view took, on the thread it ran on; for the scale benchmark. */
+    @VisibleForTesting
+    internal var onViewDerived: ((nanos: Long) -> Unit)? = null
+
+    private fun derive(projectId: String, list: AgentListState, extra: Extras, unavailable: Map<String, String>): ProjectViewState {
+        val probe = onViewDerived
+        val startedAt = if (probe != null) System.nanoTime() else 0L
+        val root = list.agent(projectId)
+        val members = list.childrenOf[projectId].orEmpty()
         // Workers the account named but the list has not shown yet stand in with what the membership says.
         val listedWorkerIds = members.mapTo(HashSet()) { it.id }
-        ProjectViewState(
+        return ProjectViewState(
             projectId = projectId,
             root = root,
             rootUnavailable = if (root == null) unavailable[projectId] else null,
@@ -613,7 +640,7 @@ class ProjectRepository(
             lineageNotice = extra.lineageNotice,
             context = extra.context,
             actionsAvailable = extra.actionsAvailable,
-        )
+        ).also { probe?.invoke(System.nanoTime() - startedAt) }
     }
 
     /** A worker the account named but the list has not shown yet: its id, until the row arrives. */
@@ -637,7 +664,9 @@ class ProjectRepository(
     /**
      * A Project's view is on screen: its memberships are read now and every [pollIntervalMs] while it is, the list
      * refreshed alongside so the primaries' status stays live (`StreamBackgroundComposerUpdates` would replace the
-     * poll once a Connect streaming client exists). Balanced by [detach].
+     * poll once a Connect streaming client exists). The poll leaves the memberships alone while the coordinator's
+     * record has not moved and they were read in full less than [POLL_LINEAGE_TTL_MS] ago, and waits longer after
+     * each tick the server refused (see [pollDelayMs]). Balanced by [detach].
      */
     fun attach(projectId: String) {
         Breadcrumbs.add("project open ${Breadcrumbs.tail(projectId)}")
@@ -645,13 +674,25 @@ class ProjectRepository(
         if (count > 1) return
         pollers[projectId]?.cancel()
         pollers[projectId] = scope.launch {
-            refreshView(projectId)
+            var failures = if (readView(projectId, force = false) == false) 1 else 0
             while (isActive) {
-                delay(pollIntervalMs)
-                agents.refreshIfStale(pollIntervalMs / 2, RefreshDepth.Quick)
-                refreshView(projectId)
+                delay(pollDelayMs(failures))
+                val list = agents.refreshIfStale(pollIntervalMs / 2, RefreshDepth.Quick)
+                val lineage = readView(projectId, force = false)
+                failures = when {
+                    list == RefreshOutcome.Failed || lineage == false -> failures + 1
+                    list == RefreshOutcome.Refreshed || lineage == true -> 0
+                    else -> failures
+                }
             }
         }
+    }
+
+    /** The interval while the server answers, doubled per consecutive refused tick up to [MAX_POLL_BACKOFF_SHIFT], with jitter. */
+    private fun pollDelayMs(failures: Int): Long {
+        if (failures <= 0) return pollIntervalMs
+        val backed = pollIntervalMs shl minOf(failures, MAX_POLL_BACKOFF_SHIFT)
+        return backed + Random.nextLong(backed / 4 + 1)
     }
 
     fun detach(projectId: String) {
@@ -664,20 +705,40 @@ class ProjectRepository(
 
     /** One read of what the Project's view shows beyond the list: the account's memberships, when they may be read. */
     suspend fun refreshView(projectId: String) {
+        readView(projectId, force = true)
+    }
+
+    /**
+     * [refreshView]'s read; unless [force], skipped while the memberships are fresh (see [attach]). True when both
+     * membership reads answered, false when one failed, null when nothing was asked.
+     */
+    private suspend fun readView(projectId: String, force: Boolean): Boolean? {
         val flow = extrasOf(projectId)
         val allowed = capabilities()
         val available = session.isDemo || allowed.projects
         flow.update { it.copy(actionsAvailable = available) }
         if (session.isDemo) {
             flow.update { it.copy(hasSynced = true, lineageNotice = null, context = if (it.context == ContextState.Idle) ContextState.NoStore else it.context) }
-            return
+            return null
         }
         if (!allowed.projects) {
             flow.update { it.copy(hasSynced = true, lineageNotice = NEEDS_EXTENDED_MODE, context = ContextState.Unavailable(NEEDS_EXTENDED_MODE)) }
-            return
+            return null
         }
-        syncMutex.withLock { readLineage(projectId, agents.token()) }
+        val read = syncMutex.withLock {
+            if (!force && membershipsFresh(projectId, flow.value)) return@withLock null
+            readLineage(projectId, agents.token())
+            flow.value.lastSync?.let { it.workersRead && it.childrenRead }
+        }
         if (agents.agent(projectId) == null) materializeParents(listOf(projectId))
+        return read
+    }
+
+    /** Both membership reads answered less than [POLL_LINEAGE_TTL_MS] ago, and the root's record has not moved since. */
+    private fun membershipsFresh(projectId: String, extras: Extras): Boolean {
+        val last = extras.lastSync ?: return false
+        val stamp = recordStamp(projectId) ?: return false
+        return last.workersRead && last.childrenRead && stamp == extras.syncedRecordStamp && now() - extras.lastSyncedAtMillis < POLL_LINEAGE_TTL_MS
     }
 
     // ---- the coordinator's actions -----------------------------------------------------------------------------------
@@ -727,11 +788,13 @@ class ProjectRepository(
      * members and releases the side chats and subagents it no longer names (see [AgentRepository.applyLineage]);
      * it never makes a Project of the parent. Members the list does not hold are fetched by id so the section can
      * list them. Answers how many side chats it named; with Extended mode off, or in the demo, nothing is called and
-     * the answer says so.
+     * the answer says so. A list read less than [CHILDREN_FRESH_MS] ago — by this or by the Project's membership
+     * read — is not asked for again: the rows already carry it.
      */
     suspend fun refreshChildren(parentId: String): VmRead<Int> {
-        if (session.isDemo) return VmRead.Loaded(agents.state.value.agents.count { it.parent?.id == parentId && it.parent.kind == AgentParentKind.SIDE_CHAT })
+        if (session.isDemo) return VmRead.Loaded(listedSideChats(parentId))
         if (!capabilities().projects) return VmRead.NotAvailable(NEEDS_EXTENDED_MODE)
+        if (childrenReadAt[parentId]?.let { now() - it < CHILDREN_FRESH_MS } == true) return VmRead.Loaded(listedSideChats(parentId))
         val token = agents.token()
         val children = try {
             api.children(parentId)
@@ -741,6 +804,7 @@ class ProjectRepository(
             return VmRead.Failed(describeFailure(t), endpointChanged = t is ConnectRpcException && t.isNotOffered)
         }
         if (agents.token() != token) return VmRead.Failed("The account changed while the side chats were being read.")
+        childrenReadAt[parentId] = now()
         val members = children.associate { child -> child.id to (child.parent?.kind ?: AgentParentKind.SUBAGENT) }
         if (children.isNotEmpty()) agents.applyAccountSnapshots(children, token)
         agents.applyLineage(parentId, members, LineageSignal.CHILDREN_LIST, retract = setOf(AgentParentKind.SIDE_CHAT, AgentParentKind.SUBAGENT), startedIn = token)
@@ -750,6 +814,8 @@ class ProjectRepository(
         }
         return VmRead.Loaded(members.count { it.value == AgentParentKind.SIDE_CHAT })
     }
+
+    private fun listedSideChats(parentId: String): Int = agents.state.value.agents.count { it.parent?.id == parentId && it.parent.kind == AgentParentKind.SIDE_CHAT }
 
     /**
      * Starts a side chat off [parentId] (`StartSideChatBackgroundComposer`) — any chat's, not a Project's alone, the
@@ -829,6 +895,7 @@ class ProjectRepository(
         lastRootScanAtMillis = 0L
         _unavailableParents.value = emptyMap()
         extras.clear()
+        childrenReadAt.clear()
         pollers.values.forEach { it.cancel() }
         pollers.clear()
         attached.clear()
@@ -893,6 +960,12 @@ class ProjectRepository(
         private const val MAX_MATERIALIZED = 8
         private const val RETRY_AFTER_MS = 30 * 60_000L
         private const val POLL_INTERVAL_MS = 20_000L
+        /** An open Project's memberships, its record unchanged, are re-read by its poll at most this often (see [attach]). */
+        const val POLL_LINEAGE_TTL_MS = 60_000L
+        /** Refused poll ticks double the wait up to 2^this times the interval (see [attach]). */
+        private const val MAX_POLL_BACKOFF_SHIFT = 3
+        /** A children list this recent is not read again for a panel's side chats (see [refreshChildren]). */
+        const val CHILDREN_FRESH_MS = 30_000L
 
         /** Why a Project action or read is refused with Extended mode off; the view names it instead of the action. */
         const val NEEDS_EXTENDED_MODE = "Needs Extended mode: spawning, adopting, steering, side chats and Context use Cursor's account service."

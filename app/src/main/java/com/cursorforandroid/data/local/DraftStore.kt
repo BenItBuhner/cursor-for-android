@@ -85,7 +85,6 @@ class DraftStore(context: Context) {
         val modelLabel: String? = null,
         /** False until something has settled the model choice, so "Default" can be told apart from "never asked". */
         val modelChosen: Boolean = false,
-        val autoCreatePr: Boolean = false,
         val planMode: Boolean = false,
         /** Ask or Debug as [com.cursorforandroid.domain.AgentMode] names it, for a draft in one of Extended mode's modes; null otherwise. */
         val mode: String? = null,
@@ -140,7 +139,6 @@ class DraftStore(context: Context) {
         val modelId: String? = null,
         val modelParams: Map<String, String> = emptyMap(),
         val modelChosen: Boolean = false,
-        val autoCreatePr: Boolean = false,
         val planMode: Boolean = false,
         val nonce: String = "",
     )
@@ -295,7 +293,6 @@ class DraftStore(context: Context) {
             modelId = legacy.modelId,
             modelParams = legacy.modelParams.map { (paramId, value) -> ModelParam(paramId, value) },
             modelChosen = legacy.modelChosen,
-            autoCreatePr = legacy.autoCreatePr,
             planMode = legacy.planMode,
             nonce = legacy.nonce,
         )

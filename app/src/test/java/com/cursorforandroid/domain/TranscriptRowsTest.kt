@@ -404,4 +404,18 @@ class TranscriptRowsTest {
         // A run that ended any other way is never one.
         assertThat(TranscriptRows.interruptedFooters(listOf(RunFooter("f1", "run-1", RunStatus.ERROR, 30_000, emptyList()), UserMessage("u2", "And this.")))).isEmpty()
     }
+
+    @Test
+    fun `a stretch's key and an event group's are built once and kept`() {
+        val notice = SystemNotification("n1", SystemNotification.Kind.Other, "Subagent completed", "Fix the keyboard", null, raw = "<system_notification>…</system_notification>")
+        val group = TranscriptRow.Events(listOf(TranscriptRow.Event(notice), TranscriptRow.Event(notice.copy(id = "n2"))))
+        val stretch = TranscriptRow.Stretch(listOf(TranscriptRow.Entry.Events(group), TranscriptRow.Entry.Call(ToolCall("c1", "read_file", ToolKind.Read, ToolCall.STATUS_COMPLETED, "A.kt"), "c1")))
+        assertThat(group.key).isEqualTo("events:n1")
+        assertThat(stretch.key).isEqualTo("stretch:n1")
+        assertThat(group.key).isSameInstanceAs(group.key)
+        assertThat(stretch.key).isSameInstanceAs(stretch.key)
+        // Kept out of the value: a copy that says the same is equal, and has the same key.
+        assertThat(stretch.copy(live = true).key).isEqualTo(stretch.key)
+        assertThat(stretch.copy()).isEqualTo(stretch)
+    }
 }

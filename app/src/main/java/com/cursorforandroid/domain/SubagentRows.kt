@@ -522,15 +522,65 @@ object SubagentRows {
      * [rows]' [Index], read in order. A notice is bound to the call that started its child before it: the one that
      * started the agent it names, else the call its report names (`tool_call_id`), else the newest with its title.
      */
-    fun index(rows: List<TranscriptRow>): Index {
-        var latest: MutableMap<String, String>? = null
-        var workers: MutableMap<String, Index.Worker>? = null
-        var notices: MutableMap<String, SubagentCall>? = null
-        var endings: MutableMap<String, SubagentChild.Status>? = null
-        val byAgent = HashMap<String, ToolCall>()
-        val byCall = HashMap<String, SubagentCall>()
-        val byTitle = HashMap<String, ToolCall>()
-        fun note(call: ToolCall, subagent: SubagentCall) {
+    fun index(rows: List<TranscriptRow>): Index = Indexer().apply { visit(rows, 0, rows.size) }.index()
+
+    /** What one row tells the [Index], in the order [index] reads it: a subagent's call, or a subagent's or worker's notice. */
+    sealed interface Mark {
+        class Call(val call: ToolCall, val subagent: SubagentCall) : Mark
+        class Notice(val notification: SystemNotification) : Mark
+    }
+
+    /** The [Mark]s of [rows], in order: [index] over [rows] is [Indexer.add] of these, so a turn's can be kept and read again. */
+    fun marks(rows: List<TranscriptRow>): List<Mark> {
+        var out: MutableList<Mark>? = null
+        forEachMark(rows, 0, rows.size) { (out ?: ArrayList<Mark>().also { out = it }) += it }
+        return out ?: emptyList()
+    }
+
+    private fun forEachMark(rows: List<TranscriptRow>, from: Int, to: Int, action: (Mark) -> Unit) {
+        fun notice(notification: SystemNotification) {
+            if (notification.kind == SystemNotification.Kind.Subagent || notification.kind == SystemNotification.Kind.Worker) action(Mark.Notice(notification))
+        }
+        fun visit(row: TranscriptRow) {
+            when (row) {
+                is TranscriptRow.Stretch -> row.entries.forEach { entry ->
+                    when (entry) {
+                        is TranscriptRow.Entry.Call -> entry.subagent?.let { action(Mark.Call(entry.call, it)) }
+                        is TranscriptRow.Entry.Event -> notice(entry.row.notification)
+                        is TranscriptRow.Entry.Events -> entry.group.rows.forEach(::visit)
+                        else -> Unit
+                    }
+                }
+                is TranscriptRow.Events -> row.rows.forEach(::visit)
+                is TranscriptRow.Event -> notice(row.notification)
+                else -> Unit
+            }
+        }
+        for (i in from until to) visit(rows[i])
+    }
+
+    /** [index] read a piece at a time: rows, or the [marks] kept of them, in the rows' order. */
+    class Indexer {
+        private var latest: MutableMap<String, String>? = null
+        private var workers: MutableMap<String, Index.Worker>? = null
+        private var notices: MutableMap<String, SubagentCall>? = null
+        private var endings: MutableMap<String, SubagentChild.Status>? = null
+        private val byAgent = HashMap<String, ToolCall>()
+        private val byCall = HashMap<String, SubagentCall>()
+        private val byTitle = HashMap<String, ToolCall>()
+
+        fun visit(rows: List<TranscriptRow>, from: Int, to: Int) = forEachMark(rows, from, to) { add(it) }
+
+        fun addAll(marks: List<Mark>) { for (i in marks.indices) add(marks[i]) }
+
+        fun add(mark: Mark) {
+            when (mark) {
+                is Mark.Call -> note(mark.call, mark.subagent)
+                is Mark.Notice -> bind(mark.notification)
+            }
+        }
+
+        private fun note(call: ToolCall, subagent: SubagentCall) {
             if (subagent.source == SubagentCall.Source.Task || subagent.source == SubagentCall.Source.Created) {
                 subagent.agentId?.let { byAgent[it] = call }
                 byCall[call.callId] = subagent
@@ -543,8 +593,8 @@ object SubagentRows {
                 (workers ?: LinkedHashMap<String, Index.Worker>().also { workers = it })[id] = Index.Worker(subagent.title, subagent.modelId)
             }
         }
-        fun bind(notification: SystemNotification) {
-            if (notification.kind != SystemNotification.Kind.Subagent && notification.kind != SystemNotification.Kind.Worker) return
+
+        private fun bind(notification: SystemNotification) {
             val callId = notification.agentId?.let(byAgent::get)?.callId
                 ?: notification.callId?.takeIf { it in byCall }
                 ?: notification.summary?.trim()?.let(byTitle::get)?.callId
@@ -552,23 +602,10 @@ object SubagentRows {
             (notices ?: LinkedHashMap<String, SubagentCall>().also { notices = it })[notification.id] = byCall.getValue(callId)
             endedAs(notification)?.let { (endings ?: LinkedHashMap<String, SubagentChild.Status>().also { endings = it })[callId] = it }
         }
-        fun visit(row: TranscriptRow) {
-            when (row) {
-                is TranscriptRow.Stretch -> row.entries.forEach { entry ->
-                    when (entry) {
-                        is TranscriptRow.Entry.Call -> entry.subagent?.let { note(entry.call, it) }
-                        is TranscriptRow.Entry.Event -> bind(entry.row.notification)
-                        is TranscriptRow.Entry.Events -> entry.group.rows.forEach(::visit)
-                        else -> Unit
-                    }
-                }
-                is TranscriptRow.Events -> row.rows.forEach(::visit)
-                is TranscriptRow.Event -> bind(row.notification)
-                else -> Unit
-            }
+
+        fun index(): Index {
+            if (latest == null && notices == null) return Index.EMPTY
+            return Index(latest.orEmpty(), workers.orEmpty(), notices.orEmpty(), endings.orEmpty())
         }
-        rows.forEach(::visit)
-        if (latest == null && notices == null) return Index.EMPTY
-        return Index(latest.orEmpty(), workers.orEmpty(), notices.orEmpty(), endings.orEmpty())
     }
 }

@@ -103,7 +103,7 @@ class ComposerPillsScreenshotTest {
         // Nothing on: "+", the model chip beside send, the placeholder.
         capture("33_composer_no_pill", settledText = "Ask Cursor to build")
 
-        // Plan mode, as the model picker's toggle or `/plan` leaves it: a yellow pill right of "+", the chip the model's
+        // Plan mode, as the "+" menu's Plan or `/plan` leaves it: a yellow pill right of "+", the chip the model's
         // name alone, and a `/command` in the pill's yellow beside it in the text.
         scene = Scene(planMode = true, value = "/review Work out how the sidebar should group projects")
         capture("34_composer_plan_pill", settledText = "Work out how")

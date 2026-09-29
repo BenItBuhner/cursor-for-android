@@ -249,7 +249,7 @@ internal fun ProjectShortcutGrid(
                             lifted = lifted,
                             modifier = Modifier.clip(shape).indication(sources.getOrPut(id) { MutableInteractionSource() }, ripple(color = colors.base)),
                         )
-                        if (actions != null) ChatRowMenu(row = row, expanded = grid.menuFor == id, onDismiss = grid::closeMenu, actions = actions, at = grid.menuAt)
+                        if (actions != null && grid.menuFor == id) ChatRowMenu(row = row, expanded = true, onDismiss = grid::closeMenu, actions = actions, at = grid.menuAt)
                     }
                 }
             }

@@ -51,6 +51,9 @@ data class SlashOffer(
     val models: List<ModelOption> = emptyList(),
     val current: ModelChoice? = null,
 ) {
+    /** [models] indexed for the popover's search and the composer's check that a `/` phrase names a model. */
+    val modelSearch: ModelSearch.Index by lazy { ModelSearch.Index(models) }
+
     companion object {
         val None = SlashOffer()
     }
@@ -66,7 +69,7 @@ object SlashMenu {
      */
     fun items(query: String, catalog: SlashCatalog, recent: List<String>, offer: SlashOffer, expanded: Set<SlashSection> = emptySet()): List<SlashItem> {
         val q = query.trim().removePrefix("/").lowercase()
-        val models = if (offer.models.isEmpty()) emptyList() else ModelSearch.search(offer.models, q, offer.current)
+        val models = if (offer.models.isEmpty()) emptyList() else offer.modelSearch.search(q, offer.current)
             .map { SlashItem.Model(it, current = it.model.id == offer.current?.model?.id) }
         val modes = modes(q, offer)
         val asModes = offer.modes.mapTo(HashSet()) { it.command }
