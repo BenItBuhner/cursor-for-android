@@ -23,7 +23,6 @@ import com.cursorforandroid.domain.RunStatus
 import com.cursorforandroid.domain.SpotlightTarget
 import com.cursorforandroid.domain.SpotlightView
 import com.cursorforandroid.util.AppClock
-import com.cursorforandroid.util.throttleLatest
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -39,7 +38,8 @@ import kotlinx.coroutines.launch
 /**
  * Foreground service (`dataSync`) behind the Spotlight notification: up while a chat or Project is in the
  * [SpotlightController], down as soon as there is none. It follows the target through [SpotlightFeed] — the run
- * streams the app already shares, never a connection of its own — and posts at most one update a second.
+ * streams the app already shares, never a connection of its own — and posts each change as the live roster does
+ * ([PostPacer]), within the package's [PostBudget] that the roster shares.
  *
  * Kept apart from [LiveNotificationService] on purpose: the Spotlight is the user's explicit ask for one chat, so it
  * runs whether or not the live roster is switched on, and ends on its own terms (the run finishing, Stop Spotlight,
@@ -75,7 +75,7 @@ class SpotlightService : Service() {
         if (inForeground) return true
         try {
             val type = if (Build.VERSION.SDK_INT >= 29) ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC else 0
-            ServiceCompat.startForeground(this, SpotlightRenderer.SPOTLIGHT_ID, placeholder(), type)
+            graph.postBudget.post { ServiceCompat.startForeground(this, SpotlightRenderer.SPOTLIGHT_ID, placeholder(), type) }
         } catch (e: Exception) {
             Log.w(TAG, "Foreground start refused", e)
             graph.spotlight.stop()
@@ -108,24 +108,30 @@ class SpotlightService : Service() {
             }
             coroutineScope {
                 launch { refreshWhileAlone() }
-                graph.spotlightFeed.of(target)
-                    .throttleLatest(UPDATE_INTERVAL_MS)
-                    .collect { frame -> show(target, frame) }
+                // Finishes and ends skip the pacer and act at once; a stop cancels this scope, and with it what the pacer held back.
+                val pacer = PostPacer<SpotlightView, SpotlightView>(this, look = { it }, ends = { _, _ -> false }, graph.postBudget) { view ->
+                    LiveNotifications.post(this@SpotlightService, SpotlightRenderer.SPOTLIGHT_ID, SpotlightRenderer.spotlight(this@SpotlightService, view))
+                }
+                graph.spotlightFeed.of(target).collect { frame -> show(target, frame, pacer) }
             }
         }
     }
 
-    private fun show(target: SpotlightTarget, frame: SpotlightFeed.Frame) {
+    private fun show(target: SpotlightTarget, frame: SpotlightFeed.Frame, pacer: PostPacer<SpotlightView, SpotlightView>) {
         when (frame) {
             is SpotlightFeed.Frame.Live -> {
                 graph.spotlight.cover(target, frame.covered)
-                LiveNotifications.post(this, SpotlightRenderer.SPOTLIGHT_ID, SpotlightRenderer.spotlight(this, frame.view))
+                pacer.offer(frame.view)
             }
             is SpotlightFeed.Frame.Finished -> {
+                pacer.cancel()
                 announce(frame)
                 graph.spotlight.end(target)
             }
-            SpotlightFeed.Frame.Ended -> graph.spotlight.end(target)
+            SpotlightFeed.Frame.Ended -> {
+                pacer.cancel()
+                graph.spotlight.end(target)
+            }
         }
     }
 
@@ -142,7 +148,9 @@ class SpotlightService : Service() {
             if (!graph.prefs.projectNotifications.first().announces(frame.agent)) return@launch
             val foreground = runCatching { ProcessLifecycleOwner.get().lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED) }.getOrDefault(false)
             if (foreground && graph.conversations.isAttached(run.agentId)) return@launch
-            LiveNotifications.post(this@SpotlightService, LiveNotificationRenderer.finishedId(run.agentId), LiveNotificationRenderer.finished(this@SpotlightService, run))
+            graph.postBudget.post {
+                LiveNotifications.post(this@SpotlightService, LiveNotificationRenderer.finishedId(run.agentId), LiveNotificationRenderer.finished(this@SpotlightService, run))
+            }
         }
     }
 
@@ -200,8 +208,6 @@ class SpotlightService : Service() {
     companion object {
         private const val TAG = "Spotlight"
         const val ACTION_STOP = "com.cursorforandroid.action.STOP_SPOTLIGHT"
-        /** Android rate-limits an app's notification updates; one a second is well inside that and reads as live. */
-        const val UPDATE_INTERVAL_MS = 1_000L
         private const val REFRESH_INTERVAL_MS = 60_000L
 
         /** Must be called from the foreground, like any foreground service start. False when the platform refused it. */

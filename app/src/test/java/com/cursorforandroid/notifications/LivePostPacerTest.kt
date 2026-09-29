@@ -169,6 +169,27 @@ class LivePostPacerTest {
     }
 
     @Test
+    fun `the Spotlight's pacing posts each change within the budget it shares with the roster, the latest left up`() = runTest {
+        val budget = budget()
+        val posts = ArrayList<Pair<Long, String>>()
+        val pacer = PostPacer<String, String>(backgroundScope, look = { it }, ends = { _, _ -> false }, budget) { posts += testScheduler.currentTime to it }
+        pacer.offer("Reading")
+        pacer.offer("Reading")
+        assertThat(posts).containsExactly(0L to "Reading")
+
+        // The roster posting meanwhile spends the same budget, so the Spotlight's next change waits for it.
+        repeat(6) { budget.record(testScheduler.currentTime); advanceTimeBy(20) }
+        pacer.offer("Grepping")
+        assertThat(posts).hasSize(1)
+        repeat(40) { i -> advanceTimeBy(25); pacer.offer("Step $i") }
+        advanceTimeBy(2_000)
+        runCurrent()
+        assertThat(posts.last().second).isEqualTo("Step 39")
+        val android = PostBudget(PostBudget.ANDROID_MAX_PER_SECOND)
+        assertThat(posts.all { (at, _) -> android.allows(at).also { if (it) android.record(at) } }).isTrue()
+    }
+
+    @Test
     fun `the budget settles at its ceiling, a quiet spell earns a short burst, and waiting its wait is always enough`() {
         val budget = PostBudget(maxPerSecond = 4.5)
         var now = 0L
