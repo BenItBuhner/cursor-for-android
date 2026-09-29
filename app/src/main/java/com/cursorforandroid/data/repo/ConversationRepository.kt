@@ -378,16 +378,24 @@ class ConversationRepository(
          * it, and the disk does not keep it.
          */
         val sending: Boolean = false,
+        /**
+         * When a read of the account's queue first found the message gone from it, by the app's clock (see
+         * [noteAccountQueue]); null while the account lists it. The account has consumed it: past
+         * [DELIVERY_GRACE_MS] of reads that all agree, it leaves the card whether or not a transcript read got through.
+         */
+        val unlistedAt: Long? = null,
     ) {
         fun copy(
             behindRunId: String? = this.behindRunId,
             queuedOnAccount: Boolean = this.queuedOnAccount,
             staged: StagedFollowUp = this.staged,
             queuedAt: Long = this.queuedAt,
+            priorCopies: Int = this.priorCopies,
             priorTranscriptCopies: Int = this.priorTranscriptCopies,
             runId: String? = this.runId,
             sending: Boolean = this.sending,
-        ) = Awaiting(staged, behindRunId, queuedAt, queuedOnAccount, followupId, priorCopies, priorTranscriptCopies, runId, sending)
+            unlistedAt: Long? = this.unlistedAt,
+        ) = Awaiting(staged, behindRunId, queuedAt, queuedOnAccount, followupId, priorCopies, priorTranscriptCopies, runId, sending, unlistedAt)
 
         /** The same message: the followup id when the send minted one, else the staged copy's own id (an [Awaiting] is replaced by [copy] as it waits). */
         fun sameAs(other: Awaiting): Boolean = if (followupId != null) followupId == other.followupId else staged.localId == other.staged.localId
@@ -822,6 +830,37 @@ class ConversationRepository(
             return filed
         }
 
+        /**
+         * The Beta engine draws the account's record, which [fileInFrame] never reads: a message the account has let
+         * go of whose copy the frame [items] now draws — a copy beyond the frame's copies of its words when it was
+         * queued ([Awaiting.priorCopies]) — is in the transcript, and leaves the card in this very frame, whether or
+         * not the `/v0` transcript's read for its filing gets through. One the account still lists waits for its
+         * filing. Returns what left, for its staged attachments to go.
+         */
+        fun retireDrawn(items: List<TimelineItem>): List<Awaiting> {
+            if (recordWindow == null || awaiting.none { !it.queuedOnAccount && !it.sending }) return emptyList()
+            val bubbles = local.filterNot { it.filed }.mapTo(HashSet()) { it.message.id }
+            val drawn = HashMap<String, Int>()
+            for (item in items) if (item is UserMessage && item.id !in bubbles) drawn.merge(QueuePlacement.textKey(item.text), 1, Int::plus)
+            val retired = ArrayList<Awaiting>()
+            for (candidate in awaiting.sortedBy { it.queuedAt }) {
+                val a = awaiting.firstOrNull { it.sameAs(candidate) } ?: continue
+                if (a.queuedOnAccount || a.sending) continue
+                val key = QueuePlacement.textKey(a.staged.text)
+                if ((drawn[key] ?: 0) <= a.priorCopies) continue
+                retired += a
+                // The copy is this message's: the ones queued after it with the same words are one further along.
+                awaiting = awaiting.mapNotNull { other ->
+                    when {
+                        other === a -> null
+                        other.queuedAt >= a.queuedAt && QueuePlacement.textKey(other.staged.text) == key -> other.copy(priorCopies = other.priorCopies + 1)
+                        else -> other
+                    }
+                }
+            }
+            return retired
+        }
+
         private fun storyOf(runId: String): List<TimelineItem>? = live?.takeIf { it.runId == runId }?.items ?: partial[runId] ?: traces[runId]
 
         /**
@@ -899,7 +938,7 @@ class ConversationRepository(
             awaiting = awaiting.mapNotNull { other ->
                 when {
                     other === a -> null
-                    other.queuedAt >= a.queuedAt && normalizePrompt(other.staged.text) == wanted -> other.copy(priorTranscriptCopies = other.priorTranscriptCopies + 1)
+                    other.queuedAt >= a.queuedAt && normalizePrompt(other.staged.text) == wanted -> other.copy(priorCopies = other.priorCopies + 1, priorTranscriptCopies = other.priorTranscriptCopies + 1)
                     else -> other
                 }
             }
@@ -2802,6 +2841,7 @@ class ConversationRepository(
      */
     private inline fun Entry.publish(mutate: Entry.() -> Unit = {}, transform: ConversationState.() -> ConversationState = { this }, fileSteers: Boolean = false) {
         var filed: List<Pair<Awaiting, LocalPrompt>> = emptyList()
+        var retired: List<Awaiting> = emptyList()
         var adopt = false
         var unfollowed = false
         var refiled = false
@@ -2820,6 +2860,7 @@ class ConversationRepository(
             val buildStartedAt = System.nanoTime()
             // Whichever source answered last, a coordinator's message once shown stays on the list (see [ShownMessages]).
             val items = shownMessages.keep(items(), source = if (recordWindow != null) "record" else "runs")
+            retired = retireDrawn(items)
             val window = recordWindow
             val (older, status) = if (window != null) {
                 (window.hasOlder) to recordTraceStatus(window)
@@ -2839,8 +2880,9 @@ class ConversationRepository(
             val (created, _) = workers
             if (created.isNotEmpty()) agents.applyLineage(agentId, created.associateWith { AgentParentKind.PROJECT_WORKER }, LineageSignal.COORDINATOR_CREATED)
         }
+        if (retired.isNotEmpty()) { val gone = retired; scope.launch { gone.forEach { attachments.discard(it.staged.attachments) } } }
         if (filed.isNotEmpty()) { val toCommit = filed; scope.launch { commitFiled(this@publish, toCommit) } }
-        else if (refiled) scope.launch { persist(this@publish, session.current) }
+        else if (refiled || retired.isNotEmpty()) scope.launch { persist(this@publish, session.current) }
         if (adopt) requestAdoption(this)
         // A queued message filed under the run it started, nothing followed: that run is found and followed, however
         // the turn before it ended (a Stop's end looks for no next run).
@@ -5333,7 +5375,7 @@ class ConversationRepository(
             result = text.ifEmpty { run.result },
             git = result?.git ?: run.git,
         )
-        val reply = text.takeIf { it.isNotEmpty() }?.let { V0ConversationMessageDto("res-${run.id}", ASSISTANT_MESSAGE, it) }
+        val reply = text.takeIf { it.isNotEmpty() }?.let { V0ConversationMessageDto("$RUN_REPLY_PREFIX${run.id}", ASSISTANT_MESSAGE, it) }
         runs = runs.map { if (it.id == run.id) terminal else it }
         local = local.map { if (it.run.id == run.id) it.copy(run = terminal, reply = reply) else it }
         // The transcript may hold the reply already — a load that read it before the stream's end came through
@@ -5631,6 +5673,7 @@ class ConversationRepository(
         var adopt = false
         var changed = false
         val putBack = ArrayList<Delivered>()
+        val lapsed = ArrayList<Awaiting>()
         synchronized(e) {
             if (e.awaiting.isEmpty() && e.delivered.isEmpty() && e.returned.isEmpty()) return
             if (e.awaiting.isNotEmpty()) {
@@ -5651,9 +5694,24 @@ class ConversationRepository(
                             val behind = since.take(ahead).lastOrNull()?.id ?: a.behindRunId
                             if (a.behindRunId == behind) a else a.copy(behindRunId = behind)
                         }
-                        !queued && a.queuedOnAccount -> { adopt = true; changed = true; a.copy(queuedOnAccount = false) }
+                        !queued && a.queuedOnAccount -> { adopt = true; changed = true; a.copy(queuedOnAccount = false, unlistedAt = readAtMillis) }
+                        // Listed again after a read that missed it: still the account's to deliver, whatever that read said.
+                        queued -> { changed = true; a.copy(queuedOnAccount = true, unlistedAt = null) }
+                        // Let go of since a read before this one — or since before a restart, which keeps no clock for it.
+                        a.unlistedAt == null -> a.copy(unlistedAt = readAtMillis)
                         else -> a
                     }
+                }
+                // Every read that finds a message let go of and still not filed asks for its filing again: one adoption
+                // that could not read the transcript, or ran for another message when this one was let go of, is not
+                // the last word on it.
+                if (e.awaiting.any { !it.sending && !it.queuedOnAccount }) adopt = true
+                // The account consumed it a while ago by every read since, and no transcript has filed it: it is off
+                // the card rather than "being delivered" for good. Nothing the account still lists is ever let go here.
+                lapsed += e.awaiting.filter { a -> !a.sending && !a.queuedOnAccount && a.unlistedAt != null && readAtMillis - a.unlistedAt >= DELIVERY_GRACE_MS }
+                if (lapsed.isNotEmpty()) {
+                    e.awaiting = e.awaiting.filterNot { a -> lapsed.any { it === a } }
+                    changed = true
                 }
             }
             if (e.delivered.isNotEmpty()) {
@@ -5690,7 +5748,8 @@ class ConversationRepository(
             }
         }
         if (changed) e.publish()
-        if (putBack.isNotEmpty()) e.scope.launch { persist(e, session.current) }
+        if (lapsed.isNotEmpty()) e.scope.launch { lapsed.forEach { attachments.discard(it.staged.attachments) } }
+        if (putBack.isNotEmpty() || lapsed.isNotEmpty()) e.scope.launch { persist(e, session.current) }
         if (adopt) requestAdoption(e)
     }
 
@@ -5724,7 +5783,15 @@ class ConversationRepository(
             val conversation = async { runCatching { net(agentId, "transcript"); api.conversationV0(agentId).messages }.getOrNull() }
             runs.await() to conversation.await()
         }
-        if (transcript == null) return
+        // A transcript that could not be read says nothing of where the message landed: asked again like one that
+        // does not hold it yet, never given up on as if it had answered.
+        if (transcript == null) {
+            if (attempt < ADOPT_ATTEMPTS) {
+                delay(ADOPT_RETRY_MS)
+                adoptDelivered(e, attempt + 1)
+            }
+            return
+        }
         // Merged and published: the frame files every message the transcript now holds a copy of (see [Entry.fileInFrame]).
         e.publish(mutate = {
             if (page != null) {
@@ -5732,8 +5799,9 @@ class ConversationRepository(
                 val known = runs.mapTo(HashSet()) { it.id }
                 runs = page.items.filter { it.id !in known } + runs.map { fresh[it.id] ?: it }
             }
-            // The transcript read now is the fresher copy: the load's may predate the delivery.
-            if (transcript.size >= messages.size) messages = transcript
+            // The transcript read now is the fresher copy: the load's may predate the delivery. The replies this device
+            // added from finished runs' results (see [recordFinishedRun]) are not the server's and do not make its copy older.
+            if (transcript.size >= messages.count { !it.id.startsWith(RUN_REPLY_PREFIX) }) messages = transcript
         }, fileSteers = true)
         // Not in the transcript yet — the account files a message a beat after it starts the run — asked for again a
         // few times, a moment apart; one the queue has dropped that the transcript never shows was taken back from
@@ -5754,6 +5822,8 @@ class ConversationRepository(
             }
         })
         dropped.forEach { attachments.discard(it.attachments) }
+        // Written back: a copy on disk still holding the message would put it back on the card at the next start.
+        if (dropped.isNotEmpty()) persist(e, session.current)
     }
 
     /** The server's runs of [e]'s chat, oldest first: never a prompt's placeholder. */
@@ -6499,6 +6569,14 @@ class ConversationRepository(
          */
         const val PUT_BACK_SLACK_MS = 2_000L
         const val ADOPT_RETRY_MS = 2_500L
+        /**
+         * How long every read of the account's queue must have found a message gone from it, with no transcript
+         * filing it, before it leaves the card anyway (see [Awaiting.unlistedAt]): the account has consumed it, and a
+         * transcript that never answered, or never showed it, must not keep it "being delivered" for good.
+         */
+        const val DELIVERY_GRACE_MS = 45_000L
+        /** The id of a reply this device added to the transcript from a finished run's result, ahead of the server's copy (see [recordFinishedRun]). */
+        const val RUN_REPLY_PREFIX = "res-"
         /** The two message types of `/v0/agents/{id}/conversation`. */
         const val USER_MESSAGE = "user_message"
         const val ASSISTANT_MESSAGE = "assistant_message"

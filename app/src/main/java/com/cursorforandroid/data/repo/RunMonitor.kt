@@ -36,6 +36,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * Follows running agents (up to [maxTracked] at a time, like the iOS Live Activity's eight) through the [LiveRunHub]
@@ -59,6 +60,8 @@ class RunMonitor(
     dispatcher: CoroutineDispatcher = Dispatchers.Default,
     /** Settings › Notifications, the Project half: what the live count includes, whose finishes are cards. */
     private val notificationPrefs: Flow<ProjectNotificationPrefs> = flowOf(ProjectNotificationPrefs.DEFAULT),
+    /** How often a followed run's streaming words reach the monitor (see `LiveRunHub.snapshots`); 0 for every token. */
+    private val sampleMs: Long = SAMPLE_MS,
 ) {
     private val _state = MutableStateFlow(LiveActivityState())
     val state: StateFlow<LiveActivityState> = _state.asStateFlow()
@@ -79,6 +82,8 @@ class RunMonitor(
      * take an id out of it.
      */
     private val finishedEmitted = RecentIds(MAX_REMEMBERED_FINISHES)
+    /** Snapshots turned into a [TrackedRun] so far, each a pass over the run's items: for the benchmarks. */
+    internal val digests = AtomicInteger()
 
     private class Tracker(val runId: String, val job: Job)
 
@@ -224,10 +229,12 @@ class RunMonitor(
             ?: agent.updatedAtMillis.takeIf { it > 0 }
             ?: nowProvider()
         upsert(TrackedRun(agent.id, runId, agent.name, agent.runStatus ?: RunStatus.CREATING, LivePhase.Starting, startedAt, branch = agent.branchName, prUrl = agent.prUrl))
-        hub.snapshots(agent.id, runId, startedAt)
+        // Sampled: the notification shows the run's step, not its words, so only a step change or the finish comes at once.
+        hub.snapshots(agent.id, runId, startedAt, sampleMs = sampleMs)
             .transformWhile { emit(it); !it.finished }
             .collect { snapshot ->
                 val current = agents.agent(agent.id) ?: agent
+                digests.incrementAndGet()
                 val tracked = toTracked(current, snapshot)
                 if (snapshot.finished) {
                     trackers.remove(agent.id)
@@ -278,6 +285,8 @@ class RunMonitor(
          * the notification, never the count it reports.
          */
         const val MAX_TRACKED = 8
+        /** How often a followed run's streaming words reach the monitor; its step changes and finish come at once (see `LiveRunHub.snapshots`). */
+        const val SAMPLE_MS = 500L
         private const val FULL_REFRESH_EVERY = 5
         /** Far more finishes than a session sees, and small enough that the ids cost nothing to hold. */
         private const val MAX_REMEMBERED_FINISHES = 256

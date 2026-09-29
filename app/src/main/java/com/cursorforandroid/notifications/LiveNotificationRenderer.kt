@@ -55,24 +55,48 @@ object LiveNotificationRenderer {
         .setProgress(0, 0, true)
         .build()
 
-    fun live(context: Context, state: LiveActivityState): Notification {
-        val running = state.running
-        if (running.isEmpty()) return connecting(context)
-        // Chosen by how many agents run, not how many are followed: a second agent beyond the tracked one still counts.
-        return if (state.totalRunning == 1) single(context, running.first()) else condensed(context, state)
+    fun live(context: Context, state: LiveActivityState): Notification = live(context, look(context, state))
+
+    /**
+     * Everything the live notification shows for [state], and where its taps lead, without building it: two states
+     * with equal looks post identical notifications. A run's streaming words are not part of it, only its step.
+     */
+    sealed interface LiveLook {
+        data object Connecting : LiveLook
+        data class Single(val agentId: String, val runId: String, val title: String, val step: String, val phase: String, val startedAtMillis: Long, val canStop: Boolean) : LiveLook
+        data class Condensed(val count: Int, val lines: List<String>, val startedAtMillis: Long) : LiveLook
     }
 
-    private fun single(context: Context, run: TrackedRun): Notification {
+    fun look(context: Context, state: LiveActivityState): LiveLook {
+        val running = state.running
+        if (running.isEmpty()) return LiveLook.Connecting
+        // Chosen by how many agents run, not how many are followed: a second agent beyond the tracked one still counts.
+        if (state.totalRunning == 1) {
+            val run = running.first()
+            return LiveLook.Single(run.agentId, run.runId, run.title, stepText(context, run), phaseLabel(context, run), run.startedAtMillis, run.phase != LivePhase.Stopping)
+        }
+        // The count is every running agent; the lines only cover the tracked ones, so the rest are summed up below.
+        val lines = running.map { condensedLine(context, it) } + listOfNotNull(moreLine(context, state.untrackedCount))
+        return LiveLook.Condensed(state.totalRunning, lines, running.minOf { it.startedAtMillis })
+    }
+
+    fun live(context: Context, look: LiveLook): Notification = when (look) {
+        LiveLook.Connecting -> connecting(context)
+        is LiveLook.Single -> single(context, look)
+        is LiveLook.Condensed -> condensed(context, look)
+    }
+
+    private fun single(context: Context, look: LiveLook.Single): Notification {
         val builder = liveBuilder(context)
-            .setContentTitle(run.title)
-            .setContentText(stepText(context, run))
-            .setSubText(phaseLabel(context, run))
-            .setWhen(run.startedAtMillis)
+            .setContentTitle(look.title)
+            .setContentText(look.step)
+            .setSubText(look.phase)
+            .setWhen(look.startedAtMillis)
             .setShowWhen(true)
             .setUsesChronometer(true)
-            .setContentIntent(openAgent(context, run.agentId))
-        if (run.phase != LivePhase.Stopping) {
-            builder.addAction(0, context.getString(R.string.notif_action_stop), stopRun(context, run))
+            .setContentIntent(openAgent(context, look.agentId))
+        if (look.canStop) {
+            builder.addAction(0, context.getString(R.string.notif_action_stop), stopRun(context, look.agentId, look.runId))
         }
         if (Build.VERSION.SDK_INT >= 36) {
             builder.setStyle(NotificationCompat.ProgressStyle().setProgressIndeterminate(true))
@@ -82,16 +106,13 @@ object LiveNotificationRenderer {
         return builder.build()
     }
 
-    private fun condensed(context: Context, state: LiveActivityState): Notification {
-        val running = state.running
-        // The count is every running agent; the lines only cover the tracked ones, so the rest are summed up below.
-        val count = state.totalRunning
-        val lines = running.map { condensedLine(context, it) } + listOfNotNull(moreLine(context, state.untrackedCount))
+    private fun condensed(context: Context, look: LiveLook.Condensed): Notification {
+        val count = look.count
         return liveBuilder(context)
             .setContentTitle(context.resources.getQuantityString(R.plurals.notif_agents_running, count, count))
-            .setContentText(lines.first())
-            .setStyle(NotificationCompat.BigTextStyle().bigText(lines.joinToString("\n")))
-            .setWhen(running.minOf { it.startedAtMillis })
+            .setContentText(look.lines.first())
+            .setStyle(NotificationCompat.BigTextStyle().bigText(look.lines.joinToString("\n")))
+            .setWhen(look.startedAtMillis)
             .setShowWhen(false)
             // The chip shows either the chronometer or this text; with several agents the count is the useful one.
             .setShortCriticalText(context.resources.getQuantityString(R.plurals.notif_chip_agents, count, count))
@@ -242,6 +263,6 @@ object LiveNotificationRenderer {
         return PendingIntent.getActivity(context, requestCode("url", key), intent, flags())
     }
 
-    private fun stopRun(context: Context, run: TrackedRun): PendingIntent =
-        PendingIntent.getService(context, requestCode("stop", run.agentId), LiveNotificationService.stopRunIntent(context, run.agentId, run.runId), flags())
+    private fun stopRun(context: Context, agentId: String, runId: String): PendingIntent =
+        PendingIntent.getService(context, requestCode("stop", agentId), LiveNotificationService.stopRunIntent(context, agentId, runId), flags())
 }

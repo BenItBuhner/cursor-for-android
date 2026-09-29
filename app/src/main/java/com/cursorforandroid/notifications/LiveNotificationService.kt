@@ -61,6 +61,8 @@ class LiveNotificationService : Service() {
     private var watch: CoroutineScope? = null
     private var idleJob: Job? = null
     private var latestStartId = 0
+    /** Every notification this service posts counts against Android's rate for the package: see [PostBudget]. */
+    private val budget = PostBudget()
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -110,7 +112,7 @@ class LiveNotificationService : Service() {
             ?: LiveNotificationRenderer.connecting(this)
         try {
             val type = if (Build.VERSION.SDK_INT >= 29) ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC else 0
-            ServiceCompat.startForeground(this, LiveNotificationRenderer.LIVE_ID, initial, type)
+            budget.post { ServiceCompat.startForeground(this, LiveNotificationRenderer.LIVE_ID, initial, type) }
         } catch (e: Exception) {
             // ForegroundServiceStartNotAllowedException (a background start, or Android 15's dataSync budget spent
             // before the app was in front again) or a missing permission. Not fatal, and nothing is left owing: the
@@ -143,6 +145,9 @@ class LiveNotificationService : Service() {
             }
         }
         monitor.start()
+        val pacer = LivePostPacer(watching, look = { LiveNotificationRenderer.look(this, it) }, budget) { look ->
+            LiveNotifications.post(this, LiveNotificationRenderer.LIVE_ID, LiveNotificationRenderer.live(this, look))
+        }
         watching.launch {
             // A chat in the Spotlight has a card of its own, so the roster leaves it out as it does a snoozed one.
             combine(monitor.state, graph.prefs.liveNotifications, graph.prefs.localAgentState, graph.spotlight.covered) { state, enabled, local, spotlit ->
@@ -150,12 +155,19 @@ class LiveNotificationService : Service() {
             }
                 .collect { (state, enabled, _) ->
                     when {
-                        !enabled -> shutdown(keepWatching = false)
-                        state.running.isEmpty() -> scheduleIdleShutdown(state)
+                        !enabled -> {
+                            pacer.cancel()
+                            shutdown(keepWatching = false)
+                        }
+                        state.running.isEmpty() -> {
+                            // The notification stays up through the idle grace: with the last look it had, not one the pacer held back.
+                            pacer.flush()
+                            scheduleIdleShutdown(state)
+                        }
                         else -> {
                             idleJob?.cancel()
                             idleJob = null
-                            post(LiveNotificationRenderer.LIVE_ID, LiveNotificationRenderer.live(this@LiveNotificationService, state))
+                            pacer.offer(state)
                         }
                     }
                 }
@@ -205,7 +217,7 @@ class LiveNotificationService : Service() {
         }
     }
 
-    private fun post(id: Int, notification: Notification) = LiveNotifications.post(this, id, notification)
+    private fun post(id: Int, notification: Notification) = budget.post { LiveNotifications.post(this, id, notification) }
 
     /**
      * Stops following the runs and takes the live notification down. With [keepWatching] the runs are believed to be

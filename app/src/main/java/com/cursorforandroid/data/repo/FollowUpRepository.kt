@@ -952,7 +952,8 @@ class FollowUpRepository(
             runToFollow(e.agentId).collectLatest { runId ->
                 if (runId != null) {
                     runCatching {
-                        hub.snapshots(e.agentId, runId).transformWhile { emit(it); !it.finished }.collect { }
+                        // Only the end is read here, and a sampled subscriber hears that at once (see LiveRunHub.snapshots).
+                        hub.snapshots(e.agentId, runId, sampleMs = RunMonitor.SAMPLE_MS).transformWhile { emit(it); !it.finished }.collect { }
                     }.onFailure { if (it is CancellationException) throw it }
                 }
             }

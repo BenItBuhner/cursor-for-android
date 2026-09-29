@@ -153,6 +153,12 @@ class FaultServer(
      */
     @Volatile var datesQueuedRunsAtQueue = false
     private val queuedRunDates = ConcurrentHashMap<String, String>()
+    /**
+     * The account's record takes the prompt of a run it starts on a message ([startRun]) as the record of a turn started
+     * elsewhere does: the Beta engine then draws the message from the record, whatever `/v0` answers. Off by default,
+     * for the tests written before the record carried deliveries.
+     */
+    @Volatile var recordsDeliveries = false
     /** Whether the account may start the next run on a queued message on its own the moment the turn ends (see [endTurn]); tests deliver by hand otherwise. */
     @Volatile var autoDeliver = false
     /** The followups delivered, in order, and the run each started (a steer's run is the one it was delivered into). */
@@ -734,6 +740,7 @@ class FaultServer(
         agents[agentId] = agent.copy(status = "ACTIVE", latestRunId = runId, updatedAt = now)
         v0[agentId]?.let { v0[agentId] = it.copy(status = "RUNNING") }
         transcripts[agentId] = transcripts[agentId].orEmpty() + V0ConversationMessageDto("$runId-u", "user_message", text)
+        if (recordsDeliveries) records[agentId]?.let { steps -> records[agentId] = steps + buildJsonObject { put("humanMessage", buildJsonObject { put("text", text) }) } }
         sent += text to runId
         return run
     }
