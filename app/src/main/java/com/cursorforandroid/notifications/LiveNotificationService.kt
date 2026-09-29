@@ -62,7 +62,7 @@ class LiveNotificationService : Service() {
     private var idleJob: Job? = null
     private var latestStartId = 0
     /** Every notification this service posts counts against Android's rate for the package: see [PostBudget]. */
-    private val budget = PostBudget()
+    private val budget: PostBudget get() = graph.postBudget
 
     override fun onBind(intent: Intent?): IBinder? = null
 

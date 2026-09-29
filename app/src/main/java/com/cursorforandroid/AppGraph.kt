@@ -166,6 +166,7 @@ import com.cursorforandroid.domain.WorkerMembership
 import com.cursorforandroid.domain.WorkerSpawnKind
 import com.cursorforandroid.domain.WorkspaceTree
 import com.cursorforandroid.notifications.LiveNotifications
+import com.cursorforandroid.notifications.PostBudget
 import com.cursorforandroid.notifications.SpotlightController
 import com.cursorforandroid.share.ShareInbox
 import com.cursorforandroid.ui.components.ComposerMediaPreviews
@@ -980,6 +981,9 @@ class AppGraph(
 
     /** The one chat or Project in the Spotlight. Plain state, cheap enough to build eagerly: menus read it on every row. */
     val spotlight = SpotlightController()
+
+    /** Android rates the package's notification posts together, so the live roster and the Spotlight share one budget. Main thread only. */
+    internal val postBudget = PostBudget()
 
     private val lazySpotlightFeed = lazy { SpotlightFeed(agents, liveRuns) }
     val spotlightFeed: SpotlightFeed get() = lazySpotlightFeed.value
