@@ -42,8 +42,6 @@
     <string name="spotlight_action">Spotlight</string>
     <string name="spotlight_action_stop">Stop Spotlight</string>
     <string name="spotlight_connecting">Connecting…</string>
-    <string name="spotlight_notifications_off">Turn on notifications to use Spotlight</string>
-
     <!-- App updates -->
     <string name="channel_updates_name">App updates</string>
     <string name="channel_updates_description">A new version of Cursor has been downloaded and is ready to install.</string>

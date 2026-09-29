@@ -8,7 +8,6 @@ import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
 import android.util.Log
-import android.widget.Toast
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
@@ -226,7 +225,6 @@ class SpotlightService : Service() {
                 return
             }
             if (!LiveNotifications.canShowSpotlight(context)) {
-                Toast.makeText(context, R.string.spotlight_notifications_off, Toast.LENGTH_SHORT).show()
                 runCatching { context.startActivity(LiveNotifications.appNotificationSettingsIntent(context)) }
                 return
             }
