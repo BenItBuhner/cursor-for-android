@@ -938,7 +938,8 @@ fun ConversationScreen(
                         },
                         anchor = composerAnchor,
                         // Free the moment send is tapped: the message, its files' uploads and its send are the transcript's from then on.
-                        canSend = (draft.isNotBlank() || attachments.isNotEmpty() || files.isNotEmpty()) && !archived,
+                        // A message bound for a queue is held until its files are up (see ConversationViewModel.submit).
+                        canSend = (draft.isNotBlank() || attachments.isNotEmpty() || files.isNotEmpty()) && !archived && (uploadHint == null || !willQueue),
                         isRunning = isActive,
                         onStop = { stopConfirmation.ask(RunInterruption.Stop, agentId, viewModel::cancelRun) },
                         plusMenu = plusMenu,

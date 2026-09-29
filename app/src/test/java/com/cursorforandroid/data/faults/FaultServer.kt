@@ -133,6 +133,11 @@ class FaultServer(
         @Volatile var consumedAtServerMs: Long? = null
     }
 
+    /** Every `AddAsyncFollowupBackgroundComposer` body the server read, in order, whatever it answered: each write of a message. */
+    val queueAdds = CopyOnWriteArrayList<JsonObject>()
+    /** The upload ids whose part a `PUT` delivered, in order. */
+    val uploadedParts = CopyOnWriteArrayList<String>()
+
     /** The account's queue per chat, oldest first. */
     val pending: MutableMap<String, MutableList<Pending>> = ConcurrentHashMap()
     /** How long the account's list keeps naming a followup after the run it started (or the steer it became) exists. */
@@ -196,7 +201,7 @@ class FaultServer(
     private val resets = AtomicInteger()
 
     /** [Live] is `StreamConversation` asked with `purpose = LIVE` (an open chat's watch); [RecordState] the same method's state read. */
-    enum class Route { Me, ListAgents, ListAgentsV0, GetAgent, ListRuns, GetRun, CreateRun, CancelRun, Conversation, Stream, Auth, Record, RecordState, Live, Blob, QueueAdd, QueueList, QueueDelete, QueueUpdate, QueueReorder, QueueSendNow, QueueEditing, Steer, AccountList, Workers, Children, Pins, FleetWorkers, FleetPools, Other }
+    enum class Route { Me, ListAgents, ListAgentsV0, GetAgent, ListRuns, GetRun, CreateRun, CancelRun, Conversation, Stream, Auth, Record, RecordState, Live, Blob, QueueAdd, QueueList, QueueDelete, QueueUpdate, QueueReorder, QueueSendNow, QueueEditing, Steer, AccountList, Workers, Children, Pins, FleetWorkers, FleetPools, UploadPresign, UploadPut, UploadComplete, UploadAbort, Other }
 
     /**
      * One row of the account's own list (`ListBackgroundComposers`, Extended mode): the record the sidebar's rows
@@ -393,6 +398,11 @@ class FaultServer(
             segments.size == 2 && segments[0] == RECORD_SERVICE && segments[1] == "ListWorkersForManager" -> Route.Workers
             segments.size == 2 && segments[0] == RECORD_SERVICE && segments[1] == "ListBackgroundComposerChildren" -> Route.Children
             segments.size == 2 && segments[0] == RECORD_SERVICE && (segments[1] == "PinBackgroundComposers" || segments[1] == "UnpinBackgroundComposers") -> Route.Pins
+            // A prompt's files: presigned, each part `PUT` to the URL the presign named (this server's own), completed.
+            segments.size == 2 && segments[0] == RECORD_SERVICE && segments[1] == "PresignPromptUpload" -> Route.UploadPresign
+            segments.size == 2 && segments[0] == RECORD_SERVICE && segments[1] == "CompletePromptUpload" -> Route.UploadComplete
+            segments.size == 2 && segments[0] == RECORD_SERVICE && segments[1] == "AbortPromptUpload" -> Route.UploadAbort
+            segments.size == 2 && segments[0] == UPLOAD_PARTS && request.method == "PUT" -> Route.UploadPut
             else -> Route.Other
         }
     }
@@ -472,6 +482,13 @@ class FaultServer(
                 json(200, encode(ListWorkersResponseDto.serializer(), ListWorkersResponseDto(workers = fleetWorkers.filter { (it.scope == "team_pool") == teamPool })))
             }
             Route.FleetPools -> json(200, encode(ListPoolsResponseDto.serializer(), ListPoolsResponseDto(pools = fleetPools)))
+            Route.UploadPresign -> presignUpload(request)
+            Route.UploadPut -> {
+                if (processed) uploadedParts += segments[1]
+                MockResponse().setResponseCode(200)
+            }
+            Route.UploadComplete -> json(200, """{"status":"PROMPT_UPLOAD_COMPLETION_STATUS_COMPLETED"}""")
+            Route.UploadAbort -> json(200, "{}")
             Route.Other -> json(404, error("not_found", "No such route in the fault server: ${request.method} ${url.encodedPath}"))
         }
         answer.getBody()?.size?.let { size -> bytesByRoute.merge(route, size, Long::plus) }
@@ -529,7 +546,7 @@ class FaultServer(
         CursorJson.parseToJsonElement(String(body, 5, length, Charsets.UTF_8)).jsonObject["purpose"]?.jsonPrimitive?.contentOrNull == "STREAM_CONVERSATION_PURPOSE_LIVE"
     }.getOrDefault(false)
 
-    private val Route.isAccount: Boolean get() = this == Route.Record || this == Route.RecordState || this == Route.Live || this == Route.Blob || this == Route.QueueAdd || this == Route.QueueList || this == Route.QueueDelete || this == Route.QueueUpdate || this == Route.QueueReorder || this == Route.QueueSendNow || this == Route.QueueEditing || this == Route.Steer || this == Route.AccountList || this == Route.Workers || this == Route.Children || this == Route.Pins
+    private val Route.isAccount: Boolean get() = this == Route.Record || this == Route.RecordState || this == Route.Live || this == Route.Blob || this == Route.QueueAdd || this == Route.QueueList || this == Route.QueueDelete || this == Route.QueueUpdate || this == Route.QueueReorder || this == Route.QueueSendNow || this == Route.QueueEditing || this == Route.Steer || this == Route.AccountList || this == Route.Workers || this == Route.Children || this == Route.Pins || this == Route.UploadPresign || this == Route.UploadComplete || this == Route.UploadAbort
 
     // ---- the account's list ----------------------------------------------------------------------------------------
 
@@ -579,6 +596,7 @@ class FaultServer(
      */
     private fun queueAdd(request: RecordedRequest, processed: Boolean): MockResponse {
         val body = CursorJson.parseToJsonElement(request.body.readUtf8()).jsonObject
+        queueAdds += body
         val agentId = body["bcId"]?.jsonPrimitive?.contentOrNull ?: return json(400, connectError("invalid_argument", "bcId is required"))
         val text = body["followup"]?.jsonPrimitive?.contentOrNull ?: ""
         val followupId = body["followupId"]?.jsonPrimitive?.contentOrNull ?: "fu-server-${ids.incrementAndGet()}"
@@ -607,6 +625,16 @@ class FaultServer(
             delivered += followupId to run.id
         }
         return json(200, """{"runId":"${run.id}"}""")
+    }
+
+    /** `PresignPromptUpload {filename, mimeType, contentLengthBytes}`: one part, `PUT` back to this server under the upload's id. */
+    private fun presignUpload(request: RecordedRequest): MockResponse {
+        val body = CursorJson.parseToJsonElement(request.body.readUtf8()).jsonObject
+        val filename = body["filename"]?.jsonPrimitive?.contentOrNull ?: "file"
+        val size = body["contentLengthBytes"]?.jsonPrimitive?.contentOrNull ?: "0"
+        val uploadId = "up-$filename-${ids.incrementAndGet()}"
+        val url = server.url("/$UPLOAD_PARTS/$uploadId").toString()
+        return json(200, """{"uploadId":"$uploadId","multipart":{"s3UploadId":"s3-$uploadId","parts":[{"partNumber":1,"url":${quote(url)},"offsetBytes":"0","sizeBytes":"$size"}],"partSizeBytes":"$size"}}""")
     }
 
     /** `ListPendingFollowups {bcId}`: what waits, and what the account consumed within the last [queueLagMs]. */
@@ -1150,6 +1178,8 @@ class FaultServer(
         const val HEAVY_CHARS = 2_000
         /** The account service the record RPCs belong to (see `HeadlessConversationApi.SERVICE`). */
         const val RECORD_SERVICE = "aiserver.v1.BackgroundComposerService"
+        /** Where a presigned part is `PUT` on this server. */
+        const val UPLOAD_PARTS = "upload-parts"
         /** The server's own words for the removed unary, lowerCamel as its handler names it (Bennett's phone, 2026-09-21). */
         const val REMOVED_UNARY = "getLatestAgentConversationState has been removed"
     }

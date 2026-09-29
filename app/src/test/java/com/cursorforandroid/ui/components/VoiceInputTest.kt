@@ -53,6 +53,9 @@ class VoiceInputTest {
         assertThat(buttons(voice = true, hasContent = true, canSend = false)).isEqualTo(ComposerButtons(SendSlot.Send, micBeside = true))
         // While the agent runs, a typed follow-up is Send, as before, with the mic beside it.
         assertThat(buttons(voice = true, hasContent = true, canStop = true)).isEqualTo(ComposerButtons(SendSlot.Send, micBeside = true))
+        // Held back while the agent runs (files still going up for the queue): Send, dimmed — never Stop in its place.
+        assertThat(buttons(voice = true, hasContent = true, canSend = false, canStop = true)).isEqualTo(ComposerButtons(SendSlot.Send, micBeside = true))
+        assertThat(buttons(voice = false, hasContent = true, canSend = false, canStop = true)).isEqualTo(ComposerButtons(SendSlot.Send, micBeside = false))
     }
 
     @Test

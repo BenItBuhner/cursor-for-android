@@ -266,7 +266,7 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyMap())
     /**
      * "Uploading 2 of 3…" while an attached file is still going up, null otherwise — the composer's footer says so.
-     * Send is not held by it: a message sent while its files are going up finishes them on its bubble.
+     * Send is held by it only for a queue: a message sent into a bubble while its files are going up finishes them there.
      */
     val uploadHint: StateFlow<String?> = combine(files, graph.attachmentUploads.states) { fs, states -> AttachmentUploads.hint(states, fs.map { it.id }) }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
@@ -684,13 +684,13 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
             toast.value = AgentRepository.FILES_NEED_EXTENDED
             return null
         }
-        // The send button is held while a file is still going up; a send that gets here all the same waits its turn too.
-        uploadHint.value?.let { hint ->
-            toast.value = "$hint The message goes out once the files are up."
-            return null
-        }
         val accountQueue = caps.accountQueue && !graph.session.isDemo
         val waiting = graph.followUps.state(agentId).value.queue.isNotEmpty()
+        // A message for a queue waits there with its files already up; the send button is held until they are. Into a
+        // bubble it goes regardless: the bubble finishes its uploads (see dispatch). The dimmed Send says why.
+        if ((busy || waiting) && AttachmentUploads.isUploading(graph.attachmentUploads.states.value, attached.map { it.id })) {
+            return null
+        }
         val message = OutgoingMessages.Draft(
             // The account's follow-up refuses a message with no text; an attachment-only one says what it carries.
             text = text.ifEmpty { if (withFiles) attachmentOnlyText(images.size, attached.size) else QueuedFollowUp.IMAGE_ONLY_TEXT },

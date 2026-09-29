@@ -131,7 +131,8 @@ fun composerButtons(
 ): ComposerButtons = when {
     isSending && cancelOffered -> ComposerButtons(SendSlot.CancelSend, micBeside = false)
     isSending -> ComposerButtons(SendSlot.Busy, micBeside = false)
-    canStop && !canSend -> ComposerButtons(SendSlot.Stop, micBeside = voice)
+    // A draft held back mid-run (its files still going up for the queue) keeps a dimmed Send, not a Stop in its place.
+    canStop && !canSend && !hasContent -> ComposerButtons(SendSlot.Stop, micBeside = voice)
     voice && !hasContent && !canSend -> ComposerButtons(SendSlot.Mic, micBeside = false)
     else -> ComposerButtons(SendSlot.Send, micBeside = voice)
 }

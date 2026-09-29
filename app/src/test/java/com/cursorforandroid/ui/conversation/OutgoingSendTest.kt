@@ -735,8 +735,11 @@ class OutgoingSendTest {
         val vm2 = openIn(secondVisit)
         account.gate = CountDownLatch(1)
         account.failNext = ConnectRpcException(503, "unavailable", "The account service is unavailable right now.")
-        vm2.addFiles(listOf(file("spec.pdf")))
+        val spec = file("spec.pdf")
+        vm2.addFiles(listOf(spec))
         vm2.setDraft("And the spec")
+        // Up before it is sent: were the first message's run still under way, a send mid-upload would be held.
+        awaitChip(vm2, spec.id) { it?.done == true }
         vm2.send()
         // A bubble, or — the chat still showing the first message's run under way — the queue's card row.
         await("the message shown") { pendingBubbles().singleOrNull() ?: card().queue.singleOrNull() }
