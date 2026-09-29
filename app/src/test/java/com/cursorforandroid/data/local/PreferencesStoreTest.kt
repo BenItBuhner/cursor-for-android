@@ -16,6 +16,7 @@ import com.cursorforandroid.domain.CredentialInfo
 import com.cursorforandroid.domain.CursorUser
 import com.cursorforandroid.domain.NewChatHome
 import com.cursorforandroid.domain.SignInMethod
+import com.cursorforandroid.domain.TranscriptEngine
 import com.cursorforandroid.ui.panel.PaneWidthClass
 import com.cursorforandroid.ui.theme.ThemeMode
 import com.google.common.truth.Truth.assertThat
@@ -505,5 +506,50 @@ class PreferencesStoreTest {
         assertThat(prefs.pinnedModelIds.first()).containsExactly("cursor-grok-4.6").inOrder()
         prefs.togglePinnedModel("cursor-grok-4.6")
         assertThat(prefs.pinnedModelIds.first()).isEmpty()
+    }
+
+    @Test
+    fun `the settings snapshot reads what each setting's own flow does, stored or defaulted`() = runBlocking {
+        val prefs = PreferencesStore(ApplicationProvider.getApplicationContext())
+        suspend fun fromFlows() = SettingsSnapshot(
+            themeMode = prefs.themeMode.first(),
+            oledBlack = prefs.oledBlack.first(),
+            confirmStop = prefs.confirmStop.first(),
+            shortenSidebarLists = prefs.shortenSidebarLists.first(),
+            unreadOnlyTouchedHere = prefs.unreadOnlyTouchedHere.first(),
+            liveNotifications = prefs.liveNotifications.first(),
+            liveSync = prefs.liveSync.first(),
+            projectNotifications = prefs.projectNotifications.first(),
+            newChatHome = prefs.newChatHome.first(),
+            extendedMode = prefs.extendedMode.first(),
+            extendedModeAcknowledgedAt = prefs.extendedModeAcknowledgedAt.first(),
+            transcriptEngine = prefs.transcriptEngine.first(),
+            autoUpdate = prefs.autoUpdate.first(),
+            crashReports = prefs.crashReports.first(),
+        )
+        prefs.warmSettings()
+        withTimeout(5_000) { prefs.settings.first { it != null } }
+        assertThat(prefs.settings.value).isEqualTo(SettingsSnapshot())
+        assertThat(fromFlows()).isEqualTo(SettingsSnapshot())
+
+        prefs.setThemeMode(ThemeMode.Light)
+        prefs.setOledBlack(true)
+        prefs.setConfirmStop(false)
+        prefs.setShortenSidebarLists(false)
+        prefs.setUnreadOnlyTouchedHere(false)
+        prefs.setLiveNotifications(false)
+        prefs.setLiveSync(false)
+        prefs.setCountProjectAgentsInLive(false)
+        prefs.setNotifyProjectCoordinators(true)
+        prefs.setNotifyProjectMembers(true)
+        prefs.setNewChatHome(NewChatHome.entries.first { it != NewChatHome.DEFAULT })
+        prefs.setExtendedMode(true)
+        prefs.setExtendedModeAcknowledgedAt(1_234L)
+        prefs.setTranscriptEngine(TranscriptEngine.entries.first { it != TranscriptEngine.DEFAULT })
+        prefs.setAutoUpdate(false)
+        prefs.setCrashReports(true)
+        val stored = fromFlows()
+        assertThat(stored).isNotEqualTo(SettingsSnapshot())
+        assertThat(withTimeout(5_000) { prefs.settings.first { it == stored } }).isEqualTo(stored)
     }
 }

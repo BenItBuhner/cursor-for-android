@@ -56,6 +56,8 @@ class MainActivity : ComponentActivity() {
         readRequests(intent)
         returnFromBrowserWhenLoginEnds(graph)
         followThemePreference(graph)
+        // Read now, with the theme, so Settings has the stored values in memory before it is first opened.
+        graph.prefs.warmSettings()
 
         setContent {
             val themeMode by graph.prefs.themeMode.collectAsStateWithLifecycle(initialValue = ThemeMode.System)

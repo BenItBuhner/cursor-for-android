@@ -99,7 +99,7 @@ internal fun NewChatHomeCard(
 ) {
     val scope = rememberCoroutineScope()
     // On the main dispatcher for the reason the Extended mode switch is (see SettingsScreen).
-    val chosen by graph.prefs.newChatHome.collectAsStateWithLifecycle(initialValue = null, context = Dispatchers.Main.immediate)
+    val chosen by graph.prefs.newChatHome.collectAsStateWithLifecycle(initialValue = graph.prefs.settings.value?.newChatHome, context = Dispatchers.Main.immediate)
     val chips = rememberComposerChips(graph)
     SettingsCard {
         Row(

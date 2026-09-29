@@ -102,7 +102,7 @@ fun ExtendedModeRow(graph: AppGraph, enabled: Boolean) {
     val scope = rememberCoroutineScope()
     // On the main dispatcher, as the screen's reading of the mode is (see SettingsScreen): written from the store's IO
     // thread, a first value can be lost to the recomposer's bookkeeping under the test harness's unconfined dispatcher.
-    val acknowledgedAt by graph.extendedMode.acknowledgedAt.collectAsStateWithLifecycle(initialValue = null, context = Dispatchers.Main.immediate)
+    val acknowledgedAt by graph.extendedMode.acknowledgedAt.collectAsStateWithLifecycle(initialValue = graph.storedSettings.extendedModeAcknowledgedAt, context = Dispatchers.Main.immediate)
     var dialogOpen by rememberSaveable { mutableStateOf(false) }
 
     fun setEnabled(on: Boolean) {
@@ -144,7 +144,7 @@ fun ExtendedModeRow(graph: AppGraph, enabled: Boolean) {
 @Composable
 fun TranscriptEngineRow(graph: AppGraph, extendedMode: Boolean) {
     val scope = rememberCoroutineScope()
-    val engine by graph.extendedMode.engine.collectAsStateWithLifecycle(initialValue = TranscriptEngine.DEFAULT, context = Dispatchers.Main.immediate)
+    val engine by graph.extendedMode.engine.collectAsStateWithLifecycle(initialValue = graph.storedSettings.transcriptEngine, context = Dispatchers.Main.immediate)
     SettingsToggleRow(
         title = ExtendedModeCopy.ENGINE_TITLE,
         description = if (extendedMode) ExtendedModeCopy.ENGINE_DETAIL else ExtendedModeCopy.NEEDS_MODE,

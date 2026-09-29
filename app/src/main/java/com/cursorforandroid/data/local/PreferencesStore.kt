@@ -36,6 +36,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
@@ -59,6 +62,24 @@ private data class CachedUser(
     val lastName: String?,
     val userId: Long?,
     val profilePictureUrl: String? = null,
+)
+
+/** What Settings shows, read in one go (see [PreferencesStore.settings]); each field defaults as its own flow does. */
+data class SettingsSnapshot(
+    val themeMode: ThemeMode = ThemeMode.System,
+    val oledBlack: Boolean = false,
+    val confirmStop: Boolean = true,
+    val shortenSidebarLists: Boolean = true,
+    val unreadOnlyTouchedHere: Boolean = true,
+    val liveNotifications: Boolean = true,
+    val liveSync: Boolean = true,
+    val projectNotifications: ProjectNotificationPrefs = ProjectNotificationPrefs.DEFAULT,
+    val newChatHome: NewChatHome = NewChatHome.DEFAULT,
+    val extendedMode: Boolean = false,
+    val extendedModeAcknowledgedAt: Long? = null,
+    val transcriptEngine: TranscriptEngine = TranscriptEngine.DEFAULT,
+    val autoUpdate: Boolean = true,
+    val crashReports: Boolean = false,
 )
 
 /** Everything that is device-local: theme, list customization, pins, read markers and composer defaults. */
@@ -899,6 +920,42 @@ class PreferencesStore(
 
     private fun encodeDismissedNotices(map: Map<String, List<String>>): String =
         CursorJson.encodeToString(MapSerializer(String.serializer(), ListSerializer(String.serializer())), map)
+
+    /**
+     * Every value Settings shows, held in memory from the first read on: null only until the file has been read once.
+     * Settings takes its first frame from here, so a screen opened with non-default values draws them rather than the
+     * defaults for a frame and then flips (rows appearing and going, switches animating on their own). Started by
+     * [warmSettings] as the app's window opens; the individual flows stay the source of the rows' later values.
+     */
+    val settings: StateFlow<SettingsSnapshot?> by lazy {
+        data.map { it.settingsSnapshot() }.stateIn(CoroutineScope(SupervisorJob() + Dispatchers.Default), SharingStarted.Eagerly, null)
+    }
+
+    /** Starts [settings] reading, so it holds the stored values before any screen asks for them. */
+    fun warmSettings() {
+        settings
+    }
+
+    private fun Preferences.settingsSnapshot() = SettingsSnapshot(
+        themeMode = this[Keys.theme]?.let { raw -> ThemeMode.entries.firstOrNull { it.name == raw } } ?: ThemeMode.System,
+        oledBlack = this[Keys.oledBlack] ?: false,
+        confirmStop = this[Keys.confirmStop] ?: true,
+        shortenSidebarLists = this[Keys.shortenSidebarLists] ?: true,
+        unreadOnlyTouchedHere = this[Keys.unreadOnlyTouchedHere] ?: true,
+        liveNotifications = this[Keys.liveNotifications] ?: true,
+        liveSync = this[Keys.liveSync] ?: true,
+        projectNotifications = ProjectNotificationPrefs(
+            countProjectAgentsInLive = this[Keys.countProjectAgentsInLive] ?: true,
+            notifyProjectCoordinators = this[Keys.notifyProjectCoordinators] ?: false,
+            notifyProjectMembers = this[Keys.notifyProjectMembers] ?: false,
+        ),
+        newChatHome = NewChatHome.parse(this[Keys.newChatHome]),
+        extendedMode = this[Keys.extendedMode] ?: false,
+        extendedModeAcknowledgedAt = this[Keys.extendedModeAcknowledgedAt],
+        transcriptEngine = TranscriptEngine.parse(this[Keys.transcriptEngine]),
+        autoUpdate = this[Keys.autoUpdate] ?: true,
+        crashReports = this[Keys.crashReports] ?: false,
+    )
 
     private companion object {
         const val MAX_RECENT_SKILLS = 8

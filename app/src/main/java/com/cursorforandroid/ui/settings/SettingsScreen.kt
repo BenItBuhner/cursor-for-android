@@ -15,6 +15,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
@@ -41,12 +42,12 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.cursorforandroid.AppGraph
 import com.cursorforandroid.data.api.CursorEndpoints
 import com.cursorforandroid.data.local.SecureKeyStore
+import com.cursorforandroid.data.local.SettingsSnapshot
 import com.cursorforandroid.data.repo.SessionState
 import com.cursorforandroid.data.update.UpdateManager
 import com.cursorforandroid.domain.AppRelease
 import com.cursorforandroid.domain.CredentialInfo
 import com.cursorforandroid.domain.CursorUser
-import com.cursorforandroid.domain.ProjectNotificationPrefs
 import com.cursorforandroid.domain.ReleaseNotes
 import com.cursorforandroid.domain.SignInMethod
 import com.cursorforandroid.domain.UpdatePhase
@@ -70,6 +71,7 @@ import com.cursorforandroid.ui.theme.ThemeMode
 import com.cursorforandroid.util.TimeFormat
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.util.Locale
 
 /** The words the screen shows that more than one place (a test, a sheet) has to agree on. */
@@ -149,8 +151,8 @@ fun SettingsScreen(
     // This screen fills the pane the New Chat page does, so its size is the page's for the picker's miniatures.
     var pane by remember { mutableStateOf(DpSize(411.dp, 914.dp)) }
     val uriHandler = LocalUriHandler.current
-    val themeMode by graph.prefs.themeMode.collectAsStateWithLifecycle(initialValue = ThemeMode.System)
-    val oledBlack by graph.prefs.oledBlack.collectAsStateWithLifecycle(initialValue = false)
+    val themeMode by graph.prefs.themeMode.collectAsStateWithLifecycle(initialValue = graph.storedSettings.themeMode)
+    val oledBlack by graph.prefs.oledBlack.collectAsStateWithLifecycle(initialValue = graph.storedSettings.oledBlack)
     val session by graph.session.state.collectAsStateWithLifecycle()
     val credential = (session as? SessionState.SignedIn)?.credential
     val keyStorage by graph.keyStore.availability.collectAsStateWithLifecycle()
@@ -161,7 +163,7 @@ fun SettingsScreen(
     // change — Compose 1.7's Recomposer.recordComposerModifications resets its pending set without holding the lock
     // for the whole round. On a device the composition runs on the main thread anyway; under the test harness's
     // unconfined dispatcher it does not, and a fresh collector's first value went missing once in a few dozen runs.
-    val extendedMode by graph.extendedMode.enabled.collectAsStateWithLifecycle(initialValue = false, context = Dispatchers.Main.immediate)
+    val extendedMode by graph.extendedMode.enabled.collectAsStateWithLifecycle(initialValue = graph.storedSettings.extendedMode, context = Dispatchers.Main.immediate)
     var accountOpen by rememberSaveable { mutableStateOf(false) }
     var debugOpen by rememberSaveable { mutableStateOf(false) }
 
@@ -278,6 +280,21 @@ fun SettingsScreen(
     }
 }
 
+/** The stored settings as last read, for a row's first frame (see `PreferencesStore.settings`); the defaults until the file has been read. */
+internal val AppGraph.storedSettings: SettingsSnapshot get() = prefs.settings.value ?: SettingsSnapshot()
+
+/** What the system allows, as Settings last found it (binder calls, made off the main thread on each resume). */
+private data class NotificationChecks(val allowed: Boolean = true, val promotedAllowed: Boolean? = null, val liveUpdatesIntent: Intent? = null)
+
+/**
+ * The last answers to Settings' system checks, kept for the process so a reopened screen starts from them rather than
+ * from a guess that the fresh check then overturns. Before the first check the guess is "allowed": no hint shows.
+ */
+private object SystemChecks {
+    @Volatile var notifications = NotificationChecks()
+    @Volatile var canInstall = true
+}
+
 /** Who is signed in: the avatar, the name, the address (and the key's name). Tappable where there is more to show. */
 @Composable
 private fun AccountRow(user: CursorUser, subtitle: String, onClick: (() -> Unit)?) {
@@ -356,7 +373,7 @@ private fun AccountDetailsSheet(credential: CredentialInfo?, keyStorage: SecureK
 private fun UnreadThisPhoneRow(graph: AppGraph) {
     val scope = rememberCoroutineScope()
     // On the main dispatcher for the reason the Extended mode switch is (see SettingsScreen).
-    val enabled by graph.prefs.unreadOnlyTouchedHere.collectAsStateWithLifecycle(initialValue = true, context = Dispatchers.Main.immediate)
+    val enabled by graph.prefs.unreadOnlyTouchedHere.collectAsStateWithLifecycle(initialValue = graph.storedSettings.unreadOnlyTouchedHere, context = Dispatchers.Main.immediate)
     SettingsToggleRow(
         title = SettingsCopy.UNREAD_THIS_PHONE,
         description = SettingsCopy.UNREAD_THIS_PHONE_DETAIL,
@@ -371,7 +388,7 @@ private fun UnreadThisPhoneRow(graph: AppGraph) {
 private fun ShortenProjectsRow(graph: AppGraph) {
     val scope = rememberCoroutineScope()
     // On the main dispatcher for the reason the Extended mode switch is (see SettingsScreen).
-    val enabled by graph.prefs.shortenSidebarLists.collectAsStateWithLifecycle(initialValue = true, context = Dispatchers.Main.immediate)
+    val enabled by graph.prefs.shortenSidebarLists.collectAsStateWithLifecycle(initialValue = graph.storedSettings.shortenSidebarLists, context = Dispatchers.Main.immediate)
     SettingsToggleRow(
         title = SettingsCopy.SHORTEN_PROJECTS,
         description = SettingsCopy.SHORTEN_PROJECTS_DETAIL,
@@ -386,7 +403,7 @@ private fun ShortenProjectsRow(graph: AppGraph) {
 internal fun LiveSyncRow(graph: AppGraph) {
     val scope = rememberCoroutineScope()
     // On the main dispatcher for the reason the Extended mode switch is (see SettingsScreen).
-    val enabled by graph.prefs.liveSync.collectAsStateWithLifecycle(initialValue = true, context = Dispatchers.Main.immediate)
+    val enabled by graph.prefs.liveSync.collectAsStateWithLifecycle(initialValue = graph.storedSettings.liveSync, context = Dispatchers.Main.immediate)
     SettingsToggleRow(
         title = SettingsCopy.LIVE_SYNC,
         description = SettingsCopy.LIVE_SYNC_DETAIL,
@@ -406,15 +423,25 @@ private fun NotificationRows(graph: AppGraph) {
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
     // On the main dispatcher for the reason the Extended mode switch is (see SettingsScreen).
-    val enabled by graph.prefs.liveNotifications.collectAsStateWithLifecycle(initialValue = true, context = Dispatchers.Main.immediate)
+    val enabled by graph.prefs.liveNotifications.collectAsStateWithLifecycle(initialValue = graph.storedSettings.liveNotifications, context = Dispatchers.Main.immediate)
     var resumeCount by remember { mutableIntStateOf(0) }
     LifecycleResumeEffect(Unit) {
         resumeCount++
         onPauseOrDispose { }
     }
-    val notificationsAllowed = remember(resumeCount) { LiveNotifications.areEnabled(context) }
-    val promotedAllowed = remember(resumeCount) { LiveNotifications.canPostPromoted(context) }
-    val liveUpdatesIntent = remember(resumeCount) { LiveNotifications.liveUpdatesSettingsIntent(context) }
+    val system by produceState(SystemChecks.notifications, resumeCount) {
+        value = withContext(Dispatchers.IO) {
+            NotificationChecks(
+                allowed = LiveNotifications.areEnabled(context),
+                promotedAllowed = LiveNotifications.canPostPromoted(context),
+                liveUpdatesIntent = LiveNotifications.liveUpdatesSettingsIntent(context),
+            )
+        }
+        SystemChecks.notifications = value
+    }
+    val notificationsAllowed = system.allowed
+    val promotedAllowed = system.promotedAllowed
+    val liveUpdatesIntent = system.liveUpdatesIntent
 
     SettingsToggleRow(
         title = "Live notifications",
@@ -439,7 +466,7 @@ private fun NotificationRows(graph: AppGraph) {
     }
     // The Project half (see ProjectNotificationPrefs): the live count is every running agent by default, the
     // cards for a Project's chats off by default; each its own switch.
-    val project by graph.prefs.projectNotifications.collectAsStateWithLifecycle(initialValue = ProjectNotificationPrefs.DEFAULT)
+    val project by graph.prefs.projectNotifications.collectAsStateWithLifecycle(initialValue = graph.storedSettings.projectNotifications)
     HairlineDivider()
     SettingsToggleRow(
         title = "Count Project agents in the live notification",
@@ -471,7 +498,7 @@ private fun NotificationRows(graph: AppGraph) {
 private fun ConfirmStopRow(graph: AppGraph) {
     val scope = rememberCoroutineScope()
     // On the main dispatcher for the reason the Extended mode switch is (see SettingsScreen).
-    val enabled by graph.prefs.confirmStop.collectAsStateWithLifecycle(initialValue = true, context = Dispatchers.Main.immediate)
+    val enabled by graph.prefs.confirmStop.collectAsStateWithLifecycle(initialValue = graph.storedSettings.confirmStop, context = Dispatchers.Main.immediate)
     SettingsToggleRow(
         title = RunStopCopy.SETTING_TITLE,
         description = RunStopCopy.SETTING_DETAIL,
@@ -495,7 +522,7 @@ private fun UpdateRows(graph: AppGraph, open: (String) -> Unit, onDebug: () -> U
     val context = LocalContext.current
     val updates = graph.updates
     val state by updates.state.collectAsStateWithLifecycle()
-    val autoUpdate by updates.autoUpdate.collectAsStateWithLifecycle(initialValue = true)
+    val autoUpdate by updates.autoUpdate.collectAsStateWithLifecycle(initialValue = graph.storedSettings.autoUpdate)
     // On the main dispatcher for the reason the Extended mode switch is (see SettingsScreen): the value comes from
     // the store's thread, and the row must not miss the write that would show it.
     val whatsNew by graph.whatsNew.unread.collectAsStateWithLifecycle(initialValue = null, context = Dispatchers.Main.immediate)
@@ -504,7 +531,10 @@ private fun UpdateRows(graph: AppGraph, open: (String) -> Unit, onDebug: () -> U
         resumeCount++
         onPauseOrDispose { }
     }
-    val canInstall = remember(resumeCount) { context.packageManager.canRequestPackageInstalls() }
+    val canInstall by produceState(SystemChecks.canInstall, resumeCount) {
+        value = withContext(Dispatchers.IO) { context.packageManager.canRequestPackageInstalls() }
+        SystemChecks.canInstall = value
+    }
     val allowInstalls = {
         runCatching {
             context.startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, "package:${context.packageName}".toUri()))
@@ -630,7 +660,7 @@ private fun checkedLabel(checkedAtMs: Long): String = when (val age = TimeFormat
 @Composable
 private fun CrashReportRows(graph: AppGraph) {
     val scope = rememberCoroutineScope()
-    val enabled by graph.prefs.crashReports.collectAsStateWithLifecycle(initialValue = false)
+    val enabled by graph.prefs.crashReports.collectAsStateWithLifecycle(initialValue = graph.storedSettings.crashReports)
     if (!graph.crashReporting.isAvailable) {
         SettingsRow(title = CrashReportCopy.TITLE, description = CrashReportCopy.UNAVAILABLE)
         return

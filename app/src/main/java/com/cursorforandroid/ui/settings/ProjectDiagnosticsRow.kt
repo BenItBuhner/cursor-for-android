@@ -14,7 +14,9 @@ import androidx.compose.ui.platform.testTag
 import androidx.core.content.FileProvider
 import com.cursorforandroid.AppGraph
 import com.cursorforandroid.ui.components.CursorIcons
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
 
 /**
@@ -30,12 +32,14 @@ fun ProjectDiagnosticsRow(graph: AppGraph, share: ((String) -> Unit)? = null) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var busy by remember { mutableStateOf(false) }
-    val send = share ?: { report ->
+    val shareHere: suspend (String) -> Unit = { report ->
         // The report goes as a file as well as text: a heavy account's report runs to hundreds of lines, more than
         // some receivers take as text, and a `.txt` attaches to mail, Slack or Drive as it is.
-        val file = runCatching {
-            File(context.cacheDir, DIAGNOSTICS_DIR).apply { mkdirs() }.resolve("cursor-project-diagnostics-${System.currentTimeMillis()}.txt").also { it.writeText(report) }
-        }.getOrNull()
+        val file = withContext(Dispatchers.IO) {
+            runCatching {
+                File(context.cacheDir, DIAGNOSTICS_DIR).apply { mkdirs() }.resolve("cursor-project-diagnostics-${System.currentTimeMillis()}.txt").also { it.writeText(report) }
+            }.getOrNull()
+        }
         val uri = file?.let { runCatching { FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", it) }.getOrNull() }
         val intent = Intent(Intent.ACTION_SEND).apply {
             setType("text/plain")
@@ -58,7 +62,8 @@ fun ProjectDiagnosticsRow(graph: AppGraph, share: ((String) -> Unit)? = null) {
                 busy = true
                 scope.launch {
                     try {
-                        send(graph.projectDiagnosticsReport())
+                        val report = graph.projectDiagnosticsReport()
+                        if (share != null) share(report) else shareHere(report)
                     } finally {
                         busy = false
                     }
