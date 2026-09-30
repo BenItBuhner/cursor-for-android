@@ -22,6 +22,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -110,7 +111,8 @@ internal fun LazyListScope.panelMarkdownItems(
 
 /**
  * The blocks of [markdown] with its relative links read against [base], for [panelMarkdownItems]: at once when they
- * were parsed before or the text is short, else parsed off the main thread and null until then. Null for no text.
+ * were parsed before or the text is short, else parsed off the main thread and null until then. A text that changed
+ * under the same [base] (the same file read again) keeps the blocks shown until its own are parsed. Null for no text.
  */
 @Composable
 internal fun rememberPanelBlocks(markdown: String?, base: StoreBase?): List<MdBlock>? {
@@ -121,7 +123,10 @@ internal fun rememberPanelBlocks(markdown: String?, base: StoreBase?): List<MdBl
     LaunchedEffect(resolved) {
         if (resolved != null && blocks.value == null) blocks.value = withContext(Dispatchers.Default) { MarkdownCache.parse(resolved) }
     }
-    return blocks.value
+    val shown = remember(base) { arrayOfNulls<List<MdBlock>>(1) }
+    val current = blocks.value
+    SideEffect { if (current != null) shown[0] = current }
+    return current ?: shown[0]?.takeIf { resolved != null }
 }
 
 /**

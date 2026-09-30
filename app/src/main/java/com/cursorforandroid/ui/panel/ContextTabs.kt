@@ -26,6 +26,8 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -70,6 +72,7 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.time.temporal.ChronoUnit
 import java.util.Locale
+import kotlinx.coroutines.flow.drop
 import java.time.format.TextStyle as DateTextStyle
 
 /**
@@ -82,6 +85,9 @@ import java.time.format.TextStyle as DateTextStyle
 internal fun ProjectTabContent(state: PanelState, actions: PanelActions, modifier: Modifier = Modifier) {
     LaunchedEffect(state.agentId, state.capabilities) { actions.loadContext() }
     val root = state.projectRoot
+    // The coordinator's row as the poll keeps it: when its activity moves or its run ends, it may have written.
+    val activity by rememberUpdatedState(root?.listedAtMillis to (if (root != null && root.id == state.agentId) state.isRunning else root?.isRunning == true))
+    LaunchedEffect(state.agentId) { snapshotFlow { activity }.drop(1).collect { actions.refreshContext() } }
     val name = root?.name ?: state.parentAgent?.name?.takeIf { state.agent?.parent != null } ?: state.agent?.name ?: "Project"
     val allFiles = state.context.allFiles
     val notes = (state.context.notes as? RemoteLoad.Loaded)?.value

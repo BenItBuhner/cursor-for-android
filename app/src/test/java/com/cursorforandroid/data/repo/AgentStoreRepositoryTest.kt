@@ -24,6 +24,8 @@ class AgentStoreRepositoryTest {
     private var calls = 0
     private var failure: Throwable? = null
     private var now = 1_000_000L
+    private var notesWrittenAt = 900_000L
+    private val filesRead = mutableListOf<String>()
 
     private val project = AgentStoreRef("st-project", AgentStoreKind.CLOUD, sourceId = "bc-root", lastFileWriteAtMillis = 900_000L)
     private val user = AgentStoreRef("st-user", AgentStoreKind.USER)
@@ -42,7 +44,7 @@ class AgentStoreRepositoryTest {
                 project.storeId to "" -> listOf(
                     ContextEntry("docs", isDirectory = true, updatedAtMillis = 700_000L),
                     ContextEntry("media", isDirectory = true, updatedAtMillis = 950_000L),
-                    ContextEntry("notes.md", isDirectory = false, sizeBytes = 120, updatedAtMillis = 900_000L),
+                    ContextEntry("notes.md", isDirectory = false, sizeBytes = 120, updatedAtMillis = notesWrittenAt),
                 )
                 project.storeId to "docs" -> listOf(ContextEntry("docs/spec.md", isDirectory = false, sizeBytes = 900, updatedAtMillis = 700_000L))
                 project.storeId to "media" -> listOf(ContextEntry("media/shot.png", isDirectory = false, sizeBytes = 40_000, updatedAtMillis = 950_000L))
@@ -53,6 +55,7 @@ class AgentStoreRepositoryTest {
         override suspend fun readFile(storeId: String, relativePath: String): String {
             calls++
             failure?.let { throw it }
+            filesRead += relativePath
             return "# $relativePath"
         }
         override suspend fun presignRead(target: StoreReadTarget, relativePath: String): PresignedStoreRead? =
@@ -113,6 +116,25 @@ class AgentStoreRepositoryTest {
         assertThat(calls).isEqualTo(2)
         repo.entries(project, "", force = true)
         assertThat(calls).isEqualTo(3)
+    }
+
+    @Test
+    fun `the notes are read again when the root's listing stamps them anew, and only then`() = runBlocking<Unit> {
+        val repo = repo()
+        repo.notes(project)
+        assertThat(filesRead).containsExactly("notes.md")
+        // The root listed again, the file as it was: the text kept stands.
+        now += AgentStoreRepository.TTL_MS + 1
+        repo.notes(project)
+        assertThat(filesRead).containsExactly("notes.md")
+        // The coordinator wrote the notes: the next listing stamps them anew, and the text is read again.
+        notesWrittenAt = now
+        now += AgentStoreRepository.TTL_MS + 1
+        repo.notes(project)
+        assertThat(filesRead).containsExactly("notes.md", "notes.md")
+        // A document tab of the file names no stamp and is given what is kept.
+        repo.document(project, "notes.md")
+        assertThat(filesRead).hasSize(2)
     }
 
     @Test

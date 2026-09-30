@@ -137,6 +137,8 @@ interface PanelActions {
     fun openProject(allFiles: Boolean) = Unit
     /** Reads the Context the Project tab shows: the stores, the notes, the roots' listings, Recents. */
     fun loadContext(force: Boolean = false) = Unit
+    /** Reads the Project tab's Context again in place: the Project's coordinator has done something since it was read. */
+    fun refreshContext() = Unit
     fun toggleFolder(store: AgentStoreRef, path: String) = Unit
     fun loadDocument(tab: PanelTab.Document, force: Boolean = false) = Unit
     fun setDocumentSource(tab: PanelTab.Document, source: Boolean) = Unit

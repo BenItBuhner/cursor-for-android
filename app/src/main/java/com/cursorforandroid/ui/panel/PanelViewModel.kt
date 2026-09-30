@@ -276,9 +276,8 @@ class PanelViewModel(private val graph: AppGraph, val agentId: String) : ViewMod
     private val fileJobs = HashMap<String, Job>()
     /** What each file tab's Retry asks again: its last open, with the agent's machine woken first when asked. */
     private val reopens = HashMap<String, (wake: Boolean) -> Unit>()
-    private val context = MutableStateFlow(ContextPanelState())
-    private var contextJob: Job? = null
-    private val folderJobs = HashMap<String, Job>()
+    private val contextReads = ContextReads(agentId, graph.agentStores, viewModelScope) { tabsNow().projectRootId }
+    private val context = contextReads.state
     private val documentJobs = HashMap<String, Job>()
     private var browseJob: Job? = null
     private var pullRequestJob: Job? = null
@@ -631,61 +630,15 @@ class PanelViewModel(private val graph: AppGraph, val agentId: String) : ViewMod
 
     /**
      * Reads which stores the chat has, then — in parallel — the Project's notes, both roots' listings and the
-     * Recents row. Idempotent while a read is out; [force] re-reads through the repository's cache.
+     * Recents row (see [ContextReads.load]).
      */
-    fun loadContext(force: Boolean = false) {
-        if (contextJob?.isActive == true && !force) return
-        val current = context.value.stores
-        if (!force && current is RemoteLoad.Loaded) return
-        contextJob?.cancel()
-        context.update { it.copy(stores = RemoteLoad.Loading) }
-        contextJob = viewModelScope.launch {
-            val root = tabsNow().projectRootId
-            val read = graph.agentStores.storesFor(agentId, root, force)
-            val stores = when (read) {
-                is VmRead.Loaded -> read.value
-                is VmRead.NotAvailable -> {
-                    context.update { it.copy(stores = RemoteLoad.Unsupported(read.reason), notes = RemoteLoad.Unsupported(read.reason), recents = RemoteLoad.Unsupported(read.reason)) }
-                    return@launch
-                }
-                is VmRead.Failed -> {
-                    context.update { it.copy(stores = RemoteLoad.Failed(read.message, retryable = !read.endpointChanged)) }
-                    return@launch
-                }
-            }
-            // The roots open at once, as the web's tree does; deeper folders as they are tapped.
-            context.update { c -> c.copy(stores = RemoteLoad.Loaded(stores), expandedFolders = c.expandedFolders + stores.all.map { ContextPanelState.folderKey(it, "") }) }
-            stores.all.forEach { store -> listFolder(store, "", force) }
-            val project = stores.project
-            if (project != null) {
-                context.update { it.copy(notes = RemoteLoad.Loading) }
-                launch { context.update { it.copy(notes = graph.agentStores.notes(project, force).toLoad()) } }
-            } else {
-                context.update { it.copy(notes = RemoteLoad.Loaded(null)) }
-            }
-            context.update { it.copy(recents = RemoteLoad.Loading) }
-            launch { context.update { it.copy(recents = graph.agentStores.recents(agentId, stores.all, force = force).toLoad()) } }
-        }
-    }
+    fun loadContext(force: Boolean = false) = contextReads.load(force)
+
+    /** Reads the Context again in place, the roots listed afresh: the Project's coordinator has moved (see [ContextReads.refresh]). */
+    fun refreshContext() = contextReads.refresh(moved = true)
 
     /** Opens or closes a folder of the tree; an opened folder not yet listed is listed. */
-    fun toggleFolder(store: AgentStoreRef, path: String) {
-        val key = ContextPanelState.folderKey(store, path)
-        val expanding = key !in context.value.expandedFolders
-        context.update { it.copy(expandedFolders = if (expanding) it.expandedFolders + key else it.expandedFolders - key) }
-        if (expanding && context.value.listings[key] !is RemoteLoad.Loaded) listFolder(store, path)
-    }
-
-    private fun listFolder(store: AgentStoreRef, path: String, force: Boolean = false) {
-        val key = ContextPanelState.folderKey(store, path)
-        if (folderJobs[key]?.isActive == true && !force) return
-        folderJobs[key]?.cancel()
-        context.update { it.copy(listings = it.listings + (key to RemoteLoad.Loading)) }
-        folderJobs[key] = viewModelScope.launch {
-            val load = graph.agentStores.entries(store, path, force).toLoad()
-            context.update { it.copy(listings = it.listings + (key to load)) }
-        }
-    }
+    fun toggleFolder(store: AgentStoreRef, path: String) = contextReads.toggleFolder(store, path)
 
     /** Reads the document behind [tab]; the store is the one the listing named, or the id alone when the tab outlived it. */
     fun loadDocument(tab: PanelTab.Document, force: Boolean = false) {
@@ -970,14 +923,6 @@ class PanelViewModel(private val graph: AppGraph, val agentId: String) : ViewMod
         }
     }
 
-    private fun <T> VmRead<T>.toLoad(): RemoteLoad<T> = when (this) {
-        is VmRead.Loaded -> RemoteLoad.Loaded(value)
-        is VmRead.NotAvailable -> RemoteLoad.Unsupported(reason)
-        // The request and its answer under the words, as the transcript's notices print them; Retry always, since a
-        // refusal this build reads as a removal has been a missing file before (Bennett's 2026-09-22 frame).
-        is VmRead.Failed -> RemoteLoad.Failed(listOfNotNull(message, asked?.let { "Asked: $it" }).joinToString("\n"))
-    }
-
     // -- the repository browser --------------------------------------------------------------------------------------
 
     /** Lists [path] of the agent's repository at its branch; the root when empty. A path that is a file opens as a tab. */
@@ -1078,4 +1023,12 @@ class PanelViewModel(private val graph: AppGraph, val agentId: String) : ViewMod
         @Suppress("UNCHECKED_CAST")
         override fun <T : ViewModel> create(modelClass: Class<T>): T = PanelViewModel(graph, agentId) as T
     }
+}
+
+internal fun <T> VmRead<T>.toLoad(): RemoteLoad<T> = when (this) {
+    is VmRead.Loaded -> RemoteLoad.Loaded(value)
+    is VmRead.NotAvailable -> RemoteLoad.Unsupported(reason)
+    // The request and its answer under the words, as the transcript's notices print them; Retry always, since a
+    // refusal this build reads as a removal has been a missing file before (Bennett's 2026-09-22 frame).
+    is VmRead.Failed -> RemoteLoad.Failed(listOfNotNull(message, asked?.let { "Asked: $it" }).joinToString("\n"))
 }

@@ -114,6 +114,25 @@ class ProjectNotesFirstFrameTest {
     }
 
     @Test
+    fun `notes read again keep the shown notes on screen while the new text is parsed`() {
+        state = panel(ContextDocument(store, "notes.md", notes(24).first))
+        show()
+        compose.waitUntil(10_000) { compose.onAllNodes(hasTestTag("project-notes-body")).fetchSemanticsNodes().isNotEmpty() }
+
+        // The coordinator rewrote them: the new text is not parsed yet, and the notes shown stay until it is.
+        compose.mainClock.autoAdvance = false
+        state = panel(ContextDocument(store, "notes.md", notes(24, word = "Milestone").first))
+        repeat(3) {
+            compose.mainClock.advanceTimeByFrame()
+            assertThat(count("Reading the Project's notes…")).isEqualTo(0)
+            assertThat(count("Workstream ") + count("Milestone ")).isGreaterThan(0)
+        }
+        compose.mainClock.autoAdvance = true
+        compose.waitUntil(10_000) { count("Milestone ") > 0 }
+        assertThat(count("Workstream ")).isEqualTo(0)
+    }
+
+    @Test
     fun `a long document tab composes about a screenful`() {
         val (text, sections) = notes(96, word = "Chapter")
         val document = ContextDocument(store, "docs/long.md", text)

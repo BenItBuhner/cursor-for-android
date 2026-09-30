@@ -439,6 +439,7 @@ fun rememberPanelActions(
             override fun openStorePath(path: StorePath, chatAgentId: String, otherwise: () -> Unit) = viewModel.openStorePath(path, chatAgentId, otherwise)
             override fun openProject(allFiles: Boolean) = viewModel.openProject(allFiles)
             override fun loadContext(force: Boolean) = viewModel.loadContext(force)
+            override fun refreshContext() = viewModel.refreshContext()
             override fun toggleFolder(store: AgentStoreRef, path: String) = viewModel.toggleFolder(store, path)
             override fun loadDocument(tab: PanelTab.Document, force: Boolean) = viewModel.loadDocument(tab, force)
             override fun setDocumentSource(tab: PanelTab.Document, source: Boolean) = viewModel.setDocumentSource(tab, source)

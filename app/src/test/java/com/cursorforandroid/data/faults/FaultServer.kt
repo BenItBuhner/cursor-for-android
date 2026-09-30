@@ -211,7 +211,7 @@ class FaultServer(
     private val resets = AtomicInteger()
 
     /** [Live] is `StreamConversation` asked with `purpose = LIVE` (an open chat's watch); [RecordState] the same method's state read. */
-    enum class Route { Me, ListAgents, ListAgentsV0, GetAgent, ListRuns, GetRun, CreateRun, CancelRun, Conversation, Stream, Auth, Record, RecordState, Live, Blob, QueueAdd, QueueList, QueueDelete, QueueUpdate, QueueReorder, QueueSendNow, QueueEditing, Steer, AccountList, Workers, Children, Pins, FleetWorkers, FleetPools, Other }
+    enum class Route { Me, ListAgents, ListAgentsV0, GetAgent, ListRuns, GetRun, CreateRun, CancelRun, Conversation, Stream, Auth, Record, RecordState, Live, Blob, QueueAdd, QueueList, QueueDelete, QueueUpdate, QueueReorder, QueueSendNow, QueueEditing, Steer, AccountList, Workers, Children, Pins, StoreList, StoreEntries, StoreRead, StorePresign, FleetWorkers, FleetPools, Other }
 
     /**
      * One row of the account's own list (`ListBackgroundComposers`, Extended mode): the record the sidebar's rows
@@ -252,6 +252,18 @@ class FaultServer(
     val pinned: MutableSet<String> = ConcurrentHashMap.newKeySet()
     /** How many rows one account page carries whatever `n` asks (the service's window is 200; a small account still pages when this is small). */
     @Volatile var accountPageSize = 200
+
+    /** One Agent Store `ListAgentStores` lists: whose it is ([kind], the wire's `AGENT_STORE_KIND_*`) and its files by relative path. */
+    class AgentStore(val storeId: String, val kind: String, val sourceId: String? = null) {
+        val files: MutableMap<String, StoreFile> = ConcurrentHashMap()
+        val lastFileWriteAtMs: Long? get() = files.values.maxOfOrNull { it.updatedAtMs }
+    }
+
+    /** A file of an [AgentStore]: its text and when it was last written. */
+    data class StoreFile(val content: String, val updatedAtMs: Long)
+
+    /** The account's Agent Stores, in the order `ListAgentStores` lists them; folders are the files' paths. */
+    val agentStores = CopyOnWriteArrayList<AgentStore>()
 
     /** What one request meets instead of, or before, its answer. */
     sealed interface Fault {
@@ -416,6 +428,11 @@ class FaultServer(
             segments.size == 2 && segments[0] == RECORD_SERVICE && segments[1] == "ListWorkersForManager" -> Route.Workers
             segments.size == 2 && segments[0] == RECORD_SERVICE && segments[1] == "ListBackgroundComposerChildren" -> Route.Children
             segments.size == 2 && segments[0] == RECORD_SERVICE && (segments[1] == "PinBackgroundComposers" || segments[1] == "UnpinBackgroundComposers") -> Route.Pins
+            // The Agent Stores the panel's Project tab browses.
+            segments.size == 2 && segments[0] == RECORD_SERVICE && segments[1] == "ListAgentStores" -> Route.StoreList
+            segments.size == 2 && segments[0] == RECORD_SERVICE && segments[1] == "ListAgentStoreEntries" -> Route.StoreEntries
+            segments.size == 2 && segments[0] == RECORD_SERVICE && segments[1] == "ReadAgentStoreFile" -> Route.StoreRead
+            segments.size == 2 && segments[0] == RECORD_SERVICE && segments[1] == "PresignAgentStoreReads" -> Route.StorePresign
             else -> Route.Other
         }
     }
@@ -494,6 +511,14 @@ class FaultServer(
                 json(200, """{"composers":[${composers.values.filter { it.sideChatOf == parent }.sortedByDescending { it.activityMs }.joinToString(",") { it.json() }}]}""")
             }
             Route.Pins -> json(200, "{}")
+            Route.StoreList -> json(200, """{"stores":[${agentStores.joinToString(",") { it.json() }}],"hasMore":false}""")
+            Route.StoreEntries -> storeEntries(request)
+            Route.StoreRead -> {
+                val body = CursorJson.parseToJsonElement(request.body.readUtf8()).jsonObject
+                val file = agentStores.firstOrNull { it.storeId == body.string("storeId") }?.files?.get(body.string("relativePath").trim('/'))
+                if (file == null) json(404, connectError("not_found", "No such file.")) else json(200, """{"content":${quote(file.content)}}""")
+            }
+            Route.StorePresign -> json(200, """{"instructions":[]}""")
             Route.FleetWorkers -> {
                 val teamPool = url.queryParameter("scope") == "team_pool"
                 json(200, encode(ListWorkersResponseDto.serializer(), ListWorkersResponseDto(workers = fleetWorkers.filter { (it.scope == "team_pool") == teamPool })))
@@ -558,7 +583,40 @@ class FaultServer(
         CursorJson.parseToJsonElement(String(body, 5, length, Charsets.UTF_8)).jsonObject["purpose"]?.jsonPrimitive?.contentOrNull == "STREAM_CONVERSATION_PURPOSE_LIVE"
     }.getOrDefault(false)
 
-    private val Route.isAccount: Boolean get() = this == Route.Record || this == Route.RecordState || this == Route.Live || this == Route.Blob || this == Route.QueueAdd || this == Route.QueueList || this == Route.QueueDelete || this == Route.QueueUpdate || this == Route.QueueReorder || this == Route.QueueSendNow || this == Route.QueueEditing || this == Route.Steer || this == Route.AccountList || this == Route.Workers || this == Route.Children || this == Route.Pins
+    private val Route.isAccount: Boolean get() = this == Route.Record || this == Route.RecordState || this == Route.Live || this == Route.Blob || this == Route.QueueAdd || this == Route.QueueList || this == Route.QueueDelete || this == Route.QueueUpdate || this == Route.QueueReorder || this == Route.QueueSendNow || this == Route.QueueEditing || this == Route.Steer || this == Route.AccountList || this == Route.Workers || this == Route.Children || this == Route.Pins || this == Route.StoreList || this == Route.StoreEntries || this == Route.StoreRead || this == Route.StorePresign
+
+    // ---- the Agent Stores ----------------------------------------------------------------------------------------
+
+    private fun AgentStore.json(): String = buildString {
+        append("{\"storeId\":\"").append(storeId).append("\",\"kind\":\"").append(kind).append('"')
+        sourceId?.let { append(",\"source\":{\"sourceId\":\"").append(it).append("\"}") }
+        lastFileWriteAtMs?.let { append(",\"lastFileWriteAtMs\":\"").append(it).append('"') }
+        append('}')
+    }
+
+    /** What one folder of a store holds, as `ListAgentStoreEntries` answers: its files, and a folder for each deeper path. */
+    private fun storeEntries(request: RecordedRequest): MockResponse {
+        val body = CursorJson.parseToJsonElement(request.body.readUtf8()).jsonObject
+        val store = agentStores.firstOrNull { it.storeId == body.string("storeId") } ?: return json(404, connectError("not_found", "No such store."))
+        val folder = body.string("relativePath").trim('/')
+        val prefix = if (folder.isEmpty()) "" else "$folder/"
+        val files = ArrayList<String>()
+        val folders = HashMap<String, Long>()
+        store.files.forEach { (path, file) ->
+            if (!path.startsWith(prefix)) return@forEach
+            val rest = path.removePrefix(prefix)
+            val slash = rest.indexOf('/')
+            if (slash < 0) {
+                files += """{"name":${quote(rest)},"relativePath":${quote(path)},"kind":"AGENT_STORE_ENTRY_KIND_FILE","sizeBytes":"${file.content.length}","updatedAtMs":"${file.updatedAtMs}"}"""
+            } else {
+                folders.merge(prefix + rest.substring(0, slash), file.updatedAtMs, ::maxOf)
+            }
+        }
+        val dirs = folders.map { (path, at) -> """{"name":${quote(path.substringAfterLast('/'))},"relativePath":${quote(path)},"kind":"AGENT_STORE_ENTRY_KIND_DIRECTORY","updatedAtMs":"$at"}""" }
+        return json(200, """{"entries":[${(dirs + files).joinToString(",")}]}""")
+    }
+
+    private fun JsonObject.string(name: String): String = this[name]?.jsonPrimitive?.contentOrNull.orEmpty()
 
     // ---- the account's list ----------------------------------------------------------------------------------------
 

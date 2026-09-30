@@ -33,7 +33,8 @@ class AgentStoreRepository(
     private val demo: AgentStoreApi? = null,
     private val now: () -> Long = AppClock::now,
 ) {
-    private class Cached<T>(val value: T, val at: Long)
+    /** A read and when it was made; [version] is what the caller knew of the source's state then (see [document]). */
+    private class Cached<T>(val value: T, val at: Long, val version: Any? = null)
 
     private val storeLists = HashMap<String, Cached<List<AgentStoreRef>>>()
     private val listings = HashMap<String, Cached<List<ContextEntry>>>()
@@ -90,18 +91,21 @@ class AgentStoreRepository(
         }
     }
 
-    /** The text of [relativePath] in [store], as a document the panel can show as a tab. */
-    suspend fun document(store: AgentStoreRef, relativePath: String, force: Boolean = false): VmRead<ContextDocument> {
+    /**
+     * The text of [relativePath] in [store], as a document the panel can show as a tab. [version] is the file as its
+     * folder's listing last stamped it: a body kept under another stamp is read again, one kept under the same is not.
+     */
+    suspend fun document(store: AgentStoreRef, relativePath: String, force: Boolean = false, version: Any? = null): VmRead<ContextDocument> {
         val (source, refusal) = source()
         if (source == null) return VmRead.NotAvailable(refusal ?: NOT_WIRED)
         val clean = relativePath.trim().trim('/')
         val key = "file:${store.storeId}:$clean"
-        if (!force) fresh(bodies, key, FILE_TTL_MS)?.let { return VmRead.Loaded(ContextDocument(store, clean, it)) }
+        if (!force) fresh(bodies, key, FILE_TTL_MS, version)?.let { return VmRead.Loaded(ContextDocument(store, clean, it)) }
         return lock(key).withLock {
-            if (!force) fresh(bodies, key, FILE_TTL_MS)?.let { return@withLock VmRead.Loaded(ContextDocument(store, clean, it)) }
+            if (!force) fresh(bodies, key, FILE_TTL_MS, version)?.let { return@withLock VmRead.Loaded(ContextDocument(store, clean, it)) }
             when (val text = read { source.readFile(store.storeId, clean) }) {
                 is VmRead.Loaded -> {
-                    synchronized(bodies) { bodies[key] = Cached(text.value, now()) }
+                    synchronized(bodies) { bodies[key] = Cached(text.value, now(), version) }
                     VmRead.Loaded(ContextDocument(store, clean, text.value))
                 }
                 is VmRead.NotAvailable -> text
@@ -112,7 +116,8 @@ class AgentStoreRepository(
 
     /**
      * The Project's notes — the `notes.md` at the root of [store], which the web's "Project" tab renders — or null
-     * when the store has none yet. The root is listed first so a store without notes is told apart from a failed read.
+     * when the store has none yet. The root is listed first so a store without notes is told apart from a failed read,
+     * and its stamp on the file decides whether the kept text still stands (see [document]).
      */
     suspend fun notes(store: AgentStoreRef, force: Boolean = false): VmRead<ContextDocument?> {
         val root = when (val listing = entries(store, "", force)) {
@@ -121,7 +126,8 @@ class AgentStoreRepository(
             is VmRead.Failed -> return listing
         }
         val notes = root.firstOrNull { !it.isDirectory && it.name.equals(NOTES_FILE, ignoreCase = true) } ?: return VmRead.Loaded(null)
-        return when (val document = document(store, notes.relativePath, force)) {
+        val stamp = if (notes.updatedAtMillis == null && notes.sizeBytes == null) null else notes.updatedAtMillis to notes.sizeBytes
+        return when (val document = document(store, notes.relativePath, force, stamp)) {
             is VmRead.Loaded -> VmRead.Loaded(document.value)
             is VmRead.NotAvailable -> document
             is VmRead.Failed -> document
@@ -178,8 +184,9 @@ class AgentStoreRepository(
         failure(t)
     }
 
-    private fun <T> fresh(map: HashMap<String, Cached<T>>, key: String, ttl: Long = TTL_MS): T? = synchronized(map) {
-        map[key]?.takeIf { now() - it.at < ttl }?.value
+    /** What [map] keeps under [key] younger than [ttl], and read under [version] when one is named. */
+    private fun <T> fresh(map: HashMap<String, Cached<T>>, key: String, ttl: Long = TTL_MS, version: Any? = null): T? = synchronized(map) {
+        map[key]?.takeIf { now() - it.at < ttl && (version == null || it.version == version) }?.value
     }
 
     companion object {
