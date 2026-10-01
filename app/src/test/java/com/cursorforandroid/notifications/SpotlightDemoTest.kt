@@ -46,6 +46,8 @@ import com.cursorforandroid.data.demo.DemoPace
 import com.cursorforandroid.data.demo.DemoRunStreamer
 import com.cursorforandroid.data.demo.DemoStore
 import com.cursorforandroid.data.repo.CursorBackend
+import com.cursorforandroid.data.repo.GeneratedImageStore
+import com.cursorforandroid.data.repo.LiveRunHub
 import com.cursorforandroid.util.AppClock
 import com.github.takahirom.roborazzi.RoborazziOptions
 import com.github.takahirom.roborazzi.RoborazziTaskType
@@ -281,8 +283,22 @@ class SpotlightDemoTest {
         val pace = DemoPace.Realistic.let {
             it.copy(typeDelayMs = it.typeDelayMs * DILATION, thinkDelayMs = it.thinkDelayMs * DILATION, stepScale = it.stepScale * DILATION)
         }
-        CursorApp::class.java.getDeclaredField("graph").apply { isAccessible = true }
-            .set(app, AppGraph(app, demo = CursorBackend(DemoCursorApi(store), DemoRunStreamer(store, pace), isDemo = true)))
+        val graph = AppGraph(app, demo = CursorBackend(DemoCursorApi(store), DemoRunStreamer(store, pace), isDemo = true))
+        // The hub's stall watch counts wall time, so slowed down it would take each of the demo's longer steps for a
+        // stalled connection; and the demo's stream answers a resume by playing its script again from the start.
+        AppGraph::class.java.getDeclaredField("lazyLiveRuns").apply { isAccessible = true }.set(
+            graph,
+            lazy {
+                LiveRunHub(
+                    graph.session, graph.agents,
+                    images = GeneratedImageStore { agentId, callId, bytes, mimeType -> graph.generatedMedia.save(agentId, callId, bytes, mimeType) },
+                    parking = graph.caches.liveRuns,
+                    stallTimeoutMs = 30_000L * DILATION,
+                    stallMaxMs = 300_000L * DILATION,
+                )
+            },
+        )
+        CursorApp::class.java.getDeclaredField("graph").apply { isAccessible = true }.set(app, graph)
         runBlocking { app.graph.session.enterDemo() }
 
         compose.mainClock.autoAdvance = false
