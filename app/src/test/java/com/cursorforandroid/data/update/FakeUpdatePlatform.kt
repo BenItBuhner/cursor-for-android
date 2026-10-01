@@ -5,7 +5,11 @@ import com.cursorforandroid.domain.AppRelease
 import java.io.File
 import java.util.concurrent.CopyOnWriteArrayList
 
-/** A scriptable device: what is installed, how it is signed, what the network and the screen are doing. */
+/**
+ * A scriptable device: what is installed, how it is signed, what the screen is doing. Like the interface it stands
+ * in for, it has no way to post a notification — so a manager that wanted to announce an update would not compile,
+ * never mind run.
+ */
 class FakeUpdatePlatform(
     override var installedVersionCode: Int = 10099,
     override var installedVersionName: String = "0.1.0",
@@ -15,7 +19,6 @@ class FakeUpdatePlatform(
     override var releaseCertSha256: String? = null,
 ) : UpdatePlatform {
     var canInstall = true
-    var metered = false
     var visible = false
     var signatures: Set<String> = setOf(GitHubFixtures.RELEASE_CERT_SHA256)
 
@@ -38,13 +41,8 @@ class FakeUpdatePlatform(
     var abandoned = 0
     val confirmations = CopyOnWriteArrayList<Intent>()
     var confirmationStarts = true
-    val notified = CopyOnWriteArrayList<AppRelease>()
-
-    @Volatile
-    var cancelledNotifications = 0
 
     override fun canRequestInstalls() = canInstall
-    override fun isMeteredNetwork() = metered
     override fun isAppVisible() = visible
     override fun installedSigningSha256s() = signatures
     override fun inspect(apk: File): ApkInfo? = inspection(apk)
@@ -58,28 +56,15 @@ class FakeUpdatePlatform(
     /** Sessions the installer still has in hand: committed here, until they are abandoned. */
     private val active = CopyOnWriteArrayList<Int>()
 
-    override suspend fun install(
-        apk: File,
-        release: AppRelease,
-        canCommit: suspend () -> Boolean,
-        onSessionCreated: suspend (Int) -> Unit,
-    ): Boolean {
+    override suspend fun install(apk: File, release: AppRelease, onSessionCreated: suspend (Int) -> Unit) {
         installError?.let { throw it }
         val sessionId = nextSessionId++
         sessions += sessionId
         staging?.invoke()
-        if (!canCommit()) return abandon()
         onSessionCreated(sessionId)
         beforeCommit?.invoke()
-        if (!canCommit()) return abandon()
         active += sessionId
         installs += apk to release
-        return true
-    }
-
-    private fun abandon(): Boolean {
-        abandoned++
-        return false
     }
 
     override fun abandonSessions() {
@@ -101,18 +86,5 @@ class FakeUpdatePlatform(
     override fun startConfirmation(intent: Intent): Boolean {
         confirmations += intent
         return confirmationStarts
-    }
-
-    /** False stands for a notification the system dropped: no permission, or notifications switched off. */
-    var notificationsPost = true
-
-    override fun notifyReadyToInstall(release: AppRelease): Boolean {
-        if (!notificationsPost) return false
-        notified += release
-        return true
-    }
-
-    override fun cancelNotifications() {
-        cancelledNotifications++
     }
 }

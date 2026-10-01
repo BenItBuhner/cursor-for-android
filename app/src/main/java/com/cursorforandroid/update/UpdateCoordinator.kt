@@ -10,14 +10,16 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 
 /**
- * Wires the update manager to the world outside its own state: the periodic job follows the "automatic updates"
- * preference, and the process lifecycle tells it when the app comes forward (time for a cheap check) and when it
- * leaves the screen (time to apply a downloaded update). Bound from [com.cursorforandroid.MainActivity] only, so
- * nothing reaches the network in tests that compose the UI directly.
+ * Wires the update manager to the world outside its own state: the periodic job follows the "check for updates"
+ * preference, and the process lifecycle tells it when the app comes forward (time for a cheap check). That is the
+ * whole of it — the app leaving the screen is not an event the updater hears about, because nothing happens on
+ * leaving: no install, no notification. Bound from [com.cursorforandroid.MainActivity] only, so nothing reaches the
+ * network in tests that compose the UI directly.
  */
 object UpdateCoordinator {
 
-    private var processObserverInstalled = false
+    /** The graph the process observer serves; one per process in the app, one per test under Robolectric. */
+    private var observed: Pair<AppGraph, LifecycleEventObserver>? = null
 
     fun bind(activity: ComponentActivity, graph: AppGraph) {
         activity.lifecycleScope.launch {
@@ -25,24 +27,19 @@ object UpdateCoordinator {
                 if (enabled) UpdateJobService.schedule(activity) else UpdateJobService.cancel(activity)
             }
         }
-        if (processObserverInstalled) return
-        processObserverInstalled = true
+        if (observed?.first === graph) return
         val process = ProcessLifecycleOwner.get()
+        observed?.let { process.lifecycle.removeObserver(it.second) }
         // Process-level rather than the activity's own events: a rotation restarts the activity but never means the
-        // user left, and an install at that moment would tear the app down under them.
-        process.lifecycle.addObserver(
-            LifecycleEventObserver { _, event ->
-                when (event) {
-                    Lifecycle.Event.ON_START -> {
-                        process.lifecycleScope.launch { graph.updates.onAppStarted() }
-                        // The installed version's notes, for the What's new page: from the disk after the first time,
-                        // and not tied to the automatic-updates switch — nothing here installs anything.
-                        graph.whatsNew.refresh()
-                    }
-                    Lifecycle.Event.ON_STOP -> process.lifecycleScope.launch { graph.updates.onAppStopped() }
-                    else -> Unit
-                }
-            },
-        )
+        // app was opened again.
+        val observer = LifecycleEventObserver { _, event ->
+            if (event != Lifecycle.Event.ON_START) return@LifecycleEventObserver
+            process.lifecycleScope.launch { graph.updates.onAppStarted() }
+            // The installed version's notes, for the What's new page: from the disk after the first time, and
+            // not tied to the check-for-updates switch — nothing here installs anything.
+            graph.whatsNew.refresh()
+        }
+        observed = graph to observer
+        process.lifecycle.addObserver(observer)
     }
 }

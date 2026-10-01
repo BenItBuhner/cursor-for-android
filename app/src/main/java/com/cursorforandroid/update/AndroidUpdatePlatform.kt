@@ -8,7 +8,6 @@ import android.content.pm.PackageInfo
 import android.content.pm.PackageInstaller
 import android.content.pm.PackageManager
 import android.content.pm.Signature
-import android.net.ConnectivityManager
 import android.os.Build
 import android.os.storage.StorageManager
 import androidx.core.content.pm.PackageInfoCompat
@@ -23,7 +22,7 @@ import java.security.MessageDigest
 import com.cursorforandroid.util.toHex
 
 /**
- * The real device behind [UpdatePlatform]: `PackageManager`, `PackageInstaller`, connectivity and the process lifecycle.
+ * The real device behind [UpdatePlatform]: `PackageManager`, `PackageInstaller` and the process lifecycle.
  * [installedVersionName] is the build's own; the screenshot tests hand in a fixed one (through `AppGraph.appVersion`)
  * so what the version decides on screen - the row - never moves with a release.
  */
@@ -38,9 +37,6 @@ open class AndroidUpdatePlatform(context: Context, override val installedVersion
     override val releaseCertSha256: String? = BuildConfig.RELEASE_CERT_SHA256.takeIf { it.isNotBlank() }?.lowercase()
 
     override fun canRequestInstalls(): Boolean = packageManager.canRequestPackageInstalls()
-
-    override fun isMeteredNetwork(): Boolean =
-        context.getSystemService(ConnectivityManager::class.java)?.isActiveNetworkMetered ?: true
 
     override fun isAppVisible(): Boolean =
         runCatching { ProcessLifecycleOwner.get().lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED) }.getOrDefault(false)
@@ -66,17 +62,13 @@ open class AndroidUpdatePlatform(context: Context, override val installedVersion
     }
 
     /**
-     * A full-install session for our own package. On Android 12+ user action is waived: the installer is updating
-     * itself, the APK targets a recent enough API and `UPDATE_PACKAGES_WITHOUT_USER_ACTION` is declared, so once
-     * "Install unknown apps" is allowed the update applies quietly. When any of that does not hold, the system
-     * answers the commit with `STATUS_PENDING_USER_ACTION` and a confirmation to show.
+     * A full-install session for our own package, for an install the user just asked for in Settings. On Android 12+
+     * user action is waived: the installer is updating itself, the APK targets a recent enough API and
+     * `UPDATE_PACKAGES_WITHOUT_USER_ACTION` is declared, so once "Install unknown apps" is allowed the update the user
+     * pressed Install for applies without a second dialog. When any of that does not hold, the system answers the
+     * commit with `STATUS_PENDING_USER_ACTION` and a confirmation to show.
      */
-    override suspend fun install(
-        apk: File,
-        release: AppRelease,
-        canCommit: suspend () -> Boolean,
-        onSessionCreated: suspend (Int) -> Unit,
-    ): Boolean {
+    override suspend fun install(apk: File, release: AppRelease, onSessionCreated: suspend (Int) -> Unit) {
         val installer = packageManager.packageInstaller
         val params = PackageInstaller.SessionParams(PackageInstaller.SessionParams.MODE_FULL_INSTALL).apply {
             setAppPackageName(applicationId)
@@ -90,11 +82,7 @@ open class AndroidUpdatePlatform(context: Context, override val installedVersion
                     apk.inputStream().use { it.copyTo(out) }
                     session.fsync(out)
                 }
-                // Copying a release into the session takes seconds, so the answer that allowed this install may no
-                // longer hold; asked again here, and once more with nothing left in between.
-                if (!canCommit()) return abandon(installer, sessionId)
                 onSessionCreated(sessionId)
-                if (!canCommit()) return abandon(installer, sessionId)
                 // The commit below can replace this process before anything after it runs.
                 session.commit(UpdateInstallReceiver.statusReceiver(context, sessionId, release).intentSender)
             }
@@ -102,12 +90,6 @@ open class AndroidUpdatePlatform(context: Context, override val installedVersion
             runCatching { installer.abandonSession(sessionId) }
             throw t
         }
-        return true
-    }
-
-    private fun abandon(installer: PackageInstaller, sessionId: Int): Boolean {
-        runCatching { installer.abandonSession(sessionId) }
-        return false
     }
 
     override fun abandonSessions() {
@@ -120,10 +102,6 @@ open class AndroidUpdatePlatform(context: Context, override val installedVersion
 
     override fun startConfirmation(intent: Intent): Boolean =
         runCatching { context.startActivity(Intent(intent).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }.isSuccess
-
-    override fun notifyReadyToInstall(release: AppRelease): Boolean = UpdateNotifications.postReadyToInstall(context, release)
-
-    override fun cancelNotifications() = UpdateNotifications.cancel(context)
 
     /** The current signers of a parsed archive, or the lineage for a single rotated signer. */
     @Suppress("DEPRECATION")

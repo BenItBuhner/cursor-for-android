@@ -40,7 +40,6 @@ import com.cursorforandroid.domain.CursorUser
 import com.cursorforandroid.domain.NewChatHomeChoice
 import com.cursorforandroid.domain.ProjectArrangement
 import com.cursorforandroid.domain.TranscriptHit
-import com.cursorforandroid.domain.UpdateState
 import com.cursorforandroid.notifications.NotificationPermissionPrompt
 import com.cursorforandroid.ui.agents.AgentListUiState
 import com.cursorforandroid.ui.agents.AgentRowActions
@@ -483,12 +482,8 @@ private fun AppShell(
         Screen.WhatsNew, Screen.KeyboardShortcuts, is Screen.Agent -> null
     }
     val updateState by graph.updateState.collectAsStateWithLifecycle(initialValue = graph.currentUpdateState())
-    val updateHint = when (val s = updateState) {
-        is UpdateState.Available -> if (s.signatureMismatch) null else UpdateCopy.available(s.release)
-        is UpdateState.Downloaded -> "Update ready to install · ${s.release.versionName}"
-        is UpdateState.Installing -> if (s.awaitingConfirmation) "Update waiting for your confirmation" else null
-        else -> null
-    }
+    // The one place an update is raised with the user; the row leads to Settings, where it is installed.
+    val updateHint = UpdateCopy.hint(updateState)
     // The installed version's notes, until the page has been opened once; the Settings row reads the same flow.
     val whatsNewUnread by graph.whatsNewUnread.collectAsStateWithLifecycle(initialValue = null)
     val whatsNewHint = whatsNewUnread?.let { WhatsNewCopy.title(it.versionName) }

@@ -3,29 +3,41 @@ package com.cursorforandroid.update
 import android.Manifest
 import android.app.Application
 import android.app.Notification
+import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.job.JobInfo
 import android.app.job.JobScheduler
 import android.content.Intent
 import android.content.pm.PackageInstaller
 import android.os.Looper
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleRegistry
+import androidx.lifecycle.ProcessLifecycleOwner
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.cursorforandroid.BuildConfig
+import com.cursorforandroid.DeferredStartup
+import com.cursorforandroid.MainActivity
 import com.cursorforandroid.appGraph
 import com.cursorforandroid.data.local.JsonDiskCache
+import com.cursorforandroid.data.update.CachedUpdateCheck
 import com.cursorforandroid.data.update.PendingInstall
 import com.cursorforandroid.data.update.UpdateCache
+import com.cursorforandroid.data.update.VerifiedDownload
 import com.cursorforandroid.domain.AppRelease
 import com.cursorforandroid.domain.AppVersion
 import com.cursorforandroid.domain.ReleaseAsset
 import com.cursorforandroid.domain.UpdateState
+import com.cursorforandroid.notifications.LiveNotifications
+import com.cursorforandroid.util.UiDispatcherRearm
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.runBlocking
+import org.junit.After
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.Robolectric
 import org.robolectric.Shadows.shadowOf
+import org.robolectric.android.controller.ActivityController
 import org.robolectric.annotation.Config
 import java.io.File
 import java.util.concurrent.CountDownLatch
@@ -97,7 +109,7 @@ class UpdateGlueTest {
         val installer = app.packageManager.packageInstaller
         val recorded = mutableListOf<Int>()
 
-        assertThat(platform.install(apk, release, canCommit = { true }) { recorded += it }).isTrue()
+        platform.install(apk, release) { recorded += it }
 
         val session = installer.allSessions.single()
         // Recorded before the commit: the callback can start a process that has nothing else to go on.
@@ -120,27 +132,6 @@ class UpdateGlueTest {
     }
 
     @Test
-    fun `an install whose window closes while the APK is staged commits nothing and leaves no session behind`() = runBlocking {
-        val apk = File(app.cacheDir, "9000099.apk").apply { writeBytes(byteArrayOf(1, 2, 3)) }
-        val platform = AndroidUpdatePlatform(app)
-        val installer = app.packageManager.packageInstaller
-        val recorded = mutableListOf<Int>()
-
-        // Closed by the time the bytes are down: nothing is committed and nothing is recorded, because there is no
-        // verdict for a record to be about.
-        assertThat(platform.install(apk, release, canCommit = { false }) { recorded += it }).isFalse()
-        assertThat(recorded).isEmpty()
-        assertThat(installer.mySessions).isEmpty()
-
-        // Closed in the moment between the record and the commit — the last look before the point of no return.
-        var asked = 0
-        assertThat(platform.install(apk, release, canCommit = { asked++ == 0 }) { recorded += it }).isFalse()
-        assertThat(asked).isEqualTo(2)
-        assertThat(recorded).hasSize(1)
-        assertThat(installer.mySessions).isEmpty()
-    }
-
-    @Test
     fun `a file that is not a package does not parse`() {
         val junk = File(app.cacheDir, "junk.apk").apply { writeText("not an apk") }
         assertThat(AndroidUpdatePlatform(app).inspect(junk)).isNull()
@@ -160,22 +151,105 @@ class UpdateGlueTest {
         settle { updates.state.value is UpdateState.Installing }
         assertThat(updates.state.value).isEqualTo(UpdateState.Installing(release, awaitingConfirmation = true))
 
-        // No activity is started in the background; a notification carries the user back to the app instead.
+        // The app is not on screen, so the system's dialog is not thrown in front of whatever the user is doing — and
+        // nothing is posted to the shade about it either. The state alone carries it: Settings offers "Confirm".
         val manager = shadowOf(app.getSystemService(NotificationManager::class.java))
-        val notification = manager.getNotification(UpdateNotifications.READY_ID)
-        assertThat(notification).isNotNull()
-        assertThat(notification.extras.getCharSequence(Notification.EXTRA_TITLE)?.toString()).isEqualTo("Cursor 9.0.0 is ready to install")
-        assertThat(notification.actions.single().title.toString()).isEqualTo("Install")
-        val open = shadowOf(notification.contentIntent).savedIntent
-        assertThat(open.action).isEqualTo(UpdateNotifications.ACTION_INSTALL_UPDATE)
-        assertThat(open.component?.className).isEqualTo("com.cursorforandroid.MainActivity")
+        assertThat(manager.allNotifications).isEmpty()
         assertThat(shadowOf(app).nextStartedActivity).isNull()
 
-        // Declining clears the notification and leaves the release to be offered again.
+        // Declining leaves the release to be offered again, still with nothing in the shade.
         deliver(PackageInstaller.STATUS_FAILURE_ABORTED)
         settle { updates.state.value !is UpdateState.Installing }
-        assertThat(manager.getNotification(UpdateNotifications.READY_ID)).isNull()
+        assertThat(manager.allNotifications).isEmpty()
         assertThat(updates.state.value.release).isEqualTo(release)
+    }
+
+    @Test
+    fun `the first start of this build takes the retired update channel and its card out of the shade`() {
+        val manager = app.getSystemService(NotificationManager::class.java)
+        manager.createNotificationChannel(
+            NotificationChannel(LiveNotifications.RETIRED_CHANNEL_UPDATES, "Updates", NotificationManager.IMPORTANCE_DEFAULT),
+        )
+        manager.notify(
+            LiveNotifications.RETIRED_UPDATE_READY_ID,
+            Notification.Builder(app, LiveNotifications.RETIRED_CHANNEL_UPDATES).setContentTitle("Cursor 0.4.0 is ready to install").build(),
+        )
+        assertThat(shadowOf(manager).getNotification(LiveNotifications.RETIRED_UPDATE_READY_ID)).isNotNull()
+
+        LiveNotifications.ensureChannels(app)
+
+        assertThat(shadowOf(manager).getNotification(LiveNotifications.RETIRED_UPDATE_READY_ID)).isNull()
+        val channels = manager.notificationChannels.map { it.id }
+        assertThat(channels).doesNotContain(LiveNotifications.RETIRED_CHANNEL_UPDATES)
+        assertThat(channels).containsAtLeast(LiveNotifications.CHANNEL_LIVE, LiveNotifications.CHANNEL_FINISHED)
+    }
+
+    /**
+     * The whole app, on the lifecycle the coordinator listens to, with a downloaded update waiting: coming forward
+     * and leaving again commits no session, starts no activity and posts nothing. The update is the sidebar's hint
+     * and Settings' Install, and stays exactly that until the user gets there.
+     */
+    @Test
+    fun `an update that is ready waits through the app being opened and put away without a session, a dialog or a notification`() {
+        shadowOf(app).grantPermissions(Manifest.permission.POST_NOTIFICATIONS)
+        val graph = app.appGraph
+        runBlocking {
+            graph.prefs.setAutoUpdate(true)
+            // The last check was a moment ago, so the foreground pass has no list to read: what is on disk is the
+            // whole of the updater's input here.
+            graph.prefs.setUpdateLastCheckedAt(System.currentTimeMillis())
+            val apk = File(app.cacheDir, "updates/${release.versionCode}.apk").apply { parentFile!!.mkdirs(); writeBytes(byteArrayOf(1, 2, 3)) }
+            val cache = UpdateCache(JsonDiskCache(File(app.cacheDir, "update-check")))
+            cache.write(CachedUpdateCheck(etag = "\"etag\"", checkedAtMs = System.currentTimeMillis(), candidate = release))
+            cache.writeVerified(VerifiedDownload(release.versionCode, apk.length(), "00"))
+        }
+        DeferredStartup.settleMs = 0
+        val installer = app.packageManager.packageInstaller
+        val notifications = shadowOf(app.getSystemService(NotificationManager::class.java))
+
+        val activity = Robolectric.buildActivity(MainActivity::class.java).setup().also { this.activity = it }
+        // The deferred startup has bound the coordinator once the job it schedules is there.
+        settle { UpdateJobService.isScheduled(app) }
+
+        // Robolectric never moves the process-wide lifecycle on its own, so the app coming forward is reported here.
+        process.handleLifecycleEvent(Lifecycle.Event.ON_START)
+        process.handleLifecycleEvent(Lifecycle.Event.ON_RESUME)
+        settle { graph.updates.state.value is UpdateState.Downloaded }
+        val downloaded = graph.updates.state.value as UpdateState.Downloaded
+        assertThat(downloaded.release).isEqualTo(release)
+
+        // Away.
+        activity.pause().stop()
+        process.handleLifecycleEvent(Lifecycle.Event.ON_PAUSE)
+        process.handleLifecycleEvent(Lifecycle.Event.ON_STOP)
+        idle()
+
+        assertThat(graph.updates.state.value).isEqualTo(downloaded)
+        assertThat(installer.allSessions).isEmpty()
+        assertThat(notifications.allNotifications).isEmpty()
+        assertThat(shadowOf(app).nextStartedActivity).isNull()
+
+        // And back again, which is the one moment the updater does act on its own: a check, throttled away here.
+        activity.start().resume()
+        process.handleLifecycleEvent(Lifecycle.Event.ON_START)
+        idle()
+        assertThat(graph.updates.state.value).isEqualTo(downloaded)
+        assertThat(installer.allSessions).isEmpty()
+        assertThat(notifications.allNotifications).isEmpty()
+        process.handleLifecycleEvent(Lifecycle.Event.ON_STOP)
+    }
+
+    private val process get() = ProcessLifecycleOwner.get().lifecycle as LifecycleRegistry
+
+    private var activity: ActivityController<MainActivity>? = null
+    private val settleMs = DeferredStartup.settleMs
+
+    /** Tears down the activity a test built; left resumed, its composition would keep collecting on the shared main looper. */
+    @After
+    fun tearDown() {
+        DeferredStartup.settleMs = settleMs
+        activity?.let { runCatching { it.pause().stop().destroy() } }
+        shadowOf(Looper.getMainLooper()).idle()
     }
 
     private fun deliver(status: Int, extras: (Intent) -> Unit = {}) {
@@ -188,6 +262,16 @@ class UpdateGlueTest {
                 .putExtra(PackageInstaller.EXTRA_STATUS, status)
                 .also(extras),
         )
+    }
+
+    /** A few frames of the main looper, with a moment of the disk's threads for each, so anything in flight lands. */
+    private fun idle() {
+        val looper = shadowOf(Looper.getMainLooper())
+        repeat(20) {
+            UiDispatcherRearm.mend()
+            looper.idle()
+            Thread.sleep(5)
+        }
     }
 
     /** The receiver finishes its work off the main thread, so the looper is pumped until it lands. */

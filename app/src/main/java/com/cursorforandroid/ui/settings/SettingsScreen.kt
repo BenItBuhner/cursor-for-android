@@ -1,7 +1,6 @@
 package com.cursorforandroid.ui.settings
 
 import android.content.Intent
-import android.os.Build
 import android.provider.Settings
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -36,7 +35,6 @@ import androidx.core.net.toUri
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.cursorforandroid.AppGraph
-import com.cursorforandroid.data.update.UpdateManager
 import com.cursorforandroid.domain.AppRelease
 import com.cursorforandroid.domain.CursorUser
 import com.cursorforandroid.domain.ProjectNotificationPrefs
@@ -362,7 +360,7 @@ private fun NotificationRows(graph: AppGraph) {
 /**
  * The in-app updater: the installed version with what the last check found and the one action that follows from it
  * (check, download, install, retry); beneath it, while they are unread, the installed version's release notes
- * ([onOpenWhatsNew]); automatic updates; and — until the user has allowed it — the system page where installing
+ * ([onOpenWhatsNew]); the automatic check; and — until the user has allowed it — the system page where installing
  * from this app is permitted. The permission is re-read when the screen resumes. A long press on the version row is
  * the way into the debug sheet ([onDebug]); a tap does nothing, so the row is not announced as a button.
  */
@@ -438,12 +436,8 @@ private fun UpdateRows(graph: AppGraph, open: (String) -> Unit, onDebug: () -> U
     }
     HairlineDivider()
     SettingsToggleRow(
-        title = "Automatic updates",
-        description = if (Build.VERSION.SDK_INT >= UpdateManager.SILENT_SELF_UPDATE_SDK) {
-            "Downloads on Wi-Fi, installs when idle."
-        } else {
-            "Downloads on Wi-Fi, then asks to install."
-        },
+        title = "Check for updates automatically",
+        description = "Shows a new release in the sidebar. Nothing downloads or installs until you choose to here.",
         checked = autoUpdate,
         onCheckedChange = { scope.launch { updates.setAutoUpdate(it) } },
     )
@@ -493,6 +487,20 @@ private fun updateStatusLine(state: UpdateState): String = when (state) {
 object UpdateCopy {
     /** "Update available: v0.3.9" — the version with the tag's `v`, so it reads as the release it names. */
     fun available(release: AppRelease): String = "Update available: v${release.versionName}"
+
+    /**
+     * The sidebar's hint for [state], or null when there is nothing to lead the user to Settings for. This row is
+     * the only way the app ever raises an update with the user: a release found by a check reads "Update available",
+     * one they downloaded "ready to install", one the system is waiting on them for "waiting for your confirmation".
+     * A release this install cannot take (signed with another key) is Settings' business alone, and no other state
+     * is worth a word.
+     */
+    fun hint(state: UpdateState): String? = when (state) {
+        is UpdateState.Available -> if (state.signatureMismatch) null else available(state.release)
+        is UpdateState.Downloaded -> "Update ready to install · ${state.release.versionName}"
+        is UpdateState.Installing -> if (state.awaitingConfirmation) "Update waiting for your confirmation" else null
+        else -> null
+    }
 }
 
 /** "checked just now", "checked 4m ago", "checked Sep 4". */

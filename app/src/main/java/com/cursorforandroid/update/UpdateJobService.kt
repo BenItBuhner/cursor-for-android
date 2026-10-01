@@ -20,7 +20,8 @@ import java.util.concurrent.TimeUnit
 /**
  * The periodic update check, run by `JobScheduler` roughly every [PERIOD_MS] while the device is online and its
  * battery is not low, whether or not the app has been opened. The job persists across reboots. Everything it does
- * is [com.cursorforandroid.data.update.UpdateManager.runScheduled]: check, download on Wi-Fi, install or notify.
+ * is [com.cursorforandroid.data.update.UpdateManager.runScheduled], which is a check and nothing more: what it finds
+ * is on the sidebar and in Settings the next time the app is opened, and is downloaded and installed from there.
  */
 class UpdateJobService : JobService() {
 
