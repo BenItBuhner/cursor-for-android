@@ -245,7 +245,4 @@ private fun SegmentButton(text: String, selected: Boolean, tag: String, onClick:
 }
 
 /** The store file [path] names as read in [chatAgentId]'s chat, or null when the mount names no store this chat can read. */
-internal fun storeRef(path: StorePath, chatAgentId: String?): MediaRef.Store? {
-    val owner = path.ownerId(chatAgentId) ?: return null
-    return MediaRef.Store(owner, path.relativePath)
-}
+internal fun storeRef(path: StorePath, chatAgentId: String?): MediaRef.Store? = MediaRef.store(path, chatAgentId)

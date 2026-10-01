@@ -19,7 +19,10 @@ import androidx.compose.ui.test.performTextClearance
 import androidx.compose.ui.test.performTextInput
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.cursorforandroid.domain.AgentSource
+import androidx.compose.foundation.layout.Column
 import com.cursorforandroid.domain.PendingFollowup
+import com.cursorforandroid.domain.QueuePlacement
+import com.cursorforandroid.domain.SteerPhase
 import com.cursorforandroid.ui.components.Keyboard
 import com.cursorforandroid.ui.components.pressEnter
 import com.cursorforandroid.ui.theme.CursorTheme
@@ -174,6 +177,70 @@ class AccountQueueRowsTest {
         assertThat(compose.onAllNodesWithContentDescription("Sending").fetchSemanticsNodes()).hasSize(1)
         assertThat(compose.onAllNodesWithContentDescription(QueueGlyphs.STEER).fetchSemanticsNodes()).hasSize(1)
         assertThat(compose.onAllNodesWithContentDescription("Reorder queued follow-up").fetchSemanticsNodes()).isEmpty()
+    }
+
+    /**
+     * Bennett's frame of v0.4.26: a row steered mid-turn sat with its glyphs live and "Being delivered to the agent."
+     * under it. A steered row reads as a steered device card does: "Steering…" then "Steered", no ring though its
+     * promote is out, its glyphs dimmed and every tap on them refused with why in place of the note — never acted on.
+     */
+    @Test
+    fun `a steered row says steering then steered, its glyphs dimmed, and refuses every tap in place`() {
+        val refusals = mutableListOf<String>()
+        var refusedId by mutableStateOf<String?>(null)
+        rows = listOf(queue[0].copy(steer = SteerPhase.STEERING, note = null), queue[1].copy(isEditing = false))
+        inFlight = setOf("fu-1")
+        compose.setContent {
+            CursorTheme(mode = ThemeMode.Dark) {
+                Column {
+                    rows.forEachIndexed { index, item ->
+                        AccountQueueCard(
+                            item = item,
+                            position = index + 1,
+                            count = rows.size,
+                            inFlightIds = inFlight,
+                            onSteer = { acted += "arrow:${it.id}" },
+                            onRemove = { acted += "remove:${it.id}" },
+                            onUpdate = { row, text -> acted += "update:${row.id}:$text" },
+                            onEditing = { row, editing -> acted += "editing:${row.id}:$editing" },
+                            steers = true,
+                            onMove = { row, up -> acted += "move:${row.id}:$up" },
+                            flights = null,
+                            refused = refusedId == item.id,
+                            onRefused = { refusals += it.id; refusedId = it.id },
+                        )
+                    }
+                }
+            }
+        }
+        // Steering: the note, no ring, the glyphs on their way — the other row's untouched.
+        compose.onNodeWithText(QueueCardWords.STEERING).assertExists()
+        assertThat(compose.onAllNodesWithContentDescription("Sending").fetchSemanticsNodes()).isEmpty()
+        assertThat(compose.onAllNodesWithTag(QueueGlyphs.ON_ITS_WAY_TAG).fetchSemanticsNodes()).hasSize(1)
+        assertThat(compose.onAllNodesWithContentDescription("Queued on your account, 1 of 2, steering into this turn").fetchSemanticsNodes()).hasSize(1)
+        assertThat(shown(QueuePlacement.DELIVERING_NOTE)).isFalse()
+
+        // Every glyph of the steered row is refused, and says why where the note was; nothing is done to the message.
+        compose.onAllNodesWithContentDescription("Remove queued follow-up")[0].performClick()
+        compose.onAllNodesWithContentDescription("Edit queued follow-up")[0].performClick()
+        compose.onAllNodesWithContentDescription(QueueGlyphs.STEER)[0].performClick()
+        compose.onAllNodesWithContentDescription("Reorder queued follow-up")[0].performClick()
+        assertThat(refusals).containsExactly("fu-1", "fu-1", "fu-1", "fu-1")
+        assertThat(acted).isEmpty()
+        assertThat(compose.onAllNodesWithText("Move up").fetchSemanticsNodes()).isEmpty()
+        assertThat(compose.onAllNodesWithTag("account-queue-edit").fetchSemanticsNodes()).isEmpty()
+        compose.onNodeWithTag(QueueGlyphs.REFUSED_TAG).assertExists()
+        assertThat(shown(QueueGlyphs.REFUSED)).isTrue()
+
+        // The account took it: "Steered", in place; the other row's glyphs still act.
+        refusedId = null
+        rows = listOf(rows[0].copy(steer = SteerPhase.STEERED), rows[1])
+        inFlight = emptySet()
+        compose.waitForIdle()
+        compose.onNodeWithText(QueueCardWords.STEERED).assertExists()
+        assertThat(compose.onAllNodesWithTag(QueueGlyphs.ON_ITS_WAY_TAG).fetchSemanticsNodes()).hasSize(1)
+        compose.onAllNodesWithContentDescription("Remove queued follow-up")[1].performClick()
+        assertThat(acted).containsExactly("remove:fu-2")
     }
 
     private fun Rect.intersects(other: Rect): Boolean =

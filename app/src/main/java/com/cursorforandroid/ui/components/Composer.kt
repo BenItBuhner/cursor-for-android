@@ -779,60 +779,62 @@ private fun ComposerTextField(
     val shortcutBindings = LocalShortcutBindings.current
     val commandTints = commandTints()
     ImeEnterFallback(onEnter = onEnter, composing = { field.composition != null }) {
-        BasicTextField(
-            state = field,
-            textStyle = type.input.copy(color = colors.textPrimary),
-            keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
-            cursorBrush = SolidColor(colors.textPrimary),
-            lineLimits = TextFieldLineLimits.MultiLine(minHeightInLines = minLines, maxHeightInLines = if (stretched) Int.MAX_VALUE else CollapsedMaxLines),
-            scrollState = textScroll,
-            onTextLayout = { provider ->
-                textLayout.get = provider
-                provider()?.lineCount?.let { if (it != lineCount.intValue) lineCount.intValue = it }
-            },
-            inputTransformation = inputTransformation,
-            modifier = Modifier
-                .fillMaxWidth()
-                // One line of `input` at the default font scale, so the box does not shrink under a small system font.
-                .heightIn(min = 22.dp)
-                .then(if (stretched) Modifier.fillMaxHeight() else Modifier)
-                .onSizeChanged { if (expansion.progress.value == 0f) expansion.fieldPx = it.height }
-                // Painted, not dissolved: the field is resized every frame the composer expands or collapses,
-                // and the composer's own fill is flat behind it.
-                .scrollEdgeFade(textScroll, surface = colors.elevated)
-                .onPhysicalKey(onPhysicalKey)
-                .onPreviewKeyEvent { event ->
-                    val chord = event.type == KeyEventType.KeyDown && shortcutBindings.matches(
-                        Shortcut.ExpandComposer,
-                        event.nativeKeyEvent.keyCode,
-                        event.isCtrlPressed,
-                        event.isShiftPressed,
-                        event.isAltPressed,
-                        event.isMetaPressed,
-                    )
-                    if (chord && expandOffered) expansion.toggle()
-                    chord && expandOffered
-                }
-                .popoverKeys(popoverOpen, popover, composing = { field.composition != null }, onPick = onPick, onDismiss = onDismissPopover)
-                .modeCycleKeys(onCycleMode)
-                .sendOnHardwareEnter(field, onSend = onHardwareSend, onEdited = onEdited)
-                .then(if (receiveImages != null) Modifier.contentReceiver(receiveImages) else Modifier)
-                .focusRequester(focus)
-                .onFocusChanged { onFocusChanged(it.isFocused) },
-            decorator = { inner ->
-                Box {
-                    ComposerPlaceholder(field, placeholder, Modifier.sendPlaceholder(sendMotion, anchor))
-                    Box(
-                        Modifier
-                            .then(if (anchor != null) Modifier.onPlaced { anchor.field = it } else Modifier)
-                            .sendSource(sendMotion, anchor)
-                            .slashCommandHighlight(layout = { textLayout.get?.invoke() }, scroll = textScroll, tints = commandTints),
-                    ) {
-                        inner()
+        StylusTextInput {
+            BasicTextField(
+                state = field,
+                textStyle = type.input.copy(color = colors.textPrimary),
+                keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
+                cursorBrush = SolidColor(colors.textPrimary),
+                lineLimits = TextFieldLineLimits.MultiLine(minHeightInLines = minLines, maxHeightInLines = if (stretched) Int.MAX_VALUE else CollapsedMaxLines),
+                scrollState = textScroll,
+                onTextLayout = { provider ->
+                    textLayout.get = provider
+                    provider()?.lineCount?.let { if (it != lineCount.intValue) lineCount.intValue = it }
+                },
+                inputTransformation = inputTransformation,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    // One line of `input` at the default font scale, so the box does not shrink under a small system font.
+                    .heightIn(min = 22.dp)
+                    .then(if (stretched) Modifier.fillMaxHeight() else Modifier)
+                    .onSizeChanged { if (expansion.progress.value == 0f) expansion.fieldPx = it.height }
+                    // Painted, not dissolved: the field is resized every frame the composer expands or collapses,
+                    // and the composer's own fill is flat behind it.
+                    .scrollEdgeFade(textScroll, surface = colors.elevated)
+                    .onPhysicalKey(onPhysicalKey)
+                    .onPreviewKeyEvent { event ->
+                        val chord = event.type == KeyEventType.KeyDown && shortcutBindings.matches(
+                            Shortcut.ExpandComposer,
+                            event.nativeKeyEvent.keyCode,
+                            event.isCtrlPressed,
+                            event.isShiftPressed,
+                            event.isAltPressed,
+                            event.isMetaPressed,
+                        )
+                        if (chord && expandOffered) expansion.toggle()
+                        chord && expandOffered
                     }
-                }
-            },
-        )
+                    .popoverKeys(popoverOpen, popover, composing = { field.composition != null }, onPick = onPick, onDismiss = onDismissPopover)
+                    .modeCycleKeys(onCycleMode)
+                    .sendOnHardwareEnter(field, onSend = onHardwareSend, onEdited = onEdited)
+                    .then(if (receiveImages != null) Modifier.contentReceiver(receiveImages) else Modifier)
+                    .focusRequester(focus)
+                    .onFocusChanged { onFocusChanged(it.isFocused) },
+                decorator = { inner ->
+                    Box {
+                        ComposerPlaceholder(field, placeholder, Modifier.sendPlaceholder(sendMotion, anchor))
+                        Box(
+                            Modifier
+                                .then(if (anchor != null) Modifier.onPlaced { anchor.field = it } else Modifier)
+                                .sendSource(sendMotion, anchor)
+                                .slashCommandHighlight(layout = { textLayout.get?.invoke() }, scroll = textScroll, tints = commandTints),
+                        ) {
+                            inner()
+                        }
+                    }
+                },
+            )
+        }
     }
 }
 

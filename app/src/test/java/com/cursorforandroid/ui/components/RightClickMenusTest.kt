@@ -273,7 +273,7 @@ class RightClickMenusTest {
     @Test
     fun `right-clicking a Project shortcut opens its menu at the pointer without opening or arranging`() {
         show {
-            ProjectShortcutGrid(NewChatHomeFixtures.list().projectRows, Modifier.padding(16.dp), onOpen = { opened += it.agent.id }, actions = actions, onReorder = {})
+            ProjectShortcutGrid(NewChatHomeFixtures.list().projectRows, Modifier.padding(16.dp), onOpen = { opened += it.agent.id }, actions = actions, onArrange = {})
         }
         val shortcut = compose.onAllNodes(hasTestTag(com.cursorforandroid.ui.home.NewChatHomeTags.PROJECT_SHORTCUT)).onFirst()
         val pointer = rightClick(shortcut)

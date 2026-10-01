@@ -30,6 +30,7 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.cursorforandroid.AppGraph
+import com.cursorforandroid.domain.NewChatHome
 import com.cursorforandroid.ui.CursorRoot
 import com.cursorforandroid.ui.home.NewChatHomeCopy
 import com.cursorforandroid.ui.theme.CursorTheme
@@ -78,6 +79,8 @@ class GoalPanelFlowTest {
         runBlocking {
             graph.session.enterDemo()
             graph.drafts.clear()
+            // The demo has a Project, so its New Chat page would open on Projects; the goal chat is opened from the recent cards.
+            graph.prefs.setNewChatHome(NewChatHome.RECENT)
         }
         compose.setContent {
             CursorTheme(mode = ThemeMode.Dark) {

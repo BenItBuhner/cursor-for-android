@@ -1,6 +1,7 @@
 package com.cursorforandroid.ui.conversation
 
 import androidx.compose.animation.core.CubicBezierEasing
+import androidx.compose.animation.core.Easing
 import androidx.compose.animation.core.LinearOutSlowInEasing
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.MutatePriority
@@ -41,6 +42,7 @@ import androidx.compose.ui.semantics.verticalScrollAxisRange
 import com.cursorforandroid.domain.TranscriptRow
 import kotlin.math.abs
 import kotlin.math.roundToInt
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
@@ -123,9 +125,7 @@ internal class TranscriptScroll(val list: LazyListState, private val followingSt
 
     /**
      * From more than [JUMP_SCREENS] screens up, the list first jumps to [LANDING_SCREENS] screens above the newest row
-     * (the rows between are never laid out), then glides the rest in [glideMillis]. Each frame aims at what is left
-     * to go as the list measures it then, so rows streaming in below mid-glide are glided to as well, and the glide
-     * ends exactly on the newest row's bottom.
+     * (the rows between are never laid out), then glides the rest in [glideMillis] (see [glide]).
      */
     private suspend fun glideToNewest() {
         val screen = list.layoutInfo.viewportSize.height.toFloat()
@@ -140,9 +140,37 @@ internal class TranscriptScroll(val list: LazyListState, private val followingSt
             known = distanceToNewest(list.layoutInfo) ?: (LANDING_SCREENS * screen)
         }
         val start = known ?: estimatedDistanceToNewest(list.layoutInfo)
-        val millis = glideMillis(start / screen)
         // A glide the jump landed in is already moving: it only slows. One from rest eases in as well.
-        val easing = if (jumped) LandingEasing else GlideEasing
+        glide(known, glideMillis(start / screen), if (jumped) LandingEasing else GlideEasing)
+    }
+
+    /**
+     * A queued card has just handed its message to the transcript: its bubble, and whatever landed with it, were laid
+     * out past the bottom edge in that frame (the list's keyed anchoring leaves new rows there), and the card has
+     * begun to fold. Rather than jumping to them, the list glides down to the newest row over the fold's
+     * [QueueExitMillis] on its curve ([QueueExitEasing]), so the room the fold gives up and the rows coming into view
+     * move as one and nothing over the dock jumps. Counted as a jump (see [isJumping]) from this call on, before the
+     * glide's first frame, so neither a row landing meanwhile nor the reader's pin takes the list from it.
+     */
+    fun settleToNewest(scope: CoroutineScope) {
+        isJumping = true
+        scope.launch {
+            try {
+                val screen = list.layoutInfo.viewportSize.height.toFloat()
+                if (screen <= 0f) return@launch list.scrollToItem(0)
+                glide(distanceToNewest(list.layoutInfo) ?: measureDistanceToNewest(screen), QueueExitMillis, QueueExitEasing)
+            } finally {
+                isJumping = false
+            }
+        }
+    }
+
+    /**
+     * Scrolls to the newest row's bottom over [millis] on [easing], from [known] px up (null: estimated off the rows
+     * on screen). Each frame aims at what is left to go as the list measures it then, so rows streaming in below
+     * mid-glide are glided to as well, and the glide ends exactly on the newest row's bottom.
+     */
+    private suspend fun glide(known: Float?, millis: Int, easing: Easing) {
         var settled = false
         list.scroll {
             var travelled = 0f
@@ -173,9 +201,13 @@ internal class TranscriptScroll(val list: LazyListState, private val followingSt
     private suspend fun measureDistanceToNewest(reach: Float): Float? {
         var found: Float? = null
         list.scroll {
+            val held = list.layoutInfo.visibleItemsInfo.let { it.getOrNull(it.size / 2) }
             val went = -scrollBy(-reach)
             found = distanceToNewest(list.layoutInfo)?.plus(went)
             scrollBy(went)
+            // Scrolling back by as much does not always land where it started (rows just landed below re-anchor the
+            // list on the way), so the row that was on screen is put back where it stood.
+            if (held != null) list.layoutInfo.visibleItemsInfo.firstOrNull { it.key == held.key }?.let { now -> scrollBy((now.offset - held.offset).toFloat()) }
         }
         return found
     }
@@ -423,7 +455,7 @@ internal class ReaderScroll(
     val screen = ScreenScroll(scroll.list)
     val dragged: ScrollableState = if (pull != null) PullableScroll(screen) else screen
     val overscroll: OverscrollEffect = pull?.let {
-        CatchUpOverscroll(platform, it, atNewest = { !screen.canScrollForward }, enabled = canCatchUp, onPulled = onCatchUp)
+        CatchUpOverscroll(platform, it, enabled = canCatchUp, onPulled = onCatchUp)
     } ?: platform
 }
 

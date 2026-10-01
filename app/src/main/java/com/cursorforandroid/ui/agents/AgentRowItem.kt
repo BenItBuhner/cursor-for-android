@@ -65,6 +65,7 @@ import com.cursorforandroid.ui.components.Haptics
 import com.cursorforandroid.ui.components.ProjectGlyph
 import com.cursorforandroid.ui.components.RunningGlyph
 import com.cursorforandroid.ui.components.StateGlyph
+import com.cursorforandroid.ui.components.StylusTextInput
 import com.cursorforandroid.ui.components.rememberHaptics
 import com.cursorforandroid.ui.components.stylusWriting
 import com.cursorforandroid.ui.components.Haptic
@@ -386,24 +387,26 @@ fun RenameChatDialog(
                     .background(colors.fillFaint, CursorTheme.shapes.base)
                     .padding(horizontal = 12.dp, vertical = 10.dp),
             ) {
-                BasicTextField(
-                    value = field,
-                    onValueChange = { incoming ->
-                        field = if (incoming.text.length <= NAME_MAX) incoming else incoming.copy(text = incoming.text.take(NAME_MAX))
-                    },
-                    singleLine = true,
-                    textStyle = type.base.copy(color = colors.textPrimary),
-                    cursorBrush = SolidColor(colors.textPrimary),
-                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
-                    keyboardActions = KeyboardActions(onDone = { save() }),
-                    modifier = Modifier.fillMaxWidth().focusRequester(focus),
-                    decorationBox = { inner ->
-                        Box {
-                            if (field.text.isEmpty()) Text("Chat name", style = type.base, color = colors.textQuaternary)
-                            inner()
-                        }
-                    },
-                )
+                StylusTextInput {
+                    BasicTextField(
+                        value = field,
+                        onValueChange = { incoming ->
+                            field = if (incoming.text.length <= NAME_MAX) incoming else incoming.copy(text = incoming.text.take(NAME_MAX))
+                        },
+                        singleLine = true,
+                        textStyle = type.base.copy(color = colors.textPrimary),
+                        cursorBrush = SolidColor(colors.textPrimary),
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                        keyboardActions = KeyboardActions(onDone = { save() }),
+                        modifier = Modifier.fillMaxWidth().focusRequester(focus),
+                        decorationBox = { inner ->
+                            Box {
+                                if (field.text.isEmpty()) Text("Chat name", style = type.base, color = colors.textQuaternary)
+                                inner()
+                            }
+                        },
+                    )
+                }
             }
         },
         confirmButton = {

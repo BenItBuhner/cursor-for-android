@@ -2,9 +2,13 @@ package com.cursorforandroid.data.faults
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.cursorforandroid.data.api.DeviceNetwork
+import com.cursorforandroid.data.api.dto.AgentEnvDto
+import com.cursorforandroid.data.api.dto.WorkerDto
 import com.cursorforandroid.data.api.userMessage
 import com.cursorforandroid.data.faults.FaultServer.Fault
 import com.cursorforandroid.data.faults.FaultServer.Route
+import com.cursorforandroid.domain.EnvType
+import com.cursorforandroid.domain.QueuedFollowUp
 import com.cursorforandroid.domain.RunStatus
 import com.cursorforandroid.domain.UserMessage
 import com.google.common.truth.Truth.assertThat
@@ -56,6 +60,9 @@ class SendFaultsTest {
 
     private fun prompts() = rig.conversations.state("bc-1").value.items.filterIsInstance<UserMessage>()
     private fun sends() = server.requests(Route.CreateRun)
+
+    /** The user's machine as `GET /v0/private-workers` lists it while it is reporting to Cursor. */
+    private val bennett = WorkerDto(id = "pw-bennett", name = "bennett", displayName = "bennett", isInUse = false, scope = "personal", userId = 42L)
 
     private suspend fun open() {
         rig.agents.refresh()
@@ -269,6 +276,118 @@ class SendFaultsTest {
         assertThat(rig.followUps.state("bc-1").value.queue.single().error).contains("Too many requests.")
         assertThat(sends()).hasSize(2)
         assertThat(server.sent).isEmpty()
+    }
+
+    @Test
+    fun `queued — a 503 that names its wait is held as Cursor unavailable, never as a rate limit, and goes by itself`() = runBlocking<Unit> {
+        open()
+        server.script(Route.CreateRun, Fault.Status(503, "unavailable", "Cursor is briefly unavailable.", retryAfter = "1"))
+        rig.followUps.enqueue("bc-1", "Now the tests")
+        rig.awaitUntil { rig.followUps.state("bc-1").value.queue.singleOrNull()?.isHeld == true }
+        val held = rig.followUps.state("bc-1").value.queue.single()
+        assertThat(held.holdReason).isEqualTo(QueuedFollowUp.SERVICE_UNAVAILABLE)
+        assertThat(held.holdReason).doesNotContain("ate limit")
+        assertThat(held.serverReason).isEqualTo("Cursor is briefly unavailable.")
+        rig.awaitUntil { rig.followUps.state("bc-1").value.queue.isEmpty() }
+        assertThat(sends()).hasSize(2)
+        assertThat(server.sent.map { it.first }).containsExactly("Now the tests")
+    }
+
+    // -- a Remote Control chat whose machine is off ---------------------------------------------------------------
+
+    private fun addMachineAgent(connected: Boolean) {
+        server.addIdleAgent("bc-m", "On bennett", "run-m", env = AgentEnvDto(type = "machine", name = "bennett#/home/bennett/projects/app"))
+        server.fleetWorkers = if (connected) listOf(bennett) else emptyList()
+    }
+
+    private suspend fun openMachine() {
+        rig.agents.refresh()
+        rig.conversations.attach("bc-m")
+        rig.awaitUntil { rig.conversations.state("bc-m").value.let { !it.isLoading && it.activeRunId == "run-m" } }
+        assertThat(rig.agents.agent("bc-m")!!.envType).isEqualTo(EnvType.MACHINE)
+    }
+
+    private fun machineSends() = server.requests(Route.CreateRun).filter { it.path.contains("bc-m") }
+    private fun fleetReads() = server.requests(Route.FleetWorkers)
+
+    @Test
+    fun `queued — a message for a machine that is off waits on the card in the machine's name, is never posted, and goes when the machine is back`() = runBlocking<Unit> {
+        addMachineAgent(connected = false)
+        openMachine()
+        val recording = rig.recordQueue("bc-m")
+        val item = rig.followUps.enqueue("bc-m", "Now the tests")
+        rig.awaitUntil { rig.followUps.state("bc-m").value.queue.singleOrNull()?.isHeld == true }
+        val held = rig.followUps.state("bc-m").value.queue.single()
+        assertThat(held.holdReason).isEqualTo("bennett isn't connected to Cursor. Sends when it reconnects")
+        assertThat(held.holdReason).doesNotContain("ate limit")
+        assertThat(held.error).isNull()
+        // Nothing was sent to a machine that cannot take it: the fleet listing was read, the run request never made.
+        assertThat(machineSends()).isEmpty()
+        // And nothing is hammered while it stays off: the listing is read again after a pause that grows (9 s, then 18 s
+        // on this rig's base), so a 12-second watch sees at most one more look and still no request.
+        val looksBefore = fleetReads().size
+        rig.watch(12_000) {
+            assertThat(machineSends()).isEmpty()
+            assertThat(fleetReads().size - looksBefore).isAtMost(1)
+        }
+        assertThat(rig.followUps.state("bc-m").value.queue.single().isHeld).isTrue()
+
+        // The machine comes back: the next look finds it, and the message goes by itself, once.
+        server.fleetWorkers = listOf(bennett)
+        rig.awaitUntil(60_000) { rig.followUps.state("bc-m").value.queue.isEmpty() }
+        recording.stop()
+        assertThat(machineSends()).hasSize(1)
+        assertThat(server.sent.map { it.first }).containsExactly("Now the tests")
+        recording.assertNoFlap(item.id)
+        recording.assertHistory(item.id, QueueRecording.Card.QUEUED, QueueRecording.Card.SENDING, QueueRecording.Card.HELD)
+    }
+
+    @Test
+    fun `queued — a 503 for a machine chat whose machine is off is said as the machine, in the server's words too, never as a rate limit`() = runBlocking<Unit> {
+        addMachineAgent(connected = true)
+        openMachine()
+        // The listing was read while the machine was still up; it goes down before the message is sent, and Cursor
+        // answers the run request with a 503 that names a wait — what read as "rate limited" before.
+        rig.remote.machineStatus(rig.agents.agent("bc-m")!!)
+        server.fleetWorkers = emptyList()
+        server.script(Route.CreateRun, Fault.Status(503, "worker_unavailable", "The self-hosted worker is not connected.", retryAfter = "5"))
+        rig.followUps.enqueue("bc-m", "Now the tests")
+        rig.awaitUntil { rig.followUps.state("bc-m").value.queue.singleOrNull()?.isHeld == true }
+        val held = rig.followUps.state("bc-m").value.queue.single()
+        assertThat(held.holdReason).isEqualTo("bennett isn't connected to Cursor. Sends when it reconnects")
+        assertThat(held.holdReason).doesNotContain("ate limit")
+        assertThat(held.serverReason).isEqualTo("The self-hosted worker is not connected.")
+        assertThat(machineSends()).hasSize(1)
+        // The refused request is not repeated against a machine the listing says is off.
+        rig.watch(6_000) { assertThat(machineSends()).hasSize(1) }
+    }
+
+    @Test
+    fun `queued — a machine that stays off stops the card after its looks, naming the machine, for the user to retry`() = runBlocking<Unit> {
+        // A short base: the eight looks (0.3 s doubling to 3 s apart) take about a quarter of a minute.
+        rig.close()
+        rig = FaultRig(server.baseUrl, folder.newFolder("rig-quick"), retryBaseMs = 10L)
+        addMachineAgent(connected = false)
+        openMachine()
+        val item = rig.followUps.enqueue("bc-m", "Now the tests")
+        rig.awaitUntil(60_000) { rig.followUps.state("bc-m").value.queue.singleOrNull()?.error != null }
+        val failed = rig.followUps.state("bc-m").value.queue.single()
+        assertThat(failed.error).isEqualTo("bennett isn't connected to Cursor. Start it, then retry.")
+        assertThat(failed.isHeld).isFalse()
+        assertThat(machineSends()).isEmpty()
+        val looks = fleetReads().size
+        // Stopped means stopped: no more looks, no request, until the user acts.
+        rig.watch(4_000) {
+            assertThat(fleetReads()).hasSize(looks)
+            assertThat(machineSends()).isEmpty()
+        }
+
+        // The user switches the machine on and retries: one request, the message filed once.
+        server.fleetWorkers = listOf(bennett)
+        rig.followUps.retry("bc-m", item.id)
+        rig.awaitUntil { rig.followUps.state("bc-m").value.queue.isEmpty() }
+        assertThat(machineSends()).hasSize(1)
+        assertThat(server.sent.map { it.first }).containsExactly("Now the tests")
     }
 
     @Test

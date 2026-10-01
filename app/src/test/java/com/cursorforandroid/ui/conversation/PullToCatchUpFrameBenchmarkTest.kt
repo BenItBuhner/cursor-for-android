@@ -85,8 +85,8 @@ import java.time.Instant
  *
  * Counted per frame, beside its time: the scopes recomposed, anywhere in the window (a [CompositionObserver] on the
  * root composition, which its subcompositions — the transcript's rows among them — inherit), and the transcript's
- * rows composed (see [TranscriptPerf]). The pull is drawn by the indicator's layer, and the transcript's stretch by
- * the platform's: no frame of it recomposes a row, and it recomposes on no more frames than the sidebar's own pull.
+ * rows composed (see [TranscriptPerf]). The pull is drawn by layers alone, the transcript's lift and the indicator's:
+ * no frame of it recomposes a row, and it recomposes on no more frames than the sidebar's own pull.
  * Its frames are held to the chat's scroll, frame for frame, with the budget widened by what the machine cannot
  * repeat of its own measurement (see KeyboardFrameBenchmarkTest). Then an armed pull is let go and the frames of the
  * catch-up are counted to the indicator's return home: the spring, the spin, the answer and the spring home recompose no row either.
@@ -365,8 +365,8 @@ class PullToCatchUpFrameBenchmarkTest {
     }
 
     private companion object {
-        /** Frames each way in a stroke, and the finger's travel per frame: 40 × 12 px carries both pulls past their thresholds. */
-        const val STEPS = 40
+        /** Frames each way in a stroke, and the finger's travel per frame: 56 × 12 px carries both pulls past their thresholds. */
+        const val STEPS = 56
         const val STEP = 12f
         const val PASSES = 5
         /** The pull's median frame may be this many times the scroll's, on a machine that repeats its own measurement. */

@@ -138,7 +138,8 @@ class StoreDocumentSheetTest {
         compose.onNodeWithText("worker=bc-1\nbranch=main").assertIsDisplayed()
         compose.onAllNodes(hasTestTag("store-preview")).fetchSemanticsNodes().let { assertThat(it).isEmpty() }
         assertThat(storeRef(StorePath.parse("/cursor/stores/self/internal/state.txt")!!, "bc-worker")).isEqualTo(MediaRef.Store("bc-worker", "internal/state.txt"))
-        assertThat(storeRef(StorePath.parse("/cursor/stores/user/notes.md")!!, "bc-worker")).isNull()
+        assertThat(storeRef(StorePath.parse("/cursor/stores/user/notes.md")!!, "bc-worker")).isEqualTo(MediaRef.Store("bc-worker", "notes.md", store = "user"))
+        assertThat(storeRef(StorePath.parse("/cursor/stores/self/notes.md")!!, null)).isNull()
         assertThat(api.reads).containsExactly("st-proj:internal/state.txt")
     }
 

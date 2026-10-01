@@ -167,7 +167,7 @@ class FileMediaScreenshotTest {
         capture("151_panel_workspace_image")
     }
 
-    /** A sound, opened out of its chip: the card, the controls under it at a minute in, at one and a half times. */
+    /** A sound, opened out of its chip: the card, the controls under it at a minute in, at twice the speed. */
     @Test
     fun audioPlayer() {
         val context = ApplicationProvider.getApplicationContext<Context>()
@@ -189,6 +189,9 @@ class FileMediaScreenshotTest {
         compose.onNodeWithTag("audio-chip").performClick()
         settle { state.phase == MediaViewerState.Phase.Open && exists("viewer-speed") }
         compose.onNodeWithTag("viewer-speed").performClick()
+        settle { exists("viewer-speed-menu") }
+        compose.onNodeWithTag("viewer-speed-2\u00D7").performClick()
+        settle { !exists("viewer-speed-menu") && player.speed == 2f }
         compose.runOnUiThread {
             player.seekTo(64_000L)
             player.pause()

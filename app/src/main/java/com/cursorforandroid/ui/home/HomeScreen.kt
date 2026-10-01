@@ -61,13 +61,17 @@ import com.cursorforandroid.domain.AgentRow
 import com.cursorforandroid.domain.DeviceTarget
 import com.cursorforandroid.domain.MediaMarkup
 import com.cursorforandroid.domain.NewChatHome
+import com.cursorforandroid.domain.ProjectArrangement
 import com.cursorforandroid.domain.Repository
 import com.cursorforandroid.ui.agents.AgentListUiState
 import com.cursorforandroid.ui.agents.AgentRowActions
 import com.cursorforandroid.ui.agents.ChatRowMenu
 import com.cursorforandroid.ui.components.ComposerAnchor
 import com.cursorforandroid.ui.components.ComposerBox
+import com.cursorforandroid.ui.components.StylusTextInput
 import com.cursorforandroid.ui.components.rememberComposerExpansion
+import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.onPlaced
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.layout.positionInParent
@@ -137,8 +141,8 @@ fun HomeScreen(
     onNewProject: (() -> Unit)? = null,
     /** The Projects page's way to Extended mode, while it is off. */
     onOpenSettings: (() -> Unit)? = null,
-    /** The Projects as arranged on the Projects page, first to last; null leaves them in the order they come in. */
-    onReorderProjects: ((List<String>) -> Unit)? = null,
+    /** The Projects as arranged on the Projects page, and the ones hidden there; null leaves them as they come in. */
+    onArrangeProjects: ((ProjectArrangement) -> Unit)? = null,
     /** Ctrl+N asked for the composer: it is scrolled to and focused, and [onComposerFocused] says the ask was taken. */
     focusComposer: Boolean = false,
     onComposerFocused: () -> Unit = {},
@@ -165,14 +169,14 @@ fun HomeScreen(
     val blocks = remember(home, listState, projectsAvailable) { homeBlocks(home, listState, projectsAvailable) }
     val projectGrid = remember { ProjectGridState() }
     // Kept across recompositions so the cards skip while the prompt is typed: the class compares by identity.
-    val blockActions = remember(onOpenAgent, rowActions, onNewProject, onOpenSettings, onReorderProjects) {
+    val blockActions = remember(onOpenAgent, rowActions, onNewProject, onOpenSettings, onArrangeProjects) {
         HomeBlockActions(
             onOpenAgent = onOpenAgent,
             rowActions = rowActions,
             onNewProject = onNewProject,
             onOpenSettings = onOpenSettings,
             projectGrid = projectGrid,
-            onReorderProjects = onReorderProjects,
+            onArrangeProjects = onArrangeProjects,
         )
     }
     // The "+" menu's two pickers: the gallery — images alone in the default mode, images and videos as real files in
@@ -208,6 +212,9 @@ fun HomeScreen(
         // offscreen layer per frame.
         val recentState = rememberLazyListState()
         val centring = remember { PageCentring() }
+        // While the shortcuts are being arranged the page stands still, so the "Hidden" section opens below them
+        // rather than lifting the shortcut under the finger away with the rest.
+        centring.held = { projectGrid.arranging }
         LaunchedEffect(recentState) { centring.follow(recentState) }
         var composerFocusRequests by remember { mutableIntStateOf(0) }
         val sendMotion = LocalSendMotion.current
@@ -233,8 +240,14 @@ fun HomeScreen(
         val barInsets = WindowInsets.navigationBars
         val footUnderBar = { (barInsets.getBottom(density) - imeInsets.getBottom(density)).coerceAtLeast(0) }
         LaunchedEffect(expansion.expanded) { if (expansion.expanded) recentState.animateScrollToItem(0) }
+        projectGrid.page = recentState
         LazyColumn(
-            Modifier.fillMaxSize().imePadding().onSizeChanged { pageHeight = it.height }.scrollEdgeFade(recentState, surface = colors.canvas),
+            Modifier
+                .fillMaxSize()
+                .imePadding()
+                .onSizeChanged { pageHeight = it.height }
+                .onGloballyPositioned { page -> projectGrid.pageBounds = page.boundsInWindow().let { it.copy(bottom = it.bottom - footUnderBar()) } }
+                .scrollEdgeFade(recentState, surface = colors.canvas),
             state = recentState,
             userScrollEnabled = !expansion.expanded,
             contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = pageTopPadding(withHeader = onOpenSidebar != null), bottom = PageBottomPadding + navigationBar),
@@ -614,15 +627,17 @@ internal fun SheetSearchField(value: String, onValueChange: (String) -> Unit, pl
     ) {
         Icon(CursorIcons.Search, null, tint = colors.iconTertiary, modifier = Modifier.size(15.dp))
         Spacer(Modifier.width(8.dp))
-        BasicTextField(
-            value = value,
-            onValueChange = onValueChange,
-            singleLine = true,
-            textStyle = type.base.copy(color = colors.textPrimary),
-            cursorBrush = SolidColor(colors.textPrimary),
-            modifier = Modifier.weight(1f),
-            decorationBox = { inner -> Box { if (value.isEmpty()) Text(placeholder, style = type.base, color = colors.textQuaternary); inner() } },
-        )
+        StylusTextInput {
+            BasicTextField(
+                value = value,
+                onValueChange = onValueChange,
+                singleLine = true,
+                textStyle = type.base.copy(color = colors.textPrimary),
+                cursorBrush = SolidColor(colors.textPrimary),
+                modifier = Modifier.weight(1f),
+                decorationBox = { inner -> Box { if (value.isEmpty()) Text(placeholder, style = type.base, color = colors.textQuaternary); inner() } },
+            )
+        }
     }
 }
 

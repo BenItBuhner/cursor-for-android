@@ -10,7 +10,7 @@ import com.cursorforandroid.domain.RunStatus
 import com.google.common.truth.Truth.assertThat
 import org.junit.Test
 
-/** The five-row cut of a long Projects or Pinned group, and the per-visit memory of which groups are listed in full. */
+/** The five-row cut of a long Projects or Pinned group (which groups are listed in full is the device's, see `SidebarShowMorePersistenceTest`). */
 class SidebarShortListTest {
 
     private val projects = (1..12).map { row("p$it") }
@@ -69,26 +69,6 @@ class SidebarShortListTest {
     fun `the row reads Show N more, then Show less`() {
         assertThat(SidebarShortList.showMore(7)).isEqualTo("Show 7 more")
         assertThat(SidebarShortList.SHOW_LESS).isEqualTo("Show less")
-    }
-
-    @Test
-    fun `each group is listed in full on its own, and a reset cuts every one back`() {
-        val lists = SidebarShortLists()
-        assertThat(lists.isExpanded(AgentListOrganizer.PROJECTS_KEY)).isFalse()
-
-        lists.expand(AgentListOrganizer.PROJECTS_KEY)
-        assertThat(lists.isExpanded(AgentListOrganizer.PROJECTS_KEY)).isTrue()
-        assertThat(lists.isExpanded(AgentListOrganizer.PINNED_KEY)).isFalse()
-
-        lists.expand(AgentListOrganizer.PINNED_KEY)
-        lists.collapse(AgentListOrganizer.PROJECTS_KEY)
-        assertThat(lists.isExpanded(AgentListOrganizer.PROJECTS_KEY)).isFalse()
-        assertThat(lists.isExpanded(AgentListOrganizer.PINNED_KEY)).isTrue()
-
-        lists.expand(AgentListOrganizer.PROJECTS_KEY)
-        lists.reset()
-        assertThat(lists.isExpanded(AgentListOrganizer.PROJECTS_KEY)).isFalse()
-        assertThat(lists.isExpanded(AgentListOrganizer.PINNED_KEY)).isFalse()
     }
 
     private fun row(id: String, children: List<AgentRow> = emptyList()) = AgentRow(

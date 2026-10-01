@@ -46,8 +46,9 @@ import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 
 /**
- * Settings › New chat page: the three layouts side by side as radio buttons, on a phone as on a tablet, Recent agents
- * chosen until another is tapped, the tap written at once; the miniatures say nothing of their own; and, with no
+ * Settings › New chat page: the three layouts side by side as radio buttons, on a phone as on a tablet; until one is
+ * tapped the one ringed is the page's own pick — Projects for an account with any, else Recent agents — the tap
+ * written at once; the miniatures say nothing of their own; and, with no
  * Projects to pin, the note of what the Projects layout shows meanwhile.
  */
 @RunWith(AndroidJUnit4::class)
@@ -71,7 +72,7 @@ class NewChatHomePickerTest {
                 SettingsScreen(graph, USER, isDemo = isDemo, onOpenSidebar = null, onBack = {}, newChatList = list)
             }
         }
-        compose.waitUntil(10_000) { compose.onAllNodes(hasTestTag(NewChatHomePickerTags.RECENT) and isSelected()).fetchSemanticsNodes().isNotEmpty() }
+        compose.waitUntil(10_000) { compose.onAllNodes(isSelected()).fetchSemanticsNodes().isNotEmpty() }
     }
 
     private fun option(home: NewChatHome) = compose.onNodeWithTag(NewChatHomePickerTags.of(home))
@@ -141,6 +142,22 @@ class NewChatHomePickerTest {
      * A tap on the picture itself — where a miniature draws a recent chat's row or a Project's shortcut, each a
      * control on the real page — chooses the layout, rather than being taken by the row drawn there.
      */
+    @Test
+    fun `with nothing chosen an account with Projects has Projects ringed, and one without has Recent agents`() {
+        composeSettings(isDemo = true, list = NewChatHomeFixtures.list())
+        option(NewChatHome.PROJECTS).performScrollTo().assertIsSelected()
+        option(NewChatHome.RECENT).assertIsNotSelected()
+        // Ringed for the account as it stands, not written: the reader has not chosen.
+        assertThat(runBlocking { graph.prefs.newChatHomeChoice.first() }.chosen).isNull()
+    }
+
+    @Test
+    fun `with nothing chosen an account without Projects has Recent agents ringed`() {
+        composeSettings(isDemo = true, list = NewChatHomeFixtures.withoutProjects())
+        option(NewChatHome.RECENT).performScrollTo().assertIsSelected()
+        option(NewChatHome.PROJECTS).assertIsNotSelected()
+    }
+
     @Test
     fun `a tap anywhere on a miniature chooses its layout, over the rows drawn in it`() {
         composeSettings(isDemo = true, list = NewChatHomeFixtures.list())

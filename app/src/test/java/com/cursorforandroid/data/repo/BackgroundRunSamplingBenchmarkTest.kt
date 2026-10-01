@@ -23,37 +23,41 @@ import com.cursorforandroid.notifications.LivePostPacer
 import com.cursorforandroid.notifications.PostBudget
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.TestCoroutineScheduler
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
-import java.util.Collections
 import java.util.Locale
-import java.util.concurrent.Executors
+import kotlin.math.ceil
+import kotlin.time.Duration.Companion.milliseconds
 
 /**
  * SCALE-6: the live notification while the runs it follows stream a hundred tokens a second, through the real
- * [LiveRunHub], [RunMonitor], renderer and the service's post path (pace, build, `notify`) on a thread of its own
- * standing in for Main. Every run thinks, writes, reads a file and moves on, every two seconds; 1, 8, 20 and 60 agents
- * run, of which the monitor follows up to eight. Main's wiring (every token published, digested and posted) and this
- * branch's run the same script.
+ * [LiveRunHub], [RunMonitor], renderer and the service's post path (pace, build, `notify`). Every run thinks, writes,
+ * reads a file and moves on, every two seconds; 1, 8, 20 and 60 agents run, of which the monitor follows up to eight.
+ * Main's wiring (every token published, digested and posted) and this branch's run the same script.
+ *
+ * Everything runs on one virtual clock ([TestCoroutineScheduler]): the hub, the monitor, the post path and the post
+ * budget, with the script's events emitted at their virtual moments. So what is posted and when, and what that costs in
+ * snapshots and digests, come out the same on any machine, however loaded; only the hub's choice to publish a run's
+ * words between its periods reads the real clock, which can add a snapshot but never changes a step or a post.
  *
  * What a user sees is judged against the truth: the notification the renderer draws for each run's step at each
  * moment, rebuilt from the script afterwards with the app's own timeline builder. On a device Android sheds a
  * package's updates past about five a second, so main is also shown as a device would keep its posts ([PostBudget] at
- * Android's ceiling). Printed as `SCALE` lines. Asserts that this branch posts within Android's budget with nothing
- * shed, shows step changes at least as soon as main does on a device, ends on the last look, and spends less CPU.
+ * Android's ceiling). Printed as `SCALE` lines, with the CPU the test thread spent (all of the pipeline runs on it) for
+ * the record only. Asserts that this branch posts within Android's budget with nothing shed, shows step changes at
+ * least as soon as main does on a device (a single run's at once), ends on the last look, and builds, digests and
+ * posts a fraction of what main does.
  */
 @RunWith(AndroidJUnit4::class)
 @Config(sdk = [35])
@@ -80,8 +84,10 @@ class BackgroundRunSamplingBenchmarkTest {
         val posts: List<Post>,
         /** The notification's truth: when it changed, and to what. */
         val truth: List<Pair<Long, String>>,
-        val defaultCpuMs: Long,
-        val mainCpuMs: Long,
+        /** The test thread's CPU over the script, which is the whole pipeline's; varies by machine, so only reported. */
+        val cpuMs: Long,
+        val wallMs: Long,
+        /** Virtual time from the followed runs' ends being streamed to the monitor dropping them. */
         val finishMs: Long,
     )
 
@@ -123,23 +129,45 @@ class BackgroundRunSamplingBenchmarkTest {
             assertThat(branchPosted.p95LagMs).isAtMost(mainDevice.p95LagMs + LAG_SLACK_MS)
             assertThat(branchPosted.meanAgeMs).isAtMost(mainDevice.meanAgeMs + LAG_SLACK_MS)
             assertThat(branchPosted.unshown).isEqualTo(0)
-            assertThat(branchPosted.skipped).isAtMost(mainDevice.skipped)
+            assertThat(branchPosted.skipped).isAtMost(mainDevice.skipped + SKIP_SLACK)
             // The last look is the one left up.
             assertThat(branchPosted.endsOnTruth).isTrue()
+            // A single run's steps are seconds apart, well inside the budget: every one is shown the moment it happens.
+            if (running == 1) {
+                assertThat(branchPosted.skipped).isEqualTo(0)
+                assertThat(branchPosted.maxLagMs).isEqualTo(0)
+            }
             // And for less: main publishes, digests and posts per token.
             assertThat(branch.snapshots * 4).isLessThan(main.snapshots)
-            assertThat(branch.mainCpuMs).isLessThan(main.mainCpuMs)
-            assertThat(branch.defaultCpuMs).isLessThan(main.defaultCpuMs)
-            assertThat(branch.finishMs).isLessThan(1_000)
+            assertThat(branch.digests * 4).isLessThan(main.digests)
+            assertThat(branchPosted.posts * 4).isLessThan(mainPosted.posts)
+            // A run's end reaches the monitor at once, not a sampling period later.
+            assertThat(branch.finishMs).isEqualTo(0)
         }
     }
 
+    @OptIn(ExperimentalCoroutinesApi::class)
     private suspend fun measure(wiring: Wiring, running: Int): Measured {
+        val scheduler = TestCoroutineScheduler()
+        // One thread, as the service's post path is on Main; the hub and the monitor share it, on the same clock.
+        val clock = StandardTestDispatcher(scheduler)
+        val scope = CoroutineScope(SupervisorJob() + clock)
+        fun advanceTo(atMs: Long) {
+            val by = atMs - scheduler.currentTime
+            if (by > 0) scheduler.advanceTimeBy(by.milliseconds)
+            scheduler.runCurrent()
+        }
+        // Setup waits on the repository's refresh, which runs on real threads; nothing timed does.
+        fun settle(what: String, until: () -> Boolean) {
+            val deadline = System.nanoTime() + SETUP_TIMEOUT_MS * 1_000_000
+            while (!until()) {
+                check(System.nanoTime() < deadline) { "$what not reached in ${SETUP_TIMEOUT_MS} ms" }
+                advanceTo(scheduler.currentTime + 20)
+                Thread.sleep(1)
+            }
+        }
         val api = FakeCursorApi()
         val streamer = FakeRunStreamer(replay = 8_192)
-        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-        val executor = Executors.newSingleThreadExecutor { Thread(it, MAIN_THREAD) }
-        val main = executor.asCoroutineDispatcher()
         val prefs = PreferencesStore(app)
         val backend = CursorBackend(api, streamer, isDemo = true)
         val session = SessionManager(SecureKeyStore(app), prefs, backend, backend)
@@ -148,6 +176,7 @@ class BackgroundRunSamplingBenchmarkTest {
         val hub = LiveRunHub(session, agents, pollIntervalMs = 500, releaseGraceMs = 200, scope = scope)
         val monitor = RunMonitor(
             agents, hub, runRecord = { agentId, runId -> api.getRun(agentId, runId) }, refreshIntervalMs = 600_000,
+            dispatcher = clock,
             sampleMs = if (wiring == Wiring.MAIN) 0L else RunMonitor.SAMPLE_MS,
         )
         try {
@@ -157,58 +186,53 @@ class BackgroundRunSamplingBenchmarkTest {
             ids.forEach { id -> HISTORY.forEach { streamer.emit("run-$id", it) } }
             agents.refresh()
 
-            val posted = Collections.synchronizedList(ArrayList<Pair<Long, Notification>>())
+            val posted = ArrayList<Pair<Long, Notification>>()
             val post = { notification: Notification ->
                 LiveNotifications.post(app, LiveNotificationRenderer.LIVE_ID, notification)
-                posted += System.nanoTime() to notification
+                posted += scheduler.currentTime to notification
             }
-            // The service's post path, on "Main": main's posts every state the monitor publishes.
+            // The service's post path: main's posts every state the monitor publishes.
             when (wiring) {
-                Wiring.MAIN -> scope.launch(main) {
+                Wiring.MAIN -> scope.launch {
                     monitor.state.collect { state -> if (state.running.isNotEmpty()) post(LiveNotificationRenderer.live(app, state)) }
                 }
                 Wiring.BRANCH -> {
-                    val pacer = withContext(main) {
-                        LivePostPacer(CoroutineScope(scope.coroutineContext + main), look = { LiveNotificationRenderer.look(app, it) }) { look ->
-                            post(LiveNotificationRenderer.live(app, look))
-                        }
+                    val budget = PostBudget(clockMs = { scheduler.currentTime })
+                    val pacer = LivePostPacer(scope, look = { LiveNotificationRenderer.look(app, it) }, budget = budget) { look ->
+                        post(LiveNotificationRenderer.live(app, look))
                     }
-                    scope.launch(main) { monitor.state.collect { state -> if (state.running.isNotEmpty()) pacer.offer(state) else pacer.flush() } }
+                    scope.launch { monitor.state.collect { state -> if (state.running.isNotEmpty()) pacer.offer(state) else pacer.flush() } }
                 }
             }
             monitor.start()
             val followedCount = minOf(running, RunMonitor.MAX_TRACKED)
-            withTimeout(60_000) {
-                while (
-                    monitor.state.value.running.count { it.phase == LivePhase.Running } < followedCount ||
-                    monitor.state.value.running.any { hub.current(it.agentId, it.runId)?.items.orEmpty().size < HISTORY_CALLS }
-                ) delay(20)
+            settle("every followed run caught up") {
+                monitor.state.value.running.count { it.phase == LivePhase.Running } >= followedCount &&
+                    monitor.state.value.running.none { hub.current(it.agentId, it.runId)?.items.orEmpty().size < HISTORY_CALLS }
             }
-            delay(1_500)
+            advanceTo(scheduler.currentTime + SETTLE_MS)
             val followed = monitor.state.value.running
             val runningCount = monitor.state.value.runningCount
             val script = script(followed.size)
 
             val publishedAt = hub.published.get()
             val digestsAt = monitor.digests.get()
-            val cpuAt = cpu()
-            val t0 = System.nanoTime()
-            var next = 0
-            while (next < script.size) {
-                val now = (System.nanoTime() - t0) / 1_000_000
-                while (next < script.size && script[next].atMs <= now) {
-                    val scripted = script[next++]
-                    streamer.emit(followed[scripted.run].runId, scripted.event)
-                }
-                if (next < script.size) delay((script[next].atMs - (System.nanoTime() - t0) / 1_000_000).coerceAtLeast(1))
+            val cpuAt = threadCpuNanos()
+            val wallAt = System.nanoTime()
+            val t0 = scheduler.currentTime
+            // Each event on its own, as a stream delivers them, and followed through to the post before the next.
+            script.forEach { scripted ->
+                advanceTo(t0 + scripted.atMs)
+                streamer.emit(followed[scripted.run].runId, scripted.event)
+                scheduler.runCurrent()
             }
-            delay(STREAM_MS + SETTLE_MS - (System.nanoTime() - t0) / 1_000_000)
-            val cpuEnd = cpu()
+            advanceTo(t0 + STREAM_MS + SETTLE_MS)
+            val cpuMs = (threadCpuNanos() - cpuAt) / 1_000_000
+            val wallMs = (System.nanoTime() - wallAt) / 1_000_000
             val snapshots = hub.published.get() - publishedAt
             val digests = monitor.digests.get() - digestsAt
 
-            // Each run's end reaches the monitor at once, not a period later.
-            val finishedAt = System.nanoTime()
+            val finishedAt = scheduler.currentTime
             followed.forEach { run ->
                 api.runs[run.runId] = api.runs.getValue(run.runId).copy(status = "FINISHED")
                 streamer.emit(run.runId, RunStreamEvent.Result(run.runId, RunStatus.FINISHED, "Done.", 60_000, null))
@@ -216,18 +240,17 @@ class BackgroundRunSamplingBenchmarkTest {
             }
             // The other running agents take their places; only the followed ones' leaving is timed.
             val followedIds = followed.map { it.agentId }.toSet()
-            withTimeout(10_000) { while (monitor.state.value.running.any { it.agentId in followedIds }) delay(5) }
-            val finishMs = (System.nanoTime() - finishedAt) / 1_000_000
+            scheduler.runCurrent()
+            settle("the followed runs' ends") { monitor.state.value.running.none { it.agentId in followedIds } }
+            val finishMs = scheduler.currentTime - finishedAt
 
             return Measured(
-                wiring, followed.size, script.size, snapshots, digests, synchronized(posted) { posted.map { (at, n) -> Post((at - t0) / 1_000_000, n) } },
-                truth(followed, runningCount, script),
-                (cpuEnd.default - cpuAt.default) / 1_000_000, (cpuEnd.main - cpuAt.main) / 1_000_000, finishMs,
+                wiring, followed.size, script.size, snapshots, digests, posted.map { (at, n) -> Post(at - t0, n) },
+                truth(followed, runningCount, script), cpuMs, wallMs, finishMs,
             )
         } finally {
             monitor.stop()
             scope.cancel()
-            executor.shutdownNow()
         }
     }
 
@@ -346,7 +369,7 @@ class BackgroundRunSamplingBenchmarkTest {
         "SCALE live_notification running=$running followed=${m.followed} wiring=${m.wiring.name.lowercase(Locale.US)} view=$view " +
             "tokensPerRunPerSec=${1_000 / TOKEN_MS} events=${m.events} truthChanges=${m.truth.count { it.first in 0 until STREAM_MS }} " +
             "snapshots=${m.snapshots} digests=${m.digests} posts=${seen.posts} postsPerSec=${f(seen.posts / WINDOW_SECONDS)} " +
-            "defaultCpuMs=${m.defaultCpuMs} mainCpuMs=${m.mainCpuMs} staleShare=${f(seen.staleShare)} meanAgeMs=${f(seen.meanAgeMs)} " +
+            "cpuMs=${m.cpuMs} wallMs=${m.wallMs} staleShare=${f(seen.staleShare)} meanAgeMs=${f(seen.meanAgeMs)} " +
             "p95AgeMs=${seen.p95AgeMs} meanLagMs=${f(seen.meanLagMs)} p95LagMs=${seen.p95LagMs} maxLagMs=${seen.maxLagMs} " +
             "unshown=${seen.unshown} skipped=${seen.skipped} endsOnTruth=${seen.endsOnTruth} finishMs=${m.finishMs}",
     )
@@ -355,24 +378,11 @@ class BackgroundRunSamplingBenchmarkTest {
         SseToolCallDto(callId = id, name = "read_file", status = status, args = buildJsonObject { put("path", JsonPrimitive(path)) }),
     )
 
-    private class Cpu(val default: Long, val main: Long)
-
     // Through reflection: the unit tests compile against android.jar, which has no java.lang.management.
     private val threads: Any = Class.forName("java.lang.management.ManagementFactory").getMethod("getThreadMXBean").invoke(null)!!
-    private val cpuTimeOf = Class.forName("java.lang.management.ThreadMXBean").getMethod("getThreadCpuTime", Long::class.javaPrimitiveType)
+    private val currentThreadCpuTime = Class.forName("java.lang.management.ThreadMXBean").getMethod("getCurrentThreadCpuTime")
 
-    private fun cpu(): Cpu {
-        var default = 0L
-        var main = 0L
-        Thread.getAllStackTraces().keys.forEach { thread ->
-            val nanos = (cpuTimeOf.invoke(threads, thread.id) as Long).coerceAtLeast(0)
-            when {
-                thread.name.startsWith("DefaultDispatcher-worker") -> default += nanos
-                thread.name == MAIN_THREAD -> main += nanos
-            }
-        }
-        return Cpu(default, main)
-    }
+    private fun threadCpuNanos(): Long = (currentThreadCpuTime.invoke(threads) as Long).coerceAtLeast(0)
 
     private fun f(value: Double) = String.format(Locale.US, "%.2f", value)
 
@@ -384,10 +394,18 @@ class BackgroundRunSamplingBenchmarkTest {
         const val SETTLE_MS = 1_500L
         const val WINDOW_SECONDS = (STREAM_MS + SETTLE_MS) / 1_000.0
         const val SAMPLE_EVERY_MS = 10L
-        /** Scheduling noise on a shared runner, in the branch's favour or against it. */
+        /**
+         * The branch paces to 4.8 posts a second, a device keeps main's at Android's 5: its posts come about 8 ms
+         * further apart, so a step change queued behind a few of them is shown that much later.
+         */
         const val LAG_SLACK_MS = 40L
+        /**
+         * The steps main may show that the branch cannot: over the window, Android's 5 a second keeps at most this
+         * many more posts than the pacer's 4.8 makes, and each shows one step at most.
+         */
+        val SKIP_SLACK = ceil((PostBudget.ANDROID_MAX_PER_SECOND - PostBudget.MAX_PER_SECOND) * WINDOW_SECONDS).toInt()
         const val HISTORY_CALLS = 150
-        const val MAIN_THREAD = "bench-main"
+        const val SETUP_TIMEOUT_MS = 60_000L
 
         val HISTORY: List<RunStreamEvent> = buildList {
             add(RunStreamEvent.Status(null, RunStatus.RUNNING))

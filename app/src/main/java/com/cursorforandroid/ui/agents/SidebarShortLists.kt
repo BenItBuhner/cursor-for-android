@@ -12,10 +12,6 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.Stable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
@@ -31,7 +27,10 @@ import com.cursorforandroid.ui.theme.CursorTheme
 /**
  * A long Projects or Pinned group, cut to its first [ROWS] rows (Settings › Appearance › "Shorten long Projects
  * list", on by default): the rest wait behind a "Show N more" row that lists them in place, and "Show less" cuts the
- * group back. The date groups keep every row. Only the top-level rows count; a Project's open tree goes with it.
+ * group back. Which groups are listed in full is the device's to remember, like the folds (see
+ * [AgentListUiState.listedInFullSections]): the list stays as it was left when the sidebar is shut and opened again,
+ * a chat is opened, the activity is recreated or the app is started again. The date groups keep every row. Only the
+ * top-level rows count; a Project's open tree goes with it.
  */
 internal object SidebarShortList {
     const val ROWS = 5
@@ -59,30 +58,6 @@ internal object SidebarShortList {
     const val SHOW_LESS = "Show less"
 
     fun showMore(hidden: Int): String = "Show $hidden more"
-}
-
-/**
- * Which cut groups are listing every row, for this visit to the sidebar only. The shell [reset]s it whenever the
- * reader leaves — the drawer shut, a chat or a Project opened, another destination — and it is never saved, so a
- * sidebar always opens on the short lists.
- */
-@Stable
-class SidebarShortLists {
-    private var expandedKeys by mutableStateOf(emptySet<String>())
-
-    fun isExpanded(sectionKey: String): Boolean = sectionKey in expandedKeys
-
-    fun expand(sectionKey: String) {
-        expandedKeys = expandedKeys + sectionKey
-    }
-
-    fun collapse(sectionKey: String) {
-        expandedKeys = expandedKeys - sectionKey
-    }
-
-    fun reset() {
-        if (expandedKeys.isNotEmpty()) expandedKeys = emptySet()
-    }
 }
 
 /**

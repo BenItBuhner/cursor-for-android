@@ -210,12 +210,32 @@ class PinnedPanelFlowTest {
 
     /** A finger down on the boundary, across by [dx] and up: the edge follows it the whole way. */
     private fun drag(edge: String, dx: Float) {
+        val before = edgeState(edge)
         compose.onNodeWithContentDescription(edge).performTouchInput {
             down(center)
             moveBy(Offset(dx, 0f))
             up()
         }
         compose.waitForIdle()
+        // Printed, never asserted. Twice on CI, never in a hundred local runs, a drag has left its pane short of where
+        // the next line expected it (the rail at 278 for 378, the panel at 582 for 960), and the failure said nothing
+        // about which it was: a drag the edge never took, one it took part of the way, or a pane still on its way when
+        // the line read it. The test's stdout is kept in the JUnit XML CI uploads, so the next time, this will say.
+        val idle = edgeState(edge)
+        val frames = List(8) {
+            compose.mainClock.advanceTimeByFrame()
+            edgeState(edge)
+        }
+        println("drag($edge, ${dx.toInt()}) at ${compose.mainClock.currentTime} ms: before $before; idle $idle; then ${frames.joinToString(" | ")}")
+    }
+
+    /** One line on a resize edge and its panes for the drag trace: where it is, what it says, how wide the panes are. */
+    private fun edgeState(edge: String): String {
+        val node = compose.onAllNodes(hasContentDescription(edge)).fetchSemanticsNodes().firstOrNull() ?: return "no edge node"
+        val says = node.config.getOrNull(SemanticsProperties.StateDescription)
+        val panel = compose.onAllNodes(hasTestTag(PANEL)).fetchSemanticsNodes().firstOrNull()?.boundsInRoot?.width?.toInt()
+        val rail = compose.onAllNodes(hasScrollToNodeAction()).fetchSemanticsNodes().firstOrNull()?.size?.width
+        return "x=${node.boundsInRoot.center.x.toInt()} \"$says\" panel=${panel ?: "-"} rail=${rail ?: "-"}${if (railShown()) "" else " (rail hidden)"}"
     }
 
     /** A finger down at [from] in the window's coordinates, moved by ([dx], [dy]) a frame at a time, then [finish]ed. */

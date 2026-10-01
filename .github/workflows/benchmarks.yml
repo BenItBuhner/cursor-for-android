@@ -1,0 +1,96 @@
+name: Benchmarks
+
+# The frame-time, throughput and memory claims (`*BenchmarkTest`, `TranscriptPerf*`: `-Papp.testShard=benchmarks` in
+# app/build.gradle.kts), alone on a runner in one test JVM so that what they measure is the code and not a neighbour.
+#
+# They report here rather than in ci.yml because they hold the code to wall-clock budgets on a shared runner, and a
+# runner that is slow for a minute misses one: the job failed on 10 of the 110 main commits from Sep 26 to Oct 1, on 4
+# of them as the only failure, and each of those held every merge and release behind the `CI` check until it was
+# re-run. A red Benchmarks check is still a real signal - a budget missed, on this commit - so it runs on every pull
+# request and main commit, the job summary lists every class, every missed budget and the numbers the benchmarks
+# printed, and the JUnit XML is the `benchmark-results` artifact. It just does not block a merge or a release.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# As in ci.yml: one active run per branch, a newer push cancels the previous one; every main commit gets its own group
+# and keeps its numbers.
+concurrency:
+  group: ${{ github.ref == 'refs/heads/main' && format('benchmarks-main-{0}', github.sha) || format('benchmarks-{0}', github.head_ref || github.ref_name) }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash # -eo pipefail, so a failing command inside a pipeline fails the step
+
+jobs:
+  benchmarks:
+    name: Benchmarks
+    runs-on: ubuntu-latest
+    timeout-minutes: 25 # seven over the slowest run seen (18); a stuck test is caught sooner ("Test stalls" in app/build.gradle.kts)
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-tags: true # the version is derived from the release tags (app/build.gradle.kts)
+
+      - uses: ./.github/actions/android-toolchain
+
+      - name: Run the benchmarks
+        run: ./gradlew :app:testDebugUnitTest -Papp.testShard=benchmarks
+
+      # One row per class, every missed budget with the first line of its message, and every line a benchmark printed
+      # under one of its headline tags.
+      - name: Summarize
+        if: always()
+        run: |
+          python3 - <<'EOF' >> "$GITHUB_STEP_SUMMARY"
+          import glob, re, xml.etree.ElementTree as ET
+
+          rows, missed, numbers = [], [], []
+          for path in sorted(glob.glob("app/build/test-results/testDebugUnitTest/TEST-*.xml")):
+              suite = ET.parse(path).getroot()
+              name = suite.get("name").rsplit(".", 1)[-1]
+              failed = int(suite.get("failures", 0)) + int(suite.get("errors", 0))
+              rows.append(f"| {name} | {suite.get('tests')} | {failed or ''} | {float(suite.get('time', 0)):.0f} s |")
+              for case in suite.iter("testcase"):
+                  for problem in [*case.iter("failure"), *case.iter("error")]:
+                      message = (problem.get("message") or problem.text or "").strip().splitlines()
+                      missed.append(f"- **{name}** > {case.get('name')}: {message[0][:300] if message else ''}")
+              out = suite.findtext("system-out") or ""
+              numbers += [line for line in out.splitlines() if re.match(r"(BENCH|BENCHMARK|SCALE|SOAK|LONG|KEEPLIVE)\b", line)]
+
+          print("## Benchmarks\n")
+          if not rows:
+              print("No results: the run stopped before any test class reported. The log says why.")
+          else:
+              print("| Class | Tests | Failed | Time |\n|---|---|---|---|")
+              print("\n".join(rows))
+              print("\n### Budgets missed\n\n" + ("\n".join(missed) if missed else "None."))
+              if numbers:
+                  print("\n<details><summary>Measurements</summary>\n\n```\n" + "\n".join(numbers) + "\n```\n</details>")
+          EOF
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: benchmark-results
+          path: app/build/test-results/testDebugUnitTest/
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Upload reports
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: benchmark-reports
+          path: |
+            app/build/reports/tests/testDebugUnitTest/
+            app/build/reports/test-stalls/
+          if-no-files-found: ignore

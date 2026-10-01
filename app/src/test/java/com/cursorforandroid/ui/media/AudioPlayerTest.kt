@@ -86,12 +86,12 @@ class AudioPlayerTest {
         compose.onNodeWithTag("viewer-play-pause").performClick()
         settle { player!!.playWhenReadyFlag }
 
-        // The speed steps 1× → 1.5× → 2×, and the player plays at it.
+        // The speed pill opens the menu of rates; the one picked is what the player plays at, and what the pill says.
         assertThat(text("viewer-speed")).isEqualTo("1\u00D7")
         compose.onNodeWithTag("viewer-speed").performClick()
-        settle { player!!.speed == 1.5f && text("viewer-speed") == "1.5\u00D7" }
-        compose.onNodeWithTag("viewer-speed").performClick()
-        settle { player!!.speed == 2f }
+        settle { exists("viewer-speed-menu") }
+        compose.onNodeWithTag("viewer-speed-2\u00D7").performClick()
+        settle { player!!.speed == 2f && text("viewer-speed") == "2\u00D7" && !exists("viewer-speed-menu") }
 
         // A tap on the scrubber seeks there.
         compose.onNodeWithTag("viewer-scrubber").performTouchInput { click(center) }
@@ -110,10 +110,5 @@ class AudioPlayerTest {
         compose.onNodeWithTag("viewer-page-0").performTouchInput { swipeDown(startY = centerY, endY = bottom, durationMillis = 200) }
         settle { !state.isOpen }
         assertThat(player!!.released).isTrue()
-    }
-
-    @Test
-    fun `speeds step round and read as the button shows them`() {
-        assertThat(VideoPlayback.SPEEDS.map(VideoPlayback::speedLabel)).containsExactly("1\u00D7", "1.5\u00D7", "2\u00D7", "0.75\u00D7").inOrder()
     }
 }

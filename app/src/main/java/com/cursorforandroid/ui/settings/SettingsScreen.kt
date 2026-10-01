@@ -9,7 +9,6 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -29,9 +28,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.onLongClick
-import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
@@ -39,16 +36,11 @@ import androidx.core.net.toUri
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.cursorforandroid.AppGraph
-import com.cursorforandroid.data.api.CursorEndpoints
-import com.cursorforandroid.data.local.SecureKeyStore
-import com.cursorforandroid.data.repo.SessionState
 import com.cursorforandroid.data.update.UpdateManager
 import com.cursorforandroid.domain.AppRelease
-import com.cursorforandroid.domain.CredentialInfo
 import com.cursorforandroid.domain.CursorUser
 import com.cursorforandroid.domain.ProjectNotificationPrefs
 import com.cursorforandroid.domain.ReleaseNotes
-import com.cursorforandroid.domain.SignInMethod
 import com.cursorforandroid.domain.UpdatePhase
 import com.cursorforandroid.domain.UpdateState
 import com.cursorforandroid.notifications.LiveNotifications
@@ -57,11 +49,8 @@ import com.cursorforandroid.ui.agents.Avatar
 import com.cursorforandroid.ui.components.CursorButton
 import com.cursorforandroid.ui.components.CursorHeader
 import com.cursorforandroid.ui.components.CursorIcons
-import com.cursorforandroid.ui.components.CursorSheet
 import com.cursorforandroid.ui.components.FlatIconButton
 import com.cursorforandroid.ui.components.HairlineDivider
-import com.cursorforandroid.ui.components.RunStopCopy
-import com.cursorforandroid.ui.components.SheetHeader
 import com.cursorforandroid.ui.components.contentColumn
 import com.cursorforandroid.ui.components.fadingVerticalScroll
 import com.cursorforandroid.ui.shortcuts.ShortcutsCopy
@@ -79,12 +68,11 @@ object SettingsCopy {
     const val GROUP_CHATS = "Chats"
     const val GROUP_NOTIFICATIONS = "Notifications"
     const val GROUP_ADVANCED = "Advanced"
+    const val OLED_BLACK = "OLED black"
     const val UNREAD_THIS_PHONE = "Unread only for chats from this phone"
-    const val UNREAD_THIS_PHONE_DETAIL = "Chats from elsewhere show as read until opened here."
+    const val UNREAD_THIS_PHONE_DETAIL = "Others show as read until opened here."
     const val SHORTEN_PROJECTS = "Shorten long Projects list"
-    const val SHORTEN_PROJECTS_DETAIL = "Shows 5 Projects until you tap Show more."
-    const val LIVE_SYNC = "Keep chats live"
-    const val LIVE_SYNC_DETAIL = "While the app is open, running chats, their Project coordinators and your last few chats stream in the background, so they open up to date. Uses more data and battery while agents run."
+    const val SHORTEN_PROJECTS_DETAIL = "Shows 5 until you tap Show more."
     const val GROUP_UPDATES = "Version and updates"
     const val SIGN_OUT = "Sign out"
     const val LEAVE_DEMO = "Leave demo"
@@ -103,29 +91,26 @@ object SettingsCopy {
     const val DEBUG_ACTION = "Debug options"
 }
 
-/** Test tags for the rows that act rather than toggle, and the two sheets behind them. */
+/** Test tags for the rows that act rather than toggle, and the sheet behind the version row. */
 object SettingsTags {
     const val ACCOUNT_ROW = "settings_account"
-    const val ACCOUNT_SHEET = "settings_account_sheet"
     const val SIGN_OUT = "settings_sign_out"
+    const val OLED_BLACK = "settings_oled_black"
     const val UNREAD_THIS_PHONE = "settings_unread_this_phone"
     const val SHORTEN_PROJECTS = "settings_shorten_projects"
-    const val LIVE_SYNC = "settings_live_sync"
-    const val LIVE_SYNC_TOGGLE = "settings_live_sync_toggle"
     const val VERSION_ROW = "settings_version"
     const val WHATS_NEW_ROW = "settings_whats_new"
     const val DEBUG_SHEET = "settings_debug_sheet"
-    const val CONFIRM_STOP = "settings_confirm_stop"
     const val KEYBOARD_SHORTCUTS_ROW = "settings_keyboard_shortcuts"
 }
 
 /**
  * Settings in the desktop settings-page idiom: 12sp group labels, bordered cards of [SettingsRow]s. The list is the
- * essentials and nothing else — the account and the way out of it, appearance, the chats (whether stopping a run
- * asks first, which chats may show as unread), notifications, Extended mode and the transcript engine, the version
- * with its updater and the crash report consent, one line of disclaimer. What the account's key is and where to
- * manage it sits behind a tap on the account row; the diagnostics exports, the About links and the credits sit
- * behind a long press on the version row ([SettingsDebugSheet]), where support can ask for them.
+ * essentials and nothing else — the account with the way out of it at the row's end, the theme and OLED black, the
+ * New Chat page, the chats (which may show as unread, how long the sidebar's Projects run, the keyboard shortcuts),
+ * notifications, Extended mode, the version with its updater, one line of disclaimer. A description is there only
+ * where a title cannot say it alone. The diagnostics exports, the About links and the credits sit behind a long
+ * press on the version row ([SettingsDebugSheet]), where support can ask for them.
  */
 @Composable
 fun SettingsScreen(
@@ -151,18 +136,13 @@ fun SettingsScreen(
     val uriHandler = LocalUriHandler.current
     val themeMode by graph.prefs.themeMode.collectAsStateWithLifecycle(initialValue = ThemeMode.System)
     val oledBlack by graph.prefs.oledBlack.collectAsStateWithLifecycle(initialValue = false)
-    val session by graph.session.state.collectAsStateWithLifecycle()
-    val credential = (session as? SessionState.SignedIn)?.credential
-    val keyStorage by graph.keyStore.availability.collectAsStateWithLifecycle()
-    // Collected once for the screen: the Extended mode row, the transcript engine beside it and the debug sheet read
-    // this one value, so each says what the switch says from its first frame rather than starting a collector of its own.
+    // Collected once for the screen: the Extended mode row, the New chat page and the debug sheet read this one value, so each says what the switch says from its first frame rather than starting a collector of its own.
     // Collected on the main dispatcher (as the acknowledgment in ExtendedModeRow is): the value arrives from the
     // store's IO thread, and a state write made there can be lost to the recomposer while it is dispatching another
     // change — Compose 1.7's Recomposer.recordComposerModifications resets its pending set without holding the lock
     // for the whole round. On a device the composition runs on the main thread anyway; under the test harness's
     // unconfined dispatcher it does not, and a fresh collector's first value went missing once in a few dozen runs.
     val extendedMode by graph.extendedMode.enabled.collectAsStateWithLifecycle(initialValue = false, context = Dispatchers.Main.immediate)
-    var accountOpen by rememberSaveable { mutableStateOf(false) }
     var debugOpen by rememberSaveable { mutableStateOf(false) }
 
     Column(
@@ -183,36 +163,30 @@ fun SettingsScreen(
         Column(Modifier.fillMaxSize().navigationBarsPadding().fadingVerticalScroll(surface = colors.canvas).contentColumn().padding(bottom = 24.dp)) {
             Group(SettingsCopy.GROUP_ACCOUNT)
             SettingsCard {
-                // The demo has no key to describe; a real account's row opens onto its key and where to manage it.
                 AccountRow(
                     user = user,
-                    subtitle = if (isDemo) SettingsCopy.DEMO_ACCOUNT else listOfNotNull(user.email, user.apiKeyName).joinToString(" · "),
-                    onClick = if (isDemo) null else ({ accountOpen = true }),
+                    subtitle = if (isDemo) SettingsCopy.DEMO_ACCOUNT else user.email ?: user.apiKeyName,
+                    signOutLabel = if (isDemo) SettingsCopy.LEAVE_DEMO else SettingsCopy.SIGN_OUT,
+                    onSignOut = { scope.launch { graph.signOut() } },
                 )
-                HairlineDivider()
-                SignOutRow(if (isDemo) SettingsCopy.LEAVE_DEMO else SettingsCopy.SIGN_OUT) { scope.launch { graph.signOut() } }
             }
 
             Group(SettingsCopy.GROUP_APPEARANCE)
             SettingsCard {
-                ThemeMode.entries.forEachIndexed { index, mode ->
-                    if (index > 0) HairlineDivider()
-                    val chosen = themeMode == mode
-                    SettingsRow(
-                        title = when (mode) { ThemeMode.System -> "Match system"; ThemeMode.Dark -> "Cursor Dark"; ThemeMode.Light -> "Cursor Light" },
-                        modifier = Modifier.semantics { selected = chosen },
-                        onClick = { scope.launch { graph.prefs.setThemeMode(mode) } },
-                        role = Role.RadioButton,
-                        trailing = if (chosen) ({ RowGlyph(CursorIcons.Check, tint = colors.accent) }) else null,
-                    )
-                }
-                // OLED only does anything while dark is on — Cursor Dark, or Match system when the phone is dark.
-                if (themeMode != ThemeMode.Light) {
-                    HairlineDivider()
-                    SettingsToggleRow(title = "OLED black", checked = oledBlack, onCheckedChange = { scope.launch { graph.prefs.setOledBlack(it) } })
-                }
+                SettingsRow(
+                    title = ThemeSwitchCopy.TITLE,
+                    role = null,
+                    trailing = { ThemeSwitch(themeMode, onSelect = { mode -> scope.launch { graph.prefs.setThemeMode(mode) } }) },
+                )
                 HairlineDivider()
-                ShortenProjectsRow(graph)
+                // OLED only does anything while dark is on — Dark, or Auto when the phone is dark — so Light dims it.
+                SettingsToggleRow(
+                    title = SettingsCopy.OLED_BLACK,
+                    checked = oledBlack,
+                    onCheckedChange = { scope.launch { graph.prefs.setOledBlack(it) } },
+                    enabled = themeMode != ThemeMode.Light,
+                    modifier = Modifier.testTag(SettingsTags.OLED_BLACK),
+                )
             }
 
             Group(NewChatHomePickerCopy.GROUP)
@@ -226,16 +200,15 @@ fun SettingsScreen(
 
             Group(SettingsCopy.GROUP_CHATS)
             SettingsCard {
-                ConfirmStopRow(graph)
                 // Every chat in the demo is this phone's own, so the unread switch would change nothing there.
                 if (!isDemo) {
-                    HairlineDivider()
                     UnreadThisPhoneRow(graph)
+                    HairlineDivider()
                 }
+                ShortenProjectsRow(graph)
                 HairlineDivider()
                 SettingsRow(
                     title = ShortcutsCopy.TITLE,
-                    description = ShortcutsCopy.SETTINGS_DETAIL,
                     modifier = Modifier.testTag(SettingsTags.KEYBOARD_SHORTCUTS_ROW),
                     onClick = onOpenKeyboardShortcuts,
                     trailing = { RowGlyph(CursorIcons.ChevronRight) },
@@ -247,105 +220,44 @@ fun SettingsScreen(
                 NotificationRows(graph)
             }
 
-            // The demo speaks to no account, so it has no mode to switch, and no record for an engine to read.
+            // The demo speaks to no account, so it has no mode to switch.
             if (!isDemo) {
                 Group(SettingsCopy.GROUP_ADVANCED)
                 SettingsCard {
                     ExtendedModeRow(graph, enabled = extendedMode)
-                    HairlineDivider()
-                    TranscriptEngineRow(graph, extendedMode = extendedMode)
-                    HairlineDivider()
-                    LiveSyncRow(graph)
                 }
             }
 
             Group(SettingsCopy.GROUP_UPDATES)
             SettingsCard {
                 UpdateRows(graph, uriHandler::openUri, onDebug = { debugOpen = true }, onOpenWhatsNew = onOpenWhatsNew)
-                HairlineDivider()
-                CrashReportRows(graph)
             }
 
-            Text(SettingsCopy.DISCLAIMER, style = type.small, color = colors.textQuaternary, modifier = Modifier.padding(top = 12.dp, start = 2.dp))
+            Text(SettingsCopy.DISCLAIMER, style = type.small, color = colors.textQuaternary, modifier = Modifier.padding(top = GroupGap, start = 2.dp))
         }
     }
 
-    if (accountOpen) {
-        AccountDetailsSheet(credential = credential, keyStorage = keyStorage, open = uriHandler::openUri, onDismiss = { accountOpen = false })
-    }
     if (debugOpen) {
         SettingsDebugSheet(graph = graph, isDemo = isDemo, extendedMode = extendedMode, open = uriHandler::openUri, onDismiss = { debugOpen = false })
     }
 }
 
-/** Who is signed in: the avatar, the name, the address (and the key's name). Tappable where there is more to show. */
+/**
+ * Who is signed in — the avatar, the name, the address — with the way out of the account (or the demo) at the row's
+ * end rather than on a row of its own. The row itself is not a control; only the button is.
+ */
 @Composable
-private fun AccountRow(user: CursorUser, subtitle: String, onClick: (() -> Unit)?) {
+private fun AccountRow(user: CursorUser, subtitle: String, signOutLabel: String, onSignOut: () -> Unit) {
     SettingsRow(
         title = user.displayName,
         description = subtitle,
         modifier = Modifier.testTag(SettingsTags.ACCOUNT_ROW),
-        onClick = onClick,
         singleLine = true,
-        leading = { Avatar(user, 34.dp) },
-        trailing = if (onClick != null) ({ RowGlyph(CursorIcons.ChevronRight) }) else null,
+        leading = { Avatar(user, 32.dp) },
+        trailing = {
+            CursorButton(signOutLabel, onClick = onSignOut, destructive = true, height = ControlHeight, modifier = Modifier.testTag(SettingsTags.SIGN_OUT))
+        },
     )
-}
-
-/** The way out of the account (or the demo), in the account's own card: a destructive row, not a button at the end of the page. */
-@Composable
-private fun SignOutRow(label: String, onClick: () -> Unit) {
-    SettingsRow(
-        title = label,
-        modifier = Modifier.testTag(SettingsTags.SIGN_OUT),
-        onClick = onClick,
-        titleColor = CursorTheme.colors.red,
-        leading = { RowGlyph(CursorIcons.SignOut, tint = CursorTheme.colors.red) },
-    )
-}
-
-/**
- * The account's key, behind a tap on the account row: how the app was signed in, when the key it holds lapses, where
- * the key is kept when that is not the encrypted store, and the pages on cursor.com where the key and the agents live.
- */
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun AccountDetailsSheet(credential: CredentialInfo?, keyStorage: SecureKeyStore.Availability, open: (String) -> Unit, onDismiss: () -> Unit) {
-    CursorSheet(onDismiss = onDismiss) { _ ->
-        SheetHeader(SettingsCopy.GROUP_ACCOUNT)
-        Column(Modifier.testTag(SettingsTags.ACCOUNT_SHEET).padding(horizontal = 16.dp).padding(bottom = 20.dp)) {
-            SettingsCard {
-                if (credential != null) {
-                    InfoRow(
-                        "Signed in with",
-                        when (credential.method) {
-                            SignInMethod.Cursor -> "Cursor account"
-                            SignInMethod.ApiKey -> "API key"
-                        },
-                    )
-                    if (credential.expiresAtMs != null) {
-                        HairlineDivider()
-                        // The key this app minted lapses on its own; a fresh sign-in issues a new one.
-                        InfoRow("Key expires", TimeFormat.date(credential.expiresAtMs))
-                    }
-                    HairlineDivider()
-                }
-                if (keyStorage != SecureKeyStore.Availability.Encrypted) {
-                    InfoRow(
-                        "Key storage",
-                        when (keyStorage) {
-                            SecureKeyStore.Availability.Reset -> "Reset — sign in again"
-                            else -> "Unavailable on this device"
-                        },
-                    )
-                    HairlineDivider()
-                }
-                LinkRow(if (credential?.method == SignInMethod.Cursor) "Manage this app's key" else "Manage API keys", CursorEndpoints.DASHBOARD_API_KEYS, open)
-                HairlineDivider()
-                LinkRow("Open cursor.com/agents", "https://cursor.com/agents", open)
-            }
-        }
-    }
 }
 
 /**
@@ -381,22 +293,6 @@ private fun ShortenProjectsRow(graph: AppGraph) {
     )
 }
 
-/** Background live sync (see `LiveSync`): the public API's run streams, so it needs no Extended mode. */
-@Composable
-internal fun LiveSyncRow(graph: AppGraph) {
-    val scope = rememberCoroutineScope()
-    // On the main dispatcher for the reason the Extended mode switch is (see SettingsScreen).
-    val enabled by graph.prefs.liveSync.collectAsStateWithLifecycle(initialValue = true, context = Dispatchers.Main.immediate)
-    SettingsToggleRow(
-        title = SettingsCopy.LIVE_SYNC,
-        description = SettingsCopy.LIVE_SYNC_DETAIL,
-        checked = enabled,
-        onCheckedChange = { scope.launch { graph.prefs.setLiveSync(it) } },
-        modifier = Modifier.testTag(SettingsTags.LIVE_SYNC),
-        toggleModifier = Modifier.testTag(SettingsTags.LIVE_SYNC_TOGGLE),
-    )
-}
-
 /**
  * Live notification toggle plus the system pages it depends on: notification permission, and on Android 16 the
  * per-app Live Updates switch. The hints re-check when the screen resumes so a trip to Settings is reflected.
@@ -425,15 +321,15 @@ private fun NotificationRows(graph: AppGraph) {
     if (enabled && !notificationsAllowed) {
         HairlineDivider()
         HintRow(
-            title = "Notifications are turned off for Cursor",
-            description = "Allow them in system settings to see running agents.",
+            title = "Notifications are off for Cursor",
+            description = "Allow them in system settings.",
             onClick = { runCatching { context.startActivity(LiveNotifications.appNotificationSettingsIntent(context)) } },
         )
     } else if (enabled && promotedAllowed == false && liveUpdatesIntent != null) {
         HairlineDivider()
         HintRow(
             title = "Allow Live Updates",
-            description = "Shows the status-bar chip and lock-screen card.",
+            description = "For the status-bar chip and lock-screen card.",
             onClick = { runCatching { context.startActivity(liveUpdatesIntent) } },
         )
     }
@@ -460,24 +356,6 @@ private fun NotificationRows(graph: AppGraph) {
         checked = project.notifyProjectMembers,
         onCheckedChange = { scope.launch { graph.prefs.setNotifyProjectMembers(it) } },
         modifier = Modifier.testTag("notif-project-members"),
-    )
-}
-
-/**
- * Whether Stop — and Pause, and Send now while a turn is under way — asks "Stop the agent?" first (see
- * `RunStopConfirmation`). On by default, upgrades included.
- */
-@Composable
-private fun ConfirmStopRow(graph: AppGraph) {
-    val scope = rememberCoroutineScope()
-    // On the main dispatcher for the reason the Extended mode switch is (see SettingsScreen).
-    val enabled by graph.prefs.confirmStop.collectAsStateWithLifecycle(initialValue = true, context = Dispatchers.Main.immediate)
-    SettingsToggleRow(
-        title = RunStopCopy.SETTING_TITLE,
-        description = RunStopCopy.SETTING_DETAIL,
-        checked = enabled,
-        onCheckedChange = { scope.launch { graph.prefs.setConfirmStop(it) } },
-        modifier = Modifier.testTag(SettingsTags.CONFIRM_STOP),
     )
 }
 
@@ -519,26 +397,26 @@ private fun UpdateRows(graph: AppGraph, open: (String) -> Unit, onDebug: () -> U
         trailing = {
             when (val s = state) {
                 UpdateState.Idle, is UpdateState.UpToDate, is UpdateState.Installed ->
-                    CursorButton("Check for updates", onClick = updates::checkNow, height = 30.dp)
-                UpdateState.Checking -> CursorButton("Checking…", onClick = {}, enabled = false, height = 30.dp)
+                    CursorButton("Check for updates", onClick = updates::checkNow, height = ControlHeight)
+                UpdateState.Checking -> CursorButton("Checking…", onClick = {}, enabled = false, height = ControlHeight)
                 is UpdateState.Available ->
                     if (s.signatureMismatch) {
-                        CursorButton("Open release", onClick = { open(s.release.htmlUrl) }, height = 30.dp)
+                        CursorButton("Open release", onClick = { open(s.release.htmlUrl) }, height = ControlHeight)
                     } else {
-                        CursorButton("Download", onClick = updates::downloadNow, primary = true, height = 30.dp)
+                        CursorButton("Download", onClick = updates::downloadNow, primary = true, height = ControlHeight)
                     }
-                is UpdateState.Downloading -> CursorButton("Cancel", onClick = updates::cancelDownload, height = 30.dp)
+                is UpdateState.Downloading -> CursorButton("Cancel", onClick = updates::cancelDownload, height = ControlHeight)
                 is UpdateState.Downloaded ->
-                    CursorButton("Install", onClick = { if (canInstall) updates.installNow() else allowInstalls() }, primary = true, height = 30.dp)
+                    CursorButton("Install", onClick = { if (canInstall) updates.installNow() else allowInstalls() }, primary = true, height = ControlHeight)
                 is UpdateState.Installing ->
                     if (s.awaitingConfirmation) {
-                        CursorButton("Confirm", onClick = updates::resumePendingInstall, primary = true, height = 30.dp)
+                        CursorButton("Confirm", onClick = updates::resumePendingInstall, primary = true, height = ControlHeight)
                     } else {
                         // The status line says what is happening; this is the way out of a session that never finishes.
-                        CursorButton("Cancel", onClick = updates::cancelInstall, height = 30.dp)
+                        CursorButton("Cancel", onClick = updates::cancelInstall, height = ControlHeight)
                     }
                 is UpdateState.Failed ->
-                    CursorButton(if (s.phase == UpdatePhase.Check) "Check again" else "Retry", onClick = updates::retry, height = 30.dp)
+                    CursorButton(if (s.phase == UpdatePhase.Check) "Check again" else "Retry", onClick = updates::retry, height = ControlHeight)
             }
         },
     )
@@ -562,7 +440,7 @@ private fun UpdateRows(graph: AppGraph, open: (String) -> Unit, onDebug: () -> U
     SettingsToggleRow(
         title = "Automatic updates",
         description = if (Build.VERSION.SDK_INT >= UpdateManager.SILENT_SELF_UPDATE_SDK) {
-            "Downloads on Wi-Fi, installs when not in use."
+            "Downloads on Wi-Fi, installs when idle."
         } else {
             "Downloads on Wi-Fi, then asks to install."
         },
@@ -573,7 +451,7 @@ private fun UpdateRows(graph: AppGraph, open: (String) -> Unit, onDebug: () -> U
         HairlineDivider()
         HintRow(
             title = "Allow installing updates",
-            description = "Needed before Cursor can install updates.",
+            description = "Required to install updates.",
             onClick = { allowInstalls() },
         )
     }
@@ -621,36 +499,6 @@ object UpdateCopy {
 private fun checkedLabel(checkedAtMs: Long): String = when (val age = TimeFormat.relativeShort(checkedAtMs)) {
     "now" -> "checked just now"
     else -> if (age.last().isLetter() && age.length <= 4) "checked $age ago" else "checked $age"
-}
-
-/**
- * The crash report consent, one row under the updater. Off until the user turns it on, and never assumed; a build
- * that carries no project to report to says so instead of offering a switch that would do nothing.
- */
-@Composable
-private fun CrashReportRows(graph: AppGraph) {
-    val scope = rememberCoroutineScope()
-    val enabled by graph.prefs.crashReports.collectAsStateWithLifecycle(initialValue = false)
-    if (!graph.crashReporting.isAvailable) {
-        SettingsRow(title = CrashReportCopy.TITLE, description = CrashReportCopy.UNAVAILABLE)
-        return
-    }
-    SettingsToggleRow(
-        title = CrashReportCopy.TITLE,
-        description = CrashReportCopy.DETAIL,
-        checked = enabled,
-        onCheckedChange = { scope.launch { graph.prefs.setCrashReports(it) } },
-    )
-}
-
-/**
- * Settings copy for the crash report consent, shared with its test. The line under the title is what a report never
- * carries (see `CrashReporting`): who the user is, anything they wrote or read, any key.
- */
-internal object CrashReportCopy {
-    const val TITLE = "Send crash reports"
-    const val DETAIL = "Never your account, chats or keys."
-    const val UNAVAILABLE = "Not available in this build."
 }
 
 /**

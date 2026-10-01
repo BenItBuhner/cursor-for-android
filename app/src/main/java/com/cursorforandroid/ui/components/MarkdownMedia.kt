@@ -152,7 +152,7 @@ fun ImageBlock(src: String, alt: String?, modifier: Modifier = Modifier, heightC
         // layout fits it to whatever width it ends up with.
         LaunchedEffect(ref, attempt) {
             if (media == null || ref is MediaRef.Unavailable) {
-                state = ImageLoad.Failed(MediaProblem.NotReadable("Image isn't available", null))
+                state = ImageLoad.Failed(unresolved("image", src, inChat = media != null))
                 return@LaunchedEffect
             }
             state = ImageLoad.Loading
@@ -188,7 +188,7 @@ fun ImageBlock(src: String, alt: String?, modifier: Modifier = Modifier, heightC
                     problem = s.problem,
                     ref = ref,
                     entry = MediaEntry(src, MediaEntry.Kind.Image, caption = alt),
-                    detail = alt ?: ref.label,
+                    detail = if (ref is MediaRef.Unavailable || media == null) alt?.takeIf { it != ref.label } else alt ?: ref.label,
                     onRetry = if (s.problem.retryable) ({ attempt++ }) else null,
                     onWake = if (s.problem.wakeable) ({ wake = true; attempt++ }) else null,
                 )
@@ -250,8 +250,20 @@ fun VideoBlock(src: String, poster: String?, modifier: Modifier = Modifier, heig
         StoreFileCard(ref, null, if (audio) CursorIcons.Music else CursorIcons.Video, modifier)
         return
     }
-    if (media == null || ref is MediaRef.Unavailable || ref is MediaRef.Inline) {
+    if (ref is MediaRef.Inline) {
         MediaErrorRow(icon = if (audio) CursorIcons.Music else CursorIcons.Video, title = if (audio) "Sound isn't available" else "Video isn't available", detail = ref.label, onRetry = null, modifier = modifier)
+        return
+    }
+    if (media == null || ref is MediaRef.Unavailable) {
+        var attempt by remember(ref) { mutableIntStateOf(0) }
+        val problem = remember(ref, media, attempt) { unresolved(if (audio) "sound" else "video", src, inChat = media != null) }
+        MediaErrorRow(
+            icon = if (audio) CursorIcons.Music else CursorIcons.Video,
+            title = problem.title,
+            detail = problem.detail,
+            onRetry = { attempt++ },
+            modifier = modifier.testTag("media-problem"),
+        )
         return
     }
     if (audio) {
@@ -559,6 +571,17 @@ private fun MediaErrorRow(
         }
     }
 }
+
+/**
+ * Why a figure had nothing to ask: no chat to read it in, or a `src` no reader here understands. The `src` as written
+ * (never a `data:` URI's bytes) is the detail, so a screenshot of the row names what the agent pointed at.
+ */
+internal fun unresolved(kind: String, src: String, inChat: Boolean): MediaProblem = MediaProblem.Failed(
+    title = if (inChat) "This $kind's address can't be read here" else "This $kind can only be read in its chat",
+    detail = src.trim().takeIf { it.isNotEmpty() && !it.startsWith("data:", ignoreCase = true) }?.take(MaxSrcChars),
+)
+
+private const val MaxSrcChars = 300
 
 /** ARGB_8888 at [MaxDecodePixels] is about 12 MB; no single figure may ask for more than that. */
 private const val MaxDecodePixels = 3_000_000L

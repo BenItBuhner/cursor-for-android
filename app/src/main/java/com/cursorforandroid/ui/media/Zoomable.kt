@@ -285,7 +285,9 @@ class PagerHandover internal constructor(
  * - one finger on a picture zoomed past the fit pans it; a pan that reaches the picture's edge hands what the finger
  *   moves past it to the pager, in the same drag ([PagerHandover]), and takes the finger back when it turns; a
  *   sideways start on a picture already at that edge is the pager's outright;
- * - a tap toggles the chrome, a double tap zooms in and out.
+ * - a tap toggles the chrome, a double tap zooms in and out;
+ * - with a [hold] (a recording), a finger held still past the long-press timeout is the hold's until it lifts: no
+ *   tap follows, and wherever the finger wanders meanwhile it drags nothing — no dismiss, no page turn.
  *
  * [enabled] is read when a finger comes down (the transform running, the page not the one on screen): a gesture
  * under way is never cut short by the page it is on ceasing to be the current one, which is exactly what happens
@@ -299,9 +301,16 @@ fun Modifier.viewerGestures(
     enabled: State<Boolean>,
     onTap: () -> Unit,
     onDismiss: (velocityY: Float) -> Unit,
+    hold: PageHold? = null,
 ): Modifier = this
-    .pointerInput(zoom, dismiss, enabled) {
+    .pointerInput(zoom, dismiss, enabled, hold) {
         detectTapGestures(
+            onPress = {
+                if (hold != null) {
+                    tryAwaitRelease()
+                    hold.release()
+                }
+            },
             onTap = { onTap() },
             onDoubleTap = { position ->
                 if (enabled.value && zoom != null && !dismiss.dragging) {
@@ -309,9 +318,10 @@ fun Modifier.viewerGestures(
                     zoom.doubleTap(scope, position - centre)
                 }
             },
+            onLongPress = hold?.let { held -> { if (enabled.value && !dismiss.dragging) held.press() } },
         )
     }
-    .pointerInput(zoom, dismiss, handover, enabled) {
+    .pointerInput(zoom, dismiss, handover, enabled, hold) {
         val velocity = VelocityTracker()
         awaitEachGesture {
             awaitFirstDown(requireUnconsumed = false)
@@ -338,6 +348,12 @@ fun Modifier.viewerGestures(
                 val pressed = event.changes.filter { it.pressed }
                 if (pressed.isEmpty()) break
                 if (mode == GestureMode.PassThrough) continue
+                if (hold?.active == true) {
+                    // Consumed, so the pager's touch slop never counts the wander either.
+                    mode = GestureMode.Spent
+                    event.changes.forEach(PointerInputChange::consume)
+                    continue
+                }
                 if (pressed.size >= 2 && zoom != null) {
                     if (mode == GestureMode.Dismiss) dismiss.recover(scope)
                     mode = GestureMode.Zoom
@@ -412,3 +428,22 @@ fun Modifier.viewerGestures(
     }
 
 private enum class GestureMode { Undecided, Zoom, Pan, Dismiss, PassThrough, Spent }
+
+/**
+ * A press held on a page, for [viewerGestures]: [begin] is asked when the long press lands and answers whether it
+ * took it (a paused recording does not); [end] is called once when that finger lifts or the gesture is cancelled.
+ */
+class PageHold(private val begin: () -> Boolean, private val end: () -> Unit) {
+    var active = false
+        private set
+
+    fun press() {
+        if (!active) active = begin()
+    }
+
+    fun release() {
+        if (!active) return
+        active = false
+        end()
+    }
+}

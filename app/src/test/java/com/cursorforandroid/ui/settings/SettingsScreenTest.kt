@@ -9,13 +9,18 @@ import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertHasClickAction
 import androidx.compose.ui.test.assertHasNoClickAction
+import androidx.compose.ui.test.assertIsNotSelected
 import androidx.compose.ui.test.assertIsOff
 import androidx.compose.ui.test.assertIsOn
+import androidx.compose.ui.test.assertIsSelected
 import androidx.compose.ui.test.hasAnyAncestor
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.isEnabled
+import androidx.compose.ui.test.isNotEnabled
 import androidx.compose.ui.test.isOff
 import androidx.compose.ui.test.isOn
+import androidx.compose.ui.test.isSelected
 import androidx.compose.ui.test.isToggleable
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.longClick
@@ -32,7 +37,7 @@ import com.cursorforandroid.BuildConfig
 import com.cursorforandroid.data.local.PreferencesStore
 import com.cursorforandroid.data.update.WhatsNewFixtures
 import com.cursorforandroid.domain.CursorUser
-import com.cursorforandroid.ui.components.RunStopCopy
+import com.cursorforandroid.ui.shortcuts.ShortcutsCopy
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.ui.theme.ThemeMode
 import com.google.common.truth.Truth.assertThat
@@ -48,8 +53,8 @@ import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 
 /**
- * The settings list is the essentials, in a fixed order, and nothing else; what was cut is either behind a tap on
- * the account row (the key) or behind a long press on the version row (the diagnostics, About, the credits). The
+ * The settings list is the essentials, in a fixed order, and nothing else; what was kept of what was cut is behind a
+ * long press on the version row (the diagnostics, About, the credits). The
  * whole screen is a scrolling Column, not a lazy list, so existence is the question for every row, on screen or not.
  */
 @RunWith(AndroidJUnit4::class)
@@ -95,29 +100,34 @@ class SettingsScreenTest {
     fun `the list is the essentials in order, and none of what was cut`() {
         composeSettings(isDemo = false)
 
-        // Account, with the way out of it, first; then appearance (ending on how long the sidebar's Projects list
-        // runs), what the New Chat pane lists, the chats (whether stopping asks first, which chats may show as unread), notifications, Extended mode and beside it the transcript engine, the version with its updater and
-        // the crash report consent; the one-line disclaimer last.
+        // Account, with the way out of it at the row's end, first; then appearance (the theme switch and OLED black
+        // alone), what the New Chat pane lists, the chats (which may show as unread, how long the sidebar's Projects
+        // list runs, the keyboard shortcuts), notifications, Extended mode, the version with its updater; the
+        // one-line disclaimer last.
         val order = listOf(
-            SettingsCopy.GROUP_ACCOUNT, SettingsCopy.SIGN_OUT, SettingsCopy.GROUP_APPEARANCE, SettingsCopy.SHORTEN_PROJECTS,
-            NewChatHomePickerCopy.GROUP, NewChatHomePickerCopy.NEEDS_MODE, SettingsCopy.GROUP_CHATS, RunStopCopy.SETTING_TITLE,
-            SettingsCopy.UNREAD_THIS_PHONE, SettingsCopy.GROUP_NOTIFICATIONS,
-            SettingsCopy.GROUP_ADVANCED, ExtendedModeCopy.SETTING_TITLE, ExtendedModeCopy.ENGINE_TITLE,
-            SettingsCopy.GROUP_UPDATES, "Version ${BuildConfig.VERSION_NAME}", CrashReportCopy.TITLE, SettingsCopy.DISCLAIMER,
+            SettingsCopy.GROUP_ACCOUNT, SettingsCopy.SIGN_OUT, SettingsCopy.GROUP_APPEARANCE, ThemeSwitchCopy.TITLE, SettingsCopy.OLED_BLACK,
+            NewChatHomePickerCopy.GROUP, NewChatHomePickerCopy.NEEDS_MODE, SettingsCopy.GROUP_CHATS,
+            SettingsCopy.UNREAD_THIS_PHONE, SettingsCopy.SHORTEN_PROJECTS, ShortcutsCopy.TITLE, SettingsCopy.GROUP_NOTIFICATIONS,
+            SettingsCopy.GROUP_ADVANCED, ExtendedModeCopy.SETTING_TITLE,
+            SettingsCopy.GROUP_UPDATES, "Version ${BuildConfig.VERSION_NAME}", "Automatic updates", SettingsCopy.DISCLAIMER,
         )
         val tops = order.map(::top)
         assertThat(tops).isInOrder()
 
         // The essentials themselves.
-        listOf("Match system", "Cursor Dark", "Cursor Light", "OLED black", "Live notifications", "Check for updates", "Automatic updates")
+        listOf("Auto", "Light", "Dark", "OLED black", "Live notifications", "Check for updates", "Automatic updates")
             .forEach { compose.onNodeWithText(it).assertExists() }
-        listOf("notif-count-project-agents", "notif-project-coordinators", "notif-project-members", ExtendedModeTags.TOGGLE, ExtendedModeTags.ENGINE_TOGGLE, SettingsTags.VERSION_ROW, SettingsTags.SIGN_OUT)
+        listOf("notif-count-project-agents", "notif-project-coordinators", "notif-project-members", ExtendedModeTags.TOGGLE, SettingsTags.VERSION_ROW, SettingsTags.SIGN_OUT, ThemeSwitchTags.SWITCH)
             .forEach { compose.onNodeWithTag(it).assertExists() }
+        // Appearance is the theme and OLED black, nothing more: the sidebar's list length is a chats setting.
+        assertThat(top(SettingsCopy.SHORTEN_PROJECTS)).isGreaterThan(top(SettingsCopy.GROUP_CHATS))
 
-        // The key details wait behind the account row; the acknowledgment, the pin sync and its status are gone
-        // with the mode following the switch alone; the exports, About and the credits wait behind the version row;
-        // the engine's header, its two choices and their footnote are one switch now. No label heads a single row
-        // with that row's own name. Updates are stable releases only, and haptics follow the system's switch alone.
+        // The account page is gone, and with it the sign-in method, the key's expiry, its management and the link
+        // out; the acknowledgment, the pin sync and its status are gone with the mode following the switch alone;
+        // the exports, About and the credits wait behind the version row. What is always on now has no switch:
+        // stopping always asks, chats are always kept live, the full transcript is always read. Crash reports are
+        // not offered. No label heads a single row with that row's own name. Updates are stable releases only, and
+        // haptics follow the system's switch alone. The keyboard shortcuts row says nothing its title does not.
         assertAbsent(
             "Include pre-releases", "Haptic feedback", "Feedback",
             "Signed in with", "Key expires", "Key storage", "Manage this app's key", "Manage API keys", "Open cursor.com/agents",
@@ -125,7 +135,10 @@ class SettingsScreenTest {
             ProjectDiagnosticsCopy.TITLE, TranscriptDiagnosticsCopy.TITLE, SendDiagnosticsCopy.TITLE, SettingsDebugCopy.API_DOCS, SettingsDebugCopy.SOURCE,
             SettingsDebugCopy.GROUP_ABOUT, SettingsDebugCopy.GROUP_DIAGNOSTICS, SettingsDebugCopy.GROUP_CREDITS, SettingsCopy.CREDITS, "Privacy", "Updates",
             "Transcript engine", "Stable", "Beta", "Takes effect the next time a chat is opened.",
+            "Confirm before stopping", "Keep chats live", "Full transcript history", "Send crash reports", "Not available in this build.",
+            "Match system", "Cursor Dark", "Cursor Light",
         )
+        compose.onAllNodes(hasText("hardware keyboard", substring = true)).assertCountEquals(0)
         compose.onAllNodes(hasText(ExtendedModeCopy.SETTING_TITLE)).assertCountEquals(1)
         // No explanatory paragraph but the disclaimer: nothing on the page mentions a license.
         compose.onAllNodes(hasText("License", substring = true)).assertCountEquals(0)
@@ -172,12 +185,12 @@ class SettingsScreenTest {
 
         compose.onNodeWithText(SettingsCopy.LEAVE_DEMO).assertExists()
         // Every chat in the demo is this phone's own: the unread switch would change nothing, so it is not offered.
-        assertAbsent(SettingsCopy.SIGN_OUT, SettingsCopy.GROUP_ADVANCED, ExtendedModeCopy.SETTING_TITLE, ExtendedModeCopy.ENGINE_TITLE, SettingsCopy.UNREAD_THIS_PHONE)
-        compose.onNodeWithText(RunStopCopy.SETTING_TITLE).assertExists()
+        assertAbsent(SettingsCopy.SIGN_OUT, SettingsCopy.GROUP_ADVANCED, ExtendedModeCopy.SETTING_TITLE, SettingsCopy.UNREAD_THIS_PHONE)
+        compose.onNodeWithText(SettingsCopy.SHORTEN_PROJECTS).assertExists()
         compose.onAllNodes(hasTestTag(ExtendedModeTags.TOGGLE)).assertCountEquals(0)
-        compose.onAllNodes(hasTestTag(ExtendedModeTags.ENGINE_TOGGLE)).assertCountEquals(0)
-        // The demo has no key to describe, so its account row is not a control.
+        // The way out is the button at the row's end; the row itself is not a control.
         compose.onNodeWithTag(SettingsTags.ACCOUNT_ROW).assertHasNoClickAction()
+        compose.onNodeWithTag(SettingsTags.SIGN_OUT).assertHasClickAction()
         assertThat(top(SettingsCopy.GROUP_ACCOUNT)).isLessThan(top(SettingsCopy.GROUP_APPEARANCE))
         assertThat(top(SettingsCopy.GROUP_NOTIFICATIONS)).isLessThan(top(SettingsCopy.GROUP_UPDATES))
     }
@@ -209,8 +222,8 @@ class SettingsScreenTest {
         val toggle = isToggleable() and hasAnyAncestor(hasTestTag(SettingsTags.SHORTEN_PROJECTS))
         compose.onNodeWithText(SettingsCopy.SHORTEN_PROJECTS_DETAIL).assertExists()
         compose.onNode(toggle).assertIsOn()
-        assertThat(top(SettingsCopy.GROUP_APPEARANCE)).isLessThan(top(SettingsCopy.SHORTEN_PROJECTS))
-        assertThat(top(SettingsCopy.SHORTEN_PROJECTS)).isLessThan(top(SettingsCopy.GROUP_CHATS))
+        assertThat(top(SettingsCopy.GROUP_CHATS)).isLessThan(top(SettingsCopy.SHORTEN_PROJECTS))
+        assertThat(top(SettingsCopy.SHORTEN_PROJECTS)).isLessThan(top(SettingsCopy.GROUP_NOTIFICATIONS))
 
         compose.onNodeWithTag(SettingsTags.SHORTEN_PROJECTS).performScrollTo().performClick()
         compose.waitUntil(10_000) { runBlocking { !graph.prefs.shortenSidebarLists.first() } }
@@ -240,39 +253,46 @@ class SettingsScreenTest {
         assertThat(shadowOf(view).lastHapticFeedbackPerformed()).isEqualTo(HapticFeedbackConstants.TOGGLE_ON)
     }
 
-    private fun confirmStopSwitch() = compose.onNode(isToggleable() and hasAnyAncestor(hasTestTag(SettingsTags.CONFIRM_STOP)))
-
     @Test
-    fun `Confirm before stopping reads on for an install upgraded from a build without it, and a tap turns it off`() {
-        // What an earlier build leaves behind: its own settings written, this one never.
-        runBlocking {
-            graph.prefs.setLiveNotifications(false)
-            graph.prefs.setOledBlack(true)
-        }
+    fun `the account row opens nothing, and Sign out is the button at its end`() {
         composeSettings(isDemo = false)
 
-        compose.onNodeWithText(RunStopCopy.SETTING_DETAIL).assertExists()
-        // The earlier build's own values were read from the same file. On is also what the switch shows before the
-        // file is read, so it is the Live notifications switch going off that says the read has landed.
-        compose.waitUntil(10_000) { compose.onAllNodes(isToggleable() and isOff() and hasAnyAncestor(hasText("Live notifications"))).fetchSemanticsNodes().isNotEmpty() }
-        confirmStopSwitch().assertIsOn()
-
-        compose.onNodeWithTag(SettingsTags.CONFIRM_STOP).performScrollTo().performClick()
-        compose.waitUntil(10_000) { compose.onAllNodes(isOff() and hasAnyAncestor(hasTestTag(SettingsTags.CONFIRM_STOP))).fetchSemanticsNodes().isNotEmpty() }
-        assertThat(runBlocking { graph.prefs.confirmStop.first() }).isFalse()
-        // A device preference: a sign-out leaves it as the user set it.
-        runBlocking { graph.prefs.clearSession() }
-        assertThat(runBlocking { graph.prefs.confirmStop.first() }).isFalse()
+        compose.onNodeWithTag(SettingsTags.ACCOUNT_ROW).assertHasNoClickAction()
+        compose.onNodeWithText(USER.email!!).assertExists()
+        compose.onNodeWithTag(SettingsTags.SIGN_OUT).assertHasClickAction()
+        compose.onAllNodes(hasText(SettingsCopy.SIGN_OUT)).assertCountEquals(1)
+        // On the account row itself, not on a row of its own beneath it.
+        compose.onNode(hasTestTag(SettingsTags.SIGN_OUT) and hasAnyAncestor(hasTestTag(SettingsTags.ACCOUNT_ROW))).assertExists()
+        assertThat(top(SettingsCopy.SIGN_OUT)).isLessThan(top(SettingsCopy.GROUP_APPEARANCE))
     }
 
     @Test
-    fun `the account row opens onto the key`() {
+    fun `the theme switch reads Auto first, and a tap on a segment writes that theme and is felt`() {
         composeSettings(isDemo = false)
+        val auto = compose.onNodeWithTag(ThemeSwitchTags.of(ThemeMode.System))
+        val light = compose.onNodeWithTag(ThemeSwitchTags.of(ThemeMode.Light))
+        val dark = compose.onNodeWithTag(ThemeSwitchTags.of(ThemeMode.Dark))
+        auto.assertIsSelected()
+        light.assertIsNotSelected()
+        dark.assertIsNotSelected()
+        assertThat(compose.onNodeWithText("Auto").fetchSemanticsNode().positionInRoot.x).isLessThan(compose.onNodeWithText("Light").fetchSemanticsNode().positionInRoot.x)
+        assertThat(compose.onNodeWithText("Light").fetchSemanticsNode().positionInRoot.x).isLessThan(compose.onNodeWithText("Dark").fetchSemanticsNode().positionInRoot.x)
 
-        compose.onNodeWithTag(SettingsTags.ACCOUNT_ROW).assertHasClickAction().performClick()
-        compose.waitUntil(10_000) { compose.onAllNodes(hasTestTag(SettingsTags.ACCOUNT_SHEET)).fetchSemanticsNodes().isNotEmpty() }
-        compose.onNodeWithText("Manage API keys").assertExists()
-        compose.onNodeWithText("Open cursor.com/agents").assertExists()
+        dark.performClick()
+        compose.waitUntil(10_000) { runBlocking { graph.prefs.themeMode.first() } == ThemeMode.Dark }
+        compose.waitUntil(10_000) { compose.onAllNodes(hasTestTag(ThemeSwitchTags.of(ThemeMode.Dark)) and isSelected()).fetchSemanticsNodes().isNotEmpty() }
+        auto.assertIsNotSelected()
+        assertThat(shadowOf(view).lastHapticFeedbackPerformed()).isEqualTo(HapticFeedbackConstants.SEGMENT_TICK)
+
+        light.performClick()
+        compose.waitUntil(10_000) { runBlocking { graph.prefs.themeMode.first() } == ThemeMode.Light }
+        // OLED black only does anything while dark is on, so Light dims it rather than hiding it.
+        compose.waitUntil(10_000) { compose.onAllNodes(hasTestTag(SettingsTags.OLED_BLACK) and isNotEnabled()).fetchSemanticsNodes().isNotEmpty() }
+        compose.onNodeWithText(SettingsCopy.OLED_BLACK).assertExists()
+
+        auto.performClick()
+        compose.waitUntil(10_000) { runBlocking { graph.prefs.themeMode.first() } == ThemeMode.System }
+        compose.waitUntil(10_000) { compose.onAllNodes(hasTestTag(SettingsTags.OLED_BLACK) and isEnabled()).fetchSemanticsNodes().isNotEmpty() }
     }
 
     @Test

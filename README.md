@@ -30,11 +30,14 @@ Requirements: JDK 17+, Android SDK with platform 36 (compileSdk; targetSdk stays
 ```bash
 ./gradlew :app:assembleDebug          # APK at app/build/outputs/apk/debug/app-debug.apk
 ./gradlew :app:testDebugUnitTest      # JVM unit tests
+./gradlew :app:agentCheck             # just the unit tests your change against origin/main is likely to break
 ./gradlew :app:recordRoborazziDebug   # re-render screenshots/ from the demo backend
 ./gradlew :app:verifyRoborazziDebug   # compare the demo walkthrough against screenshots/
 ./gradlew :app:assembleRelease        # R8-minified APK; needs release signing, or -Papp.allowUnsignedRelease=true
 adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```
+
+The whole unit suite takes over half an hour on a four-core machine; `agentCheck` is the check to run before a push. It compiles everything, then runs the test classes of the changed test files, the ones named after a changed source file and, lightest first up to about five minutes of CI's test time (`-Papp.agentCheck.seconds`), the ones that mention what the change declares. Before the tests start it prints what it picked and why, with the commands for what it leaves to CI: the screenshot tests, the benchmarks and the classes past its budget. CI still runs everything. The details are under "agentCheck" in `app/build.gradle.kts`.
 
 ## CI and releases
 
@@ -42,7 +45,8 @@ Everything runs on GitHub Actions (`.github/workflows/`); the shared toolchain (
 
 | Workflow | Runs on | Does |
 | --- | --- | --- |
-| `ci.yml` | pushes to `main`, pull requests | side by side on separate runners: `lintDebug`; a debug APK and an R8 release APK (downloadable from the run's artifacts, stamped `<next version>-dev.<run>+g<sha>`, e.g. `0.2.0-dev.42+gabc1234`); the JVM unit tests in three shards of three test JVMs each; screenshot verification against `screenshots/`. The one status to require is `CI`, which folds every job in. |
+| `ci.yml` | pushes to `main`, pull requests | side by side on separate runners: `lintDebug`; a debug APK and an R8 release APK (downloadable from the run's artifacts, stamped `<next version>-dev.<run>+g<sha>`, e.g. `0.2.0-dev.42+gabc1234`); the JVM unit tests in six slices, one runner and one test JVM each (`-Papp.testShard`); screenshot verification against `screenshots/`. The one status to require is `CI`, which folds every job in. |
+| `benchmarks.yml` | pushes to `main`, pull requests | the frame-time, throughput and memory benchmarks (`*BenchmarkTest`, `TranscriptPerf*`) alone on a runner; the job summary lists every class, every missed budget and the measurements. It reports on every commit but is not part of `CI`, so a budget missed on a slow runner holds no merge or release. |
 | `release.yml` | tags `vX.Y.Z`, or manually for an existing tag | a gate that finds the green `ci.yml` run on the tag's tree (lint + tests run again only when there is none) and stands down when the release is already published or the signing secrets are missing, then a signed release APK and AAB, the R8 `mapping.txt`, `SHA256SUMS.txt` and a GitHub Release with generated notes (`.github/release.yml` groups them by label) |
 | `update-screenshots.yml` | manually | re-records `screenshots/` on a clean runner and opens a pull request |
 
@@ -84,9 +88,9 @@ Debug builds (`com.cursorforandroid.debug`) check and download like release buil
 
 ### Crash reports
 
-Off until the user turns them on, and not present at all unless the build was given somewhere to send them. "Send crash reports" (Settings › Privacy) is a device-level consent that defaults to off; while it is off the Sentry SDK is never initialised — its start-up providers are removed from the manifest, so it cannot start itself — and turning it off again closes it. A report is a crash or an ANR: the stack trace, the app version and build, the device model and OS version, and the screens that were open. It never carries the account (no id, email or IP address; the server is told not to keep one and `beforeSend` drops whatever an integration set), the text typed, any prompt or reply, or any key; sessions, screenshots, view hierarchies, touch breadcrumbs and performance tracing are all disabled (`crash/CrashReporting.kt`).
+Remote crash reporting is off: Settings no longer offers the "Send crash reports" consent, the consent a device stored before is forgotten, and nothing starts the Sentry SDK — its start-up providers are removed from the manifest, so it cannot start itself. Crashes are still kept on the device and shared from Settings' debug sheet (long-press the version row). The reporter itself stays in the code, unwired, for when a consent returns. A report would be a crash or an ANR: the stack trace, the app version and build, the device model and OS version, and the screens that were open. It never carries the account (no id, email or IP address; the server is told not to keep one and `beforeSend` drops whatever an integration set), the text typed, any prompt or reply, or any key; sessions, screenshots, view hierarchies, touch breadcrumbs and performance tracing are all disabled (`crash/CrashReporting.kt`).
 
-The project to report to comes from the `SENTRY_DSN` repository secret: the release workflow bakes it into `BuildConfig.SENTRY_DSN` when it exists, and a build made without it — every PR and debug build, and a release before the secret is set — has no crash reporting and says so in place of the toggle. With `SENTRY_AUTH_TOKEN` (an organization auth token with `project:releases`) and the `SENTRY_ORG` and `SENTRY_PROJECT` variables, the workflow also uploads the build's R8 mapping under a UUID it mints for that build and bakes in as `BuildConfig.SENTRY_PROGUARD_UUID`, so obfuscated traces are readable in Sentry; the mapping is attached to the GitHub Release either way. Locally, `-Papp.sentryDsn=… -Papp.sentryProguardUuid=…` do the same.
+The project to report to comes from the `SENTRY_DSN` repository secret: the release workflow bakes it into `BuildConfig.SENTRY_DSN` when it exists, and a build made without it — every PR and debug build, and a release before the secret is set — has nowhere to report to. With `SENTRY_AUTH_TOKEN` (an organization auth token with `project:releases`) and the `SENTRY_ORG` and `SENTRY_PROJECT` variables, the workflow also uploads the build's R8 mapping under a UUID it mints for that build and bakes in as `BuildConfig.SENTRY_PROGUARD_UUID`, so obfuscated traces are readable in Sentry; the mapping is attached to the GitHub Release either way. Locally, `-Papp.sentryDsn=… -Papp.sentryProguardUuid=…` do the same.
 
 ### Screenshots
 

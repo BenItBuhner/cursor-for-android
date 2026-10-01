@@ -29,11 +29,13 @@ import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.cursorforandroid.AppGraph
 import com.cursorforandroid.data.repo.SessionState
+import com.cursorforandroid.domain.NewChatHome
 import com.cursorforandroid.ui.CursorRoot
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.ui.theme.ThemeMode
 import com.google.common.truth.Truth.assertThat
 import kotlin.math.abs
+import kotlinx.coroutines.runBlocking
 import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
@@ -75,6 +77,8 @@ class ConversationKeyboardTest {
     @Before
     fun openChat() {
         graph = AppGraph(ApplicationProvider.getApplicationContext())
+        // The demo has a Project, so its New Chat page would open on Projects; these open chats from the recent cards.
+        runBlocking { graph.prefs.setNewChatHome(NewChatHome.RECENT) }
         compose.setContent { App(graph) }
         waitForText("Try the demo")
         compose.onNodeWithText("Try the demo").performClick()

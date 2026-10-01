@@ -100,6 +100,12 @@ data class AgentListState(
     val hasLoaded: Boolean = false,
     /** True while the list is the one restored from disk and no fetch has completed yet this session. */
     val isFromCache: Boolean = false,
+    /**
+     * A fetch has ended this session, landed or failed: whatever is shown is as current as this launch could make it.
+     * A silent fetch that fails over the disk copy leaves [isFromCache] set and no [error], so this is what says it
+     * was tried.
+     */
+    val fetchEnded: Boolean = false,
     val error: String? = null,
     /** The server has agents older than the ones loaded: the next page is a scroll to the end of the list away (see [AgentRepository.loadMore]). */
     val hasMore: Boolean = false,
@@ -340,6 +346,12 @@ private fun modelRef(modelId: String?, params: List<ModelParam>): ModelRefDto? =
 data class Launched(val agent: Agent, val run: RunDto?)
 
 /**
+ * What the account made of a follow-up filed through it (see [AgentRepository.followUpVia]): the run it named, null
+ * when it named none, and whether the server has that run under way — else the message waits on the account's queue.
+ */
+data class FollowUpTaken(val run: RunDto?, val started: Boolean)
+
+/**
  * The agent list. Restored from disk before the first fetch so the app opens on the last known state, then kept
  * fresh with stale-while-revalidate refreshes: every v1 page is published the moment it arrives, the legacy v0
  * enrichment (repo / branch / PR / summary / execution status) lands independently, the runs whose state is still in
@@ -479,8 +491,11 @@ class AgentRepository(
      */
     private val overruledRunning = ConcurrentHashMap<String, Long>()
 
-    /** [startedAtMillis] is the run's `createdAt` when the list has read its record ([runStarts]); null when it never has. */
-    private class EndedRun(val runId: String, val status: RunStatus, val startedAtMillis: Long?)
+    /**
+     * [startedAtMillis] is the run's `createdAt` when the list has read its record ([runStarts]); null when it never has.
+     * [notedAtMillis] is when this device learned of the end, on its own clock: what the account's word is placed against.
+     */
+    private class EndedRun(val runId: String, val status: RunStatus, val startedAtMillis: Long?, val notedAtMillis: Long = AppClock.now())
 
     /**
      * When each agent's last few runs began, by run id: every run record the list reads passes [known], which
@@ -740,6 +755,9 @@ class AgentRepository(
      * that run active in the chat either (see `ConversationRepository.Entry.statusOf`).
      */
     fun endedStatus(agentId: String, runId: String?): RunStatus? = runId?.let { id -> endedRuns[agentId]?.takeIf { it.runId == id }?.status }
+
+    /** When this device learned of the end of [agentId]'s run it last saw end (see [endedRuns]), on its own clock; null when it knows of none. */
+    fun endedNotedAt(agentId: String): Long? = endedRuns[agentId]?.notedAtMillis
 
     /**
      * True when [run] began before the run of [agentId] this device last saw end (see [endedRuns]) — and so is over
@@ -1561,7 +1579,7 @@ class AgentRepository(
                 (if (verdict.gone.isEmpty()) s else s.copy(agents = s.agents.filterNot { it.id in verdict.gone }))
                     .let { if (backend.isDemo) it.withSources(demoSources).withAccountSnapshots(demoComposers) else it }
                     // A page that failed before this refresh is moot: the window and its cursors are re-read here.
-                    .copy(isRefreshing = false, hasLoaded = true, isFromCache = false, error = null, hasMore = if (keepWindow) nextCursor != null || truncated else truncated, loadMoreError = null)
+                    .copy(isRefreshing = false, hasLoaded = true, isFromCache = false, fetchEnded = true, error = null, hasMore = if (keepWindow) nextCursor != null || truncated else truncated, loadMoreError = null)
             }
             if (!silent) stats.spinnerReleased()
             // Under the same lock as the publication: a completed fetch is the cue the account's pins are synced
@@ -1598,7 +1616,7 @@ class AgentRepository(
             if (t is CancellationException) throw t
             publish { s ->
                 val keepQuiet = silent && s.agents.isNotEmpty()
-                s.copy(isRefreshing = false, hasLoaded = true, error = if (keepQuiet) s.error else t.userMessage())
+                s.copy(isRefreshing = false, hasLoaded = true, fetchEnded = true, error = if (keepQuiet) s.error else t.userMessage())
             }
         } finally {
             pending.end(work)
@@ -2521,6 +2539,12 @@ class AgentRepository(
      * since the account reports no record for it. Null from [send] is success with no run to stream: the caller
      * reloads the chat instead. A message [queued] behind a turn under way — asked with the run the account named,
      * once it has answered — leaves the row on that turn, its run and its status: the account has started nothing.
+     * Nor has it when the server does not have the named run under way: a Project's coordinator names the run a
+     * message will start the moment it takes the message into its queue, behind a turn that no listed run may stand
+     * for (a worker's report) — Bennett's frames of 2026-09-30, a message taken for started on the name alone, under
+     * "Starting…" while the account held it. So the name is a run started only on its record's word: running, or
+     * over, or — unless the message went into a [turnUnderWay], shown or refused as busy, where a run still to start
+     * is the queued message's own — starting. No record under a documented id yet, or none to read: not started.
      */
     suspend fun followUpVia(
         agentId: String,
@@ -2528,26 +2552,43 @@ class AgentRepository(
         modelParams: List<ModelParam> = emptyList(),
         modelDisplayName: String? = null,
         queued: (runId: String?) -> Boolean = { false },
+        turnUnderWay: Boolean = false,
         send: suspend () -> String?,
-    ): Result<RunDto?> = runCatching {
+    ): Result<FollowUpTaken> = runCatching {
         val startedIn = token()
         val named = send()
         val behind = queued(named)
         // A run the account started under its own name is followed, stopped and read by the id the documented API
         // lists it under (see [documentedRunId]); only when that cannot be learned yet does the account's name stand in.
         val runId = if (named == null || behind || isDocumentedRunId(named)) named else resolveNamedRun(agentId, named, after = agent(agentId)?.latestRunId) ?: named
+        val started = runId != null && !behind && runStarted(agentId, runId, turnUnderWay)
         val now = AppClock.now()
         val stamp = Instant.ofEpochMilli(now).toString()
         val run = runId?.let { RunDto(id = it, agentId = agentId, status = RunStatus.CREATING.name, createdAt = stamp, updatedAt = stamp) }
         patch(agentId, startedIn) { current ->
             val switched = current.switchedTo(modelId, modelParams, modelDisplayName)
-            if (behind) {
+            if (!started || run == null) {
                 switched.copy(lifecycle = AgentLifecycle.ACTIVE).touched(now)
             } else {
-                switched.copy(runStatus = RunStatus.CREATING, latestRunId = run?.id ?: current.latestRunId, lifecycle = AgentLifecycle.ACTIVE).touched(now)
+                switched.copy(runStatus = RunStatus.CREATING, latestRunId = run.id, lifecycle = AgentLifecycle.ACTIVE).touched(now)
             }
         }
-        run
+        FollowUpTaken(run, started)
+    }
+
+    /**
+     * Whether the server has [runId], a run the account named for a follow-up, under way (see [followUpVia]): its
+     * record runs or is over — or is still starting, unless the follow-up went into a [turnUnderWay]. A run with no
+     * record under a documented id yet, or one that cannot be read, has not been seen to start.
+     */
+    suspend fun runStarted(agentId: String, runId: String, turnUnderWay: Boolean): Boolean {
+        val status = try {
+            RunStatus.parse(runRecord(agentId, runId).status)
+        } catch (t: Throwable) {
+            if (t is CancellationException) throw t
+            return false
+        }
+        return status == RunStatus.RUNNING || status.isTerminal || (!turnUnderWay && status == RunStatus.CREATING)
     }
 
     /**

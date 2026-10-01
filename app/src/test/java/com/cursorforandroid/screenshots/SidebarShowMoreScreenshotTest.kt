@@ -26,7 +26,6 @@ import com.cursorforandroid.ui.agents.AgentListUiState
 import com.cursorforandroid.ui.agents.AgentRowActions
 import com.cursorforandroid.ui.agents.Sidebar
 import com.cursorforandroid.ui.agents.SidebarCallbacks
-import com.cursorforandroid.ui.agents.SidebarShortLists
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.ui.theme.ThemeMode
 import com.github.takahirom.roborazzi.ExperimentalRoborazziApi
@@ -134,7 +133,6 @@ class SidebarShowMoreScreenshotTest {
     )
 
     private fun show(mode: ThemeMode, listedInFull: Boolean) {
-        val shortLists = SidebarShortLists().apply { if (listedInFull) expand(AgentListOrganizer.PROJECTS_KEY) }
         compose.setContent {
             Scene(mode) {
                 Sidebar(
@@ -143,6 +141,7 @@ class SidebarShowMoreScreenshotTest {
                         hasLoaded = true,
                         prefs = ListPreferences(),
                         collapsedSections = setOf(AgentListOrganizer.PINNED_KEY, "date:Last 30 Days", "date:Older"),
+                        listedInFullSections = if (listedInFull) setOf(AgentListOrganizer.PROJECTS_KEY) else emptySet(),
                         nowMillis = NOW,
                     ),
                     user = CursorUser("key", "bennett@example.com", "Bennett", "Buhner", 1),
@@ -160,7 +159,6 @@ class SidebarShowMoreScreenshotTest {
                         onNewProject = {},
                     ),
                     extendedMode = true,
-                    shortLists = shortLists,
                 )
             }
         }

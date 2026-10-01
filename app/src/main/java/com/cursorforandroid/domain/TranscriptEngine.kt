@@ -14,10 +14,9 @@ package com.cursorforandroid.domain
  *    `GetBlobForAgentKV`), and so never the "Account transcript unavailable" notice. The Goal strip goes by what the
  *    chat's own transcript says of the goal, as it does with Extended mode off.
  *
- * The preference is absent until the Settings switch is flipped, and nothing but that switch (and the Stable / Beta
- * picker it replaced) has ever written it: absent is "never chosen" and follows [DEFAULT], so fresh installs and every
- * upgrade that never touched it are on Beta, while a stored `stable` is the reader's own choice and stays. Nothing
- * writes the default back, so no migration is needed to tell the two apart.
+ * Settings no longer offers the choice (Bennett, 2026-10-01: "Full transcript history" is always on): every install
+ * renders with [DEFAULT], and the `transcript_engine` preference the switch once wrote is retired, so a stored
+ * `stable` is forgotten. [STABLE] stays as the documented path's own mode, which the tests drive directly.
  *
  * Only meaningful while Extended mode is on (the record is a private surface): with the mode off the documented path
  * renders whatever this says (see [Capabilities.of]). Read at the start of a chat's load, so a change takes effect on

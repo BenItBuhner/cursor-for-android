@@ -24,12 +24,14 @@ import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.yield
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.Protocol
@@ -54,7 +56,8 @@ class CatalogRepositoryTest {
     val folder = TemporaryFolder()
 
     private val api = FakeCursorApi()
-    private var now = 1_800_000_000_000L
+    // Read by the fleet calls on Dispatchers.Default and advanced by the test on the main thread.
+    @Volatile private var now = 1_800_000_000_000L
     private lateinit var session: SessionManager
     private lateinit var cache: CatalogCache
 
@@ -422,7 +425,10 @@ class CatalogRepositoryTest {
         val gate = CompletableDeferred<Unit>().also { api.workersGate = it }
         val first = async(Dispatchers.Default) { catalog.loadDevices() }
         val second = async(Dispatchers.Default) { catalog.loadDevices() }
-        while (api.workersCalls < 6) yield()
+        // Bounded: an unbounded spin here once held a CI shard until the stall watchdog killed it, with nothing to say
+        // which call never came. A miss now fails in seconds and names the counts.
+        withTimeoutOrNull(10_000) { while (api.workersCalls < 6) delay(1) }
+            ?: error("the two opens together asked for workers ${api.workersCalls} times (expected 6) and pools ${api.poolsCalls} times within 10 s")
         gate.complete(Unit)
         assertThat(first.await().getOrThrow()).isEqualTo(second.await().getOrThrow())
         assertThat(api.workersCalls to api.poolsCalls).isEqualTo(6 to 3)

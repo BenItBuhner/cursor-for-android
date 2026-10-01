@@ -220,7 +220,11 @@ data class StretchSummary(val action: String, val details: String?, val lineStat
          * ([coordinator]) it is "2 Working" either way, followed by where the newest of them stands ("Editing
          * AgentListOrganizer.kt") instead of the counts. The line shimmers while any works.
          */
-        fun of(stretch: TranscriptRow.Stretch, working: List<SubagentLook> = emptyList(), coordinator: Boolean = false): StretchSummary {
+        fun of(stretch: TranscriptRow.Stretch, working: List<SubagentLook> = emptyList(), coordinator: Boolean = false): StretchSummary =
+            of(stretch, working.size, working.lastOrNull()?.status, coordinator)
+
+        /** [stretch]'s line with [working] of its subagents at work, the newest of them standing at [newestStatus]. */
+        fun of(stretch: TranscriptRow.Stretch, working: Int, newestStatus: String?, coordinator: Boolean): StretchSummary {
             val entries = stretch.entries.filterIsInstance<TranscriptRow.Entry.Call>()
             // A call that failed is counted once, as a failure, not as the edit or read it did not manage.
             val failed = entries.count { it.call.isError }
@@ -259,21 +263,21 @@ data class StretchSummary(val action: String, val details: String?, val lineStat
                 if (durations.isEmpty()) f else f.copy(durationMs = durations.sum())
             }
             val action = when {
-                working.isNotEmpty() -> "${working.size} ${if (stretch.live || coordinator) "Working" else "working"}"
+                working > 0 -> "$working ${if (stretch.live || coordinator) "Working" else "working"}"
                 // Still being written: whatever earlier runs closed inside it, the stretch is working.
                 stretch.live -> "Working"
                 footer != null -> footerLabel(footer, interrupted = last?.interrupted == true)
                 else -> counts.firstOrNull() ?: failure ?: "Worked"
             }
-            val rest = if (footer != null || stretch.live || working.isNotEmpty()) counts else counts.drop(1)
+            val rest = if (footer != null || stretch.live || working > 0) counts else counts.drop(1)
             // The reader's next message cut the run short: said at the end of the line, quietly, never as a warning.
             val interrupted = INTERRUPTED.takeIf { !stretch.live && footerEntries.any { it.interrupted } }
             // A run the server says failed: its line is inside the stretch (see Entry.Failure), and the summary's last
             // word says it is there — the verb stays what the run did ("Worked 2m 3s"), the failure is not a banner.
             val runFailed = FAILED.takeIf { !stretch.live && stretch.entries.any { it is TranscriptRow.Entry.Failure } }
-            val status = working.lastOrNull()?.status?.takeIf { coordinator }
+            val status = newestStatus?.takeIf { coordinator && working > 0 }
             val details = status ?: (rest.take(MAX_COUNTS) + listOfNotNull(failure.takeIf { action != failure }, interrupted, runFailed)).joinToString(" \u00B7 ").ifEmpty { null }
-            return StretchSummary(action, details, work.lineStats, busy = stretch.live || working.isNotEmpty())
+            return StretchSummary(action, details, work.lineStats, busy = stretch.live || working > 0)
         }
 
         /**

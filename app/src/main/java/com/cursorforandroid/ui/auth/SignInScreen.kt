@@ -56,9 +56,11 @@ import com.cursorforandroid.ui.components.CursorIcons
 import com.cursorforandroid.ui.components.FlatIconButton
 import com.cursorforandroid.ui.components.HairlineDivider
 import com.cursorforandroid.ui.components.SpinnerRing
+import com.cursorforandroid.ui.components.StylusTextInput
 import com.cursorforandroid.ui.components.cursorSurface
 import com.cursorforandroid.ui.components.fadingVerticalScroll
 import com.cursorforandroid.ui.components.pressable
+import com.cursorforandroid.ui.components.stylusWriting
 import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
 import kotlinx.coroutines.launch
@@ -249,23 +251,27 @@ private fun ApiKeySection(graph: AppGraph) {
             Row(
                 Modifier
                     .fillMaxWidth()
+                    // A key is pasted, not written: the pen gets the field's reach, never the handwriting IME.
+                    .stylusWriting(handwriting = false)
                     .cursorSurface(colors.elevated, fieldBorder, CursorTheme.shapes.lg)
                     .height(44.dp)
                     .padding(start = 12.dp, end = 6.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                BasicTextField(
-                    value = key,
-                    onValueChange = { key = it.trim(); error = null },
-                    singleLine = true,
-                    textStyle = type.code.copy(color = colors.textPrimary, fontSize = type.base.fontSize),
-                    cursorBrush = SolidColor(colors.textPrimary),
-                    visualTransformation = if (reveal) VisualTransformation.None else PasswordVisualTransformation(),
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Go, autoCorrectEnabled = false),
-                    keyboardActions = KeyboardActions(onGo = { submit() }),
-                    modifier = Modifier.weight(1f).onFocusChanged { focused = it.isFocused },
-                    decorationBox = { inner -> Box { if (key.isEmpty()) Text("key_…", style = type.code.copy(fontSize = type.base.fontSize), color = colors.textQuaternary); inner() } },
-                )
+                StylusTextInput {
+                    BasicTextField(
+                        value = key,
+                        onValueChange = { key = it.trim(); error = null },
+                        singleLine = true,
+                        textStyle = type.code.copy(color = colors.textPrimary, fontSize = type.base.fontSize),
+                        cursorBrush = SolidColor(colors.textPrimary),
+                        visualTransformation = if (reveal) VisualTransformation.None else PasswordVisualTransformation(),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Go, autoCorrectEnabled = false),
+                        keyboardActions = KeyboardActions(onGo = { submit() }),
+                        modifier = Modifier.weight(1f).onFocusChanged { focused = it.isFocused },
+                        decorationBox = { inner -> Box { if (key.isEmpty()) Text("key_…", style = type.code.copy(fontSize = type.base.fontSize), color = colors.textQuaternary); inner() } },
+                    )
+                }
                 FlatIconButton(if (reveal) CursorIcons.EyeOff else CursorIcons.Eye, if (reveal) "Hide key" else "Show key", onClick = { reveal = !reveal }, iconSize = 17.dp)
             }
             if (error != null) {

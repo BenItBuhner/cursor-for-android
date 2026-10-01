@@ -128,9 +128,11 @@ class WorkingCaptionHandoffTest {
         compose.onNode(hasSetTextAction() and inComposer).performTextInput(FOLLOW_UP)
         val send = hasContentDescription("Send") and inComposer
         compose.waitUntil(20_000) { compose.onAllNodes(send and isEnabled()).fetchSemanticsNodes().isNotEmpty() }
+        val lastRun = api.agents.getValue(agentId).latestRunId
         compose.onNode(send).performClick()
-        // The send goes out on the main thread's queue, which only an idle wait runs here.
-        compose.waitUntil(20_000) { compose.waitForIdle(); api.runRequests.isNotEmpty() }
+        // The send goes out on the main thread's queue, which only an idle wait runs here. The fake counts the request
+        // before it names the run it starts as the agent's latest, so what is waited for is that run.
+        compose.waitUntil(20_000) { compose.waitForIdle(); api.agents.getValue(agentId).latestRunId != lastRun }
         val runId = checkNotNull(api.agents.getValue(agentId).latestRunId)
         runBlocking { streamer.emit(runId, RunStreamEvent.Status(runId, RunStatus.RUNNING)) }
         compose.waitUntil(20_000) { caption() != null && nodes(hasText(FOLLOW_UP)).isNotEmpty() }

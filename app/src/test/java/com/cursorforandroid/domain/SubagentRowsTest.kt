@@ -219,6 +219,43 @@ class SubagentRowsTest {
     }
 
     @Test
+    fun `a long reply's action line reads as the whole reply's would, however its marks fall`() {
+        fun whole(markdown: String): String? = markdown
+            .replace(Regex("\\[([^\\]]*)]\\([^)]*\\)"), "$1")
+            .replace(Regex("(^|\\s)#{1,6}\\s|[*_`>~]|^\\s*[-+]\\s", RegexOption.MULTILINE), "")
+            .replace(Regex("\\s+"), " ")
+            .trim()
+            .takeIf { it.isNotEmpty() }
+            ?.take(SubagentRows.REPLY_CHARS)
+        val random = kotlin.random.Random(493)
+        val words = listOf("word", "a", "hover", "Chart.kt", "  ", " ", "\n", "\n\n", "\t", "#", "## ", "*", "**", "_", "`", "> ", "~", "- ", "+ ", "-", "+", "[", "]", "(", ")", "[x](y)", "[link](https://x.y) ")
+        val unlinked = words.filter { '[' !in it }
+        val vanishing = listOf("*", "**", "_", "`", "~", "  ", "\n", "\n\n", "> ", "## ", "\t")
+        repeat(6_000) { i ->
+            // Mostly plain, as replies are; some thick with marks, spaces and links; some plain up to where the head
+            // ends and thick with marks and spaces around it, no link to rule the head out; and some whose head is
+            // mostly marks that vanish, so that what is left of it is about as long as the line needs.
+            val marks = if (i % 4 == 0) 1.0 else 0.15
+            val thin = 60 + random.nextInt(100)
+            val markdown = buildString {
+                val length = 60 + random.nextInt(1_400)
+                while (this.length < length) {
+                    append(
+                        when {
+                            i % 4 == 3 && this.length < thin -> vanishing[random.nextInt(vanishing.size)]
+                            (i % 4 == 3 && this.length < 240) || (i % 4 in 1..2 && this.length in 100..240) -> unlinked[random.nextInt(unlinked.size)]
+                            random.nextDouble() < marks -> words[random.nextInt(words.size)]
+                            else -> words[random.nextInt(4)]
+                        },
+                    )
+                    if (random.nextBoolean()) append(' ')
+                }
+            }
+            assertThat(SubagentRows.actionOf(listOf(AssistantMessage("a", markdown)))).isEqualTo(whole(markdown))
+        }
+    }
+
+    @Test
     fun `a run's stream moves the line on, and its end says how the child finished`() {
         val edit = ActivityGroup("g", listOf(ToolCall("e", "edit", ToolKind.Edit, ToolCall.STATUS_RUNNING, "Chart.kt")))
         val going = SubagentRows.withRun(SubagentChild(), listOf(edit), finished = false, status = RunStatus.RUNNING)

@@ -168,6 +168,38 @@ class FollowUpRepositoryTest {
     }
 
     @Test
+    fun `the state that first shows a queued message's bubble names its row as filed, before the queue drops it`() = runBlocking<Unit> {
+        api.addRunningAgent("bc-1", "Agent", "run-1")
+        agents.refresh()
+        val followUps = repository()
+        followUps.enqueue("bc-1", "Now the tests")
+        val rowId = followUps.state("bc-1").value.queue.single().id
+
+        // Every state the chat publishes, as it publishes it, until the queue lets the row go.
+        val unfiled = mutableListOf<Set<String>>()
+        var filedWhenDropped: Set<String>? = null
+        val watch = launch(Dispatchers.Unconfined) {
+            conversations.state("bc-1").collect { state ->
+                val bubble = state.items.any { it is UserMessage && it.text == "Now the tests" }
+                if (bubble && filedWhenDropped == null && rowId !in state.queuePlacement.filedQueueIds) unfiled += state.queuePlacement.filedQueueIds
+            }
+        }
+        val drop = launch(Dispatchers.Unconfined) {
+            followUps.state("bc-1").first { s -> s.queue.none { it.id == rowId } }
+            filedWhenDropped = conversations.state("bc-1").value.queuePlacement.filedQueueIds
+        }
+        awaitUntil { streamer.connections.contains("run-1") }
+        finish("run-1")
+
+        awaitUntil { sent() == listOf("Now the tests") }
+        awaitUntil { filedWhenDropped != null }
+        watch.cancel()
+        drop.cancel()
+        assertWithMessage("states that showed the bubble while the card still stood for it").that(unfiled).isEmpty()
+        assertWithMessage("the chat's placement as the queue let the row go").that(filedWhenDropped).contains(rowId)
+    }
+
+    @Test
     fun `queued follow-ups go out one per turn, in order`() = runBlocking<Unit> {
         api.addRunningAgent("bc-1", "Agent", "run-1")
         agents.refresh()

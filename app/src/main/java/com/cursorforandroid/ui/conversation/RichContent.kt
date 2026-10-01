@@ -46,6 +46,7 @@ import com.cursorforandroid.ui.components.CursorIcons
 import com.cursorforandroid.ui.components.HairlineDivider
 import com.cursorforandroid.ui.components.ImageBlock
 import com.cursorforandroid.ui.components.ShimmerText
+import com.cursorforandroid.ui.components.StylusTextInput
 import com.cursorforandroid.ui.components.VideoBlock
 import com.cursorforandroid.ui.components.cursorSurface
 import com.cursorforandroid.ui.components.pressable
@@ -375,21 +376,23 @@ private fun AnswerField(value: String, onValueChange: (String) -> Unit, placehol
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
     val shape = CursorTheme.shapes.base
-    BasicTextField(
-        value = value,
-        onValueChange = onValueChange,
-        enabled = enabled,
-        textStyle = type.base.copy(color = colors.textPrimary),
-        cursorBrush = SolidColor(colors.textPrimary),
-        modifier = Modifier
-            .fillMaxWidth()
-            .stylusWriting(enabled = enabled)
-            .cursorSurface(colors.fill, colors.strokeSubtle, shape)
-            .padding(horizontal = 10.dp, vertical = 7.dp)
-            .semantics { contentDescription = placeholder }
-            .testTag("answer-field"),
-        decorationBox = { inner -> Box { if (value.isEmpty()) Text(placeholder, style = type.base, color = colors.textQuaternary); inner() } },
-    )
+    StylusTextInput {
+        BasicTextField(
+            value = value,
+            onValueChange = onValueChange,
+            enabled = enabled,
+            textStyle = type.base.copy(color = colors.textPrimary),
+            cursorBrush = SolidColor(colors.textPrimary),
+            modifier = Modifier
+                .fillMaxWidth()
+                .stylusWriting(enabled = enabled)
+                .cursorSurface(colors.fill, colors.strokeSubtle, shape)
+                .padding(horizontal = 10.dp, vertical = 7.dp)
+                .semantics { contentDescription = placeholder }
+                .testTag("answer-field"),
+            decorationBox = { inner -> Box { if (value.isEmpty()) Text(placeholder, style = type.base, color = colors.textQuaternary); inner() } },
+        )
+    }
 }
 
 /**

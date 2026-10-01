@@ -36,7 +36,8 @@ import org.robolectric.annotation.GraphicsMode
 
 /**
  * A long Projects group lists its first five rows and a quiet "Show N more" under them; tapped, every Project is
- * listed in place with "Show less" to cut it back. The open Project stays listed past the cut, the header's chevron
+ * listed in place with "Show less" to cut it back, and either is the device's to remember (see
+ * `SidebarShowMorePersistenceTest` for the device). The open Project stays listed past the cut, the header's chevron
  * still folds the whole group, the Settings switch turns the cut off, and Pinned is cut the same way while the date
  * groups keep every row.
  */
@@ -50,7 +51,6 @@ class SidebarShowMoreTest {
 
     private var listState by mutableStateOf(AgentListUiState())
     private var selected by mutableStateOf<String?>(null)
-    private val shortLists = SidebarShortLists()
 
     private val projectNames = listOf(
         "Zenium", "Polymarket Bot Scaling", "Revenue Scaling Pipeline", "Shopify Competitor", "Noetic", "SSHit",
@@ -118,16 +118,23 @@ class SidebarShowMoreTest {
     }
 
     @Test
-    fun `leaving cuts a group listed in full back to five rows`() {
+    fun `Show more and Show less are the device's to remember, and a group the device has listed in full opens so`() {
         showSidebar()
+        assertThat(listState.listedInFullSections).isEmpty()
         compose.onNodeWithText("Show 7 more").performClick()
         compose.waitForIdle()
-        assertThat(listed(projectNames)).hasSize(12)
-
-        compose.runOnIdle { shortLists.reset() }
+        assertThat(listState.listedInFullSections).containsExactly(AgentListOrganizer.PROJECTS_KEY)
+        compose.onNodeWithText("Show less").performClick()
         compose.waitForIdle()
-        assertThat(listed(projectNames)).containsExactlyElementsIn(projectNames.take(5)).inOrder()
-        compose.onNodeWithText("Show 7 more").assertIsDisplayed()
+        assertThat(listState.listedInFullSections).isEmpty()
+
+        // A sidebar composed anew — opened again, the activity recreated, the app started — with the device's word
+        // that Projects is listed in full lists every Project without a tap.
+        compose.runOnIdle { listState = listState.copy(listedInFullSections = setOf(AgentListOrganizer.PROJECTS_KEY)) }
+        compose.waitForIdle()
+        assertThat(listed(projectNames)).containsExactlyElementsIn(projectNames).inOrder()
+        compose.onNodeWithText("Show less").assertIsDisplayed()
+        compose.onAllNodes(hasText("Show 7 more")).fetchSemanticsNodes().let { assertThat(it).isEmpty() }
     }
 
     @Test
@@ -259,8 +266,11 @@ class SidebarShowMoreTest {
                         onSectionCollapsed = { key, folded ->
                             listState = listState.copy(collapsedSections = if (folded) listState.collapsedSections + key else listState.collapsedSections - key)
                         },
+                        // The device's memory, stood in for by the state the sidebar reads: what the view model does.
+                        onSectionListedInFull = { key, inFull ->
+                            listState = listState.copy(listedInFullSections = if (inFull) listState.listedInFullSections + key else listState.listedInFullSections - key)
+                        },
                     ),
-                    shortLists = shortLists,
                 )
             }
         }

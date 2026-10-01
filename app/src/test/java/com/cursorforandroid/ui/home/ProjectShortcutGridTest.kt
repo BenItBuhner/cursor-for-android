@@ -8,6 +8,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.lerp
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.LocalViewConfiguration
@@ -24,16 +25,21 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.test.performTouchInput
+import androidx.compose.ui.unit.toSize
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.cursorforandroid.AppGraph
+import com.cursorforandroid.data.local.PreferencesStore
+import com.cursorforandroid.domain.Agent
 import com.cursorforandroid.domain.LocalAgentState
 import com.cursorforandroid.domain.NewChatHome
+import com.cursorforandroid.domain.ProjectArrangement
 import com.cursorforandroid.ui.agents.AgentRowActions
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.ui.theme.ThemeMode
 import com.cursorforandroid.util.AppClock
 import com.google.common.truth.Truth.assertThat
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Before
@@ -65,6 +71,7 @@ class ProjectShortcutGridTest {
     private val opened = mutableListOf<String>()
     private val edited = mutableListOf<String>()
     private val reorders = mutableListOf<List<String>>()
+    private val arrangements = mutableListOf<ProjectArrangement>()
 
     @Before
     fun setUp() {
@@ -82,8 +89,17 @@ class ProjectShortcutGridTest {
         AppClock.nowMillis = System::currentTimeMillis
     }
 
-    /** The Projects page; with [followOrder], each drop is written back into the list as the app's organizer would. */
-    private fun show(followOrder: Boolean = false) {
+    /**
+     * The Projects page with [local]'s order and hidden Projects; with [followOrder], each drop is written back into the
+     * list as the app's organizer would, or — with [onArrange] — handed to that instead.
+     */
+    private fun show(
+        followOrder: Boolean = false,
+        local: LocalAgentState = LocalAgentState(),
+        agents: List<Agent> = NewChatHomeFixtures.agents,
+        onArrange: ((ProjectArrangement) -> Unit)? = null,
+    ) {
+        list = NewChatHomeFixtures.list(agents, local)
         compose.setContent {
             CursorTheme(mode = ThemeMode.Dark) {
                 view = LocalView.current
@@ -97,16 +113,23 @@ class ProjectShortcutGridTest {
                     rowActions = AgentRowActions({}, {}, {}, {}, { _, _ -> }, { _, _ -> }, {}, onEditProject = { edited += it.agent.id }),
                     home = NewChatHome.PROJECTS,
                     projectsAvailable = true,
-                    onReorderProjects = { ids ->
-                        reorders += ids
-                        if (followOrder) list = NewChatHomeFixtures.list(local = LocalAgentState(projectOrder = ids))
+                    onArrangeProjects = { arrangement ->
+                        arrangements += arrangement
+                        reorders += arrangement.order
+                        when {
+                            onArrange != null -> onArrange(arrangement)
+                            followOrder -> list = NewChatHomeFixtures.list(agents, LocalAgentState(projectOrder = arrangement.order, hiddenProjectIds = arrangement.hidden))
+                        }
                     },
                 )
             }
         }
-        compose.waitUntil(30_000) { shortcuts() == 5 }
+        val shown = agents.count { it.isProject } - local.hiddenProjectIds.size
+        compose.waitUntil(30_000) { if (shown == 0) allHiddenShown() else shortcuts() == shown }
         compose.mainClock.autoAdvance = false
     }
+
+    private fun allHiddenShown() = compose.onAllNodes(hasTestTag(NewChatHomeTags.ALL_HIDDEN)).fetchSemanticsNodes().isNotEmpty()
 
     private fun shortcuts() = compose.onAllNodes(hasTestTag(NewChatHomeTags.PROJECT_SHORTCUT)).fetchSemanticsNodes().size
 
@@ -142,7 +165,58 @@ class ProjectShortcutGridTest {
     private fun menuShown() = compose.onAllNodes(hasText(EDIT_PROJECT)).fetchSemanticsNodes().isNotEmpty()
 
     private fun arranging() =
-        compose.onAllNodes(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, ProjectShortcutCopy.ARRANGING)).fetchSemanticsNodes().size == 5
+        compose.onAllNodes(hasTestTag(NewChatHomeTags.HIDDEN_LINE)).fetchSemanticsNodes().isNotEmpty() &&
+            compose.onAllNodes(hasTestTag(NewChatHomeTags.PROJECT_SHORTCUT) and SemanticsMatcher.keyNotDefined(SemanticsProperties.StateDescription)).fetchSemanticsNodes().isEmpty()
+
+    /** The shortcuts on the page, outside arranging, by name in their order; the hidden ones are not among them. */
+    private fun names(state: String): List<String> =
+        compose.onAllNodes(hasTestTag(NewChatHomeTags.PROJECT_SHORTCUT) and SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, state)).fetchSemanticsNodes()
+            .sortedWith(compareBy({ it.boundsInRoot.center.y.roundToInt() }, { it.boundsInRoot.center.x }))
+            .map { it.config[SemanticsProperties.Text].first().text }
+
+    /** While arranging: the shortcuts above the "Hidden" line, and those below it. */
+    private fun shownNames() = names(ProjectShortcutCopy.ARRANGING)
+    private fun hiddenNames() = names(ProjectShortcutCopy.HIDDEN)
+
+    /** A point [below] the "Hidden" line's foot, in the page's coordinates: half a shortcut down lands in its first row. */
+    private fun underLine(below: Float = shortcutHeight() / 2f, x: Float? = null): Offset {
+        val line = compose.onNode(hasTestTag(NewChatHomeTags.HIDDEN_LINE)).fetchSemanticsNode().boundsInRoot
+        val page = page().fetchSemanticsNode().boundsInRoot
+        return Offset(x ?: (line.left + line.width / 4f - page.left), line.bottom + below - page.top)
+    }
+
+    /** A point just above the "Hidden" line, in the page's coordinates. */
+    private fun overLine(x: Float): Offset {
+        val line = compose.onNode(hasTestTag(NewChatHomeTags.HIDDEN_LINE)).fetchSemanticsNode().boundsInRoot
+        return Offset(x, line.top - shortcutHeight() / 3f - page().fetchSemanticsNode().boundsInRoot.top)
+    }
+
+    private fun shortcutHeight() = compose.onAllNodes(hasTestTag(NewChatHomeTags.PROJECT_SHORTCUT)).fetchSemanticsNodes().first().boundsInRoot.height
+
+    /**
+     * While arranging, drags [name]'s shortcut to [target] at once and lets go, the hand moving a frame at a time; what
+     * was felt on the way, each haptic once in the order first felt.
+     */
+    private fun dragArranged(name: String, target: Offset): List<Int> {
+        val start = at(name)
+        val felt = LinkedHashSet<Int>()
+        page().performTouchInput { down(start) }
+        for (step in 1..STEPS) {
+            page().performTouchInput { moveTo(lerp(start, target, step / STEPS.toFloat())) }
+            hold(FRAME_MILLIS)
+            felt += lastHaptic()
+        }
+        hold(400)
+        release()
+        hold(1_000)
+        return felt.toList()
+    }
+
+    /** Ends the arranging as the reader would: a tap on the page around the shortcuts. */
+    private fun tapAway() {
+        page().performTouchInput { click(Offset(centerX, top + 40f)) }
+        hold(1_000)
+    }
 
     /** The shortcuts' names as they are laid out, row by row; by their centres, which the lifted one's scale leaves be. */
     private fun order(): List<String> = compose.onAllNodes(hasTestTag(NewChatHomeTags.PROJECT_SHORTCUT)).fetchSemanticsNodes()
@@ -198,7 +272,7 @@ class ProjectShortcutGridTest {
     }
 
     @Test
-    fun `a lifted shortcut dragged over another takes its place, and the drop keeps the order and ends the arranging`() {
+    fun `a lifted shortcut dragged over another takes its place, and the drop keeps the order while the arranging goes on`() {
         show(followOrder = true)
         assertThat(order()).containsExactly(*NAMES.toTypedArray()).inOrder()
         val start = at(NewChatHomeFixtures.SHIPYARD_NAME)
@@ -217,6 +291,9 @@ class ProjectShortcutGridTest {
         assertThat(lastHaptic()).isEqualTo(HapticFeedbackConstants.GESTURE_END)
         hold(1_000)
         assertThat(reorders).containsExactly(listOf(NewChatHomeFixtures.BILLING, "bc-design", "bc-android", "bc-shipyard", "bc-pipeline"))
+        assertThat(arrangements.single().hidden).isEmpty()
+        assertThat(arranging()).isTrue()
+        tapAway()
         assertThat(arranging()).isFalse()
         // The list came back in the arranged order, and the page shows it as its own.
         assertThat(list.projectRows.map { it.agent.id }).containsExactly(NewChatHomeFixtures.BILLING, "bc-design", "bc-android", "bc-shipyard", "bc-pipeline").inOrder()
@@ -225,7 +302,7 @@ class ProjectShortcutGridTest {
     }
 
     @Test
-    fun `while arranging, a drag moves a shortcut at once and its drop ends the arranging`() {
+    fun `while arranging, a drag moves a shortcut at once and its drop leaves the arranging on`() {
         show()
         enterArranging(NewChatHomeFixtures.PIPELINE_NAME)
         val start = at(NewChatHomeFixtures.PIPELINE_NAME)
@@ -238,7 +315,7 @@ class ProjectShortcutGridTest {
         hold(1_000)
         assertThat(reorders).containsExactly(listOf("bc-pipeline", "bc-shipyard", NewChatHomeFixtures.BILLING, "bc-design", "bc-android"))
         assertThat(order().first()).isEqualTo(NewChatHomeFixtures.PIPELINE_NAME)
-        assertThat(arranging()).isFalse()
+        assertThat(arranging()).isTrue()
     }
 
     @Test
@@ -306,7 +383,7 @@ class ProjectShortcutGridTest {
         show()
         val shipyard = compose.onNodeWithText(NewChatHomeFixtures.SHIPYARD_NAME)
         val actions = shipyard.fetchSemanticsNode().config[SemanticsActions.CustomActions].map { it.label }
-        assertThat(actions).containsExactly(ProjectShortcutCopy.MOVE_LATER)
+        assertThat(actions).containsExactly(ProjectShortcutCopy.MOVE_LATER, ProjectShortcutCopy.HIDE).inOrder()
         compose.runOnUiThread {
             shipyard.fetchSemanticsNode().config[SemanticsActions.CustomActions].single { it.label == ProjectShortcutCopy.MOVE_LATER }.action()
         }
@@ -314,7 +391,7 @@ class ProjectShortcutGridTest {
         assertThat(reorders).containsExactly(listOf(NewChatHomeFixtures.BILLING, "bc-shipyard", "bc-design", "bc-android", "bc-pipeline"))
         assertThat(order().take(2)).containsExactly(NewChatHomeFixtures.BILLING_NAME, NewChatHomeFixtures.SHIPYARD_NAME).inOrder()
         assertThat(compose.onNodeWithText(NewChatHomeFixtures.SHIPYARD_NAME).fetchSemanticsNode().config[SemanticsActions.CustomActions].map { it.label })
-            .containsExactly(ProjectShortcutCopy.MOVE_EARLIER, ProjectShortcutCopy.MOVE_LATER).inOrder()
+            .containsExactly(ProjectShortcutCopy.MOVE_EARLIER, ProjectShortcutCopy.MOVE_LATER, ProjectShortcutCopy.HIDE).inOrder()
 
         compose.onNodeWithText(NewChatHomeFixtures.SHIPYARD_NAME).performSemanticsAction(SemanticsActions.OnLongClick)
         hold(300)
@@ -337,9 +414,203 @@ class ProjectShortcutGridTest {
         assertThat(order()).containsExactly(*NAMES.toTypedArray()).inOrder()
     }
 
+    @Test
+    fun `a shortcut dragged below the Hidden line is hidden, felt as it crosses, and gone from the page after`() {
+        show(followOrder = true)
+        enterArranging(NewChatHomeFixtures.SHIPYARD_NAME)
+        assertThat(hiddenNames()).isEmpty()
+        compose.onAllNodes(hasTestTag(NewChatHomeTags.HIDDEN_DROP_TARGET), useUnmergedTree = true).assertCountEquals(1)
+
+        val felt = dragArranged(NewChatHomeFixtures.PIPELINE_NAME, underLine())
+        assertThat(felt).contains(HapticFeedbackConstants.GESTURE_THRESHOLD_ACTIVATE)
+        assertThat(lastHaptic()).isEqualTo(HapticFeedbackConstants.GESTURE_END)
+        val saved = arrangements.single()
+        assertThat(saved.hidden).containsExactly("bc-pipeline")
+        // Hiding leaves the whole order — the sidebar's — as it was.
+        assertThat(saved.order).containsExactly(*IDS.toTypedArray()).inOrder()
+        assertThat(arranging()).isTrue()
+        assertThat(shownNames()).containsExactly(*NAMES.dropLast(1).toTypedArray()).inOrder()
+        assertThat(hiddenNames()).containsExactly(NewChatHomeFixtures.PIPELINE_NAME)
+        compose.onAllNodes(hasTestTag(NewChatHomeTags.HIDDEN_DROP_TARGET), useUnmergedTree = true).assertCountEquals(0)
+
+        tapAway()
+        assertThat(arranging()).isFalse()
+        assertThat(order()).containsExactly(*NAMES.dropLast(1).toTypedArray()).inOrder()
+        compose.onAllNodes(hasText(NewChatHomeFixtures.PIPELINE_NAME), useUnmergedTree = true).assertCountEquals(0)
+        compose.onAllNodes(hasTestTag(NewChatHomeTags.HIDDEN_LINE)).assertCountEquals(0)
+        // Only this page leaves it out: the list's Projects, which the sidebar and search draw, still have it.
+        assertThat(list.projectRows.map { it.agent.id }).contains("bc-pipeline")
+        assertThat(opened).isEmpty()
+    }
+
+    @Test
+    fun `a hidden shortcut dragged back above the line is shown again where it is dropped`() {
+        show(followOrder = true, local = LocalAgentState(hiddenProjectIds = setOf("bc-design", "bc-pipeline")))
+        assertThat(order()).containsExactly(NewChatHomeFixtures.SHIPYARD_NAME, NewChatHomeFixtures.BILLING_NAME, "Cursor for Android").inOrder()
+
+        enterArranging(NewChatHomeFixtures.SHIPYARD_NAME)
+        assertThat(hiddenNames()).containsExactly("Design system", NewChatHomeFixtures.PIPELINE_NAME).inOrder()
+        val felt = dragArranged("Design system", overLine(x = at(NewChatHomeFixtures.BILLING_NAME).x))
+        assertThat(felt).contains(HapticFeedbackConstants.GESTURE_THRESHOLD_DEACTIVATE)
+        assertThat(shownNames()).containsExactly(NewChatHomeFixtures.SHIPYARD_NAME, NewChatHomeFixtures.BILLING_NAME, "Cursor for Android", "Design system").inOrder()
+        assertThat(hiddenNames()).containsExactly(NewChatHomeFixtures.PIPELINE_NAME)
+        assertThat(arrangements.last().hidden).containsExactly("bc-pipeline")
+
+        tapAway()
+        assertThat(order()).containsExactly(NewChatHomeFixtures.SHIPYARD_NAME, NewChatHomeFixtures.BILLING_NAME, "Cursor for Android", "Design system").inOrder()
+    }
+
+    @Test
+    fun `shortcuts reorder above the line, below it, and land in the slot they are dropped on across it`() {
+        show(followOrder = true, local = LocalAgentState(hiddenProjectIds = setOf("bc-pipeline")))
+        enterArranging(NewChatHomeFixtures.SHIPYARD_NAME)
+
+        dragArranged(NewChatHomeFixtures.BILLING_NAME, at(NewChatHomeFixtures.PIPELINE_NAME))
+        assertThat(shownNames()).containsExactly(NewChatHomeFixtures.SHIPYARD_NAME, "Design system", "Cursor for Android").inOrder()
+        assertThat(hiddenNames()).containsExactly(NewChatHomeFixtures.BILLING_NAME, NewChatHomeFixtures.PIPELINE_NAME).inOrder()
+
+        val felt = dragArranged(NewChatHomeFixtures.PIPELINE_NAME, at(NewChatHomeFixtures.BILLING_NAME))
+        assertThat(felt).doesNotContain(HapticFeedbackConstants.GESTURE_THRESHOLD_ACTIVATE)
+        assertThat(felt).contains(HapticFeedbackConstants.SEGMENT_TICK)
+        assertThat(hiddenNames()).containsExactly(NewChatHomeFixtures.PIPELINE_NAME, NewChatHomeFixtures.BILLING_NAME).inOrder()
+
+        dragArranged("Cursor for Android", at(NewChatHomeFixtures.SHIPYARD_NAME))
+        assertThat(shownNames()).containsExactly("Cursor for Android", NewChatHomeFixtures.SHIPYARD_NAME, "Design system").inOrder()
+        assertThat(hiddenNames()).containsExactly(NewChatHomeFixtures.PIPELINE_NAME, NewChatHomeFixtures.BILLING_NAME).inOrder()
+
+        val saved = arrangements.last()
+        assertThat(saved.hidden).containsExactly("bc-pipeline", NewChatHomeFixtures.BILLING)
+        assertThat(saved.order.filter { it in saved.hidden }).containsExactly("bc-pipeline", NewChatHomeFixtures.BILLING).inOrder()
+        assertThat(saved.order.filterNot { it in saved.hidden }).containsExactly("bc-android", "bc-shipyard", "bc-design").inOrder()
+
+        tapAway()
+        assertThat(order()).containsExactly("Cursor for Android", NewChatHomeFixtures.SHIPYARD_NAME, "Design system").inOrder()
+    }
+
+    @Test
+    fun `with every Project hidden the page keeps a quiet way back, which arranges them to be dragged up again`() {
+        show(followOrder = true, local = LocalAgentState(hiddenProjectIds = IDS.toSet()))
+        assertThat(shortcuts()).isEqualTo(0)
+        val way = compose.onNode(hasTestTag(NewChatHomeTags.ALL_HIDDEN))
+        assertThat(way.fetchSemanticsNode().config[SemanticsProperties.ContentDescription]).containsExactly(ProjectShortcutCopy.allHidden(5))
+
+        way.performClick()
+        hold(1_000)
+        assertThat(opened).isEmpty()
+        assertThat(arranging()).isTrue()
+        assertThat(shownNames()).isEmpty()
+        assertThat(hiddenNames()).containsExactly(*NAMES.toTypedArray()).inOrder()
+
+        val room = compose.onNode(hasTestTag(NewChatHomeTags.ALL_HIDDEN)).fetchSemanticsNode().boundsInRoot.center - page().fetchSemanticsNode().boundsInRoot.topLeft
+        val felt = dragArranged(NewChatHomeFixtures.BILLING_NAME, room)
+        assertThat(felt).contains(HapticFeedbackConstants.GESTURE_THRESHOLD_DEACTIVATE)
+        assertThat(shownNames()).containsExactly(NewChatHomeFixtures.BILLING_NAME)
+        assertThat(arrangements.last().hidden).hasSize(4)
+
+        tapAway()
+        assertThat(order()).containsExactly(NewChatHomeFixtures.BILLING_NAME)
+        compose.onAllNodes(hasTestTag(NewChatHomeTags.ALL_HIDDEN)).assertCountEquals(0)
+    }
+
+    @Test
+    fun `accessibility services hide a shortcut, and show it again while the shortcuts are arranged`() {
+        show(followOrder = true)
+        fun action(name: String, label: String) = compose.runOnUiThread {
+            compose.onNodeWithText(name).fetchSemanticsNode().config[SemanticsActions.CustomActions].single { it.label == label }.action()
+        }
+        action(NewChatHomeFixtures.SHIPYARD_NAME, ProjectShortcutCopy.HIDE)
+        hold(1_000)
+        assertThat(arrangements.single().hidden).containsExactly("bc-shipyard")
+        assertThat(order()).containsExactly(*NAMES.drop(1).toTypedArray()).inOrder()
+
+        enterArranging(NewChatHomeFixtures.BILLING_NAME)
+        assertThat(hiddenNames()).containsExactly(NewChatHomeFixtures.SHIPYARD_NAME)
+        assertThat(compose.onNodeWithText(NewChatHomeFixtures.SHIPYARD_NAME).fetchSemanticsNode().config[SemanticsActions.CustomActions].map { it.label })
+            .containsExactly(ProjectShortcutCopy.SHOW)
+        action(NewChatHomeFixtures.SHIPYARD_NAME, ProjectShortcutCopy.SHOW)
+        hold(1_000)
+        assertThat(arrangements.last().hidden).isEmpty()
+        assertThat(hiddenNames()).isEmpty()
+        assertThat(shownNames().last()).isEqualTo(NewChatHomeFixtures.SHIPYARD_NAME)
+    }
+
+    @Test
+    fun `a Project hidden on the page is still hidden after a restart, and only there`() {
+        val context = ApplicationProvider.getApplicationContext<Application>()
+        show(onArrange = { arrangement -> runBlocking { graph.prefs.setProjectArrangement(arrangement) } })
+        enterArranging(NewChatHomeFixtures.SHIPYARD_NAME)
+        dragArranged("Design system", underLine())
+        tapAway()
+
+        // The settings as the next start of the app reads them, from a store opened afresh over the same file.
+        val restarted = runBlocking { PreferencesStore(context).localAgentState.first() }
+        assertThat(restarted.hiddenProjectIds).containsExactly("bc-design")
+        assertThat(restarted.projectOrder).containsExactly(*IDS.toTypedArray()).inOrder()
+        list = NewChatHomeFixtures.list(local = restarted)
+        hold(1_000)
+        assertThat(order()).containsExactly(*NAMES.filterNot { it == "Design system" }.toTypedArray()).inOrder()
+        // The sidebar's Projects group, which follows the same settings, still lists it in its place.
+        assertThat(list.sections.first().rows.map { it.agent.id }).containsExactly(*IDS.toTypedArray()).inOrder()
+    }
+
+    @Test
+    fun `a shortcut carried to the page's foot scrolls it to the Hidden line below the fold, and is hidden there`() {
+        val more = (1..14).map { "Side project $it" }
+        show(followOrder = true, agents = NewChatHomeFixtures.withMoreProjects(more))
+        enterArranging(NewChatHomeFixtures.SHIPYARD_NAME)
+        val page = page().fetchSemanticsNode().boundsInRoot
+        // Unclipped: below the fold the line's bounds in the root are cut away to nothing.
+        fun line() = compose.onNode(hasTestTag(NewChatHomeTags.HIDDEN_LINE)).fetchSemanticsNode().let { Rect(it.positionInRoot, it.size.toSize()) }
+        assertThat(line().top).isGreaterThan(page.bottom)
+
+        val start = at(NewChatHomeFixtures.SHIPYARD_NAME)
+        val foot = Offset(start.x, page.height - 8f)
+        val felt = LinkedHashSet<Int>()
+        page().performTouchInput { down(start) }
+        for (step in 1..STEPS) {
+            page().performTouchInput { moveTo(lerp(start, foot, step / STEPS.toFloat())) }
+            hold(FRAME_MILLIS)
+        }
+        // Held still at the foot, the page goes on scrolling, the shortcut under the finger passing each slot to the line.
+        repeat(250) {
+            hold(FRAME_MILLIS)
+            felt += lastHaptic()
+        }
+        assertThat(line().bottom).isLessThan(page.bottom)
+        release()
+        hold(1_000)
+
+        assertThat(felt).contains(HapticFeedbackConstants.GESTURE_THRESHOLD_ACTIVATE)
+        assertThat(arrangements.last().hidden).containsExactly("bc-shipyard")
+        assertThat(hiddenNames()).containsExactly(NewChatHomeFixtures.SHIPYARD_NAME)
+        assertThat(shownNames().size).isEqualTo(NAMES.size + more.size - 1)
+
+        // Carried to the page's head, it scrolls back up the same way, and is shown again above the line.
+        val back = at(NewChatHomeFixtures.SHIPYARD_NAME)
+        val head = Offset(back.x, 8f)
+        felt.clear()
+        page().performTouchInput { down(back) }
+        for (step in 1..STEPS) {
+            page().performTouchInput { moveTo(lerp(back, head, step / STEPS.toFloat())) }
+            hold(FRAME_MILLIS)
+            felt += lastHaptic()
+        }
+        repeat(250) {
+            hold(FRAME_MILLIS)
+            felt += lastHaptic()
+        }
+        release()
+        hold(1_000)
+        assertThat(felt).contains(HapticFeedbackConstants.GESTURE_THRESHOLD_DEACTIVATE)
+        assertThat(hiddenNames()).isEmpty()
+        assertThat(arrangements.last().hidden).isEmpty()
+    }
+
     private companion object {
+        val IDS = listOf("bc-shipyard", NewChatHomeFixtures.BILLING, "bc-design", "bc-android", "bc-pipeline")
         const val EDIT_PROJECT = "Edit Project"
         const val FRAME_MILLIS = 16L
+        const val STEPS = 10
         val NAMES = listOf(NewChatHomeFixtures.SHIPYARD_NAME, NewChatHomeFixtures.BILLING_NAME, "Design system", "Cursor for Android", NewChatHomeFixtures.PIPELINE_NAME)
     }
 }

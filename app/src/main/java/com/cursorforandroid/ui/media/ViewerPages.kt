@@ -1,10 +1,16 @@
 package com.cursorforandroid.ui.media
 
 import android.view.TextureView
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.animate
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.core.withInfiniteAnimationFrameMillis
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -12,8 +18,10 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
@@ -57,6 +65,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.LayoutDirection
@@ -375,6 +384,7 @@ internal fun VideoPage(
         }
     }
     val enabled = rememberUpdatedState(isCurrent && state.phase == MediaViewerState.Phase.Open)
+    val hold = remember(presentation) { PageHold(begin = { presentation.playback?.beginHold() == true }, end = { presentation.playback?.endHold() }) }
     val poster = presentation.bitmap
     // The frame the video is drawn in: the video's own size once the decoder reports it, the poster's until then.
     val videoSize = playback?.videoSize?.takeIf { it.width > 0 } ?: presentation.imageSize.takeIf { it.width > 0 } ?: IntSize(16, 9)
@@ -391,6 +401,7 @@ internal fun VideoPage(
         enabled = enabled,
         onTap = environment.onTap,
         onDismiss = environment.onDismiss,
+        hold = hold,
     )
     Box(
         Modifier
@@ -438,6 +449,36 @@ internal fun VideoPage(
                 }
                 playback?.isBuffering == true -> SpinnerRing(size = 24.dp, color = Color.White.copy(alpha = 0.8f), modifier = Modifier.align(Alignment.Center))
             }
+        }
+        // Over the top of the picture, but never under the top bar's row where a tall recording reaches up to it.
+        val safeTop = with(density) { WindowInsets.safeDrawing.getTop(this).toDp() }
+        val pictureTop = with(density) { fitted.top.toDp() }
+        HoldSpeedPill(
+            visible = playback?.holding == true,
+            modifier = Modifier.align(Alignment.TopCenter).padding(top = maxOf(pictureTop + 12.dp, safeTop + 64.dp)),
+        )
+    }
+}
+
+/** "2×" and the fast-forward glyph on a dark pill while a finger held on the page plays the recording faster. */
+@Composable
+private fun HoldSpeedPill(visible: Boolean, modifier: Modifier = Modifier) {
+    AnimatedVisibility(
+        visible = visible,
+        enter = fadeIn(tween(HoldPillEnterMillis, easing = HoldPillEnterEasing)) + scaleIn(tween(HoldPillEnterMillis, easing = HoldPillEnterEasing), initialScale = 0.85f),
+        exit = fadeOut(tween(HoldPillExitMillis, easing = HoldPillExitEasing)) + scaleOut(tween(HoldPillExitMillis, easing = HoldPillExitEasing), targetScale = 0.85f),
+        modifier = modifier,
+    ) {
+        Row(
+            Modifier
+                .background(Color.Black.copy(alpha = 0.6f), CursorTheme.shapes.full)
+                .padding(horizontal = 12.dp, vertical = 6.dp)
+                .semantics { contentDescription = "Playing at ${VideoPlayback.speedLabel(VideoPlayback.HOLD_SPEED)}" }
+                .testTag("viewer-hold-speed"),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(VideoPlayback.speedLabel(VideoPlayback.HOLD_SPEED), style = CursorTheme.typography.small.copy(fontWeight = FontWeight.SemiBold), color = Color.White)
+            Icon(CursorIcons.FastForward, null, tint = Color.White, modifier = Modifier.padding(start = 4.dp).size(12.dp))
         }
     }
 }
@@ -691,6 +732,12 @@ private fun PageSpinner(waking: Boolean, modifier: Modifier = Modifier) {
 
 /** A sharper picture's fade in over the one it replaces: about ten frames, so the finer detail blends in rather than arrives in one. */
 internal const val UpgradeFadeMillis = 160
+
+/** The hold's pill: in on an emphasized decelerate, out quicker on an accelerate, as the app's menus come and go. */
+private const val HoldPillEnterMillis = 180
+private const val HoldPillExitMillis = 140
+private val HoldPillEnterEasing = CubicBezierEasing(0.05f, 0.7f, 0.1f, 1f)
+private val HoldPillExitEasing = CubicBezierEasing(0.3f, 0f, 0.8f, 0.15f)
 
 /** Where the note sits on the card, as a share of its height: above the middle, the play disc below it. */
 private const val AudioGlyphAt = 0.4f

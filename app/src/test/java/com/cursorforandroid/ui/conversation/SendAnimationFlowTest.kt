@@ -25,6 +25,7 @@ import com.cursorforandroid.AppGraph
 import com.cursorforandroid.data.local.DraftStore
 import com.cursorforandroid.data.repo.NewChatDrafts
 import com.cursorforandroid.domain.DraftImage
+import com.cursorforandroid.domain.NewChatHome
 import com.cursorforandroid.domain.PromptImage
 import com.cursorforandroid.domain.UserMessage
 import com.cursorforandroid.ui.CursorRoot
@@ -82,6 +83,8 @@ class SendAnimationFlowTest {
         // ("JniConstants: Class not found: java/nio/FloatBuffer"), so it is made here, first.
         Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888).copyPixelsToBuffer(ByteBuffer.allocate(4))
         graph = AppGraph(ApplicationProvider.getApplicationContext())
+        // The demo has a Project, so its New Chat page would open on Projects; these open chats from the recent cards.
+        runBlocking { graph.prefs.setNewChatHome(NewChatHome.RECENT) }
         runBlocking {
             graph.session.enterDemo()
             graph.drafts.clear()

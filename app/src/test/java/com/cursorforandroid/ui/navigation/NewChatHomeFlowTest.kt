@@ -31,9 +31,9 @@ import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 
 /**
- * The New chat page setting through the shell, sidebar beside the pane: Projects chosen in Settings pins the demo's
- * Project in the New Chat pane the next time it is on screen, and its shortcut opens the Project; Recent agents
- * chosen again brings the recent chats back.
+ * The New chat page setting through the shell, sidebar beside the pane: with nothing chosen the demo's Project is
+ * pinned from the first, never after the recent chats; Projects chosen in Settings keeps it there and its shortcut
+ * opens the Project; Recent agents chosen brings the recent chats back.
  */
 @RunWith(AndroidJUnit4::class)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
@@ -52,6 +52,8 @@ class NewChatHomeFlowTest {
     private fun onScreen(text: String) = compose.onAllNodes(hasText(text, substring = true)).fetchSemanticsNodes().isNotEmpty()
 
     private fun shortcuts() = compose.onAllNodes(hasTestTag(NewChatHomeTags.PROJECT_SHORTCUT)).fetchSemanticsNodes().size
+
+    private fun recentCards() = compose.onAllNodes(hasTestTag(NewChatHomeTags.RECENT_CHAT)).fetchSemanticsNodes().size
 
     private fun choose(home: NewChatHome) {
         compose.onNodeWithTag(SidebarTags.ACCOUNT).performClick()
@@ -85,8 +87,14 @@ class NewChatHomeFlowTest {
             }
         }
         compose.waitUntil(30_000) { onScreen(NewChatHomeCopy.PLACEHOLDER) }
-        compose.waitUntil(30_000) { graph.agents.state.value.let { it.hasLoaded && !it.isRefreshing } }
-        assertThat(shortcuts()).isEqualTo(0)
+        // Nothing chosen and the demo has a Project: the page opens on it, the recent chats never drawn first.
+        var recentsDrawn = false
+        compose.waitUntil(30_000) {
+            recentsDrawn = recentsDrawn || recentCards() > 0
+            shortcuts() == 1
+        }
+        assertThat(recentsDrawn).isFalse()
+        assertThat(runBlocking { graph.prefs.newChatHomeChoice.first() }.chosen).isNull()
 
         choose(NewChatHome.PROJECTS)
         compose.waitUntil(10_000) { shortcuts() == 1 }
@@ -95,7 +103,9 @@ class NewChatHomeFlowTest {
         // The pane has left New Chat for the Project's own chat.
         compose.waitUntil(30_000) { shortcuts() == 0 && !onScreen(NewChatHomeCopy.PLACEHOLDER) }
 
+        // Recent agents tapped is the reader's own choice: kept over the demo's Project.
         choose(NewChatHome.RECENT)
-        compose.waitUntil(10_000) { shortcuts() == 0 && onScreen("Revenue Scaling Pipeline Research") }
+        compose.waitUntil(10_000) { shortcuts() == 0 && recentCards() > 0 }
+        assertThat(runBlocking { graph.prefs.newChatHomeChoice.first() }.chosen).isEqualTo(NewChatHome.RECENT)
     }
 }

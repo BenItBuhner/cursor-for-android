@@ -72,7 +72,8 @@ sealed interface OutgoingStatus {
  * is the [listener]; what needs a composer (an edit) waits for one.
  *
  * @param onBusy the documented run request refused the message as busy: it goes to a queue, as the composer would
- *   have sent it had it known — decided by [OutgoingSends], since no composer need be open by then.
+ *   have sent it had it known — decided by [OutgoingSends], since no composer need be open by then. Its bubble is
+ *   still up, for what takes the message's place to take down in the same frame.
  * @param onAccepted the server has the message: what it consumed of the chat's draft is settled, composer open or not.
  */
 class OutgoingMessages(
@@ -80,7 +81,7 @@ class OutgoingMessages(
     private val scope: CoroutineScope,
     private val conversations: ConversationRepository,
     private val uploads: AttachmentUploads,
-    private val onBusy: (Draft) -> Unit,
+    private val onBusy: (Draft, bubble: StagedFollowUp) -> Unit,
     private val onAccepted: (Draft) -> Unit = {},
 ) {
     /** What the composer held when send was tapped. [text] is what the message says; [typed] what the user wrote (an attachment-only message says what it carries). */
@@ -155,8 +156,10 @@ class OutgoingMessages(
     /**
      * Sends [draft] by [route]. Its place in the order is taken here, at the tap; the bubble follows as soon as the
      * attachments are staged, and the request once the message before it has returned and its files are up.
+     * [replacing]: the bubble of this message's run request, refused as busy, that it takes the place of — in the
+     * frame its row goes up on the card, for a queued [route] (see [ConversationRepository.queueAhead]).
      */
-    fun send(draft: Draft, route: Route): Job {
+    fun send(draft: Draft, route: Route, replacing: StagedFollowUp? = null): Job {
         val ticket = take()
         // In flight from the tap, under a provisional id until the bubble has one: the composer's "sending" reads true
         // the moment send returns, not once the attachments have been written to disk.
@@ -167,8 +170,9 @@ class OutgoingMessages(
                 val images = draft.images.map { it.image }
                 val files = draft.files.map { it.file }
                 if (route is Route.Account && route.queued) {
-                    conversations.queueAhead(agentId, draft.text, images, files, route.followupId)
+                    conversations.queueAhead(agentId, draft.text, images, files, route.followupId, replacing = replacing)
                 } else {
+                    replacing?.let { conversations.discardStaged(agentId, it) }
                     conversations.stageFollowUp(agentId, draft.text, images, files)
                 }
             } catch (e: CancellationException) {
@@ -245,6 +249,7 @@ class OutgoingMessages(
                     message.draft.override?.label,
                     followupId = route.followupId,
                     discardOnFailure = false,
+                    turnUnderWay = route.queued,
                 ) {
                     val uploaded = awaitUploads(message)
                     setStatus(id, OutgoingStatus.Sending)
@@ -272,11 +277,11 @@ class OutgoingMessages(
                 },
                 onFailure = { t ->
                     if (message.route is Route.Documented && t.toCursorError()?.code == AGENT_BUSY) {
-                        // Not lost, and nothing to show: the message goes where the composer would have put it had it known.
+                        // Not lost, and nothing to show: the message goes where the composer would have put it had it
+                        // known, its bubble up until that place has it.
                         synchronized(lock) { outgoing.remove(id) }
                         _statuses.update { it - id }
-                        conversations.discardStaged(agentId, message.staged)
-                        onBusy(message.draft)
+                        onBusy(message.draft, message.staged)
                     } else {
                         if (route is Route.Account && !message.staged.shown) {
                             // Off the card, which would go on promising a message the account never took, and into a
@@ -352,7 +357,7 @@ class OutgoingSends(
     fun forAgent(agentId: String): OutgoingMessages = perChat.getOrPut(agentId) {
         OutgoingMessages(
             agentId, scope, conversations, uploads,
-            onBusy = { draft -> refusedAsBusy(agentId, draft) },
+            onBusy = { draft, bubble -> refusedAsBusy(agentId, draft, bubble) },
             // The server keeps the model a message switched to for the runs after it: the draft's pick is spent.
             onAccepted = { draft -> draft.override?.let { followUps.spendDraftModel(agentId, DraftModel(it.model.id, it.params, it.label)) } },
         )
@@ -402,13 +407,15 @@ class OutgoingSends(
      * The documented run request refused the message as busy — the server still winding down the last turn against
      * every word here: the message goes where the composer would have put it had it known, the account's queue in
      * Extended mode (which sends it when the agent is free), this device's otherwise (which waits with a growing
-     * pause and says so on the card). Nothing of the composer is touched: it may hold a new draft by now.
+     * pause and says so on the card). Nothing of the composer is touched: it may hold a new draft by now. The account's
+     * card takes [bubble]'s place in one frame; this device's queue after it is down.
      */
-    private fun refusedAsBusy(agentId: String, draft: OutgoingMessages.Draft) {
+    private fun refusedAsBusy(agentId: String, draft: OutgoingMessages.Draft, bubble: StagedFollowUp) {
         scope.launch {
             if (capabilities().accountQueue && !isDemo()) {
-                forAgent(agentId).send(draft, accountRoute(agentId, draft, queued = true))
+                forAgent(agentId).send(draft, accountRoute(agentId, draft, queued = true), replacing = bubble)
             } else {
+                conversations.discardStaged(agentId, bubble)
                 followUps.enqueue(
                     agentId,
                     draft.typed,

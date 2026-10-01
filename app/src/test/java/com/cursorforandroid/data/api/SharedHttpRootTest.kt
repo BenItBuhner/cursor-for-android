@@ -2,7 +2,9 @@ package com.cursorforandroid.data.api
 
 import com.cursorforandroid.BuildConfig
 import com.google.common.truth.Truth.assertThat
+import okhttp3.Call
 import okhttp3.Dns
+import okhttp3.EventListener
 import okhttp3.Interceptor
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -18,6 +20,13 @@ import org.junit.Assert.assertThrows
 import org.junit.Before
 import org.junit.Test
 import java.io.IOException
+import java.net.InetSocketAddress
+import java.net.Proxy
+import java.util.concurrent.CompletableFuture
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * Every client `AppGraph` builds sits on one root ([CursorApiFactory.newRoot]): one connection pool, one thread pool.
@@ -38,6 +47,7 @@ class SharedHttpRootTest {
     private val all = listOf(api, sse, login, media, update, cursorServer, gitHub, origin)
 
     private val server = MockWebServer()
+    private val threads = Executors.newCachedThreadPool()
 
     @Before
     fun setUp() {
@@ -49,6 +59,7 @@ class SharedHttpRootTest {
     @After
     fun tearDown() {
         server.shutdown()
+        threads.shutdownNow()
         root.dispatcher.executorService.shutdownNow()
         root.connectionPool.evictAll()
     }
@@ -68,18 +79,21 @@ class SharedHttpRootTest {
 
     @Test
     fun `each client keeps its timeouts, interceptors, lookup and recovery as before`() {
-        assertThat(config(api)).isEqualTo(Config(20_000, 60_000, 30_000, 300_000, LastGoodDns.CURSOR, listOf("Auth", "OneShotWrites", "Retry", "Logging")))
-        assertThat(config(sse)).isEqualTo(Config(20_000, 120_000, 30_000, 0, LastGoodDns.CURSOR, listOf("Auth", "OneShotWrites", "Retry", "Logging")))
-        assertThat(config(login)).isEqualTo(Config(20_000, 30_000, 10_000, 45_000, LastGoodDns.CURSOR, listOf("UserAgent")))
-        assertThat(config(media)).isEqualTo(Config(20_000, 60_000, 10_000, 0, Dns.SYSTEM, listOf("Logging")))
-        assertThat(config(update)).isEqualTo(Config(20_000, 60_000, 10_000, 0, Dns.SYSTEM, listOf("UserAgent", "Retry", "Logging")))
-        assertThat(config(cursorServer)).isEqualTo(Config(20_000, 30_000, 10_000, 60_000, Dns.SYSTEM, emptyList()))
-        assertThat(config(gitHub)).isEqualTo(Config(20_000, 30_000, 10_000, 45_000, Dns.SYSTEM, listOf("UserAgent", "Logging")))
+        assertThat(config(api)).isEqualTo(Config(20_000, 60_000, 30_000, 300_000, LastGoodDns.CURSOR, listOf("Auth", "OneShotWrites", "Retry", "Logging", "Gate")))
+        assertThat(config(sse)).isEqualTo(Config(20_000, 120_000, 30_000, 0, LastGoodDns.CURSOR, listOf("Auth", "OneShotWrites", "Retry", "Logging", "Gate")))
+        assertThat(config(login)).isEqualTo(Config(20_000, 30_000, 10_000, 45_000, LastGoodDns.CURSOR, listOf("UserAgent", "Gate")))
+        assertThat(config(media)).isEqualTo(Config(20_000, 60_000, 10_000, 0, Dns.SYSTEM, listOf("Logging", "Gate")))
+        assertThat(config(update)).isEqualTo(Config(20_000, 60_000, 10_000, 0, Dns.SYSTEM, listOf("UserAgent", "Retry", "Logging", "Gate")))
+        assertThat(config(cursorServer)).isEqualTo(Config(20_000, 30_000, 10_000, 60_000, Dns.SYSTEM, listOf("Gate")))
+        assertThat(config(gitHub)).isEqualTo(Config(20_000, 30_000, 10_000, 45_000, Dns.SYSTEM, listOf("UserAgent", "Logging", "Gate")))
         // Origin's is GitHub's bare client on the API's lookup, so it can share the API's connection to api.cursor.com.
-        assertThat(config(origin)).isEqualTo(Config(20_000, 30_000, 10_000, 45_000, LastGoodDns.CURSOR, listOf("UserAgent", "Logging")))
+        assertThat(config(origin)).isEqualTo(Config(20_000, 30_000, 10_000, 45_000, LastGoodDns.CURSOR, listOf("UserAgent", "Logging", "Gate")))
 
+        // One gate per root, shared by every client on it: the handshakes it holds back are the pool's.
+        val gate = root.networkInterceptors.filterIsInstance<ConnectGate>().single()
         for (client in all) {
-            assertThat(client.networkInterceptors).isEmpty()
+            assertThat(client.networkInterceptors).containsExactly(gate)
+            assertThat(client.interceptors.last()).isSameInstanceAs(gate)
             assertThat(client.retryOnConnectionFailure).isTrue()
             assertThat(client.followRedirects).isTrue()
             assertThat(client.protocols).containsExactly(Protocol.HTTP_2, Protocol.HTTP_1_1).inOrder()
@@ -128,6 +142,65 @@ class SharedHttpRootTest {
         assertThat(server.requestCount).isEqualTo(1)
     }
 
+    @Test
+    fun `calls that set out together to a host with no connection open one between them`() {
+        val h2 = MockWebServer().apply { protocols = listOf(Protocol.H2_PRIOR_KNOWLEDGE) }
+        h2.dispatcher = object : okhttp3.mockwebserver.Dispatcher() {
+            override fun dispatch(request: okhttp3.mockwebserver.RecordedRequest) = MockResponse().setBody("{}")
+        }
+        h2.start()
+        try {
+            val handshakes = AtomicInteger()
+            val counting = object : EventListener() {
+                override fun connectStart(call: Call, inetSocketAddress: InetSocketAddress, proxy: Proxy) { handshakes.incrementAndGet() }
+            }
+            // The API client and the account's, as a cold start and a list refresh send them: all at once.
+            val clients = listOf(api, login, origin).map { it.newBuilder().protocols(listOf(Protocol.H2_PRIOR_KNOWLEDGE)).eventListener(counting).build() }
+            val go = CountDownLatch(1)
+            val calls = (0 until 12).map { i ->
+                CompletableFuture.supplyAsync({
+                    go.await()
+                    clients[i % clients.size].newCall(Request.Builder().url(h2.url("/v1/agents/bc-$i")).build()).execute().use { it.code }
+                }, threads)
+            }
+            go.countDown()
+
+            assertThat(calls.map { it.get(10, TimeUnit.SECONDS) }).containsExactlyElementsIn(List(12) { 200 })
+            // Not only one connection kept: one opened. A duplicate that loses the race is closed before it carries a
+            // request, and when it does not lose it, it stays pooled beside the first.
+            assertThat(handshakes.get()).isEqualTo(1)
+            val requests = List(h2.requestCount) { h2.takeRequest() }
+            assertThat(requests.count { it.sequenceNumber == 0 }).isEqualTo(1)
+            assertThat(root.connectionPool.connectionCount()).isEqualTo(1)
+        } finally {
+            h2.shutdown()
+        }
+    }
+
+    @Test
+    fun `calls to an HTTP 1 host still go out side by side, a connection each`() {
+        val together = 4
+        val arrived = CountDownLatch(together)
+        server.dispatcher = object : okhttp3.mockwebserver.Dispatcher() {
+            override fun dispatch(request: okhttp3.mockwebserver.RecordedRequest): MockResponse {
+                arrived.countDown()
+                // Answers only once every call is on the wire: calls held back one behind another never get here.
+                return if (arrived.await(10, TimeUnit.SECONDS)) MockResponse().setBody("{}") else MockResponse().setResponseCode(504)
+            }
+        }
+        val go = CountDownLatch(1)
+        val calls = (0 until together).map { i ->
+            CompletableFuture.supplyAsync({
+                go.await()
+                api.newCall(Request.Builder().url(server.url("/v0/agents/bc-$i")).build()).execute().use { it.code }
+            }, threads)
+        }
+        go.countDown()
+
+        assertThat(calls.map { it.get(15, TimeUnit.SECONDS) }).containsExactlyElementsIn(List(together) { 200 })
+        assertThat(root.connectionPool.connectionCount()).isEqualTo(together)
+    }
+
     private data class Config(val connectMs: Int, val readMs: Int, val writeMs: Int, val callMs: Int, val dns: Dns, val interceptors: List<String>)
 
     private fun config(client: OkHttpClient) = Config(
@@ -144,6 +217,7 @@ class SharedHttpRootTest {
         is OneShotWritesInterceptor -> "OneShotWrites"
         is RetryInterceptor -> "Retry"
         is HttpLoggingInterceptor -> "Logging"
+        is ConnectGate -> "Gate"
         else -> {
             // The factory's one lambda interceptor: it sets the User-Agent and nothing else.
             val seen = mutableListOf<Request>()

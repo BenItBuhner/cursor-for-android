@@ -487,6 +487,14 @@ object CursorIcons {
         }
     }
 
+    /** Lucide `fast-forward`, filled like [Play]: beside the "2×" a held finger plays a recording at. */
+    val FastForward: ImageVector by lazy {
+        icon("FastForward") {
+            fill("M12 6a2 2 0 0 1 3.414-1.414l6 6a2 2 0 0 1 0 2.828l-6 6A2 2 0 0 1 12 18z")
+            fill("M2 6a2 2 0 0 1 3.414-1.414l6 6a2 2 0 0 1 0 2.828l-6 6A2 2 0 0 1 2 18z")
+        }
+    }
+
     val Video: ImageVector by lazy {
         icon("Video") {
             path("m16 13 5.223 3.482a.5.5 0 0 0 .777-.416V7.87a.5.5 0 0 0-.752-.432L16 10.5")

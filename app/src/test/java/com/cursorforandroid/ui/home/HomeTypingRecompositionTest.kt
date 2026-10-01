@@ -73,7 +73,7 @@ class HomeTypingRecompositionTest {
                     projectsAvailable = projectsAvailable,
                     onNewProject = {},
                     onOpenSettings = {},
-                    onReorderProjects = {},
+                    onArrangeProjects = {},
                 )
             }
         }

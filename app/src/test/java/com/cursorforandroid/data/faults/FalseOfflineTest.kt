@@ -160,13 +160,17 @@ class FalseOfflineTest {
         report("the Project open", rig)
         val prompt = "Coordinator: status of market 200, please."
         val started = System.nanoTime()
-        server.startTurnElsewhere(project, prompt)
+        val turn = server.startTurnElsewhere(project, prompt)
         rig.awaitUntil(15_000) { rig.state(project).items.any { it is UserMessage && it.text == prompt } }
         println("   the turn started elsewhere was on screen after ${(System.nanoTime() - started) / 1_000_000} ms")
         assertThat(server.liveOpenCount()).isAtMost(1)
-        // The connections the first chat opened carried all of it: no chat and no stream cost a lookup of its own.
-        assertThat(server.connections.get()).isEqualTo(connections)
-        assertThat(rig.dnsLookups.get()).isEqualTo(lookups)
+        // The turn is followed on its run's stream, over the one connection run streams share beside the client's (see
+        // RunStreamMux), opened when the first is wanted: whether before or after the turn is on screen is a race.
+        rig.awaitUntil(10_000) { server.seen.any { it.route == Route.Stream && turn.id in it.path } }
+        assertThat(rig.streamMux.connectionCount).isEqualTo(1)
+        // The connections the first chat opened carried the rest: no chat and no live stream cost a lookup of its own.
+        assertThat(server.connections.get()).isEqualTo(connections + 1)
+        assertThat(rig.dnsLookups.get()).isEqualTo(lookups + 1)
     }
 
     @Test

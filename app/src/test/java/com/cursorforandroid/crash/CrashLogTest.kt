@@ -51,6 +51,23 @@ class CrashLogTest {
     }
 
     @Test
+    fun `the heap past its mark has memory given back, which the system's trim callbacks never ask for`() {
+        val log = log(folder.newFolder("crash"))
+        log.install { "state" }
+        var used = 100L shl 20
+        val trims = java.util.concurrent.atomic.AtomicInteger()
+        log.watchMemory(periodMs = 20L, heap = { used to (256L shl 20) }, onPressure = { trims.incrementAndGet() })
+        Thread.sleep(150)
+        assertThat(trims.get()).isEqualTo(0)
+
+        used = 230L shl 20
+        val deadline = System.currentTimeMillis() + 5_000
+        while (trims.get() == 0 && System.currentTimeMillis() < deadline) Thread.sleep(20)
+        assertThat(trims.get()).isAtLeast(1)
+        log.watchMemory(periodMs = 60_000L, heap = { 0L to 0L })
+    }
+
+    @Test
     fun `the heap past its mark leaves a snapshot of the state, which the crash that follows carries`() {
         val dir = folder.newFolder("crash")
         val log = log(dir)

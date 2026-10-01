@@ -368,27 +368,7 @@ fun MediaChip(
                 )
             }
         }
-        // The remove badge: three quarters outside the picture, its own small target in the slot's corner.
-        Box(
-            Modifier
-                .align(Alignment.TopEnd)
-                .size(MediaBadgeHit)
-                .testTag("media-remove")
-                .pressable(onRemove, RoundedCornerShape(4.dp), role = androidx.compose.ui.semantics.Role.Button),
-            contentAlignment = Alignment.Center,
-        ) {
-            // From the target's centre to the badge's: (+1, -1)dp with the sizes above.
-            val badgeShift = MediaTile + MediaBadgeOut - (MediaSlot - MediaBadgeHit / 2)
-            Box(
-                Modifier
-                    .offset(x = badgeShift, y = -badgeShift)
-                    .size(MediaBadge)
-                    .background(colors.textPrimary, CircleShape),
-                contentAlignment = Alignment.Center,
-            ) {
-                Icon(CursorIcons.Close, "Remove attachment", tint = colors.canvas, modifier = Modifier.size(10.dp))
-            }
-        }
+        AttachmentRemoveBadge(onRemove, Modifier.align(Alignment.TopEnd).testTag("media-remove"))
         CursorMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }, at = menuAt) {
             CursorMenuItem("Open", CursorIcons.Eye) { menuOpen = false; onOpen(slot) }
             if (failed && onRetry != null) CursorMenuItem("Retry upload", CursorIcons.Refresh) { menuOpen = false; onRetry() }
@@ -397,10 +377,40 @@ fun MediaChip(
     }
 }
 
+/**
+ * The remove badge of a chip in the composer's attachment row, for the top-end corner of the chip's slot — the slot
+ * being the chip with [MediaBadgeRoom] above it and past its end: three quarters outside the chip, its own small
+ * target in the slot's corner. A picture's tile and a file's chip wear the same one in the same place.
+ */
+@Composable
+internal fun AttachmentRemoveBadge(onRemove: () -> Unit, modifier: Modifier = Modifier) {
+    val colors = CursorTheme.colors
+    Box(
+        modifier
+            .size(MediaBadgeHit)
+            .pressable(onRemove, RoundedCornerShape(4.dp), role = androidx.compose.ui.semantics.Role.Button),
+        contentAlignment = Alignment.Center,
+    ) {
+        // From the target's centre to the badge's: (+1, -1)dp with the sizes below.
+        val badgeShift = MediaBadgeOut - (MediaBadgeRoom - MediaBadgeHit / 2)
+        Box(
+            Modifier
+                .offset(x = badgeShift, y = -badgeShift)
+                .size(MediaBadge)
+                .background(colors.textPrimary, CircleShape),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(CursorIcons.Close, "Remove attachment", tint = colors.canvas, modifier = Modifier.size(10.dp))
+        }
+    }
+}
+
 /** The slot a media tile takes in the row: the tile, and room above and to its end for the badge to overhang. */
 val MediaSlot: Dp = 60.dp
-/** The picture itself, square. */
+/** The picture itself, square; and the height of every chip in the row, a file's ([FileChip]) as much as a picture's. */
 val MediaTile: Dp = 48.dp
+/** The room a chip's slot leaves above the chip and past its end for the remove badge. */
+val MediaBadgeRoom: Dp = MediaSlot - MediaTile
 /** The remove badge's diameter. */
 val MediaBadge: Dp = 18.dp
 /** How far the badge's centre sits outside the tile's top-end corner, on each axis. */

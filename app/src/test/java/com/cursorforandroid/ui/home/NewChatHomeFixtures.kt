@@ -101,6 +101,14 @@ internal object NewChatHomeFixtures {
         )
     }
 
+    /** The same account with [names] as Projects of its own besides, enough of them that the shortcuts run past a phone's screen. */
+    fun withMoreProjects(names: List<String>): List<Agent> {
+        val looks = listOf("robot" to "blue", "target" to "magenta", "briefcase" to "yellow", "rocket" to "green", "logo-notion" to "gray")
+        return agents + names.mapIndexed { i, name ->
+            agent("bc-more-$i", name, 30 * 60L + i, repo = "bennett/more-$i", appearance = looks[i % looks.size].let { (icon, color) -> ProjectAppearance(icon, color) })
+        }
+    }
+
     /** The same account before its first Project: the chats of its own alone. */
     fun withoutProjects(): AgentListUiState = list(agents.filter { !it.isProject && it.parent == null })
 

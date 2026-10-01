@@ -114,13 +114,20 @@ data class QueuedFollowUp(
     val notBeforeMillis: Long? = null,
     /**
      * Why the message waits when it is not the agent's turn it waits for: the server asked every caller to slow
-     * down (`429`, or a `503` that named a wait), and the card says so in place of [WAITING_FOR_AGENT] — the
-     * server's own words under it ([serverReason]), the wait it named waited out ([notBeforeMillis]), then one more
-     * attempt. Null for a wait on the agent, and for a message that is not waiting.
+     * down (`429`), was briefly unavailable (a `503` that named a wait), or the machine a Remote Control chat runs
+     * on is not reporting to Cursor — and the card says so in place of [WAITING_FOR_AGENT], the server's own words
+     * under it ([serverReason]), the wait waited out ([notBeforeMillis]), then another attempt. Null for a wait on
+     * the agent, and for a message that is not waiting.
      */
     val holdReason: String? = null,
     /** Attempts the server refused with a wait it named, in a row: one is waited out; the second is the user's to hear. */
     val throttleRefusals: Int = 0,
+    /**
+     * How many times in a row the machine a Remote Control chat runs on was found not connected (see
+     * `FollowUpRepository.dispatch`): the pause before the next look grows with it, and past a point the card stops
+     * waiting and says so, for the user to retry once the machine is on.
+     */
+    val offlineChecks: Int = 0,
     /**
      * Where a steer into the turn under way stands (see `FollowUpRepository.steerNow`): the card stays in its place,
      * saying so, until the transcript shows the message. Null when the message is not being steered.
@@ -163,8 +170,16 @@ data class QueuedFollowUp(
         const val MAY_HAVE_BEEN_SENT = "This may already have been sent. Check the chat before sending it again."
         /** Said under a message the server keeps refusing as busy (see [heldSinceMillis]); the time waited follows it. */
         const val WAITING_FOR_AGENT = "Waiting for the agent to finish its last turn"
-        /** Said under a message the server asked to slow down (see [holdReason]); the time waited follows it. */
+        /** Said under a message the server asked to slow down — a real `429`, nothing else (see [holdReason]); the time waited follows it. */
         const val RATE_LIMITED = "Rate limited by Cursor, trying again shortly"
+        /** Said under a message the server could not take for the moment (a `503` naming when to come back); the time waited follows it. */
+        const val SERVICE_UNAVAILABLE = "Cursor is temporarily unavailable, trying again shortly"
+
+        /** Said under a message for a Remote Control chat whose machine is not reporting to Cursor; the time waited follows it. */
+        fun machineOffline(machine: String): String = "$machine isn't connected to Cursor. Sends when it reconnects"
+
+        /** Said on the card once the machine has stayed unconnected too long to keep waiting (see [offlineChecks]); the user's to retry. */
+        fun machineOfflineError(machine: String): String = "$machine isn't connected to Cursor. Start it, then retry."
     }
 }
 

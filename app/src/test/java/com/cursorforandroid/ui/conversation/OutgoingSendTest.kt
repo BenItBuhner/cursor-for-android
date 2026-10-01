@@ -570,6 +570,8 @@ class OutgoingSendTest {
             graph.conversations.state(AGENT).value.items.any { it is UserMessage && it.text == "Then ship it" && !it.isPending }
         }
         withTimeout(15_000) { vm.isSending.first { !it } }
+        // Filed in one publish, followed in the next (see [accountStartsRunMidSend]): the follow is waited for.
+        awaitUntil("the chat on the account's run") { graph.conversations.state(AGENT).value.activeRunId == "run-account-1" }
         assertThat(card().queue.none { it.text == "Then ship it" }).isTrue()
         assertThat(graph.conversations.state(AGENT).value.activeRunId).isEqualTo("run-account-1")
     }
@@ -595,7 +597,14 @@ class OutgoingSendTest {
             graph.conversations.state(AGENT).value.items.any { it is UserMessage && it.text == text && !it.isPending }
         }
         withTimeout(15_000) { vm.isSending.first { !it } }
-        awaitUntil("the chat on the account's run") { graph.conversations.state(AGENT).value.runStatus?.isActive == true }
+        // The account named the agent's latest run when it answered. The chat files the message in one publish and
+        // follows that run in the next; between the two it still names the turn that ended, and with the row running
+        // on the new run already it can read running there. So the wait is for the follow the callers assert on, the
+        // documented run as the chat's active run, not for a running status alone.
+        val documented = api.agents.getValue(AGENT).latestRunId!!
+        awaitUntil("the chat on the account's run") {
+            graph.conversations.state(AGENT).value.let { it.runStatus?.isActive == true && it.activeRunId == documented }
+        }
         return vm
     }
 
@@ -705,6 +714,34 @@ class OutgoingSendTest {
         withTimeout(15_000) { vm.isSending.first { !it } }
         assertThat(vm.outgoingStatuses.value).isEmpty()
         awaitUntil("bubble down") { pendingBubbles().isEmpty() }
+    }
+
+    /**
+     * Bennett's 0.4.24 frames of 2026-09-30, after a reload: the chat read idle, the account's card holding the message
+     * the server had queued behind its turn. The next send went out as a run request, was refused as busy, and — the
+     * account's answer taken for a run started — showed sent under "Starting…". Messages on the card are the server's
+     * to deliver first: the next goes behind them, onto the card from the tap, as the placeholder says it will.
+     */
+    @Test
+    fun `with a message on the account's card, the next goes behind it from the tap and never as a run request`() = runBlocking<Unit> {
+        val vm = open()
+        account.pending += PendingFollowup("fu-held", "Figure this out first")
+        graph.steering.refreshQueue(AGENT)
+        awaitUntil("the card holds the account's message") { card().queue.any { it.text == "Figure this out first" } }
+        assertThat(graph.followUps.decide(AGENT).busy).isFalse()
+        account.queueNext = true
+        vm.setDraft("And then this")
+        val bubbles = bubblesDuring("And then this") {
+            assertThat(vm.send()).isNull()
+            assertThat(vm.composerIsEmpty()).isTrue()
+            await("on the card") { card().queue.singleOrNull { it.text == "And then this" } }
+            await("queued on the account") { account.sent.singleOrNull { it.text == "And then this" } }
+            withTimeout(15_000) { vm.isSending.first { !it } }
+        }
+        assertWithMessage("pending bubbles shown for a queued message").that(bubbles).isEmpty()
+        assertThat(api.runRequests).isEmpty()
+        graph.steering.refreshQueue(AGENT)
+        assertThat(card().queue.map { it.text }).containsExactly("Figure this out first", "And then this").inOrder()
     }
 
     /**

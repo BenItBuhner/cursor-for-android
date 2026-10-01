@@ -15,6 +15,8 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.cursorforandroid.domain.CredentialInfo
 import com.cursorforandroid.domain.CursorUser
 import com.cursorforandroid.domain.NewChatHome
+import com.cursorforandroid.domain.NewChatHomeChoice
+import com.cursorforandroid.domain.ProjectArrangement
 import com.cursorforandroid.domain.SignInMethod
 import com.cursorforandroid.ui.panel.PaneWidthClass
 import com.cursorforandroid.ui.theme.ThemeMode
@@ -82,20 +84,6 @@ class PreferencesStoreTest {
     }
 
     @Test
-    fun `keep chats live is on for whoever never touched it, and a switch turned off stays off`() = runBlocking {
-        val context = ApplicationProvider.getApplicationContext<Context>()
-        assertThat(PreferencesStore(context).liveSync.first()).isTrue()
-        // What an older build wrote for someone who turned the experiment off, read by this one — sign-outs included.
-        PreferencesStore(context).setLiveSync(false)
-        val prefs = PreferencesStore(context)
-        assertThat(prefs.liveSync.first()).isFalse()
-        prefs.clearSession()
-        assertThat(prefs.liveSync.first()).isFalse()
-        prefs.setLiveSync(true)
-        assertThat(prefs.liveSync.first()).isTrue()
-    }
-
-    @Test
     fun `a long queue stacks for whoever never opened it, and an opened one stays open through a sign-out`() = runBlocking {
         val context = ApplicationProvider.getApplicationContext<Context>()
         assertThat(PreferencesStore(context).queueStacked.first()).isTrue()
@@ -159,6 +147,32 @@ class PreferencesStoreTest {
 
         prefs.clearSession()
         assertThat(prefs.localAgentState.first().projectOrder).isEmpty()
+    }
+
+    @Test
+    fun `Projects hidden from the New Chat page stay hidden across a restart, keep the order, and go at sign-out`() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val prefs = PreferencesStore(context)
+        assertThat(prefs.localAgentState.first().hiddenProjectIds).isEmpty()
+
+        prefs.setProjectArrangement(ProjectArrangement(listOf("bc-a", "bc-b", "bc-c", "bc-d"), hidden = setOf("bc-b", "bc-d")))
+        // A store opened afresh, as the next start of the app opens it.
+        val restarted = PreferencesStore(context).localAgentState.first()
+        assertThat(restarted.hiddenProjectIds).containsExactly("bc-b", "bc-d")
+        assertThat(restarted.projectOrder).containsExactly("bc-a", "bc-b", "bc-c", "bc-d").inOrder()
+
+        // Shown again while one hidden Project was not on the page (archived, filtered out): it stays hidden.
+        prefs.setProjectArrangement(ProjectArrangement(listOf("bc-b", "bc-a", "bc-c"), hidden = emptySet()))
+        val after = prefs.localAgentState.first()
+        assertThat(after.hiddenProjectIds).containsExactly("bc-d")
+        assertThat(after.projectOrder).containsExactly("bc-b", "bc-a", "bc-c", "bc-d").inOrder()
+
+        // Ordering alone leaves what is hidden as it is.
+        prefs.setProjectOrder(listOf("bc-c", "bc-b"))
+        assertThat(prefs.localAgentState.first().hiddenProjectIds).containsExactly("bc-d")
+
+        prefs.clearSession()
+        assertThat(PreferencesStore(context).localAgentState.first().hiddenProjectIds).isEmpty()
     }
 
     @Test
@@ -279,38 +293,29 @@ class PreferencesStoreTest {
     }
 
     @Test
-    fun `confirm before stopping is on for a fresh install`() = runBlocking<Unit> {
-        assertThat(PreferencesStore(ApplicationProvider.getApplicationContext()).confirmStop.first()).isTrue()
-    }
-
-    @Test
-    fun `an install upgraded from a build without Confirm before stopping reads it as on, and keeps what the user sets through a sign-out`() = runBlocking<Unit> {
+    fun `an install that turned off Confirm before stopping, Keep chats live or Full transcript history, or allowed crash reports, forgets it on upgrade`() = runBlocking<Unit> {
         val context = ApplicationProvider.getApplicationContext<Context>()
-        // The file an earlier build left: its own settings written, this one never. Written through a DataStore of its
-        // own, closed before the app's opens the file, as a process that has since been replaced would have.
-        val earlierBuild = Job()
-        val earlier = PreferenceDataStoreFactory.create(
-            scope = CoroutineScope(Dispatchers.IO + earlierBuild),
-            produceFile = { context.preferencesDataStoreFile("cursor_settings") },
+        val store = PreferenceDataStoreFactory.create(
+            scope = CoroutineScope(Dispatchers.IO + SupervisorJob()),
+            produceFile = { context.preferencesDataStoreFile("always_on_settings") },
         )
-        earlier.edit { p ->
+        // What an earlier build left for someone who turned each switch away from what is now always so.
+        store.edit { p ->
+            p[booleanPreferencesKey("confirm_stop")] = false
+            p[booleanPreferencesKey("live_sync")] = false
+            p[stringPreferencesKey("transcript_engine")] = "stable"
+            p[booleanPreferencesKey("crash_reports")] = true
             p[stringPreferencesKey("theme_mode")] = ThemeMode.Light.name
             p[booleanPreferencesKey("live_notifications")] = false
         }
-        earlierBuild.cancelAndJoin()
+        val prefs = PreferencesStore(context, store)
 
-        val prefs = PreferencesStore(context)
+        assertThat(prefs.forgetRetiredSettings()).isTrue()
+        val left = store.data.first().asMap().keys.map { it.name }
+        assertThat(left).containsExactly("theme_mode", "live_notifications")
+        // What this build still offers is kept as it was set.
         assertThat(prefs.themeMode.first()).isEqualTo(ThemeMode.Light)
         assertThat(prefs.liveNotifications.first()).isFalse()
-        assertThat(prefs.confirmStop.first()).isTrue()
-
-        prefs.setConfirmStop(false)
-        assertThat(prefs.confirmStop.first()).isFalse()
-        // The device's preference, not the account's.
-        prefs.clearSession()
-        assertThat(prefs.confirmStop.first()).isFalse()
-        prefs.setConfirmStop(true)
-        assertThat(prefs.confirmStop.first()).isTrue()
     }
 
     @Test
@@ -342,19 +347,6 @@ class PreferencesStoreTest {
         assertThat(prefs.railWidthDp.first()).isEqualTo(240)
         // Once they are gone there is nothing to write.
         assertThat(prefs.forgetRetiredSettings()).isTrue()
-    }
-
-    @Test
-    fun `crash reports are off until asked for, and the answer belongs to the device, not the account`() = runBlocking<Unit> {
-        val prefs = PreferencesStore(ApplicationProvider.getApplicationContext())
-        assertThat(prefs.crashReports.first()).isFalse()
-        prefs.setCrashReports(true)
-        assertThat(prefs.crashReports.first()).isTrue()
-        // A consent given on this phone is not withdrawn by signing out of an account.
-        prefs.clearSession()
-        assertThat(prefs.crashReports.first()).isTrue()
-        prefs.setCrashReports(false)
-        assertThat(prefs.crashReports.first()).isFalse()
     }
 
     @Test
@@ -395,6 +387,33 @@ class PreferencesStoreTest {
         assertThat(restarted.panelOpen(PaneWidthClass.Expanded).first()).isTrue()
         restarted.setPanelOpen(PaneWidthClass.Expanded, false)
         assertThat(restarted.panelOpen(PaneWidthClass.Expanded).first()).isFalse()
+    }
+
+    @Test
+    fun `the new chat page's choice reads as none until one is tapped, and a choice stays across sign-outs`() = runBlocking<Unit> {
+        val prefs = PreferencesStore(ApplicationProvider.getApplicationContext())
+        assertThat(prefs.newChatHomeChoice.first()).isEqualTo(NewChatHomeChoice(null))
+        prefs.setNewChatHome(NewChatHome.RECENT)
+        assertThat(prefs.newChatHomeChoice.first()).isEqualTo(NewChatHomeChoice(NewChatHome.RECENT))
+        prefs.clearSession()
+        assertThat(prefs.newChatHomeChoice.first()).isEqualTo(NewChatHomeChoice(NewChatHome.RECENT))
+        prefs.setNewChatHome(NewChatHome.COMPOSER)
+        assertThat(prefs.newChatHomeChoice.first()).isEqualTo(NewChatHomeChoice(NewChatHome.COMPOSER))
+    }
+
+    @Test
+    fun `the new chat page picks Projects for an account with any, Recent without, and waits while it cannot tell`() {
+        assertThat(NewChatHome.automatic(projectsAvailable = true, hasProjects = true, settled = false)).isEqualTo(NewChatHome.PROJECTS)
+        assertThat(NewChatHome.automatic(projectsAvailable = true, hasProjects = true, settled = true)).isEqualTo(NewChatHome.PROJECTS)
+        assertThat(NewChatHome.automatic(projectsAvailable = true, hasProjects = false, settled = true)).isEqualTo(NewChatHome.RECENT)
+        // No Projects on disk may yet be a Project made elsewhere: no pick until the list is current.
+        assertThat(NewChatHome.automatic(projectsAvailable = true, hasProjects = false, settled = false)).isNull()
+        // Extended mode off: no Projects to have at all, so Recent at once.
+        assertThat(NewChatHome.automatic(projectsAvailable = false, hasProjects = false, settled = false)).isEqualTo(NewChatHome.RECENT)
+        assertThat(NewChatHome.automatic(projectsAvailable = null, hasProjects = true, settled = true)).isNull()
+        assertThat(NewChatHome.chosen(null)).isNull()
+        assertThat(NewChatHome.chosen("pinned")).isNull()
+        assertThat(NewChatHome.chosen("projects")).isEqualTo(NewChatHome.PROJECTS)
     }
 
     @Test

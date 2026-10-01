@@ -177,7 +177,7 @@ class RightClickMenusScreenshotTest {
     @Test
     fun projectShortcut() {
         scene {
-            ProjectShortcutGrid(NewChatHomeFixtures.list().projectRows, Modifier.padding(16.dp).padding(top = 24.dp), onOpen = {}, actions = actions.copy(onEditProject = {}), onReorder = {})
+            ProjectShortcutGrid(NewChatHomeFixtures.list().projectRows, Modifier.padding(16.dp).padding(top = 24.dp), onOpen = {}, actions = actions.copy(onEditProject = {}), onArrange = {})
         }
         compose.onAllNodes(hasTestTag(NewChatHomeTags.PROJECT_SHORTCUT)).onFirst().rightClickAt(200f, 90f)
         capture("599_right_click_project_shortcut")

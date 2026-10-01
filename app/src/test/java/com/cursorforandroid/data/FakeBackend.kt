@@ -84,19 +84,33 @@ open class FakeCursorApi : CursorApi {
     @Volatile var blankCreatedNames = false
     /** When set, [listAgents] suspends until the deferred completes, so a test can interleave work with a refresh. */
     @Volatile var listGate: CompletableDeferred<Unit>? = null
-    @Volatile var getRunCalls = 0
-    @Volatile var getAgentCalls = 0
-    @Volatile var listAgentsCalls = 0
-    @Volatile var meCalls = 0
+    // How often each endpoint was called. Counted atomically: the repositories fan calls out side by side (the three
+    // fleet calls, a page per worker), and a `@Volatile` `++` from two threads at once loses one of them - a test that
+    // waits for a count it then never reaches spins until the stall watchdog kills the JVM.
+    protected val getRunCount = AtomicInteger()
+    protected val getAgentCount = AtomicInteger()
+    protected val listAgentsCount = AtomicInteger()
+    protected val meCount = AtomicInteger()
+    protected val listAgentsV0Count = AtomicInteger()
+    protected val listRunsCount = AtomicInteger()
+    protected val conversationCount = AtomicInteger()
+    protected val modelsCount = AtomicInteger()
+    protected val repositoriesCount = AtomicInteger()
+    protected val workersCount = AtomicInteger()
+    protected val poolsCount = AtomicInteger()
+    val getRunCalls: Int get() = getRunCount.get()
+    val getAgentCalls: Int get() = getAgentCount.get()
+    val listAgentsCalls: Int get() = listAgentsCount.get()
+    val meCalls: Int get() = meCount.get()
     /** When set, [me] throws it, as the real API does for a rejected key. */
     @Volatile var failMe: Throwable? = null
-    @Volatile var listAgentsV0Calls = 0
-    @Volatile var listRunsCalls = 0
-    @Volatile var conversationCalls = 0
-    @Volatile var modelsCalls = 0
-    @Volatile var repositoriesCalls = 0
-    @Volatile var workersCalls = 0
-    @Volatile var poolsCalls = 0
+    val listAgentsV0Calls: Int get() = listAgentsV0Count.get()
+    val listRunsCalls: Int get() = listRunsCount.get()
+    val conversationCalls: Int get() = conversationCount.get()
+    val modelsCalls: Int get() = modelsCount.get()
+    val repositoriesCalls: Int get() = repositoriesCount.get()
+    val workersCalls: Int get() = workersCount.get()
+    val poolsCalls: Int get() = poolsCount.get()
     @Volatile var failWorkers: Throwable? = null
     @Volatile var failPools: Throwable? = null
     /** Holds every `listWorkers` answer until completed. */
@@ -189,24 +203,24 @@ open class FakeCursorApi : CursorApi {
     private fun newestFirst() = agents.values.sortedWith(compareByDescending<AgentDto> { it.createdAt }.thenBy { it.id })
 
     override suspend fun me(): ApiKeyInfoDto {
-        meCalls++
+        meCount.incrementAndGet()
         failMe?.let { throw it }
         return ApiKeyInfoDto(apiKeyName = "test")
     }
     override suspend fun models(): ListModelsResponseDto {
-        modelsCalls++
+        modelsCount.incrementAndGet()
         modelsGate?.await()
         failModels?.let { throw it }
         return ListModelsResponseDto(items = modelItems)
     }
     override suspend fun repositories(): ListRepositoriesResponseDto {
-        repositoriesCalls++
+        repositoriesCount.incrementAndGet()
         repositoriesGate?.await()
         failRepositories?.let { throw it }
         return ListRepositoriesResponseDto(items = repositoryUrls.map(::RepositoryDto))
     }
     override suspend fun listWorkers(status: String?, scope: String?, limit: Int, nextPageToken: String?): ListWorkersResponseDto {
-        workersCalls++
+        workersCount.incrementAndGet()
         workersGate?.await()
         failWorkers?.let { throw it }
         val listed = when (scope) {
@@ -217,12 +231,12 @@ open class FakeCursorApi : CursorApi {
         return ListWorkersResponseDto(workers = listed)
     }
     override suspend fun listPools(scope: String?): ListPoolsResponseDto {
-        poolsCalls++
+        poolsCount.incrementAndGet()
         failPools?.let { throw it }
         return ListPoolsResponseDto(pools = pools)
     }
     override suspend fun listAgents(limit: Int, cursor: String?, includeArchived: Boolean): ListAgentsResponseDto {
-        listAgentsCalls++
+        listAgentsCount.incrementAndGet()
         failListAgents?.let { throw it }
         // Snapshot first, then wait: the answer reflects the server as it was when the request went out.
         val (items, next) = page(newestFirst().filter { includeArchived || it.status != "ARCHIVED" }, { it.id }, limit, cursor)
@@ -234,7 +248,7 @@ open class FakeCursorApi : CursorApi {
         )
     }
     override suspend fun getAgent(id: String): AgentDto {
-        getAgentCalls++
+        getAgentCount.incrementAndGet()
         failGetAgent?.let { throw it }
         getAgentGate?.await()
         return agents[id] ?: throw notFound()
@@ -276,7 +290,7 @@ open class FakeCursorApi : CursorApi {
     override suspend fun artifacts(id: String) = ListArtifactsResponseDto()
     open override suspend fun artifactUrl(id: String, path: String) = DownloadArtifactResponseDto(url = "")
     override suspend fun listRuns(id: String, limit: Int, cursor: String?): ListRunsResponseDto {
-        listRunsCalls++
+        listRunsCount.incrementAndGet()
         failListRuns?.let { throw it }
         runsGate?.await()
         // Newest first and paged, as the reference documents `ListRunsResponse.items`: with fewer runs than the limit
@@ -287,7 +301,7 @@ open class FakeCursorApi : CursorApi {
         return ListRunsResponseDto(items = items, nextCursor = next)
     }
     override suspend fun getRun(id: String, runId: String): RunDto {
-        getRunCalls++
+        getRunCount.incrementAndGet()
         getRunGate?.await()
         return runs[runId] ?: throw notFound()
     }
@@ -331,7 +345,7 @@ open class FakeCursorApi : CursorApi {
         )
     }
     override suspend fun listAgentsV0(limit: Int, cursor: String?): V0ListAgentsResponseDto {
-        listAgentsV0Calls++
+        listAgentsV0Count.incrementAndGet()
         failListAgentsV0?.let { throw it }
         v0Gate?.await()
         val ordered = newestFirst().mapNotNull { v0[it.id] }
@@ -339,7 +353,7 @@ open class FakeCursorApi : CursorApi {
         return V0ListAgentsResponseDto(agents = items, nextCursor = next)
     }
     override suspend fun conversationV0(id: String): V0ConversationResponseDto {
-        conversationCalls++
+        conversationCount.incrementAndGet()
         failConversation?.let { throw it }
         conversationGate?.await()
         return V0ConversationResponseDto(id, transcripts[id] ?: if (id in agents) emptyList() else throw notFound())
@@ -382,7 +396,18 @@ class FakeRunStreamer(private val replay: Int = 256) : RunStreamer {
         channels.remove(runId)
     }
 
+    private val strandings = ConcurrentHashMap<String, Int>()
+
+    /**
+     * The connections to [runId] open now stay open and say nothing more: what is emitted afterwards reaches only
+     * connections opened later, the way a held stream the server's side has let go of goes on with keep-alives alone.
+     */
+    fun strand(runId: String) {
+        strandings.merge(runId, 1, Int::plus)
+    }
+
     override fun stream(agentId: String, runId: String, lastEventId: String?): Flow<RunStreamEvent> = flow {
+        val strandedAt = strandings[runId] ?: 0
         connections += runId
         resumes += lastEventId
         // As the API answers any id it did not mint.
@@ -403,6 +428,7 @@ class FakeRunStreamer(private val replay: Int = 256) : RunStreamer {
             .transformWhile { event ->
                 position++
                 if (position <= skip) return@transformWhile true
+                if ((strandings[runId] ?: 0) > strandedAt) return@transformWhile true
                 emit(event)
                 delivered++
                 if (drop != null && delivered >= drop.afterEvents) {

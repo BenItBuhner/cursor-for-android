@@ -21,6 +21,7 @@ class LoginClientTest {
         val login = CursorApiFactory.loginClient()
 
         assertThat(login.interceptors.filterIsInstance<HttpLoggingInterceptor>()).isEmpty()
-        assertThat(login.networkInterceptors).isEmpty()
+        // Its one network interceptor is the root's connect gate, which reads nothing of a request but its host.
+        assertThat(login.networkInterceptors.map { it::class }).containsExactly(ConnectGate::class)
     }
 }

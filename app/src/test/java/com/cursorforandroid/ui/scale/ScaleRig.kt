@@ -33,6 +33,7 @@ import androidx.test.ext.junit.rules.ActivityScenarioRule
 import com.cursorforandroid.AppGraph
 import com.cursorforandroid.data.FakeCursorApi
 import com.cursorforandroid.data.FakeRunStreamer
+import com.cursorforandroid.data.api.RunStreamer
 import com.cursorforandroid.data.local.SecureKeyStore
 import com.cursorforandroid.data.repo.CursorBackend
 import com.cursorforandroid.domain.CursorUser
@@ -54,6 +55,8 @@ class ScaleRig(
     val size: ScaleFleet.Size,
     now: Long,
     replay: Int = 256,
+    /** The streamer the app reads runs through, given the fake one: the fake itself unless a scenario streams over the wire. */
+    private val route: (FakeRunStreamer) -> RunStreamer = { it },
 ) {
     val api = FakeCursorApi()
     val streamer = FakeRunStreamer(replay)
@@ -84,7 +87,7 @@ class ScaleRig(
         fleet.install(api)
         fleet.installBigTranscript(api, streamer, bigTurns, live)
         val context = ApplicationProvider.getApplicationContext<Context>()
-        graph = AppGraph(context, SecureKeyStore(context) { context.getSharedPreferences("stand-in-secure", Context.MODE_PRIVATE) }, demo = CursorBackend(api, streamer, isDemo = true))
+        graph = AppGraph(context, SecureKeyStore(context) { context.getSharedPreferences("stand-in-secure", Context.MODE_PRIVATE) }, demo = CursorBackend(api, route(streamer), isDemo = true))
         runBlocking { graph.session.enterDemo() }
         val started = System.nanoTime()
         runBlocking { graph.agents.refresh() }

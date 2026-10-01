@@ -9,6 +9,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import androidx.compose.ui.test.onFirst
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
@@ -74,6 +75,9 @@ class SidebarCollapsePersistenceTest {
 
     private fun composed(text: String) = compose.onAllNodes(hasText(text)).fetchSemanticsNodes().isNotEmpty()
 
+    /** On screen as `assertIsDisplayed` judges it: composed, placed, with visible bounds. */
+    private fun displayed(text: String) = runCatching { compose.onAllNodes(hasText(text)).onFirst().assertIsDisplayed() }.isSuccess
+
     @Test
     fun `a fold made in the sidebar is written to the device and read back by the next view model`() = runBlocking<Unit> {
         // Which view model the sidebar reads from: swapping it is the restart, the composition standing in for the app's.
@@ -108,16 +112,19 @@ class SidebarCollapsePersistenceTest {
         val firstToday = todayRows.first().agent.name
         compose.onNodeWithText(firstToday).assertIsDisplayed()
 
-        // Folded from the header: the rows go, the count comes, and the device has the fold.
+        // Folded from the header: the rows go, the count comes, and the device has the fold. The fold is written to
+        // the device and read back on the wall clock, with the frame clock held: the state can flip between the frame
+        // a pass stepped and its check, so each wait below holds out for the frame that shows what it is about to
+        // assert, not for the state alone.
         compose.onNodeWithText("Today").performClick()
-        compose.awaitSynced { viewModel.uiState.value.collapsedSections.contains("date:Today") }
+        compose.awaitSynced { viewModel.uiState.value.collapsedSections.contains("date:Today") && !composed(firstToday) }
         compose.onNodeWithText(firstToday).assertDoesNotExist()
         compose.onNodeWithTag("section-count-date:Today", useUnmergedTree = true).assertIsDisplayed()
         assertThat(PreferencesStore(context).collapsedSidebarSections.first()).containsExactly("date:Today")
 
         // Restart: a new view model, a fresh read of the same device. Today comes back folded, nothing tapped.
         viewModel = AgentsViewModel(graph)
-        compose.awaitSynced { viewModel.uiState.value.hasLoaded && viewModel.uiState.value.collapsedSections.contains("date:Today") }
+        compose.awaitSynced { viewModel.uiState.value.hasLoaded && viewModel.uiState.value.collapsedSections.contains("date:Today") && !composed(firstToday) }
         compose.onNodeWithText(firstToday).assertDoesNotExist()
         compose.onNodeWithTag("section-count-date:Today", useUnmergedTree = true).assertIsDisplayed()
         compose.onNodeWithContentDescription("Expand Today").assertIsDisplayed()
@@ -126,7 +133,7 @@ class SidebarCollapsePersistenceTest {
 
         // Opened again, the device forgets the fold.
         compose.onNodeWithContentDescription("Expand Today").performClick()
-        compose.awaitSynced { viewModel.uiState.value.collapsedSections.isEmpty() }
+        compose.awaitSynced { viewModel.uiState.value.collapsedSections.isEmpty() && displayed(firstToday) }
         compose.onNodeWithText(firstToday).assertIsDisplayed()
         assertThat(PreferencesStore(context).collapsedSidebarSections.first()).isEmpty()
     }

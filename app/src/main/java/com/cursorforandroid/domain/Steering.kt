@@ -93,6 +93,11 @@ data class PendingFollowup(
      * ([files], [imageCount]) stands in then.
      */
     val attachments: List<MessageAttachment> = emptyList(),
+    /**
+     * Where a steer of the message from this device stands (see [ConversationControls.steers]): the row keeps its
+     * place, reading "steering" and then "steered", until the transcript shows the message. Null for a row not steered.
+     */
+    val steer: SteerPhase? = null,
 ) {
     /** The line a card shows: the message, or a word for one that carries only attachments. */
     val previewText: String get() = text.ifBlank { attachmentOnlyText(imageCount, files.size) }
@@ -138,8 +143,15 @@ data class QueuePlacement(
      * said it holds them. The card shows them in flight, their actions held until the account knows their id.
      */
     val sendingIds: Set<String> = emptySet(),
+    /**
+     * The device queue's rows ([QueuedFollowUp.id]) sent from the card whose bubbles this frame's items show:
+     * the card leaves them out from this frame on, and stands for them until it (see `QueueHandover`), so the card
+     * closes in the very frame the bubble opens and the transcript moves once.
+     */
+    val filedQueueIds: Set<String> = emptySet(),
 ) {
-    val isEmpty: Boolean get() = deliveredIds.isEmpty() && deliveredTexts.isEmpty() && returned.isEmpty() && waiting.isEmpty() && shownIds.isEmpty() && shownTexts.isEmpty()
+    val isEmpty: Boolean get() =
+        deliveredIds.isEmpty() && deliveredTexts.isEmpty() && returned.isEmpty() && waiting.isEmpty() && shownIds.isEmpty() && shownTexts.isEmpty() && filedQueueIds.isEmpty()
 
     /** Whether [followup] is in the transcript now — filed under its run, or standing as the composer's bubble — and so not on the card. */
     fun holds(followup: PendingFollowup): Boolean =
@@ -229,6 +241,13 @@ data class ConversationControls(
      */
     val goal: Goal? = null,
     val goalKnown: Boolean = false,
+    /**
+     * The account's rows steered from here into the turn under way, by followup id: [SteerPhase.STEERING] while the
+     * promote is out, [SteerPhase.STEERED] once the account took it. Kept while the account lists the message or the
+     * transcript's placement still holds it as waiting, so the row reads as a steer — never as a queued delivery —
+     * until the frame the transcript shows it.
+     */
+    val steers: Map<String, SteerPhase> = emptyMap(),
 ) {
     val isQueueAvailable: Boolean get() = queueLoad is QueueLoad.Loaded || queueLoad is QueueLoad.Loading && queue.isNotEmpty()
 
@@ -243,8 +262,15 @@ data class ConversationControls(
      * carries the word for it (see [QueuePlacement]). The same controls when nothing is placed.
      */
     fun placed(placement: QueuePlacement): ConversationControls {
-        if (placement.isEmpty) return this
+        if (placement.isEmpty && steers.isEmpty()) return this
         var changed = false
+        // A steered row reads as its steer, whatever else would be said under it.
+        fun steered(row: PendingFollowup): PendingFollowup {
+            val phase = steers[row.id] ?: return row
+            if (row.steer == phase && row.note == null) return row
+            changed = true
+            return row.copy(steer = phase, note = null)
+        }
         // By id; by words only for one queued without an id of the account's (the list's row for it is the account's
         // own name for the same message) — the same words are other queued messages' too.
         fun same(listed: PendingFollowup, w: PendingFollowup) =
@@ -256,17 +282,20 @@ data class ConversationControls(
             val withOwn = own?.let { changed = true; item.copy(attachments = it) } ?: item
             when {
                 placement.holds(item) -> { changed = true; null }
-                placement.returned[item.id] != null -> { changed = true; withOwn.copy(note = placement.returned[item.id]) }
-                else -> withOwn
+                placement.returned[item.id] != null -> { changed = true; steered(withOwn.copy(note = placement.returned[item.id])) }
+                else -> steered(withOwn)
             }
         }
-        // This device's queued messages the list does not name (yet, or any more): kept on the card until the transcript shows them.
-        val kept = placement.waiting.filter { w -> shown.none { same(it, w) } }
+        // This device's queued messages the list does not name (yet, or any more): kept on the card until the transcript
+        // shows them. One steered into the turn is the next to leave: it stands first rather than behind the rows still
+        // waiting, the place the list had it in being gone with the list's row.
+        val kept = placement.waiting.filter { w -> shown.none { same(it, w) } }.map { steered(it) }
         if (kept.isNotEmpty()) changed = true
+        val (steering, waiting) = kept.partition { it.steer != null }
         val sending = placement.sendingIds.mapTo(HashSet()) { QUEUE_ACTION_PREFIX + it }
         return when {
-            sending.isNotEmpty() -> copy(queue = shown + kept, inFlight = inFlight + sending)
-            changed -> copy(queue = shown + kept)
+            sending.isNotEmpty() -> copy(queue = steering + shown + waiting, inFlight = inFlight + sending)
+            changed -> copy(queue = steering + shown + waiting)
             else -> this
         }
     }

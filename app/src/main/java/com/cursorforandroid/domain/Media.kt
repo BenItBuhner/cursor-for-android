@@ -256,13 +256,15 @@ sealed interface MediaRef {
 
     /**
      * A file of an Agent Store (`/cursor/stores/<mount>/…`, see [StorePath]): [ownerId] is the agent whose store it
-     * is — the mount's own, or the chat's for `self`. Read through the account's store reads in Extended mode;
-     * without them a placeholder points at the Project on cursor.com.
+     * is — the mount's own, or the chat's for `self`. A mount that names the store itself ([StorePath.storeMount]: a
+     * store id, `user`, `team`) is kept as [store], and [ownerId] is then the chat it is read in, whose Project the
+     * fallback opens on cursor.com. Read through the account's store reads in Extended mode; without them a
+     * placeholder points at the Project on cursor.com.
      */
-    data class Store(val ownerId: String, val relativePath: String) : MediaRef {
-        override val cacheKey: String get() = "store:$ownerId:$relativePath"
+    data class Store(val ownerId: String, val relativePath: String, val store: String? = null) : MediaRef {
+        override val cacheKey: String get() = "store:${store ?: ownerId}:$relativePath"
         override val label: String get() = ArtifactPaths.fileName(relativePath)
-        val path: StorePath get() = StorePath(ownerId, relativePath)
+        val path: StorePath get() = StorePath(store ?: ownerId, relativePath)
         val webUrl: String get() = StorePath.webUrl(ownerId)
     }
 
@@ -291,10 +293,7 @@ sealed interface MediaRef {
             val trimmed = src.trim()
             if (trimmed.startsWith("http://", ignoreCase = true) || trimmed.startsWith("https://", ignoreCase = true)) return Remote(trimmed)
             // A store path names the store to read from, whether written bare or behind a `file:` scheme.
-            StorePath.parse(trimmed)?.let { path ->
-                val owner = path.ownerId(agentId) ?: return Unavailable(trimmed)
-                return Store(owner, path.relativePath)
-            }
+            StorePath.parse(trimmed)?.let { path -> return store(path, agentId) ?: Unavailable(trimmed) }
             // Both spellings `java.io.File.toURI()` (`file:/x`) and `Uri.fromFile` (`file:///x`) produce.
             if (trimmed.startsWith("file:", ignoreCase = true)) {
                 val path = runCatching { java.net.URI(trimmed).path }.getOrNull()?.takeIf { it.isNotBlank() } ?: return Unavailable(trimmed)
@@ -310,6 +309,16 @@ sealed interface MediaRef {
             val path = ArtifactPaths.apiPath(trimmed)
             if (path != null) return if (agentId != null) Artifact(agentId, path) else Unavailable(trimmed)
             return if (agentId != null && isFilePath(trimmed)) Workspace(agentId, trimmed) else Unavailable(trimmed)
+        }
+
+        /**
+         * The store file [path] names as read in [agentId]'s chat: an agent's store by its owner, or the store the
+         * mount names itself. Null only for `self` outside a chat, which names no one's.
+         */
+        fun store(path: StorePath, agentId: String?): Store? {
+            path.ownerId(agentId)?.let { return Store(it, path.relativePath) }
+            val mount = path.storeMount ?: return null
+            return Store(agentId ?: mount, path.relativePath, store = mount)
         }
 
         /** A path a file could be at: no scheme, no protocol-relative host, no anchor or query alone, and a name at its end. */

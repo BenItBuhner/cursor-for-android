@@ -133,7 +133,7 @@ class AppGraphExtendedModeTest {
     }
 
     @Test
-    fun `the transcript engine outlives the mode's wipe and a sign-out, never chosen staying Beta and an explicit Stable staying Stable`() = runBlocking<Unit> {
+    fun `the transcript engine outlives the mode's wipe and a sign-out, Beta staying Beta and the tests' Stable staying Stable`() = runBlocking<Unit> {
         val graph = AppGraph(app)
         graph.extendedMode.acknowledge()
         graph.extendedMode.enable()

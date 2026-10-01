@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
@@ -41,6 +42,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.cursorforandroid.ui.components.CursorIcons
+import com.cursorforandroid.ui.components.CursorMenu
+import com.cursorforandroid.ui.components.CursorMenuItem
 import com.cursorforandroid.ui.components.FlatIconButton
 import com.cursorforandroid.ui.components.ProgressRing
 import com.cursorforandroid.ui.components.SpinnerRing
@@ -97,7 +100,16 @@ internal fun ViewerTopBar(
  * over the file's name, or the name alone — inset from the navigation bar and the cutout.
  */
 @Composable
-internal fun ViewerBottomBar(entry: MediaEntry, playback: VideoPlayback?, muted: Boolean, onMute: (Boolean) -> Unit, onInteract: () -> Unit, modifier: Modifier = Modifier) {
+internal fun ViewerBottomBar(
+    entry: MediaEntry,
+    playback: VideoPlayback?,
+    muted: Boolean,
+    onMute: (Boolean) -> Unit,
+    onInteract: () -> Unit,
+    modifier: Modifier = Modifier,
+    speedMenuOpen: Boolean = false,
+    onSpeedMenu: (Boolean) -> Unit = {},
+) {
     Column(
         modifier
             .fillMaxWidth()
@@ -107,7 +119,7 @@ internal fun ViewerBottomBar(entry: MediaEntry, playback: VideoPlayback?, muted:
             .testTag("viewer-bottom-bar"),
     ) {
         if (playback != null) {
-            VideoControls(playback, muted, onMute, onInteract, Modifier.padding(horizontal = 8.dp), showSpeed = entry.isAudio)
+            VideoControls(playback, muted, onMute, onInteract, Modifier.padding(horizontal = 8.dp), speedMenuOpen = speedMenuOpen, onSpeedMenu = onSpeedMenu)
         }
         Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp).padding(top = if (playback != null) 4.dp else 0.dp, bottom = 16.dp)) {
             Text(
@@ -124,9 +136,17 @@ internal fun ViewerBottomBar(entry: MediaEntry, playback: VideoPlayback?, muted:
     }
 }
 
-/** Play or pause, the elapsed time, the scrubber, the length, the speed for a sound, and the sound: one row over a recording. */
+/** Play or pause, the elapsed time, the scrubber, the length, the sound, and at the end the speed: one row over a recording or a sound. */
 @Composable
-internal fun VideoControls(playback: VideoPlayback, muted: Boolean, onMute: (Boolean) -> Unit, onInteract: () -> Unit, modifier: Modifier = Modifier, showSpeed: Boolean = false) {
+internal fun VideoControls(
+    playback: VideoPlayback,
+    muted: Boolean,
+    onMute: (Boolean) -> Unit,
+    onInteract: () -> Unit,
+    modifier: Modifier = Modifier,
+    speedMenuOpen: Boolean = false,
+    onSpeedMenu: (Boolean) -> Unit = {},
+) {
     val type = CursorTheme.typography
     val duration = playback.durationMs
     Row(modifier.fillMaxWidth().height(44.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -156,20 +176,6 @@ internal fun VideoControls(playback: VideoPlayback, muted: Boolean, onMute: (Boo
             modifier = Modifier.weight(1f).padding(horizontal = 8.dp).testTag("viewer-scrubber"),
         )
         Text(TimeFormat.clock(duration), style = type.code, color = Color.White.copy(alpha = 0.6f), modifier = Modifier.width(44.dp).testTag("viewer-duration"))
-        if (showSpeed) {
-            Text(
-                VideoPlayback.speedLabel(playback.speed),
-                style = type.small,
-                color = Color.White,
-                textAlign = TextAlign.Center,
-                modifier = Modifier
-                    .width(44.dp)
-                    .pressable({ playback.cycleSpeed(); onInteract() }, CursorTheme.shapes.full)
-                    .padding(vertical = 8.dp)
-                    .semantics { contentDescription = "Playback speed ${VideoPlayback.speedLabel(playback.speed)}" }
-                    .testTag("viewer-speed"),
-            )
-        }
         FlatIconButton(
             icon = if (muted) CursorIcons.VolumeOff else CursorIcons.Volume,
             contentDescription = if (muted) "Unmute" else "Mute",
@@ -177,8 +183,64 @@ internal fun VideoControls(playback: VideoPlayback, muted: Boolean, onMute: (Boo
             tint = Color.White,
             modifier = Modifier.testTag("viewer-mute"),
         )
+        SpeedButton(
+            selected = playback.selectedSpeed,
+            expanded = speedMenuOpen,
+            onExpand = { open -> onSpeedMenu(open); onInteract() },
+            onPick = { rate ->
+                playback.selectSpeed(rate)
+                onSpeedMenu(false)
+                onInteract()
+            },
+        )
     }
 }
+
+/**
+ * The rate at the end of the controls row, on a faint pill, and the compact menu it opens above itself: the four
+ * [VideoPlayback.SPEEDS], the one playing checked. The pill names the picked rate, not a held 2×, which the page shows.
+ */
+@Composable
+private fun SpeedButton(selected: Float, expanded: Boolean, onExpand: (Boolean) -> Unit, onPick: (Float) -> Unit) {
+    val label = VideoPlayback.speedLabel(selected)
+    Box {
+        Box(
+            Modifier
+                .height(44.dp)
+                .pressable({ onExpand(!expanded) }, CursorTheme.shapes.full)
+                .padding(horizontal = 4.dp)
+                .semantics { contentDescription = "Playback speed $label" }
+                .testTag("viewer-speed"),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(
+                label,
+                style = CursorTheme.typography.small.copy(fontWeight = FontWeight.Medium),
+                color = Color.White,
+                textAlign = TextAlign.Center,
+                maxLines = 1,
+                modifier = Modifier
+                    .background(Color.White.copy(alpha = if (expanded) 0.24f else 0.14f), CursorTheme.shapes.full)
+                    .widthIn(min = 40.dp)
+                    .padding(horizontal = 8.dp, vertical = 3.dp),
+            )
+        }
+        CursorMenu(expanded = expanded, onDismissRequest = { onExpand(false) }, minWidth = SpeedMenuWidth, modifier = Modifier.testTag("viewer-speed-menu")) {
+            val colors = CursorTheme.colors
+            VideoPlayback.SPEEDS.forEach { rate ->
+                CursorMenuItem(
+                    label = VideoPlayback.speedLabel(rate),
+                    icon = null,
+                    modifier = Modifier.testTag("viewer-speed-${VideoPlayback.speedLabel(rate)}"),
+                    trailing = { Box(Modifier.size(CursorDimens.menuIcon)) { if (rate == selected) Icon(CursorIcons.Check, null, tint = colors.accent, modifier = Modifier.size(CursorDimens.menuIcon)) } },
+                    onClick = { onPick(rate) },
+                )
+            }
+        }
+    }
+}
+
+private val SpeedMenuWidth = 112.dp
 
 /**
  * The timeline of a recording: the played part in white over a faint track, the buffered part between, a thumb at

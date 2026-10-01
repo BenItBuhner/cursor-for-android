@@ -54,6 +54,7 @@ import com.cursorforandroid.domain.AgentRow
 import com.cursorforandroid.domain.DeviceTarget
 import com.cursorforandroid.domain.ModelResolution
 import com.cursorforandroid.domain.NewChatHome
+import com.cursorforandroid.domain.ProjectArrangement
 import com.cursorforandroid.ui.agents.AgentListUiState
 import com.cursorforandroid.ui.agents.AgentRowActions
 import com.cursorforandroid.ui.components.ComposerBox
@@ -98,9 +99,13 @@ object NewChatHomeCopy {
 object NewChatHomeTags {
     const val COMPOSER = "new_chat_composer"
     const val PROJECT_SHORTCUT = "new_chat_project_shortcut"
+    const val RECENT_CHAT = "new_chat_recent_chat"
     const val WORKING = "new_chat_project_working"
     const val WORKING_COUNT = "new_chat_project_working_count"
     const val PROJECTS_NOTE = "new_chat_projects_note"
+    const val HIDDEN_LINE = "new_chat_projects_hidden_line"
+    const val HIDDEN_DROP_TARGET = "new_chat_projects_hidden_drop_target"
+    const val ALL_HIDDEN = "new_chat_projects_all_hidden"
 }
 
 /** What a Projects note says instead of the shortcuts: the mode that has them is off, or there are none yet. */
@@ -122,7 +127,8 @@ internal sealed interface HomeBlock {
         override val key: String get() = "empty"
     }
 
-    data class Projects(val rows: List<AgentRow>) : HomeBlock {
+    /** Every Project, first to last, with the ones [hidden] from the page (shown only while they are arranged). */
+    data class Projects(val rows: List<AgentRow>, val hidden: Set<String> = emptySet()) : HomeBlock {
         override val key: String get() = "projects"
     }
 
@@ -148,7 +154,7 @@ internal fun homeBlocks(home: NewChatHome?, list: AgentListUiState, projectsAvai
         home == null || home == NewChatHome.COMPOSER -> emptyList()
         home == NewChatHome.RECENT -> recent()
         !projectsAvailable -> listOf(HomeBlock.Note(ProjectsNote.NeedsExtendedMode)) + recent()
-        list.projectRows.isNotEmpty() -> listOf(HomeBlock.Projects(list.projectRows))
+        list.projectRows.isNotEmpty() -> listOf(HomeBlock.Projects(list.projectRows, list.local.hiddenProjectIds))
         !list.hasLoaded -> emptyList()
         list.error != null -> listOf(HomeBlock.Empty(list.error))
         else -> listOf(HomeBlock.Note(ProjectsNote.NoProjects)) + recent()
@@ -163,8 +169,8 @@ internal class HomeBlockActions(
     val onOpenSettings: (() -> Unit)?,
     /** The page's hold on its Project shortcuts (the menu open, the arranging); null where they are only shown. */
     val projectGrid: ProjectGridState? = null,
-    /** The Projects as arranged on the page, first to last; null where they cannot be arranged. */
-    val onReorderProjects: ((List<String>) -> Unit)? = null,
+    /** The Projects as arranged on the page, and the ones hidden there; null where they cannot be arranged. */
+    val onArrangeProjects: ((ProjectArrangement) -> Unit)? = null,
 )
 
 @Composable
@@ -178,7 +184,7 @@ internal fun HomeBlockView(block: HomeBlock, nowMillis: Long, actions: HomeBlock
             block.row,
             onClick = { actions.onOpenAgent(block.row) },
             actions = actions.rowActions,
-            modifier = column,
+            modifier = column.testTag(NewChatHomeTags.RECENT_CHAT),
             nowMillis = nowMillis,
         )
         is HomeBlock.Empty -> Text(
@@ -189,11 +195,12 @@ internal fun HomeBlockView(block: HomeBlock, nowMillis: Long, actions: HomeBlock
         )
         is HomeBlock.Projects -> ProjectShortcutGrid(
             block.rows,
+            hidden = block.hidden,
             modifier = inset,
             onOpen = actions.onOpenAgent,
             actions = actions.rowActions,
             state = actions.projectGrid,
-            onReorder = actions.onReorderProjects,
+            onArrange = actions.onArrangeProjects,
         )
         is HomeBlock.Note -> ProjectsNoteCard(
             block.note,
@@ -355,7 +362,11 @@ internal fun NewChatPageMiniature(
     val colors = CursorTheme.colors
     val blocks = remember(home, list, projectsAvailable) {
         // A miniature shows a page's first screenful; nothing past it is drawn.
-        homeBlocks(home, list, projectsAvailable).take(MiniatureBlocks).map { if (it is HomeBlock.Projects) HomeBlock.Projects(it.rows.take(MiniatureShortcuts)) else it }
+        homeBlocks(home, list, projectsAvailable).take(MiniatureBlocks).map { block ->
+            if (block !is HomeBlock.Projects) return@map block
+            val (hidden, shown) = block.rows.partition { it.agent.id in block.hidden }
+            block.copy(rows = shown.take(MiniatureShortcuts) + hidden)
+        }
     }
     val menu = remember { ComposerMenuActions(onPickMedia = {}) }
     // The page's list keeps its last row clear of the navigation bar, and so its middle is this much higher.

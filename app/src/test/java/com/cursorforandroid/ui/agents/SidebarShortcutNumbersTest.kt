@@ -110,7 +110,6 @@ class SidebarShortcutNumbersTest {
                         },
                         onShortcutRows = { reported = it },
                     ),
-                    shortLists = SidebarShortLists(),
                     showShortcutNumbers = numbers,
                 )
             }

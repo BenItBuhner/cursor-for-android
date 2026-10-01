@@ -33,6 +33,10 @@ class FakeVideoPlayer(private val durationMs: Long = 12_000L, private val width:
     var renderedFrame = false
     var speed = 1f
         private set
+    var pitch = 1f
+        private set
+    /** Every rate it was asked to play at, in order. */
+    val speedsSet = mutableListOf<Float>()
 
     override fun getState(): State {
         val builder = State.Builder()
@@ -41,7 +45,7 @@ class FakeVideoPlayer(private val durationMs: Long = 12_000L, private val width:
             .setPlaybackState(if (items.isEmpty() || !prepared) Player.STATE_IDLE else if (positionMs >= durationMs) Player.STATE_ENDED else Player.STATE_READY)
             .setPlaylist(items.map { item -> MediaItemData.Builder(item.mediaId.ifEmpty { item.toString() }).setMediaItem(item).setDurationUs(durationMs * 1_000).setIsSeekable(true).build() })
             .setVolume(volumeSet)
-            .setPlaybackParameters(PlaybackParameters(speed))
+            .setPlaybackParameters(PlaybackParameters(speed, pitch))
             .setVideoSize(VideoSize(width, height))
             .setContentPositionMs(positionMs)
             .setContentBufferedPositionMs(PositionSupplier.getConstant(durationMs))
@@ -98,6 +102,8 @@ class FakeVideoPlayer(private val durationMs: Long = 12_000L, private val width:
 
     override fun handleSetPlaybackParameters(playbackParameters: PlaybackParameters): ListenableFuture<*> {
         speed = playbackParameters.speed
+        pitch = playbackParameters.pitch
+        speedsSet += playbackParameters.speed
         return Futures.immediateVoidFuture()
     }
 

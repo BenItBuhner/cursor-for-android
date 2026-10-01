@@ -273,28 +273,32 @@ if [[ -n "$mapping_uuid" ]]; then
 fi
 
 # --- Release body: the same header release.yml writes, then the notes ---------------------------------------------------
-{
-  echo "| | |"
-  echo "|---|---|"
-  echo "| versionName | \`${version}\` |"
-  echo "| versionCode | \`${version_code}\` |"
-  echo "| Commit | ${sha} |"
-  if $signed; then
-    echo "| Signing certificate (SHA-256) | \`${cert_sha256}\` |"
-  else
-    echo "| Signing | **Debug key** - dry run; not publishable. |"
-  fi
-  if [[ -n "$mapping_uuid" ]]; then
-    echo "| Remote crash reporting | Opt-in, off by default (Settings > Privacy). Anonymous; R8 mapping id \`${mapping_uuid}\`. Crash reports are also kept on the device (Settings > Debug). |"
-  else
-    echo "| Remote crash reporting | Off - this build has no project to report to. Crash reports stay on the device; share them from Settings > Debug (long-press the version row). |"
-  fi
-  [[ -z "$ci_proof" ]] || echo "| CI | ${ci_proof%% *} |"
-  echo
-  echo "**Install:** download \`cursor-for-android-${version}.apk\`, then \`adb install -r cursor-for-android-${version}.apk\` (or open it on the device). \`SHA256SUMS.txt\` holds the checksums of the APK and AAB; \`*-mapping.txt\` is the R8 mapping for de-obfuscating stack traces. Installs of **v0.2.0 and later** update in place — same signing key."
-  echo
-  if [[ -n "$notes_file" ]]; then cat "$notes_file"; echo; fi
-} > "$out_dir/release-body.md"
+# Written again after the CI wait: a run still going here is only named as the proof once it has succeeded.
+write_body() {
+  {
+    echo "| | |"
+    echo "|---|---|"
+    echo "| versionName | \`${version}\` |"
+    echo "| versionCode | \`${version_code}\` |"
+    echo "| Commit | ${sha} |"
+    if $signed; then
+      echo "| Signing certificate (SHA-256) | \`${cert_sha256}\` |"
+    else
+      echo "| Signing | **Debug key** - dry run; not publishable. |"
+    fi
+    if [[ -n "$mapping_uuid" ]]; then
+      echo "| Remote crash reporting | Off - Settings has no consent for it. R8 mapping id \`${mapping_uuid}\`. Crash reports stay on the device; share them from Settings > Debug (long-press the version row). |"
+    else
+      echo "| Remote crash reporting | Off - this build has no project to report to. Crash reports stay on the device; share them from Settings > Debug (long-press the version row). |"
+    fi
+    [[ -z "$ci_proof" ]] || echo "| CI | ${ci_proof%% *} |"
+    echo
+    echo "**Install:** download \`cursor-for-android-${version}.apk\`, then \`adb install -r cursor-for-android-${version}.apk\` (or open it on the device). \`SHA256SUMS.txt\` holds the checksums of the APK and AAB; \`*-mapping.txt\` is the R8 mapping for de-obfuscating stack traces. Installs of **v0.2.0 and later** update in place — same signing key."
+    echo
+    if [[ -n "$notes_file" ]]; then cat "$notes_file"; echo; fi
+  } > "$out_dir/release-body.md"
+}
+write_body
 
 ls -l "$out_dir"
 if $dry_run; then
@@ -308,6 +312,7 @@ fi
 # in a second step: publishing is what creates the tag, so release.yml (triggered by it) finds the finished release and
 # stands down, and nobody ever sees a release without its APK.
 await_ci || exit 1
+write_body
 log "Publishing $tag"
 flags=(--repo "$repo" --draft --target "$sha" --title "$tag" --notes-file "$out_dir/release-body.md")
 $generate_notes && flags+=(--generate-notes)

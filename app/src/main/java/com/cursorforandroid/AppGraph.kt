@@ -7,7 +7,6 @@ import androidx.lifecycle.ProcessLifecycleOwner
 import com.cursorforandroid.crash.Breadcrumbs
 import com.cursorforandroid.crash.CrashContext
 import com.cursorforandroid.crash.CrashLog
-import com.cursorforandroid.crash.CrashReporting
 import com.cursorforandroid.data.api.AccountApi
 import com.cursorforandroid.data.api.AccountTranscriptionApi
 import com.cursorforandroid.data.api.AccountFollowup
@@ -191,6 +190,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -258,8 +258,6 @@ class AppGraph(
     private val app = context.applicationContext
 
     val prefs = PreferencesStore(context)
-    /** Opt-in crash reports; inert until the setting is on, and in a build with no DSN. Eager: it is only two strings. */
-    val crashReporting = CrashReporting(app)
     /**
      * Disk copies of what the API last returned; the app opens on them and revalidates in the background. Eager
      * because it is only file paths until something reads or writes, and the sign-out wipe goes through it.
@@ -810,7 +808,7 @@ class AppGraph(
     }
     val conversations: ConversationRepository get() = lazyConversations.value
 
-    /** Background live sync (Settings › Advanced › Keep chats live): started by [LiveSyncBinding]. */
+    /** Background live sync: started by [LiveSyncBinding]. */
     private val lazyLiveSync = lazy {
         LiveSync(
             target = object : LiveSync.Target {
@@ -822,8 +820,8 @@ class AppGraph(
         )
     }
     val liveSync: LiveSync get() = lazyLiveSync.value
-    /** Whether background live sync runs: the switch, outside the demo (which has no account to stream from). */
-    val liveSyncEnabled: Flow<Boolean> get() = combine(prefs.liveSync, prefs.demoMode) { on, demo -> on && !demo }
+    /** Whether background live sync runs: always, outside the demo (which has no account to stream from). */
+    val liveSyncEnabled: Flow<Boolean> get() = prefs.demoMode.map { demo -> !demo }
 
     /** The search palette's reading of the transcripts kept on this device (Ctrl+F, see [TranscriptSearchIndex]). */
     private val lazyTranscriptSearch = lazy { TranscriptSearchIndex(caches.conversations, caches.traces) }
@@ -903,6 +901,8 @@ class AppGraph(
                 override suspend fun withdraw(agentId: String, followupId: String): Boolean =
                     steering.deletePending(agentId, followupId).isSuccess
             },
+            // A Remote Control chat's machine must be reporting to Cursor for a message to go (`GET /v0/private-workers`).
+            machineStatus = { agent, fresh -> remote.machineStatus(agent, force = fresh)?.getOrNull() },
             store = followUpStore,
             persist = { !session.isDemo },
         )
@@ -939,6 +939,7 @@ class AppGraph(
             onQueueRead = { agentId, pending, readAt -> conversations.noteAccountQueue(agentId, pending, readAt) },
             onQueuedDeleted = { agentId, followupId -> conversations.queuedDeleted(agentId, followupId) },
             onQueuedEdited = { agentId, followupId, text -> conversations.queuedEdited(agentId, followupId, text) },
+            onQueuedNote = { agentId, followupId, note -> conversations.noteQueuedNote(agentId, followupId, note) },
             placement = { agentId -> conversations.queuePlacement(agentId) },
             capabilities = capabilities,
         )
@@ -1081,10 +1082,11 @@ class AppGraph(
      * Opens the key store, with the Android Keystore behind it — the slowest read of the session's restore — on a
      * background thread, for `Application.onCreate`: the restore the activity starts a moment later finds it open
      * instead of paying for it while the splash screen waits. The settings are left to the restore, which reads them
-     * in one snapshot beside it.
+     * in one snapshot beside it. The New Chat page's last picture is read beside it, so the first frame has it.
      */
     fun warmUp() {
         startupScope.launch(Dispatchers.IO) { runCatching { keyStore.apiKey() } }
+        caches.newChatPage.warm()
     }
 
     private val sessionStartLock = Any()
@@ -1172,6 +1174,7 @@ class AppGraph(
             // Cancelling a write does not stop it: the caches are closed first so nothing this account still has in
             // flight can land after the wipe below re-creates the directories it deleted.
             caches.invalidate()
+            caches.newChatPage.forget()
             AttachmentImages.clear()
             share.clear()
             // Resetting is only ever about what is in memory, so a part this process never built has nothing to

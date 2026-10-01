@@ -17,7 +17,6 @@ import com.cursorforandroid.domain.TranscriptHit
 import com.cursorforandroid.ui.agents.AgentListUiState
 import com.cursorforandroid.ui.agents.AgentRowGlyph
 import com.cursorforandroid.ui.agents.SidebarGroup
-import com.cursorforandroid.ui.agents.SidebarShortLists
 import com.cursorforandroid.ui.agents.sidebarGroups
 import com.cursorforandroid.ui.shortcuts.ChatShortcuts
 import com.cursorforandroid.ui.shortcuts.CommandPalette
@@ -110,8 +109,8 @@ internal class ShellShortcuts {
          * What Ctrl+1 … Ctrl+0 open for a sidebar that is not on screen: the rows it would number on opening, with the
          * chats in [expandedParents] listing their nested chats and the chat on top, [current], picked out.
          */
-        fun railRows(list: AgentListUiState, expandedParents: List<String>, current: String?, shortLists: SidebarShortLists): List<AgentRow> =
-            SidebarGroup.numbered(sidebarGroups(list, list.query, expandedParents, current, shortLists))
+        fun railRows(list: AgentListUiState, expandedParents: List<String>, current: String?): List<AgentRow> =
+            SidebarGroup.numbered(sidebarGroups(list, list.query, expandedParents, current))
     }
 }
 

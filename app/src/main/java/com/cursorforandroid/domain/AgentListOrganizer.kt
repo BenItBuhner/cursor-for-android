@@ -101,6 +101,11 @@ data class LocalAgentState(
      * sidebar's Projects group and the New Chat shortcuts both follow it (see [AgentListOrganizer.arranged]).
      */
     val projectOrder: List<String> = emptyList(),
+    /**
+     * The Projects the reader dragged below the New Chat page's "Hidden" line. Only that page leaves them out; the
+     * sidebar, search, links and the Projects themselves are as they were.
+     */
+    val hiddenProjectIds: Set<String> = emptySet(),
 ) {
     /** Whether [agentId] may read as unread on this phone at all; its read marker decides whether it does. */
     fun mayShowUnread(agentId: String): Boolean = !unreadOnlyTouchedHere || agentId in touchedHereIds

@@ -8,6 +8,9 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
 import androidx.core.app.NotificationManagerCompat
 import androidx.lifecycle.Lifecycle
@@ -260,14 +263,21 @@ fun NotificationPermissionPrompt(graph: AppGraph, hasRunningAgents: Boolean) {
     val context = LocalContext.current
     val enabled by graph.prefs.liveNotifications.collectAsStateWithLifecycle(initialValue = false)
     val asked by graph.prefs.notificationPermissionAsked.collectAsStateWithLifecycle(initialValue = true)
-    val launcher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+    // Remembered: the contract keys the launcher's registration, and a new one each recomposition unregistered and
+    // registered it again, the recomposition the "asked" write sets off among them.
+    val contract = remember { ActivityResultContracts.RequestPermission() }
+    val launcher = rememberLauncherForActivityResult(contract) { granted ->
         // The service may already be running invisibly; a start command re-posts its notification now that it can show.
         if (granted) LiveNotificationService.start(context)
     }
+    var prompted by remember { mutableStateOf(false) }
     LaunchedEffect(hasRunningAgents, enabled, asked) {
-        if (hasRunningAgents && enabled && !asked && !LiveNotifications.hasPermission(context)) {
-            graph.prefs.setNotificationPermissionAsked()
+        if (hasRunningAgents && enabled && !asked && !prompted && !LiveNotifications.hasPermission(context)) {
+            // Launched before the write suspends: on the composition's thread, with the launcher registered. After
+            // it, the effect can resume off that thread, as the registration is being replaced or disposed.
+            prompted = true
             launcher.launch(Manifest.permission.POST_NOTIFICATIONS)
+            graph.prefs.setNotificationPermissionAsked()
         }
     }
 }

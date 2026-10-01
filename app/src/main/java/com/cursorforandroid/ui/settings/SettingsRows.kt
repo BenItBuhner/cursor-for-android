@@ -29,7 +29,7 @@ import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
 
 /**
- * The one row every Settings surface is made of — the list, the account sheet, the debug sheet: a title, at most one
+ * The one row every Settings surface is made of — the list and the debug sheet: a title, at most one
  * line under it, an optional glyph in front and one control or glyph at the end, [RowInset] in from the card's sides.
  * 44dp on one line, 56dp with a description, whatever the row does. Rows sit in a [SettingsCard] with a full-width
  * hairline between each two; the press is square, and the card's own clip rounds the first and last row, so a
@@ -122,7 +122,7 @@ internal fun SettingsCard(modifier: Modifier = Modifier, content: @Composable Co
 /** A group label over a card: 12sp at 60 %, sentence case, a category rather than the name of a row beneath it. */
 @Composable
 internal fun Group(text: String) {
-    Text(text, style = CursorTheme.typography.small, color = CursorTheme.colors.textTertiary, modifier = Modifier.padding(top = 18.dp, bottom = 6.dp, start = 2.dp))
+    Text(text, style = CursorTheme.typography.small, color = CursorTheme.colors.textTertiary, modifier = Modifier.padding(top = GroupGap, bottom = 6.dp, start = 2.dp))
 }
 
 /** Something the system has to allow before a setting can work: the warning glyph, what to allow, and the way there. */
@@ -152,3 +152,9 @@ internal fun InfoRow(label: String, value: String) {
 
 /** How far a row's words and glyphs stand in from the card's sides. */
 internal val RowInset = 14.dp
+
+/** The space above each group label (and the disclaimer), so every card sits the same distance from the one before. */
+internal val GroupGap = 16.dp
+
+/** The height of every control at a row's end — a button, the theme switch — so none makes its row taller than the rest. */
+internal val ControlHeight = 30.dp

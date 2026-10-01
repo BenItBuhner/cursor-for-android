@@ -46,6 +46,7 @@ import com.cursorforandroid.ui.components.CursorIcons
 import com.cursorforandroid.ui.components.FlatIconButton
 import com.cursorforandroid.ui.components.GroupLabel
 import com.cursorforandroid.ui.components.PullRefreshHaptics
+import com.cursorforandroid.ui.components.StylusTextInput
 import com.cursorforandroid.ui.components.contentColumn
 import com.cursorforandroid.ui.components.hitTestBoundary
 import com.cursorforandroid.ui.components.pressable
@@ -196,17 +197,19 @@ private fun SearchField(value: String, onValueChange: (String) -> Unit, onClear:
     ) {
         Icon(CursorIcons.Search, null, tint = colors.iconTertiary, modifier = Modifier.size(15.dp))
         Spacer(Modifier.width(8.dp))
-        BasicTextField(
-            value = value,
-            onValueChange = onValueChange,
-            singleLine = true,
-            textStyle = type.base.copy(color = colors.textPrimary),
-            cursorBrush = SolidColor(colors.textPrimary),
-            modifier = Modifier.weight(1f),
-            decorationBox = { inner ->
-                Box { if (value.isEmpty()) Text("Search chats", style = type.base, color = colors.textQuaternary); inner() }
-            },
-        )
+        StylusTextInput {
+            BasicTextField(
+                value = value,
+                onValueChange = onValueChange,
+                singleLine = true,
+                textStyle = type.base.copy(color = colors.textPrimary),
+                cursorBrush = SolidColor(colors.textPrimary),
+                modifier = Modifier.weight(1f),
+                decorationBox = { inner ->
+                    Box { if (value.isEmpty()) Text("Search chats", style = type.base, color = colors.textQuaternary); inner() }
+                },
+            )
+        }
         if (value.isNotEmpty()) {
             FlatIconButton(CursorIcons.Close, "Clear search", onClick = onClear, size = 28.dp, iconSize = 14.dp)
         }

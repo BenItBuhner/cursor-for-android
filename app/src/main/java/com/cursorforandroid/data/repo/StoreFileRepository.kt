@@ -6,8 +6,10 @@ import com.cursorforandroid.data.api.await
 import com.cursorforandroid.data.api.readCancellably
 import com.cursorforandroid.data.local.DiskSweep
 import com.cursorforandroid.data.local.JsonDiskCache
+import com.cursorforandroid.domain.AgentStoreKind
 import com.cursorforandroid.domain.Capabilities
 import com.cursorforandroid.domain.MediaRef
+import com.cursorforandroid.domain.StorePath
 import com.cursorforandroid.util.AppClock
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -76,22 +78,35 @@ class StoreFileRepository(
     suspend fun available(): Boolean = api() != null && capabilities().projects
 
     /** The store [ownerId]'s files live in, or null when the account lists none for it. */
-    suspend fun storeId(ownerId: String): String? {
-        synchronized(stores) { stores[ownerId] }?.takeIf { now() - it.atMillis < STORE_TTL_MS }?.let { return it.storeId }
+    suspend fun storeId(ownerId: String): String? = resolve(ownerId) { it.storeFor(ownerId) }
+
+    /**
+     * The store [ref] is in: the one its mount names by id as it is, the user's or the team's by their kind in the
+     * account's list, else the store its owner has. Null when the account lists none.
+     */
+    suspend fun storeIdOf(ref: MediaRef.Store): String? = when (val mount = ref.store) {
+        null -> storeId(ref.ownerId)
+        StorePath.USER -> resolve(KIND_KEY + mount) { api -> api.stores().firstOrNull { it.kind == AgentStoreKind.USER }?.storeId }
+        StorePath.TEAM -> resolve(KIND_KEY + mount) { api -> api.stores().firstOrNull { it.kind == AgentStoreKind.TEAM }?.storeId }
+        else -> mount
+    }
+
+    private suspend fun resolve(key: String, lookup: suspend (AgentStoreApi) -> String?): String? {
+        synchronized(stores) { stores[key] }?.takeIf { now() - it.atMillis < STORE_TTL_MS }?.let { return it.storeId }
         val store = api() ?: throw IOException(NOT_AVAILABLE)
         val disk = cache?.child(STORES)
-        disk?.read(ownerId, CachedStoreId.serializer(), VERSION)?.let { entry ->
+        disk?.read(key, CachedStoreId.serializer(), VERSION)?.let { entry ->
             // A store once found is a fact of the account: kept across launches; a miss is asked about again later.
             if (entry.value.storeId != null || now() - entry.savedAtMillis < STORE_TTL_MS) {
-                synchronized(stores) { stores[ownerId] = Resolved(entry.value.storeId, now()) }
+                synchronized(stores) { stores[key] = Resolved(entry.value.storeId, now()) }
                 return entry.value.storeId
             }
         }
-        return storeLocks[stripe(ownerId)].withLock {
-            synchronized(stores) { stores[ownerId] }?.takeIf { now() - it.atMillis < STORE_TTL_MS }?.let { return@withLock it.storeId }
-            val storeId = store.storeFor(ownerId)
-            synchronized(stores) { stores[ownerId] = Resolved(storeId, now()) }
-            disk?.write(ownerId, CachedStoreId.serializer(), VERSION, CachedStoreId(storeId))
+        return storeLocks[stripe(key)].withLock {
+            synchronized(stores) { stores[key] }?.takeIf { now() - it.atMillis < STORE_TTL_MS }?.let { return@withLock it.storeId }
+            val storeId = lookup(store)
+            synchronized(stores) { stores[key] = Resolved(storeId, now()) }
+            disk?.write(key, CachedStoreId.serializer(), VERSION, CachedStoreId(storeId))
             storeId
         }
     }
@@ -118,8 +133,12 @@ class StoreFileRepository(
         }
     }
 
-    /** The store [ref] is read from: by id when the account names one, else the owner's, the legacy way. */
+    /**
+     * The store [ref] is read from: by id when the account names one, else the owner's, the legacy way. A mount that
+     * names the store itself has no owner to fall back on.
+     */
     private suspend fun readTarget(ref: MediaRef.Store): StoreReadTarget {
+        if (ref.store != null) return StoreReadTarget.Store(storeIdOf(ref) ?: throw IOException(NO_STORE))
         val storeId = try {
             storeId(ref.ownerId)
         } catch (e: CancellationException) {
@@ -166,7 +185,7 @@ class StoreFileRepository(
             }
         }
         if (!available()) throw IOException(NOT_AVAILABLE)
-        val storeId = storeId(ref.ownerId) ?: throw IOException(NO_STORE)
+        val storeId = storeIdOf(ref) ?: throw IOException(NO_STORE)
         val store = api() ?: throw IOException(NOT_AVAILABLE)
         val text = try {
             store.readFile(storeId, ref.relativePath)
@@ -268,9 +287,9 @@ class StoreFileRepository(
         null
     }
 
-    private fun textKey(ref: MediaRef.Store) = JsonDiskCache.sanitize("${ref.ownerId}-${ref.relativePath.hashCode()}-${ref.label}")
+    private fun textKey(ref: MediaRef.Store) = JsonDiskCache.sanitize("${ref.store ?: ref.ownerId}-${ref.relativePath.hashCode()}-${ref.label}")
 
-    private fun blobName(ref: MediaRef.Store) = JsonDiskCache.sanitize("${ref.ownerId}-${ref.relativePath.hashCode()}-${ref.label}")
+    private fun blobName(ref: MediaRef.Store) = JsonDiskCache.sanitize("${ref.store ?: ref.ownerId}-${ref.relativePath.hashCode()}-${ref.label}")
 
     private fun stripe(key: String) = (key.hashCode() and Int.MAX_VALUE) % STRIPES
 
@@ -282,6 +301,8 @@ class StoreFileRepository(
         const val FILE_EXISTS = "The store already has a file at that path."
         private const val VERSION = 1
         private const val STORES = "stores"
+        /** Where the user's and the team's store ids are kept among the owners': no agent id starts so. */
+        private const val KIND_KEY = "kind:"
         private const val TEXTS = "texts"
         /** How long an answer about which store an owner has stands, in memory and on disk for a miss. */
         private const val STORE_TTL_MS = 6 * 60 * 60_000L

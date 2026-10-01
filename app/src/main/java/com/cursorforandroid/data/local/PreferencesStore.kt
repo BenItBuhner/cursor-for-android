@@ -23,10 +23,11 @@ import com.cursorforandroid.domain.DeviceTarget
 import com.cursorforandroid.domain.EnvType
 import com.cursorforandroid.domain.ListPreferences
 import com.cursorforandroid.domain.NewChatHome
+import com.cursorforandroid.domain.NewChatHomeChoice
+import com.cursorforandroid.domain.ProjectArrangement
 import com.cursorforandroid.domain.ProjectNotificationPrefs
 import com.cursorforandroid.domain.LocalAgentState
 import com.cursorforandroid.domain.SignInMethod
-import com.cursorforandroid.domain.TranscriptEngine
 import com.cursorforandroid.ui.panel.PaneWidthClass
 import com.cursorforandroid.ui.shortcuts.ShortcutBindings
 import com.cursorforandroid.ui.theme.ThemeMode
@@ -124,6 +125,8 @@ class PreferencesStore(
         val snoozedAt = stringPreferencesKey("snoozed_at")
         /** The Projects as arranged on the New Chat page, first to last (a JSON list; see [setProjectOrder]). */
         val projectOrder = stringPreferencesKey("project_order")
+        /** The Projects dragged below the New Chat page's "Hidden" line (see [setProjectArrangement]). */
+        val hiddenProjects = stringSetPreferencesKey("hidden_project_ids")
         val demoMode = booleanPreferencesKey("demo_mode")
         val cachedUser = stringPreferencesKey("cached_user")
         val signInMethod = stringPreferencesKey("sign_in_method")
@@ -157,24 +160,19 @@ class PreferencesStore(
         val extendedModeAcknowledgedAt = longPreferencesKey("extended_mode_acknowledged_at")
         val extendedModeIntroduced = booleanPreferencesKey("extended_mode_introduced")
         val extendedModeNoticePending = booleanPreferencesKey("extended_mode_notice_pending")
-        /** Which engine renders transcripts in Extended mode (`stable` / `beta`, see `domain/TranscriptEngine.kt`); absent is never chosen, and Beta. */
-        val transcriptEngine = stringPreferencesKey("transcript_engine")
-        val crashReports = booleanPreferencesKey("crash_reports")
         val modeChoicePending = booleanPreferencesKey("mode_choice_pending")
         /** The sidebar groups the reader has folded closed, by section key ("projects", "pinned", "date:Today", …). */
         val collapsedSidebarSections = stringSetPreferencesKey("sidebar_collapsed_sections")
-        /** Settings › Appearance › Shorten long Projects list; absent reads as on (see [shortenSidebarLists]). */
+        /** The long sidebar groups the reader has listed in full with "Show N more", by section key (see [listedInFullSidebarSections]). */
+        val listedInFullSidebarSections = stringSetPreferencesKey("sidebar_listed_in_full_sections")
+        /** Settings › Chats › Shorten long Projects list; absent reads as on (see [shortenSidebarLists]). */
         val shortenSidebarLists = booleanPreferencesKey("sidebar_shorten_long_lists")
-        /** Settings › Advanced › Keep chats live; absent reads as on (see [liveSync]). */
-        val liveSync = booleanPreferencesKey("live_sync")
         /** Settings › New chat page: what the New Chat pane lists under its composer (`recent` / `projects`); absent is Recent. */
         val newChatHome = stringPreferencesKey("new_chat_home")
         /** Settings › Keyboard shortcuts: the shortcuts moved off their default keys (see `ShortcutBindings.encode`); absent is every default. */
         val shortcutBindings = stringPreferencesKey("keyboard_shortcut_bindings")
         /** The transcript notices closed over each chat's composer: `agentId -> identities` (see `LoadNotice.identity`). */
         val dismissedNotices = stringPreferencesKey("dismissed_notices")
-        /** Settings › Confirm before stopping; absent reads as on (see [confirmStop]). */
-        val confirmStop = booleanPreferencesKey("confirm_stop")
         /** Whether a long queue over the composer stands stacked, as the reader last left one; absent reads as stacked (see [queueStacked]). */
         val queueStacked = booleanPreferencesKey("queue_stacked")
         /** The widget kinds whose picker previews the system holds, each with the build and boot it was published on (see `WidgetPreviews`). */
@@ -195,6 +193,13 @@ class PreferencesStore(
             intPreferencesKey("panel_width_dp"),
             // The last launch's auto-create PR switch; launches no longer ask for a pull request.
             booleanPreferencesKey("auto_create_pr"),
+            // Confirm before stopping, Keep chats live and Full transcript history: each is always on now, so a stored
+            // "off" is forgotten rather than honoured.
+            booleanPreferencesKey("confirm_stop"),
+            booleanPreferencesKey("live_sync"),
+            stringPreferencesKey("transcript_engine"),
+            // Send crash reports: with no switch left to withdraw it, a consent given once is not kept.
+            booleanPreferencesKey("crash_reports"),
         )
     }
 
@@ -211,6 +216,7 @@ class PreferencesStore(
         Keys.launchedHere,
         Keys.touchedHere,
         Keys.projectOrder,
+        Keys.hiddenProjects,
         Keys.modeChoicePending,
         Keys.dismissedNotices,
     )
@@ -267,13 +273,6 @@ class PreferencesStore(
 
     suspend fun setWidgetPreviewsPublished(entries: Set<String>) = edit { it[Keys.widgetPreviewsPublished] = entries }
 
-    // ---- crash reports (device-level; a consent, so it outlives the account and is never assumed) ----------------
-
-    /** Send anonymous crash reports (crash/CrashReporting.kt). Off until the user turns it on; nothing is sent before. */
-    val crashReports: Flow<Boolean> = data.map { it[Keys.crashReports] ?: false }.distinctUntilChanged()
-
-    suspend fun setCrashReports(enabled: Boolean) = edit { it[Keys.crashReports] = enabled }
-
     suspend fun setUpdateLastCheckedAt(epochMillis: Long) = edit { it[Keys.updateLastCheckedAt] = epochMillis }
 
     suspend fun setPendingUpdateVersionCode(versionCode: Int?) = edit { p ->
@@ -294,14 +293,6 @@ class PreferencesStore(
     suspend fun setWhatsNewReadVersion(versionName: String) = edit { it[Keys.whatsNewReadVersion] = versionName }
 
     // ---- chats (device-level; deliberately untouched by clearSession) --------------------------------------------
-
-    /**
-     * Whether a tap that would stop, pause or interrupt a running agent asks first (see `RunStopConfirmation`). On by
-     * default, and on for every install that predates the setting: only the user turning it off here writes it off.
-     */
-    val confirmStop: Flow<Boolean> = data.map { it[Keys.confirmStop] ?: true }.distinctUntilChanged()
-
-    suspend fun setConfirmStop(enabled: Boolean) = edit { it[Keys.confirmStop] = enabled }
 
     /**
      * Whether a queue of more than a couple of follow-ups stands as a deck over the composer (`QueueStack`) rather than
@@ -327,15 +318,6 @@ class PreferencesStore(
 
     /** True while the notice about features that now need Extended mode has yet to be shown to an upgraded install. */
     val extendedModeNoticePending: Flow<Boolean> = data.map { it[Keys.extendedModeNoticePending] ?: false }.distinctUntilChanged()
-
-    /**
-     * The transcript engine Extended mode renders with (see `TranscriptEngine`): Beta unless Stable was chosen here —
-     * for every install, upgrades included. Only the Settings switch writes it, so an absent key is an install that
-     * never chose and follows the default, and a stored `stable` is an explicit opt-out that stays.
-     */
-    val transcriptEngine: Flow<TranscriptEngine> = data.map { TranscriptEngine.parse(it[Keys.transcriptEngine]) }.distinctUntilChanged()
-
-    suspend fun setTranscriptEngine(engine: TranscriptEngine) = edit { it[Keys.transcriptEngine] = engine.key }
 
     suspend fun setExtendedMode(enabled: Boolean) = edit { it[Keys.extendedMode] = enabled }
 
@@ -438,21 +420,28 @@ class PreferencesStore(
     }
 
     /**
+     * The long sidebar groups the reader has listed in full — "Show N more" tapped, "Show less" not yet — by section
+     * key. Kept like the folds: a device preference, read back when the sidebar comes back, the app is started again
+     * or the account is changed, since how far down the Projects list this reader keeps it open is theirs, not the
+     * account's.
+     */
+    val listedInFullSidebarSections: Flow<Set<String>> = data.map { it[Keys.listedInFullSidebarSections] ?: emptySet() }.distinctUntilChanged()
+
+    /** Lists the long sidebar group [sectionKey] in full, or cuts it back to its first rows; idempotent, like the folds. */
+    suspend fun setSidebarSectionListedInFull(sectionKey: String, listedInFull: Boolean) = edit { p ->
+        val current = p[Keys.listedInFullSidebarSections] ?: emptySet()
+        val next = if (listedInFull) current + sectionKey else current - sectionKey
+        if (next.isEmpty()) p.remove(Keys.listedInFullSidebarSections) else p[Keys.listedInFullSidebarSections] = next
+    }
+
+    /**
      * Whether a long Projects or Pinned group lists only its first five rows until "Show N more" is tapped. On by
-     * default; a device preference like the folds, kept across sign-outs. Which rows are listed in full is never kept.
+     * default; a device preference like the folds, kept across sign-outs. Which groups are listed in full is kept
+     * beside it ([listedInFullSidebarSections]), and stands whichever way this is switched.
      */
     val shortenSidebarLists: Flow<Boolean> = data.map { it[Keys.shortenSidebarLists] ?: true }.distinctUntilChanged()
 
     suspend fun setShortenSidebarLists(enabled: Boolean) = edit { it[Keys.shortenSidebarLists] = enabled }
-
-    /**
-     * Settings › Advanced › Keep chats live: background live sync (see `LiveSync`). On unless turned off: the switch
-     * is written only when it is flipped, so whoever turned it off while it was an experiment keeps it off, and whoever
-     * never touched it has it on.
-     */
-    val liveSync: Flow<Boolean> = data.map { it[Keys.liveSync] ?: true }.distinctUntilChanged()
-
-    suspend fun setLiveSync(enabled: Boolean) = edit { it[Keys.liveSync] = enabled }
 
     /**
      * Settings › New chat page: the recent chats under the New Chat composer, the Projects, or the composer alone (see
@@ -460,6 +449,12 @@ class PreferencesStore(
      * Recent until changed; a device preference, kept across sign-outs like the sidebar's folds.
      */
     val newChatHome: Flow<NewChatHome> = data.map { NewChatHome.parse(it[Keys.newChatHome]) }.distinctUntilChanged()
+
+    /**
+     * [newChatHome] as the reader left it: what they chose, or nothing while they never have — the pane then picks by
+     * the account's Projects ([NewChatHome.automatic]) rather than taking Recent as a choice.
+     */
+    val newChatHomeChoice: Flow<NewChatHomeChoice> = data.map { NewChatHomeChoice(NewChatHome.chosen(it[Keys.newChatHome])) }.distinctUntilChanged()
 
     suspend fun setNewChatHome(home: NewChatHome) = edit { it[Keys.newChatHome] = home.key }
 
@@ -573,7 +568,7 @@ class PreferencesStore(
 
     val localAgentState: Flow<LocalAgentState> = accountData.changedIn(
         Keys.pinned, Keys.readMarkers, Keys.launchedHere, Keys.snoozedUntil, Keys.snoozedAt, Keys.touchedHere,
-        Keys.unreadOnlyTouchedHere, Keys.demoMode, Keys.projectOrder,
+        Keys.unreadOnlyTouchedHere, Keys.demoMode, Keys.projectOrder, Keys.hiddenProjects,
     ).map { p ->
         LocalAgentState(
             pinnedIds = p[Keys.pinned] ?: emptySet(),
@@ -585,6 +580,7 @@ class PreferencesStore(
             // The demo's backend runs on this phone: every chat in it is this phone's own.
             unreadOnlyTouchedHere = (p[Keys.unreadOnlyTouchedHere] ?: true) && p[Keys.demoMode] != true,
             projectOrder = p[Keys.projectOrder]?.let(::decodeIdList) ?: emptyList(),
+            hiddenProjectIds = p[Keys.hiddenProjects] ?: emptySet(),
         )
     }
 
@@ -593,12 +589,27 @@ class PreferencesStore(
      * [ids] does not — archived, filtered out, not loaded — follow them as they were; the account's, like the pins, and
      * bounded at [MAX_PROJECT_ORDER], the ids furthest down going first.
      */
-    suspend fun setProjectOrder(ids: List<String>) = edit { p ->
-        val arranged = ids.distinct()
-        val shown = arranged.toHashSet()
-        val stored = p[Keys.projectOrder]?.let(::decodeIdList) ?: emptyList()
-        val next = (arranged + stored.filterNot { it in shown }).take(MAX_PROJECT_ORDER)
-        if (next.isEmpty()) p.remove(Keys.projectOrder) else p[Keys.projectOrder] = encodeIdList(next)
+    suspend fun setProjectOrder(ids: List<String>) = edit { p -> p.arrangeProjects(ids.distinct()) }
+
+    /**
+     * [arrangement] as left on the New Chat page, in one write: the order as [setProjectOrder] keeps it, and which of
+     * the Projects it names are hidden there. A hidden Project it does not name — archived, filtered out, not loaded —
+     * stays hidden; bounded like the order.
+     */
+    suspend fun setProjectArrangement(arrangement: ProjectArrangement) = edit { p ->
+        val arranged = arrangement.order.distinct()
+        p.arrangeProjects(arranged)
+        val named = arranged.toHashSet()
+        val stored = p[Keys.hiddenProjects].orEmpty().filterNot { it in named }
+        val hidden = (arrangement.hidden.filter { it in named } + stored).take(MAX_PROJECT_ORDER).toSet()
+        if (hidden.isEmpty()) p.remove(Keys.hiddenProjects) else p[Keys.hiddenProjects] = hidden
+    }
+
+    private fun MutablePreferences.arrangeProjects(arranged: List<String>) {
+        val named = arranged.toHashSet()
+        val stored = this[Keys.projectOrder]?.let(::decodeIdList) ?: emptyList()
+        val next = (arranged + stored.filterNot { it in named }).take(MAX_PROJECT_ORDER)
+        if (next.isEmpty()) remove(Keys.projectOrder) else this[Keys.projectOrder] = encodeIdList(next)
     }
 
     /**

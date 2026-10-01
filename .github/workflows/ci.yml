@@ -135,21 +135,24 @@ jobs:
           path: app/build/reports/lint-results-debug.html
           if-no-files-found: ignore
 
-  # The ~3000 JVM unit tests over seven runners, one test JVM each: six deterministic slices of the ordinary classes
-  # (`-Papp.testShard=I/6`, balanced on app/test-class-seconds.properties) and one for the benchmarks - the frame-time and throughput claims
-  # (`*BenchmarkTest`, `TranscriptPerf*`) - alone, so what they measure is the code and not a neighbour. One JVM
-  # because the runner's four vCPUs are two cores: with two or three test JVMs side by side the fault, benchmark and
-  # Compose UI tests, which assert on or wait for wall-clock behaviour, timed out on one shard job in five; alone in
-  # their JVM they never have. The checks are named "Unit tests (1/6)" .. "(6/6)" and "Unit tests (benchmarks)"; `ci`
-  # below folds them, and every other job, into the one check to require.
+  # The ~4000 JVM unit tests over six runners, one test JVM each: six deterministic slices of the ordinary classes
+  # (`-Papp.testShard=I/6`, balanced on app/test-class-seconds.properties). The benchmarks - the frame-time and
+  # throughput claims (`*BenchmarkTest`, `TranscriptPerf*`) - are not among them: benchmarks.yml runs them alone on a
+  # runner and reports without holding a merge or a release. One JVM because the runner's four vCPUs are two cores:
+  # with two or three test JVMs side by side the fault and Compose UI tests, which assert on or wait for wall-clock
+  # behaviour, timed out on one shard job in five; alone in their JVM they never have. The checks are named
+  # "Unit tests (1/6)" .. "(6/6)"; `ci` below folds them, and every other job, into the one check to require. The
+  # 25-minute limit is seven over the slowest job seen (18); a test JVM that stops making progress is killed long
+  # before it, by the stall watchdog ("Test stalls" in app/build.gradle.kts), whose report - the stuck test, its last
+  # output, a thread dump - is in the log and is the `unit-test-stalls-*` artifact.
   unit-tests:
     name: Unit tests (${{ matrix.shard }})
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
-        shard: ["1/6", "2/6", "3/6", "4/6", "5/6", "6/6", "benchmarks"]
+        shard: ["1/6", "2/6", "3/6", "4/6", "5/6", "6/6"]
     steps:
       - uses: actions/checkout@v7
         with:
@@ -157,27 +160,34 @@ jobs:
 
       - uses: ./.github/actions/android-toolchain
 
-      # The same stamp the build job uses, so AppVersionTest's parity check runs against a resolved dev version name
-      # and not just the base one: a versionCode derived from the base would pass unnoticed otherwise.
-      - name: Stamp dev version
-        id: stamp
-        env:
-          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-        run: echo "suffix=-dev.${GITHUB_RUN_NUMBER}+g${HEAD_SHA::7}" >> "$GITHUB_OUTPUT"
-
+      # A stamp of the same shape as the build job's, so AppVersionTest's parity check runs against a resolved dev
+      # version name and not just the base one: a versionCode derived from the base would pass unnoticed otherwise.
+      # It is a constant, not the run's number and commit: the suffix is compiled into BuildConfig, which is an input
+      # of compileDebugKotlin, so a per-run stamp made every run's compile a build-cache miss (100 s a shard, then
+      # 60 s more for the test sources). With the constant, a run whose sources match the cache's restores the
+      # compile instead. Nothing in the tests needs the real stamp; the APKs the build jobs upload still carry it.
+      #
       # The Roborazzi walkthrough is covered by the `screenshots` job below.
       - name: Run JVM unit tests (${{ matrix.shard }})
         run: >
           ./gradlew :app:testDebugUnitTest -Papp.skipScreenshotTests=true -Papp.testShard=${{ matrix.shard }}
-          -Papp.testForks=1 -Papp.versionNameSuffix="${{ steps.stamp.outputs.suffix }}"
+          -Papp.testForks=1 -Papp.versionNameSuffix=-dev.1+gci
 
-      # The JUnit XML always (a megabyte): the per-class times are what the slices are balanced on. The HTML report
-      # only when something failed.
+      # Named for the shard ("1-of-6" .. "6-of-6"): an artifact name cannot hold the slash.
+      - name: Name the artifacts
+        if: always()
+        id: artifacts
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: echo "suffix=${SHARD//\//-of-}" >> "$GITHUB_OUTPUT"
+
+      # The JUnit XML always (a megabyte): the per-class times are what the slices are balanced on, and a failure's
+      # message is in it. The HTML report only when something failed.
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: unit-tests-results-${{ strategy.job-index }}
+          name: unit-tests-results-${{ steps.artifacts.outputs.suffix }}
           path: app/build/test-results/testDebugUnitTest/
           if-no-files-found: ignore
           retention-days: 14
@@ -186,8 +196,16 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v7
         with:
-          name: unit-test-report-${{ strategy.job-index }}
+          name: unit-test-report-${{ steps.artifacts.outputs.suffix }}
           path: app/build/reports/tests/testDebugUnitTest/
+          if-no-files-found: ignore
+
+      - name: Upload test stall reports
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: unit-test-stalls-${{ steps.artifacts.outputs.suffix }}
+          path: app/build/reports/test-stalls/
           if-no-files-found: ignore
 
   screenshots:
@@ -223,6 +241,7 @@ jobs:
             app/build/outputs/roborazzi/
             app/build/reports/roborazzi/
             app/build/reports/tests/testDebugUnitTest/
+            app/build/reports/test-stalls/
           if-no-files-found: ignore
 
   # The one status to require in branch protection: "CI". It succeeds only when every job above did, so the set of

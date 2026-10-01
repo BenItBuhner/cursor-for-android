@@ -35,15 +35,17 @@ import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 
 /**
- * "Show N more" lasts one visit to the sidebar: every way of leaving it — the drawer shut, a chat opened, the
- * Project opened, another destination, the rail put away — cuts the group back to five rows, and the chat opened
- * from past the cut stays listed as the sixth. Driven through the shell on the demo, whose Pinned group is made
- * long by pinning seven of its chats (the demo has one Project; the cut and its reset are the same for both groups).
+ * "Show N more" outlasts the visit to the sidebar: every way of leaving it — the drawer shut, a chat opened, the
+ * Project opened, another destination, the rail put away — meets the group still listed in full when the sidebar is
+ * next on screen, and only "Show less" cuts it back, which is kept the same way. Driven through the shell on the
+ * demo, whose Pinned group is made long by pinning seven of its chats (the demo has one Project; Projects and Pinned
+ * are cut, listed and remembered by the one mechanism). The device's side — the preference, a recreated composition,
+ * a new view model — is `SidebarShowMorePersistenceTest`.
  */
 @RunWith(AndroidJUnit4::class)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 @Config(sdk = [35], qualifiers = "w411dp-h914dp-night-420dpi")
-class SidebarShortListResetTest {
+class SidebarShortListPersistenceTest {
 
     @get:Rule
     val compose = createAndroidComposeRule<ComponentActivity>()
@@ -62,9 +64,10 @@ class SidebarShortListResetTest {
     )
 
     @After
-    fun tearDown() = runBlocking {
+    fun tearDown() = runBlocking<Unit> {
         val now = graph.prefs.localAgentState.first().pinnedIds
         pinned.keys.filter { it in now }.forEach { graph.pins.toggle(it) }
+        graph.prefs.setSidebarSectionListedInFull(AgentListOrganizer.PINNED_KEY, false)
     }
 
     private fun showShell(wide: Boolean) {
@@ -73,6 +76,7 @@ class SidebarShortListResetTest {
             graph.session.enterDemo()
             val now = graph.prefs.localAgentState.first().pinnedIds
             pinned.keys.filter { it !in now }.forEach { graph.pins.toggle(it) }
+            graph.prefs.setSidebarSectionListedInFull(AgentListOrganizer.PINNED_KEY, false)
         }
         compose.setContent {
             CursorTheme(mode = ThemeMode.Dark) {
@@ -104,19 +108,39 @@ class SidebarShortListResetTest {
     private fun moreText(): String? = compose.onAllNodes(hasTestTag("section-more-${AgentListOrganizer.PINNED_KEY}")).fetchSemanticsNodes().firstOrNull()
         ?.config?.getOrNull(SemanticsProperties.Text)?.joinToString { it.text }
 
+    private fun savedOnDevice(): Set<String> = runBlocking { graph.prefs.listedInFullSidebarSections.first() }
+
     private fun openDrawer() {
         compose.onNodeWithContentDescription("Open sidebar").performClick()
         compose.waitForIdle()
     }
 
-    /** "Show 2 more", tapped: all seven pinned chats listed. */
+    private fun shutDrawer() {
+        compose.onNodeWithContentDescription("Toggle sidebar").performClick()
+        compose.waitForIdle()
+    }
+
+    /** Back to the New Chat pane, where the drawer can be opened again (a chat or Settings on a phone has back, not the sidebar button). */
+    private fun backHome() {
+        compose.activity.onBackPressedDispatcher.onBackPressed()
+        compose.waitUntil(20_000) { exists(hasText(HOME_PLACEHOLDER, substring = true)) }
+        compose.waitForIdle()
+    }
+
+    /** "Show 2 more", tapped: all seven pinned chats listed, and the device told. */
     private fun listInFull() {
         moreRow.performClick()
         compose.waitUntil(10_000) { listedPinned().size == 7 }
         assertThat(moreText()).isEqualTo("Show less")
+        compose.waitUntil(10_000) { AgentListOrganizer.PINNED_KEY in savedOnDevice() }
     }
 
-    private fun assertCutBack(listed: Int = 5, more: String = "Show 2 more") {
+    private fun assertStillInFull() {
+        compose.waitUntil(10_000) { listedPinned().size == 7 }
+        assertThat(moreText()).isEqualTo("Show less")
+    }
+
+    private fun assertCut(listed: Int = 5, more: String = "Show 2 more") {
         compose.waitUntil(10_000) { listedPinned().size == listed }
         assertThat(moreText()).isEqualTo(more)
     }
@@ -126,21 +150,35 @@ class SidebarShortListResetTest {
     }
 
     @Test
-    fun `shutting the drawer cuts the group back, and it opens again on five rows`() {
+    fun `shutting the drawer keeps the group listed in full, and it opens again on all seven rows`() {
         showShell(wide = false)
         openDrawer()
         listInFull()
 
-        compose.onNodeWithContentDescription("Toggle sidebar").performClick()
-        compose.waitForIdle()
-        assertCutBack()
+        shutDrawer()
+        assertStillInFull()
 
         openDrawer()
-        assertCutBack()
+        assertStillInFull()
     }
 
     @Test
-    fun `opening a chat from the drawer cuts the group back`() {
+    fun `Show less is kept the same way, so a drawer shut after it opens again on five rows`() {
+        showShell(wide = false)
+        openDrawer()
+        listInFull()
+
+        moreRow.performClick()
+        assertCut()
+        compose.waitUntil(10_000) { savedOnDevice().isEmpty() }
+
+        shutDrawer()
+        openDrawer()
+        assertCut()
+    }
+
+    @Test
+    fun `opening a chat from the drawer keeps the group listed in full`() {
         showShell(wide = false)
         openDrawer()
         val firstFive = listedPinned()
@@ -149,11 +187,37 @@ class SidebarShortListResetTest {
         tapInSidebar(firstFive.first())
         compose.waitUntil(20_000) { exists(hasText("Follow up", substring = true)) }
         compose.waitForIdle()
-        assertCutBack()
+        // The shut drawer's sidebar, composed off screen, is still in full; and so it is when opened again.
+        assertStillInFull()
+
+        backHome()
+        openDrawer()
+        assertStillInFull()
     }
 
     @Test
-    fun `opening the Project from the drawer cuts the group back`() {
+    fun `opening a chat from past the cut keeps the group listed in full`() {
+        showShell(wide = false)
+        openDrawer()
+        val firstFive = listedPinned()
+        // A chat at rest: the running one past the cut (Cesium Revenue Strategy) is written to as its opened stream
+        // works, and that lifts it into the first five on its own a moment after it opens.
+        val pastTheCut = "Latest release process"
+        assertThat(firstFive).doesNotContain(pastTheCut)
+        listInFull()
+
+        tapInSidebar(pastTheCut)
+        compose.waitUntil(20_000) { exists(hasTestTag("chat-header") and hasContentDescription(pastTheCut)) }
+        compose.waitForIdle()
+        assertStillInFull()
+
+        backHome()
+        openDrawer()
+        assertStillInFull()
+    }
+
+    @Test
+    fun `opening the Project from the drawer keeps the group listed in full`() {
         showShell(wide = false)
         openDrawer()
         listInFull()
@@ -161,11 +225,15 @@ class SidebarShortListResetTest {
         tapInSidebar("Cesium billing launch")
         compose.waitUntil(20_000) { exists(hasTestTag("chat-header") and hasContentDescription("Cesium billing launch")) }
         compose.waitForIdle()
-        assertCutBack()
+        assertStillInFull()
+
+        backHome()
+        openDrawer()
+        assertStillInFull()
     }
 
     @Test
-    fun `going to Settings from the drawer cuts the group back`() {
+    fun `going to Settings from the drawer keeps the group listed in full`() {
         showShell(wide = false)
         openDrawer()
         listInFull()
@@ -173,24 +241,33 @@ class SidebarShortListResetTest {
         compose.onNodeWithTag(SidebarTags.ACCOUNT).performClick()
         compose.waitUntil(20_000) { exists(hasText("Appearance")) }
         compose.waitForIdle()
-        assertCutBack()
+        assertStillInFull()
+
+        backHome()
+        openDrawer()
+        assertStillInFull()
     }
 
     @Test
-    fun `beside the pane, opening a chat from past the cut cuts the group back with that chat kept as the sixth row`() {
+    fun `beside the pane, opening a chat from past the cut keeps the group listed in full, and Show less then keeps that chat as the sixth row`() {
         showShell(wide = true)
         val firstFive = listedPinned()
+        val pastTheCut = "Latest release process"
+        assertThat(firstFive).doesNotContain(pastTheCut)
         listInFull()
-        val pastTheCut = (pinned.values.toSet() - firstFive).first()
 
         tapInSidebar(pastTheCut)
         compose.waitUntil(20_000) { exists(hasTestTag("chat-header") and hasContentDescription(pastTheCut)) }
-        assertCutBack(listed = 6, more = "Show 1 more")
+        assertStillInFull()
+
+        // Cut back with the open chat on screen: the cut keeps it listed, as it always has.
+        moreRow.performClick()
+        assertCut(listed = 6, more = "Show 1 more")
         assertThat(listedPinned()).isEqualTo(firstFive + pastTheCut)
     }
 
     @Test
-    fun `beside the pane, putting the sidebar away cuts the group back`() {
+    fun `beside the pane, putting the sidebar away and bringing it back keeps the group listed in full`() {
         showShell(wide = true)
         listInFull()
 
@@ -198,7 +275,7 @@ class SidebarShortListResetTest {
         compose.waitForIdle()
         compose.onNodeWithContentDescription("Open sidebar").performClick()
         compose.waitForIdle()
-        assertCutBack()
+        assertStillInFull()
     }
 
     private companion object {

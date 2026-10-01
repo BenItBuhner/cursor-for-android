@@ -61,7 +61,7 @@ class CatchUpHapticsTest {
         compose.setContent {
             CursorTheme(mode = ThemeMode.Dark) {
                 val density = LocalDensity.current
-                pull = remember { with(density) { CatchUpPull(CatchUpPullThreshold.toPx()) } }
+                pull = remember { catchUpPullFor(density) }
                 val list = rememberLazyListState()
                 val scroll = rememberTranscriptScroll(list, key = "chat")
                 val reader = rememberReaderScroll(scroll, pull = pull, canCatchUp = { true }, onCatchUp = { status.value = CatchUpStatus.Checking })
@@ -70,7 +70,7 @@ class CatchUpHapticsTest {
                         state = list,
                         reverseLayout = true,
                         userScrollEnabled = false,
-                        modifier = Modifier.fillMaxWidth().align(Alignment.TopCenter).testTag("transcript").readerScrolling(reader),
+                        modifier = Modifier.fillMaxWidth().align(Alignment.TopCenter).readerScrolling(reader).catchUpLift(pull).testTag("transcript"),
                         verticalArrangement = Arrangement.spacedBy(10.dp),
                     ) {
                         items(60, key = { it }) { Text("Row $it", Modifier.fillMaxWidth().height(56.dp)) }

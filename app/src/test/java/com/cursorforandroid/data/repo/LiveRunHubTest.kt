@@ -535,9 +535,10 @@ class LiveRunHubTest {
     fun `resubscribing while the released pass is still winding down never doubles the trace`() = runTest {
         api.addRunningAgent("bc-1", "Agent", "run-1")
         // The hub runs on the test scheduler, so the release grace passes on the virtual clock: the pass is provably
-        // released before the next subscriber arrives, rather than probably released after a few milliseconds.
+        // released before the next subscriber arrives, rather than probably released after a few milliseconds. The
+        // stall watch is off: run until idle, the virtual clock would never stop taking a quiet stream up again.
         val hubScope = CoroutineScope(SupervisorJob() + StandardTestDispatcher(testScheduler))
-        hub = LiveRunHub(session, agents, nowProvider = { now }, pollIntervalMs = 50, releaseGraceMs = releaseGrace, reconnectBaseMs = 20, reconnectMaxMs = 40, scope = hubScope)
+        hub = LiveRunHub(session, agents, nowProvider = { now }, pollIntervalMs = 50, releaseGraceMs = releaseGrace, reconnectBaseMs = 20, reconnectMaxMs = 40, stallTimeoutMs = 0, scope = hubScope)
         streamer.emit("run-1", RunStreamEvent.Status("run-1", RunStatus.RUNNING))
         streamer.emit("run-1", RunStreamEvent.Assistant("Hello"))
 
@@ -707,6 +708,129 @@ class LiveRunHubTest {
         assertThat(current().result?.text).isEqualTo("Done.")
         assertThat(current().result?.durationMs).isEqualTo(12_000L)
         assertThat(api.getRunCalls).isEqualTo(0)
+        subscription.cancel()
+    }
+
+    private fun stallingHub(stallMs: Long = 200, stallMaxMs: Long = 800) =
+        LiveRunHub(session, agents, nowProvider = { now }, pollIntervalMs = 50, releaseGraceMs = releaseGrace, reconnectBaseMs = 20, reconnectMaxMs = 40, stallTimeoutMs = stallMs, stallMaxMs = stallMaxMs, scope = scope)
+
+    @Test
+    fun `a connection that goes quiet while the run is under way is taken up again, without ever saying reconnecting`() = runBlocking {
+        hub = stallingHub()
+        api.addRunningAgent("bc-1", "Agent", "run-1")
+        streamer.emit("run-1", RunStreamEvent.Status("run-1", RunStatus.RUNNING))
+        streamer.emit("run-1", RunStreamEvent.Assistant("Hello"))
+        val seen = CopyOnWriteArrayList<LiveRunHub.Snapshot>()
+        val subscription = scope.launch { hub.snapshots("bc-1", "run-1").collect { seen += it } }
+        awaitUntil { snapshot()?.items?.isNotEmpty() == true }
+
+        // The open connection hears nothing more of the run (a steer took the turn on elsewhere); the run goes on.
+        streamer.strand("run-1")
+        streamer.emit("run-1", RunStreamEvent.Assistant(" world"))
+        awaitUntil { (snapshot()?.items?.lastOrNull() as? AssistantMessage)?.markdown == "Hello world" }
+
+        assertThat(connections()).isEqualTo(2)
+        // The record was asked whether the run is over before the stream was taken up again.
+        assertThat(api.getRunCalls).isEqualTo(1)
+        // Quietly: no snapshot said reconnecting, the story never went back, nothing ended.
+        assertThat(seen.none { it.reconnecting }).isTrue()
+        assertThat(seen.none { it.finished }).isTrue()
+        assertThat(seen.map { it.items.size }.zipWithNext().none { (a, b) -> b < a }).isTrue()
+        assertThat(current().items.filterIsInstance<AssistantMessage>()).hasSize(1)
+        subscription.cancel()
+    }
+
+    @Test
+    fun `heartbeats alone do not keep a quiet connection - only the run's events do`() = runBlocking {
+        hub = stallingHub()
+        api.addRunningAgent("bc-1", "Agent", "run-1")
+        streamer.emit("run-1", RunStreamEvent.Status("run-1", RunStatus.RUNNING))
+        val seen = CopyOnWriteArrayList<LiveRunHub.Snapshot>()
+        val subscription = scope.launch { hub.snapshots("bc-1", "run-1").collect { seen += it } }
+        awaitUntil { snapshot()?.eventCount?.let { it > 0 } == true }
+        // Heartbeats every 40 ms and nothing else, for well past the 200 ms window: they say nothing of the run.
+        val beats = scope.launch { while (true) { streamer.emit("run-1", RunStreamEvent.Heartbeat); delay(40) } }
+        awaitUntil { connections() >= 2 }
+        beats.cancel()
+        streamer.emit("run-1", RunStreamEvent.Thinking("Planning."))
+        awaitUntil { snapshot()?.items?.isNotEmpty() == true }
+        assertThat(seen.none { it.reconnecting }).isTrue()
+        assertThat(current().finished).isFalse()
+        subscription.cancel()
+    }
+
+    @Test
+    fun `a run only the notification follows holds its quiet connection - a chat arriving on it gets the stall watch`() = runBlocking {
+        hub = stallingHub()
+        api.addRunningAgent("bc-1", "Agent", "run-1")
+        streamer.emit("run-1", RunStreamEvent.Status("run-1", RunStatus.RUNNING))
+        streamer.emit("run-1", RunStreamEvent.Assistant("Hello"))
+        // What the live notification subscribes as: watched, sampled, shown what the run is doing rather than every word.
+        val follower = scope.launch { hub.snapshots("bc-1", "run-1", sampleMs = 100).collect { } }
+        awaitUntil { snapshot()?.items?.isNotEmpty() == true }
+
+        // The open connection hears nothing more of the run for many stall windows: it is held, not taken up again.
+        streamer.strand("run-1")
+        delay(1_500)
+        assertThat(connections()).isEqualTo(1)
+        assertThat(api.getRunCalls).isEqualTo(0)
+        assertThat(current().reconnecting).isFalse()
+        assertThat(current().finished).isFalse()
+
+        // A chat opens on the run: the stall window counts from now, and the stream is taken up again from its last event.
+        streamer.emit("run-1", RunStreamEvent.Assistant(" world"))
+        val chat = scope.launch { hub.snapshots("bc-1", "run-1").collect { } }
+        awaitUntil { (snapshot()?.items?.lastOrNull() as? AssistantMessage)?.markdown == "Hello world" }
+        assertThat(connections()).isEqualTo(2)
+        assertThat(api.getRunCalls).isEqualTo(1)
+        assertThat(current().reconnecting).isFalse()
+
+        // The chat leaves; the notification's connection goes on being held through the next quiet spell.
+        chat.cancel()
+        streamer.strand("run-1")
+        delay(1_500)
+        assertThat(connections()).isEqualTo(2)
+        assertThat(api.getRunCalls).isEqualTo(1)
+        follower.cancel()
+    }
+
+    @Test
+    fun `a run in a long quiet step is looked at less and less often, never given up on`() = runBlocking {
+        hub = stallingHub(stallMs = 100, stallMaxMs = 400)
+        api.addRunningAgent("bc-1", "Agent", "run-1")
+        streamer.emit("run-1", RunStreamEvent.Status("run-1", RunStatus.RUNNING))
+        streamer.emit("run-1", tool("c1", "run_terminal_cmd", "running", "./gradlew build"))
+        val subscription = scope.launch { hub.snapshots("bc-1", "run-1").collect { } }
+        awaitUntil { snapshot()?.items?.isNotEmpty() == true }
+
+        // A two-second build says nothing: windows of 100, 200, 400, 400… ms, not one every 100 ms.
+        delay(2_000)
+        assertThat(connections()).isIn(3..8)
+        assertThat(current().reconnecting).isFalse()
+        assertThat(current().finished).isFalse()
+
+        streamer.emit("run-1", tool("c1", "run_terminal_cmd", "completed", "./gradlew build"))
+        awaitUntil { snapshot()?.items?.filterIsInstance<ActivityGroup>()?.singleOrNull()?.isRunning == false }
+        subscription.cancel()
+    }
+
+    @Test
+    fun `a run that ended behind a connection still open on keep-alives is settled from its record`() = runBlocking {
+        hub = stallingHub()
+        api.addRunningAgent("bc-1", "Agent", "run-1")
+        streamer.emit("run-1", RunStreamEvent.Status("run-1", RunStatus.RUNNING))
+        streamer.emit("run-1", RunStreamEvent.Assistant("Working on it."))
+        val subscription = scope.launch { hub.snapshots("bc-1", "run-1").collect { } }
+        awaitUntil { snapshot()?.items?.isNotEmpty() == true }
+
+        // The run finishes on the server, but its end never reaches the open connection.
+        streamer.strand("run-1")
+        api.runs["run-1"] = api.runs.getValue("run-1").copy(status = "FINISHED", durationMs = 20_000, result = "All done.")
+        awaitUntil { snapshot()?.finished == true }
+        assertThat(current().status).isEqualTo(RunStatus.FINISHED)
+        assertThat(current().result?.text).isEqualTo("All done.")
+        assertThat(current().reconnecting).isFalse()
+        assertThat(connections()).isEqualTo(1)
         subscription.cancel()
     }
 }

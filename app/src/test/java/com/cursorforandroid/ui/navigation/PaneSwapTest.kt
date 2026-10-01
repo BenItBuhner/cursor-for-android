@@ -17,6 +17,7 @@ import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.cursorforandroid.AppGraph
 import com.cursorforandroid.domain.CursorUser
+import com.cursorforandroid.domain.NewChatHome
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.ui.theme.ThemeMode
 import com.google.common.truth.Truth.assertThat
@@ -48,6 +49,8 @@ class PaneSwapTest {
     @Before
     fun enterDemo() {
         graph = AppGraph(ApplicationProvider.getApplicationContext())
+        // The demo has a Project, so its New Chat page would open on Projects; these open chats from the recent cards.
+        runBlocking { graph.prefs.setNewChatHome(NewChatHome.RECENT) }
         runBlocking { graph.session.enterDemo() }
         compose.setContent {
             CursorTheme(mode = ThemeMode.Dark) {

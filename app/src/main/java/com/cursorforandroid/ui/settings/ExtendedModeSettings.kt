@@ -28,7 +28,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.cursorforandroid.AppGraph
-import com.cursorforandroid.domain.TranscriptEngine
 import com.cursorforandroid.ui.components.CursorIcons
 import com.cursorforandroid.ui.components.fadingVerticalScroll
 import com.cursorforandroid.ui.components.pressable
@@ -71,10 +70,6 @@ object ExtendedModeCopy {
 
     /** The dialog's text as one string, for the tests that pin the wording. */
     val DIALOG_TEXT: String get() = listOf(DIALOG_INTRO, DIALOG_POINTS.joinToString("\n") { "• $it" }, DIALOG_CLOSING).joinToString("\n\n")
-
-    /** The transcript engine (see TranscriptEngine) as one switch: on is Beta, the default, off is Stable. */
-    const val ENGINE_TITLE = "Full transcript history"
-    const val ENGINE_DETAIL = "Reads each chat's full record from your Cursor account. Off: the documented API only."
 }
 
 /** Test tags, for the tests that drive the toggle and its dialog. */
@@ -84,18 +79,16 @@ object ExtendedModeTags {
     const val DIALOG_CHECKBOX = "extended_mode_dialog_checkbox"
     const val DIALOG_CONFIRM = "extended_mode_dialog_confirm"
     const val NOTICE = "extended_mode_notice"
-    const val ENGINE_ROW = "transcript_engine_row"
-    const val ENGINE_TOGGLE = "transcript_engine_toggle"
 }
 
 /**
  * The Extended mode switch. Turning the mode on for the first time opens the acknowledgment dialog, which is the only
  * way the setting can come on; once acknowledged it flips like any other switch, and turning it off is immediate.
  * Everything the mode adds follows the switch — the pins sync with the account exactly while it is on — so nothing
- * is listed under it. The transcript engine is a setting of its own beside it ([TranscriptEngineRow]).
+ * is listed under it, and the full transcript record it unlocks is always read while it is on.
  *
  * [enabled] is the screen's reading of the mode, collected once by the screen and shared with everything on it that
- * shows the mode (the engine row, the debug sheet's API row), so they can never disagree for a frame.
+ * shows the mode (the New chat page, the debug sheet's API row), so they can never disagree for a frame.
  */
 @Composable
 fun ExtendedModeRow(graph: AppGraph, enabled: Boolean) {
@@ -132,28 +125,6 @@ fun ExtendedModeRow(graph: AppGraph, enabled: Boolean) {
             },
         )
     }
-}
-
-/**
- * The transcript engine (see [TranscriptEngine]) as one switch: on is Beta, the default, off is Stable — the way back
- * to the documented path. A setting of its own, beside Extended mode rather than under it; but the record Beta reads
- * is a private surface, so with the mode off the switch does nothing, and it says so: dimmed, the reason as its
- * description, and off, as nothing reads the record then — the row default mode has always shown. The stored choice
- * shows again the moment the mode is on. Written the moment it is flipped; a chat reads it when it next opens.
- */
-@Composable
-fun TranscriptEngineRow(graph: AppGraph, extendedMode: Boolean) {
-    val scope = rememberCoroutineScope()
-    val engine by graph.extendedMode.engine.collectAsStateWithLifecycle(initialValue = TranscriptEngine.DEFAULT, context = Dispatchers.Main.immediate)
-    SettingsToggleRow(
-        title = ExtendedModeCopy.ENGINE_TITLE,
-        description = if (extendedMode) ExtendedModeCopy.ENGINE_DETAIL else ExtendedModeCopy.NEEDS_MODE,
-        checked = extendedMode && engine == TranscriptEngine.BETA,
-        onCheckedChange = { beta -> scope.launch { graph.extendedMode.setEngine(if (beta) TranscriptEngine.BETA else TranscriptEngine.STABLE) } },
-        enabled = extendedMode,
-        modifier = Modifier.semantics { testTag = ExtendedModeTags.ENGINE_ROW },
-        toggleModifier = Modifier.semantics { testTag = ExtendedModeTags.ENGINE_TOGGLE },
-    )
 }
 
 /**

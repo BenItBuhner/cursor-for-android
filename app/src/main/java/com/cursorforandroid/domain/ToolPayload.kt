@@ -16,17 +16,31 @@ sealed interface ToolPayload {
     /** The path the payload is about, for the Files and Changes lists; null for a question. */
     val path: String? get() = null
 
-    /** A unified diff of one edit (`edit.result.diffString`), with the line counts when the result reported them. */
+    /**
+     * A unified diff of one edit (`edit.result.diffString`), with the line counts when the result reported them. A
+     * long one is kept on disk, not on the heap, and read back when a row opens onto it (see [SpillText]): a working
+     * agent's turn makes one per edit, and they were most of what its story held.
+     */
     @Serializable
     @SerialName("diff")
     data class FileDiff(
         override val path: String,
-        val diff: String,
+        @SerialName("diff") private val text: SpillText,
         val linesAdded: Int? = null,
         val linesRemoved: Int? = null,
         /** The diff was longer than [ToolPayloadLimits.MAX_TEXT_CHARS] and is kept to its head. */
         val truncated: Boolean = false,
     ) : ToolPayload {
+        constructor(
+            path: String,
+            diff: String,
+            linesAdded: Int? = null,
+            linesRemoved: Int? = null,
+            truncated: Boolean = false,
+        ) : this(path, SpillText.of(diff), linesAdded, linesRemoved, truncated)
+
+        val diff: String get() = text.value
+
         /** The diff's lines, for rendering; a Windows-style ending is read like a plain one. */
         val lines: List<String> get() = diff.replace("\r\n", "\n").lines()
     }

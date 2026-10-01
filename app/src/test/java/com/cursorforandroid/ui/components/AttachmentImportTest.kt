@@ -37,24 +37,34 @@ class AttachmentImportTest {
     }
 
     @Test
-    fun `magic bytes recognise the types the API accepts`() {
-        assertThat(sniffImageMime(byteArrayOf(0x89.toByte(), 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A))).isEqualTo("image/png")
-        assertThat(sniffImageMime(byteArrayOf(0xFF.toByte(), 0xD8.toByte(), 0xFF.toByte(), 0xE0.toByte()))).isEqualTo("image/jpeg")
-        assertThat(sniffImageMime(byteArrayOf(0x47, 0x49, 0x46, 0x38, 0x39, 0x61))).isEqualTo("image/gif")
-        val webp = ByteArray(12)
-        "RIFF".forEachIndexed { i, c -> webp[i] = c.code.toByte() }
-        "WEBP".forEachIndexed { i, c -> webp[8 + i] = c.code.toByte() }
-        assertThat(sniffImageMime(webp)).isEqualTo("image/webp")
-        assertThat(sniffImageMime("not an image".toByteArray())).isNull()
+    fun `a vague, missing or wrong clipboard type is replaced by the one the bytes are`() {
+        val bytes = png()
+        assertThat(loadAttachment(bytes, "image/*", "a").getOrThrow().image.mimeType).isEqualTo("image/png")
+        assertThat(loadAttachment(bytes, null, "b").getOrThrow().image.mimeType).isEqualTo("image/png")
+        assertThat(loadAttachment(bytes, "image/png; charset=binary", "c").getOrThrow().image.mimeType).isEqualTo("image/png")
+        // A keyboard sticker declared `image/png` over JPEG bytes: the model refuses a type that is not the bytes'.
+        val jpeg = ByteArrayOutputStream().also { Bitmap.createBitmap(32, 24, Bitmap.Config.ARGB_8888).apply { eraseColor(Color.RED) }.compress(Bitmap.CompressFormat.JPEG, 90, it) }.toByteArray()
+        assertThat(loadAttachment(jpeg, "image/png", "d").getOrThrow().image.mimeType).isEqualTo("image/jpeg")
+    }
+
+    /** A paste that hands over the picture's encoding instead of the picture would otherwise reach the agent as text to decode. */
+    @Test
+    fun `a paste carrying base64 or a data URI goes out as the picture itself`() {
+        val bytes = png()
+        val base64 = java.util.Base64.getEncoder().encodeToString(bytes)
+        for (payload in listOf(base64, "data:image/png;base64,$base64")) {
+            val image = loadAttachment(payload.toByteArray(), "image/png", "p").getOrThrow().image
+            assertThat(image.bytes).isEqualTo(bytes)
+            assertThat(image.mimeType).isEqualTo("image/png")
+            assertThat(image.base64).isEqualTo(base64)
+        }
     }
 
     @Test
-    fun `a vague or missing clipboard type is recovered from the bytes`() {
-        val bytes = png()
-        assertThat(resolveImageMime("image/*", bytes)).isEqualTo("image/png")
-        assertThat(resolveImageMime(null, bytes)).isEqualTo("image/png")
-        assertThat(resolveImageMime("image/png", bytes)).isEqualTo("image/png")
-        assertThat(resolveImageMime("image/bmp", "BM".toByteArray())).isNull()
+    fun `an image that will not decode is refused inline instead of being sent as it is`() {
+        val result = loadAttachment(png().copyOf(30), "image/png", "x")
+        assertThat(result.exceptionOrNull()?.message).isEqualTo("Couldn't read this PNG image. Re-save it as PNG or JPEG and attach it again.")
+        assertThat(loadAttachment("BM".toByteArray(), "image/bmp", "y").exceptionOrNull()?.message).isEqualTo("Unsupported image type (image/bmp). Use PNG, JPEG, GIF or WebP.")
     }
 
     /** [count] temporary PNGs, as the clipboard or the picker hands them over: content the resolver can open. */

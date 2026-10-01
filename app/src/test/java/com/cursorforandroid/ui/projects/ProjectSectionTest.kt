@@ -19,9 +19,7 @@ import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
-import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
-import com.cursorforandroid.data.local.PreferencesStore
 import com.cursorforandroid.data.repo.ContextState
 import com.cursorforandroid.data.repo.ProjectRepository
 import com.cursorforandroid.data.repo.ProjectViewState
@@ -51,7 +49,6 @@ import com.cursorforandroid.ui.media.MediaViewerState
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.ui.theme.ThemeMode
 import com.google.common.truth.Truth.assertThat
-import kotlinx.coroutines.runBlocking
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -293,12 +290,11 @@ class ProjectSectionTest {
     }
 
     @Test
-    fun `a running primary's Pause and Stop ask first under Confirm before stopping, and only the dialog's answer reaches the hand`() {
+    fun `a running primary's Pause and Stop always ask first, and only the dialog's answer reaches the hand`() {
         current = state(actionsAvailable = true)
-        val prefs = PreferencesStore(ApplicationProvider.getApplicationContext())
         compose.setContent {
             CursorTheme(mode = ThemeMode.Dark) {
-                val confirmation = rememberRunStopConfirmation(prefs)
+                val confirmation = rememberRunStopConfirmation()
                 CompositionLocalProvider(LocalRunStopConfirmation provides confirmation) {
                     Section(busy = busy, actions = actions())
                 }
@@ -325,13 +321,6 @@ class ProjectSectionTest {
         compose.onNodeWithTag(RunStopTags.CONFIRM).performClick()
         compose.waitUntil(10_000) { !dialogShown() }
         assertThat(tapped).containsAtLeast("pause:bc-w1", "stop:bc-w1").inOrder()
-
-        // Turned off, the menu's Stop reaches the hand at once.
-        runBlocking { prefs.setConfirmStop(false) }
-        tapped.clear()
-        openMenuAndTap("Stop")
-        compose.waitUntil(10_000) { "stop:bc-w1" in tapped }
-        assertThat(dialogShown()).isFalse()
     }
 
     @Test
@@ -339,7 +328,7 @@ class ProjectSectionTest {
         current = state(actionsAvailable = true)
         compose.setContent {
             CursorTheme(mode = ThemeMode.Dark) {
-                val confirmation = rememberRunStopConfirmation(PreferencesStore(ApplicationProvider.getApplicationContext()))
+                val confirmation = rememberRunStopConfirmation()
                 CompositionLocalProvider(LocalRunStopConfirmation provides confirmation) {
                     Section(busy = busy, actions = actions())
                 }

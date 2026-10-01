@@ -1,6 +1,13 @@
+import java.io.ByteArrayOutputStream
 import java.security.KeyStore
 import java.security.MessageDigest
+import java.time.LocalDateTime
+import java.time.format.DateTimeFormatter
 import java.util.Properties
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.TimeUnit
+import javax.inject.Inject
+import kotlin.concurrent.thread
 
 plugins {
     alias(libs.plugins.android.application)
@@ -172,11 +179,11 @@ fun certificateSha256(signing: ReleaseSigning): String {
 val releaseCertSha256: String = releaseSigning?.let(::certificateSha256).orEmpty()
 
 // ---------------------------------------------------------------------------------------------------------------------
-// Crash reports (opt-in; crash/CrashReporting.kt)
+// Crash reports (crash/CrashReporting.kt; currently unwired, with no Settings consent)
 //
 // `-Papp.sentryDsn=https://<key>@<host>/<project>` bakes the Sentry project into BuildConfig.SENTRY_DSN; the release
 // workflow passes it from the SENTRY_DSN secret when that exists. Without it the field is empty and the app has no
-// crash reporting at all: the Settings toggle says so and nothing is initialised. `-Papp.sentryProguardUuid=<uuid>` is
+// crash reporting at all. `-Papp.sentryProguardUuid=<uuid>` is
 // the id the workflow uploads this build's R8 mapping under, so a report from an obfuscated build can be read back;
 // it is only meaningful together with the DSN. Neither is ever set for a PR or debug build.
 // ---------------------------------------------------------------------------------------------------------------------
@@ -414,7 +421,8 @@ tasks.withType<Test>().configureEach {
 //   -Papp.testShard=benchmarks
 //                            run only the benchmark classes (`*BenchmarkTest`, `TranscriptPerf*`): the frame-time and
 //                            throughput claims. Always one JVM, whatever -Papp.testForks says, and nothing else beside
-//                            them, so what they measure is the code and not the neighbour.
+//                            them, so what they measure is the code and not the neighbour. CI runs them in
+//                            benchmarks.yml, which reports on every commit but holds no merge or release.
 // ---------------------------------------------------------------------------------------------------------------------
 val testForks: Int = providers.gradleProperty("app.testForks").map(String::toInt)
     .getOrElse((Runtime.getRuntime().availableProcessors() / 2).coerceIn(1, 4))
@@ -502,6 +510,434 @@ tasks.withType<Test>().configureEach {
 if (providers.gradleProperty("app.skipScreenshotTests").map(String::toBoolean).getOrElse(false)) {
     tasks.withType<Test>().configureEach {
         exclude("com/cursorforandroid/screenshots/**")
+    }
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Test stalls
+//
+// A test JVM that stops making progress - a test waiting on a latch nothing counts down or a response no fake server
+// will send, a deadlock in a class's setup - used to sit there until the CI job's timeout took the runner half an hour
+// in, and left nothing to go on: the stuck test had not finished, so no report named it, and its last output was still
+// in Gradle's buffer. So every test task watches its JVMs ("Gradle Test Executor N"). When one has started or finished
+// no test or test class for `-Papp.testStallMinutes` (default 5; no single test in CI has taken two), the watchdog
+// logs, and saves under build/reports/test-stalls/, what that JVM was in the middle of, its last lines of output and
+// `jcmd Thread.print` and `GC.heap_info` of it, then kills it, so the task fails at once and says where. 0 turns the
+// watchdog off; a test JVM under a debugger (--debug-jvm, an IDE's debug run) is never watched.
+// ---------------------------------------------------------------------------------------------------------------------
+val testStallMinutes: Long = providers.gradleProperty("app.testStallMinutes").map(String::toLong).getOrElse(5L)
+
+/** Watches each run of a test task ([TestStallListener]). A class rather than a lambda for the configuration cache, as with [TestShardFilter]. */
+class TestStallWatchdog(private val stallMillis: Long, private val reportDir: File) : Action<Task>, java.io.Serializable {
+    override fun execute(task: Task) {
+        val test = task as Test
+        if (test.debug || test.allJvmArgs.any { "jdwp" in it }) return
+        val listener = TestStallListener(test, stallMillis, reportDir)
+        test.addTestListener(listener)
+        test.addTestOutputListener(listener)
+    }
+}
+
+/**
+ * One run of a test task, watched. The test events reach the build process as they happen, so it knows what each test
+ * JVM is in the middle of even once that JVM has stopped; a daemon thread looks every five seconds and ends with the run.
+ */
+class TestStallListener(private val task: Test, private val stallMillis: Long, private val reportDir: File) : TestListener, TestOutputListener {
+    /** One test JVM: when it last started or finished a test or class, what it has started and not finished, its last output. */
+    private class Jvm {
+        @Volatile var lastProgress: Long = System.nanoTime()
+        @Volatile var lastFinished: String? = null
+        val running = ConcurrentHashMap<TestDescriptor, Long>()
+        val output = ArrayDeque<String>()
+    }
+
+    private val jvms = ConcurrentHashMap<String, Jvm>()
+    private val gone: MutableSet<String> = ConcurrentHashMap.newKeySet()
+    @Volatile private var runFinished = false
+
+    override fun beforeSuite(suite: TestDescriptor) {
+        if (suite.parent == null) watch() else progress(suite, started = true)
+    }
+
+    override fun afterSuite(suite: TestDescriptor, result: TestResult) {
+        when {
+            suite.parent == null -> runFinished = true
+            suite.parent?.parent == null -> {
+                gone += suite.name
+                jvms.remove(suite.name)
+            }
+            else -> progress(suite, started = false)
+        }
+    }
+
+    override fun beforeTest(testDescriptor: TestDescriptor) = progress(testDescriptor, started = true)
+
+    override fun afterTest(testDescriptor: TestDescriptor, result: TestResult) = progress(testDescriptor, started = false)
+
+    // Kept for the report, but not progress: a test stuck in a loop that logs is still stuck.
+    override fun onOutput(testDescriptor: TestDescriptor, outputEvent: TestOutputEvent) {
+        val jvm = jvmOf(testDescriptor) ?: return
+        synchronized(jvm.output) {
+            outputEvent.message.trimEnd('\n').lineSequence().forEach { line ->
+                jvm.output.addLast(line.take(500))
+                if (jvm.output.size > 40) jvm.output.removeFirst()
+            }
+        }
+    }
+
+    /** The JVM [descriptor] runs in: the run's suites are its JVMs ("Gradle Test Executor N"), their suites the classes. */
+    private fun jvmOf(descriptor: TestDescriptor): Jvm? {
+        var suite = descriptor
+        while (suite.parent?.parent != null) suite = suite.parent!!
+        if (suite.parent == null || suite.name in gone) return null
+        return jvms.computeIfAbsent(suite.name) { Jvm() }
+    }
+
+    private fun progress(descriptor: TestDescriptor, started: Boolean) {
+        val jvm = jvmOf(descriptor) ?: return
+        val now = System.nanoTime()
+        jvm.lastProgress = now
+        if (descriptor.parent?.parent == null) return
+        if (started) {
+            jvm.running[descriptor] = now
+        } else {
+            jvm.running.remove(descriptor)
+            jvm.lastFinished = if (descriptor.isComposite) descriptor.name else "${descriptor.className} > ${descriptor.name}"
+        }
+    }
+
+    private fun watch() {
+        thread(isDaemon = true, name = "Test stall watchdog (${task.path})") {
+            while (!runFinished && !task.state.executed) {
+                Thread.sleep(5_000)
+                val now = System.nanoTime()
+                for ((name, jvm) in jvms) {
+                    val silentMillis = TimeUnit.NANOSECONDS.toMillis(now - jvm.lastProgress)
+                    if (silentMillis >= stallMillis && jvms.remove(name, jvm)) {
+                        gone += name
+                        stalled(name, jvm, silentMillis / 1000)
+                    }
+                }
+            }
+        }
+    }
+
+    private fun stalled(name: String, jvm: Jvm, silentSeconds: Long) {
+        // Gradle hands a test JVM its display name, quoted, as the one argument to its main class: `'Gradle Test Executor 3'`.
+        // Matched among this build's own children, so it finds that JVM and never another build's.
+        val processes = ProcessHandle.current().descendants()
+            .filter { process -> process.info().arguments().map { args -> args.any { it.removeSurrounding("'") == name } }.orElse(false) }
+            .toList()
+        try {
+            val report = report(name, jvm, silentSeconds, processes)
+            val stamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss"))
+            val file = File(reportDir, "${task.name}-${name.substringAfterLast(' ')}-$stamp.txt")
+            val saved = runCatching { reportDir.mkdirs(); file.writeText(report) }.isSuccess
+            val outcome = if (processes.isEmpty()) "its process was not found, so it is left running" else "killing it so that ${task.path} fails now"
+            task.logger.error("Test stall: $outcome.${if (saved) " Saved to $file." else ""}\n$report")
+        } finally {
+            processes.forEach { process ->
+                process.descendants().forEach { it.destroyForcibly() }
+                process.destroyForcibly()
+            }
+        }
+    }
+
+    private fun report(name: String, jvm: Jvm, silentSeconds: Long, processes: List<ProcessHandle>): String = buildString {
+        val now = System.nanoTime()
+        fun since(start: Long) = "${TimeUnit.NANOSECONDS.toSeconds(now - start)} s"
+        appendLine("${task.path}: $name has started or finished no test for $silentSeconds s (the limit is ${stallMillis / 1000} s, -Papp.testStallMinutes).")
+        val running = jvm.running.entries.sortedBy { it.value }
+        val tests = running.filterNot { it.key.isComposite }
+        val classes = running.filter { it.key.isComposite }
+        when {
+            tests.isNotEmpty() -> tests.forEach { (test, start) -> appendLine("Running for ${since(start)}: ${test.className} > ${test.name}") }
+            classes.isNotEmpty() -> classes.forEach { (suite, start) ->
+                appendLine("In ${suite.name} for ${since(start)} with no test running: stuck in its setup or teardown, or between two of its tests.")
+            }
+            else -> appendLine("Between two test classes: no class had started.")
+        }
+        appendLine("Last finished: ${jvm.lastFinished ?: "nothing yet"}")
+        synchronized(jvm.output) {
+            appendLine()
+            appendLine("Its last ${jvm.output.size} lines of output:")
+            jvm.output.forEach { appendLine("  $it") }
+        }
+        processes.forEach { process ->
+            for (command in listOf(listOf("Thread.print", "-l"), listOf("GC.heap_info"))) {
+                appendLine()
+                appendLine("jcmd ${process.pid()} ${command.joinToString(" ")}:")
+                appendLine(jcmd(process, command))
+            }
+        }
+    }
+
+    /** `jcmd <pid> <command>` from the JDK that JVM runs on (or this build's, or the PATH's): what it printed, or why it could not. */
+    private fun jcmd(process: ProcessHandle, command: List<String>): String {
+        val executable = sequenceOf(process, ProcessHandle.current())
+            .mapNotNull { it.info().command().orElse(null) }
+            .map { File(File(it).parentFile, "jcmd") }
+            .firstOrNull { it.canExecute() }?.path ?: "jcmd"
+        val out = File.createTempFile("jcmd-", ".txt")
+        return try {
+            val jcmd = ProcessBuilder(listOf(executable, process.pid().toString()) + command).redirectErrorStream(true).redirectOutput(out).start()
+            if (jcmd.waitFor(60, TimeUnit.SECONDS)) {
+                out.readText()
+            } else {
+                jcmd.destroyForcibly()
+                out.readText() + "\n(jcmd gave no answer within 60 s)"
+            }
+        } catch (e: Exception) {
+            "jcmd could not run: $e"
+        } finally {
+            out.delete()
+        }
+    }
+}
+
+if (testStallMinutes > 0) {
+    val stallReportDir = layout.buildDirectory.dir("reports/test-stalls")
+    tasks.withType<Test>().configureEach {
+        doFirst(TestStallWatchdog(TimeUnit.MINUTES.toMillis(testStallMinutes), stallReportDir.get().asFile))
+    }
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// agentCheck
+//
+// `./gradlew :app:agentCheck` runs the unit tests a change is likely to break instead of all ~4000, which take over
+// half an hour on a four-core machine. The change is everything that differs from where HEAD left origin/main (their
+// merge base), committed or not, new files included; `-Papp.agentCheck.base=<ref>` measures from another ref. From
+// src/test it runs:
+//
+//   * the test classes of every changed test file;
+//   * the test classes named after a changed source file - SessionManagerProfileTest and SessionManagerRestoreTest for
+//     SessionManager.kt - support code in src/test included;
+//   * lightest first, the test classes that mention what a changed file declares - a class, interface, object or type
+//     alias, a function with a compound name (StatusPill, toRows), the file's own name, a changed fixture's file name -
+//     until the run holds `-Papp.agentCheck.seconds` of test time as CI measures it (default 300; `testClassSeconds`).
+//     0 leaves them all out. Over the last 40 merges that came to a median of 31 classes and 190 s, and never more than
+//     300 s, of a suite that takes 3500.
+//
+// It compiles all of src/main and src/test whatever it picks, and runs the tests in one JVM unless -Papp.testForks says
+// otherwise: two side by side on a four-core machine starve the timing-sensitive tests, as on CI's runners. (A change to
+// SessionManager.kt picks 80 classes; alone they took 5m 53s, as two JVMs 4m 37s with one wait timing out.) Before the
+// tests start it prints what it picked and why, and what it leaves to CI with the command for each: the mentioning
+// classes past the budget, the screenshot tests (verifyRoborazziDebug) and the benchmarks (alone). It is the check
+// before a push, not a substitute for CI. The pick is made from the tree on every run: a further change picks again, an
+// unchanged tree reuses the configuration cache.
+// ---------------------------------------------------------------------------------------------------------------------
+val agentCheckRequested: Boolean = gradle.startParameter.taskNames.any { it.substringAfterLast(':') == "agentCheck" }
+
+/** What agentCheck runs - the classes of the test files it picked (`com/x/FooTest`) - and what it says before and after. */
+data class AgentCheckPlan(val classPaths: List<String>, val before: String, val after: String) : java.io.Serializable
+
+/**
+ * Picks agentCheck's tests from git and the sources. A [ValueSource], so the configuration cache keeps the plan and
+ * checks it against the tree on each run rather than tracking every file read to make it.
+ */
+abstract class AgentCheckSelection : ValueSource<AgentCheckPlan, AgentCheckSelection.Parameters> {
+    interface Parameters : ValueSourceParameters {
+        val appDir: DirectoryProperty
+        val base: Property<String>
+        val seconds: Property<Int>
+        val classSeconds: MapProperty<String, Int>
+    }
+
+    @get:Inject abstract val exec: ExecOperations
+
+    /** A test file: its path from the repository root, the classes it declares (`com/x/FooTest`), their seconds in CI. */
+    private class TestFile(val path: String, val name: String, val classPaths: List<String>, val seconds: Int, val text: String) {
+        val className: String = (classPaths.firstOrNull { it.substringAfterLast('/') == name } ?: classPaths.first()).replace('/', '.')
+        /** Its test classes: the one it is named after, then any other `*Test` beside it (PhoneComposerButtonSizeTest). */
+        val testClasses: List<String> = listOf(name) + classPaths.map { it.substringAfterLast('/') }.filter { it != name && it.endsWith("Test") }
+        val isScreenshot: Boolean get() = classPaths.first().startsWith("com/cursorforandroid/screenshots/")
+        val isBenchmark: Boolean get() = TestShardFilter.isBenchmark(name)
+    }
+
+    override fun obtain(): AgentCheckPlan {
+        val appDir = parameters.appDir.get().asFile
+        val root = git(appDir, "rev-parse", "--show-toplevel")?.let(::File)
+            ?: return AgentCheckPlan(emptyList(), "agentCheck: this is not a git checkout, so there is no change to pick tests for; it only compiles.", "agentCheck passed: it compiled.")
+        val base = parameters.base.get()
+        val budget = parameters.seconds.get()
+        val mergeBase = git(root, "merge-base", "HEAD", base)
+        val changed = (git(root, "diff", "--name-only", "--no-renames", mergeBase ?: "HEAD").orEmpty().lines() +
+            git(root, "ls-files", "--others", "--exclude-standard").orEmpty().lines())
+            .filter(String::isNotBlank).distinct().sorted()
+
+        val app = appDir.relativeTo(root).invariantSeparatorsPath.let { if (it.isEmpty()) "" else "$it/" }
+        val testRoot = File(appDir, "src/test/java")
+        val classSeconds = parameters.classSeconds.get()
+        val tests = testRoot.walkTopDown().filter { it.isFile && it.extension == "kt" }.mapNotNull { file ->
+            val text = file.readText()
+            if ("@Test" !in text) return@mapNotNull null
+            val packagePath = packageLine.find(text)?.groupValues?.get(1)?.replace('.', '/')?.plus('/').orEmpty()
+            val classes = topLevelType.findAll(text).map { it.groupValues[1] }.toList().ifEmpty { listOf(file.nameWithoutExtension) }
+            TestFile(
+                path = app + "src/test/java/" + file.relativeTo(testRoot).invariantSeparatorsPath,
+                name = file.nameWithoutExtension,
+                classPaths = classes.map { packagePath + it },
+                seconds = classes.sumOf { classSeconds[it] ?: 0 }.coerceAtLeast(1),
+                text = text,
+            )
+        }.sortedBy { it.path }.toList()
+        val testAt = tests.associateBy { it.path }
+
+        // Why each test file is in: changed itself, or named after a changed source file.
+        val why = linkedMapOf<TestFile, String>()
+        val stems = mutableListOf<String>()
+        val declared = sortedSetOf<String>()
+        val unmapped = mutableListOf<String>()
+        for (path in changed) {
+            val parts = path.removePrefix(app).split('/')
+            val inSources = path.startsWith(app) && parts.size > 3 && parts[0] == "src"
+            when {
+                inSources && parts[2] == "java" && (path.endsWith(".kt") || path.endsWith(".java")) -> {
+                    val stem = parts.last().substringBeforeLast('.')
+                    val test = testAt[path]
+                    if (test != null) why[test] = "changed" else stems += stem
+                    val text = File(root, path).takeIf { it.isFile }?.readText() ?: mergeBase?.let { git(root, "show", "$it:$path") }.orEmpty()
+                    declared += stem
+                    declared += topLevelType.findAll(text).map { it.groupValues[1] }
+                    declared += topLevelFunction.findAll(text).map { it.groupValues[1] }.filter { it.length >= 6 && it.drop(1).any(Char::isUpperCase) }
+                }
+                inSources && parts[1] == "test" && parts[2] == "resources" && tests.any { parts.last() in it.text } -> declared += parts.last()
+                path.startsWith(app) || path.endsWith(".gradle.kts") || path == "gradle.properties" || path.startsWith("gradle/") -> unmapped += path
+            }
+        }
+        for (test in tests) if (test !in why) stems.firstOrNull { test.name.startsWith(it) }?.let { why[test] = "named after $it" }
+        val mention = declared.takeIf { it.isNotEmpty() }?.let { names -> Regex(names.joinToString("|", """\b(""", """)\b""") { Regex.escape(it) }) }
+        val mentioning = tests.filter { it !in why }.mapNotNull { test -> mention?.find(test.text)?.let { test to "mentions ${it.groupValues[1]}" } }
+
+        val touched = why.toList() + mentioning
+        val screenshots = touched.map { it.first }.filter { it.isScreenshot }
+        val benchmarks = touched.map { it.first }.filter { it.isBenchmark && !it.isScreenshot }
+        val direct = why.toList().filter { (test, _) -> !test.isScreenshot && !test.isBenchmark }
+        val candidates = mentioning.filter { (test, _) -> !test.isScreenshot && !test.isBenchmark }.sortedWith(compareBy({ it.first.seconds }, { it.first.path }))
+        var room = budget - direct.sumOf { it.first.seconds }
+        val fits = candidates.takeWhile { (test, _) -> (test.seconds <= room).also { if (it) room -= test.seconds } }
+        val pastBudget = candidates.drop(fits.size).map { it.first }
+        val run = direct + fits
+
+        fun count(n: Int, one: String, many: String) = "$n ${if (n == 1) one else many}"
+        fun classes(tests: List<TestFile>) = count(tests.sumOf { it.testClasses.size }, "test class", "test classes")
+        fun command(task: String, tests: List<TestFile>): String =
+            "./gradlew $task " + tests.take(10).joinToString(" ") { "--tests '${it.className}'" } + if (tests.size > 10) "   (+${tests.size - 10} more)" else ""
+        val before = buildString {
+            val from = if (mergeBase == null) "the last commit" else "${mergeBase.take(9)}, where HEAD left $base"
+            val files = count(changed.size, "file", "files")
+            if (mergeBase == null) {
+                val fetch = if ('/' in base) " (try: git fetch ${base.substringBefore('/')} ${base.substringAfter('/')})" else ""
+                appendLine("agentCheck: HEAD has no merge base with $base in this checkout$fetch, so only what is not committed counts.")
+            }
+            when {
+                changed.isEmpty() -> appendLine("agentCheck: nothing has changed since $from, so it only compiles.")
+                run.isEmpty() -> appendLine("agentCheck: it has nothing to run for the $files changed since $from, so it only compiles.")
+                else -> {
+                    appendLine("agentCheck: ${classes(run.map { it.first })} for the $files changed since $from - about ${run.sumOf { it.first.seconds }} s of test time as CI measures it:")
+                    val kinds = listOf("changed", "named after", "mentions")
+                    run.groupBy({ it.second }, { it.first }).toSortedMap(compareBy({ reason -> kinds.indexOfFirst { reason.startsWith(it) } }, { it }))
+                        .forEach { (reason, tests) -> appendLine("  $reason: ${tests.flatMap { it.testClasses }.sorted().joinToString()}") }
+                }
+            }
+            if (pastBudget.isNotEmpty()) {
+                val seconds = pastBudget.sumOf { it.seconds }
+                val more = pastBudget.sumOf { it.testClasses.size }
+                appendLine("Past its $budget s budget, $more more ${if (more == 1) "test class mentions" else "test classes mention"} what changed - about $seconds s; -Papp.agentCheck.seconds=${budget + seconds} takes them in:")
+                appendLine("  " + command(":app:testDebugUnitTest", pastBudget))
+            }
+            if (screenshots.isNotEmpty()) {
+                appendLine("Screenshot tests that touch the change, compared against screenshots/:")
+                appendLine("  " + command(":app:verifyRoborazziDebug", screenshots))
+            }
+            if (benchmarks.isNotEmpty()) {
+                appendLine("Benchmarks that touch the change, to run alone:")
+                appendLine("  " + command(":app:testDebugUnitTest -Papp.testShard=benchmarks", benchmarks))
+            }
+            if (unmapped.isNotEmpty()) appendLine("No unit test maps to ${unmapped.joinToString()}; only CI's full run checks ${if (unmapped.size == 1) "it" else "them"}.")
+        }.trimEnd()
+        val after = buildString {
+            append(if (run.isEmpty()) "agentCheck passed: it compiled." else "agentCheck passed: ${classes(run.map { it.first })}.")
+            val left = listOfNotNull(
+                pastBudget.takeIf { it.isNotEmpty() }?.let { "${classes(it)} past the budget" },
+                screenshots.takeIf { it.isNotEmpty() }?.let { count(it.size, "screenshot test", "screenshot tests") },
+                benchmarks.takeIf { it.isNotEmpty() }?.let { count(it.size, "benchmark", "benchmarks") },
+            )
+            if (left.isNotEmpty()) append(" Not run here: ${left.joinToString()} - the commands are in its plan above.")
+            append(" CI runs everything.")
+        }
+        return AgentCheckPlan(run.flatMap { it.first.classPaths }, before, after)
+    }
+
+    /** What `git args` prints in [dir], or null when git is missing or fails. */
+    private fun git(dir: File, vararg args: String): String? = runCatching {
+        val out = ByteArrayOutputStream()
+        val result = exec.exec {
+            commandLine("git", "-c", "core.quotePath=false", *args)
+            workingDir = dir
+            standardOutput = out
+            errorOutput = ByteArrayOutputStream()
+            isIgnoreExitValue = true
+        }
+        out.toString(Charsets.UTF_8).trim().takeIf { result.exitValue == 0 }
+    }.getOrNull()
+
+    private companion object {
+        val packageLine = Regex("""^package\s+([\w.]+)""", RegexOption.MULTILINE)
+        val topLevelType = Regex("""^(?:(?:public|internal|data|sealed|abstract|open|enum|value|annotation|inline|fun)\s+)*(?:class|interface|object|typealias)\s+(\w+)""", RegexOption.MULTILINE)
+        val topLevelFunction = Regex("""^(?:(?:public|internal|inline|suspend|operator|infix|tailrec)\s+)*fun\s+(?:<[^>]*>\s+)?(?:[\w.<>, ?*]+\.)?(\w+)\s*\(""", RegexOption.MULTILINE)
+    }
+}
+
+/** Logs [text] when its task runs, or fails the task with it. A class rather than a lambda for the configuration cache, as with [TestShardFilter]. */
+class AgentCheckMessage(private val text: String, private val fail: Boolean = false) : Action<Task>, java.io.Serializable {
+    override fun execute(task: Task) {
+        if (fail) throw GradleException(text)
+        task.logger.lifecycle(text)
+    }
+}
+
+val agentCheckPlan: AgentCheckPlan? = if (!agentCheckRequested) null else {
+    require(testShard == null) { "agentCheck picks its own test classes; drop -Papp.testShard." }
+    providers.of(AgentCheckSelection::class.java) {
+        parameters {
+            appDir.set(layout.projectDirectory)
+            base.set(providers.gradleProperty("app.agentCheck.base").orElse("origin/main"))
+            seconds.set(providers.gradleProperty("app.agentCheck.seconds").map(String::toInt).orElse(300))
+            classSeconds.set(testClassSeconds)
+        }
+    }.get()
+}
+
+val agentCheckPlanTask: TaskProvider<Task>? = agentCheckPlan?.let { plan ->
+    tasks.register("agentCheckPlan") {
+        description = "Prints what agentCheck runs, and why."
+        doLast(AgentCheckMessage(plan.before))
+    }
+}
+
+if (agentCheckPlan != null && agentCheckPlan.classPaths.isNotEmpty()) {
+    val forksGiven = providers.gradleProperty("app.testForks").isPresent
+    tasks.withType<Test>().configureEach {
+        if (name == "testDebugUnitTest") {
+            mustRunAfter(agentCheckPlanTask)
+            agentCheckPlan.classPaths.forEach { include("$it.class", "$it\$*.class") }
+            if (!forksGiven) maxParallelForks = 1
+        }
+    }
+}
+
+tasks.register("agentCheck") {
+    group = "verification"
+    description = "Runs the unit tests a change against origin/main is likely to break; see agentCheck in app/build.gradle.kts."
+    if (agentCheckPlan == null) {
+        // Asked for by an abbreviation, or as another task's dependency: its tests are picked only when it is named.
+        doFirst(AgentCheckMessage("Run agentCheck by its name (./gradlew :app:agentCheck): it picks its tests only when the command line names it.", fail = true))
+    } else {
+        dependsOn(agentCheckPlanTask, "compileDebugUnitTestKotlin")
+        if (agentCheckPlan.classPaths.isNotEmpty()) dependsOn("testDebugUnitTest")
+        doLast(AgentCheckMessage(agentCheckPlan.after))
     }
 }
 

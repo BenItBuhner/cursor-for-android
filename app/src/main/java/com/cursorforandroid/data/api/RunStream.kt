@@ -10,6 +10,7 @@ import com.cursorforandroid.data.api.dto.SseStatusDto
 import com.cursorforandroid.data.api.dto.SseTextDto
 import com.cursorforandroid.data.api.dto.SseToolCallDto
 import com.cursorforandroid.domain.RunStatus
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.InternalCoroutinesApi
 import kotlinx.coroutines.Job
@@ -21,14 +22,19 @@ import kotlinx.coroutines.flow.buffer
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.runInterruptible
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import okhttp3.Call
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
-import okhttp3.Response
+import okio.Buffer
 import okio.BufferedSource
+import okio.Source
+import okio.Timeout
+import okio.buffer
 import java.io.IOException
 import java.time.ZonedDateTime
 import java.time.format.DateTimeFormatter
@@ -341,9 +347,17 @@ class SseRunStreamer(
     private val waiter: suspend (Long) -> Unit = { delay(it) },
     /** The host's pause a `429` asked for, shared with the REST calls (see [RetryInterceptor]): a connection waits it out first. */
     private val pauses: HostPause = HostPause(now),
+    /** Where streams are read without a thread each (see [RunStreamMux]); null, or a URL it cannot serve, reads them through OkHttp. */
+    private val mux: RunStreamMux? = RunStreamMux(client),
 ) : RunStreamer {
 
-    override fun stream(agentId: String, runId: String, lastEventId: String?): Flow<RunStreamEvent> = flow {
+    override fun stream(agentId: String, runId: String, lastEventId: String?): Flow<RunStreamEvent> {
+        val muxed = urlFor(agentId, runId).toHttpUrlOrNull()?.let { mux?.canServe(it) } == true
+        // Multiplexed, a stream suspends between frames and its parsing is CPU work; through OkHttp it blocks a thread.
+        return frames(agentId, runId, lastEventId, onStreamIo = !muxed).buffer(EVENTS_AHEAD).flowOn(if (muxed) Dispatchers.Default else STREAM_IO)
+    }
+
+    private fun frames(agentId: String, runId: String, lastEventId: String?, onStreamIo: Boolean): Flow<RunStreamEvent> = flow {
         val host = urlFor(agentId, runId).toHttpUrlOrNull()?.host.orEmpty()
         pauses.remainingMs(host).takeIf { it > 0 }?.let { waiter(it) }
         var lastId = lastEventId
@@ -353,7 +367,7 @@ class SseRunStreamer(
         /** Whether this pass has handed the caller anything: until it has, a connection that starts over duplicates nothing. */
         var delivered = false
         while (currentCoroutineContext().isActive) {
-            val outcome = connectOnce(agentId, runId, lastId) { frame ->
+            val outcome = connectOnce(agentId, runId, lastId, onStreamIo) { frame ->
                 frame.retryMillis?.let { serverRetryMs = it }
                 // A stream that says it has no resume position has to be believed even when the frame saying so is
                 // one this client cannot read: the pass then ends and the caller rebuilds from nothing.
@@ -409,7 +423,7 @@ class SseRunStreamer(
                 }
             }
         }
-    }.buffer(EVENTS_AHEAD).flowOn(STREAM_IO)
+    }
 
     private sealed interface Outcome {
         /** The run's `result` (and `done`) came through. */
@@ -426,6 +440,7 @@ class SseRunStreamer(
         agentId: String,
         runId: String,
         lastId: String?,
+        onStreamIo: Boolean,
         onFrame: suspend FlowCollector<RunStreamEvent>.(SseFrame) -> SseParser.Parsed,
     ): Outcome {
         val request = Request.Builder()
@@ -437,6 +452,56 @@ class SseRunStreamer(
                 lastId?.let { header("Last-Event-ID", it) }
             }
             .build()
+        mux?.takeIf { it.canServe(request.url) }?.let { mux -> connectMultiplexed(mux, request, lastId, onFrame)?.let { return it } }
+        return connectOkHttp(request, lastId, onStreamIo, onFrame)
+    }
+
+    /** One connection over [mux]; null when OkHttp has to take the request after all (no `h2`, or a redirect to follow). */
+    private suspend fun FlowCollector<RunStreamEvent>.connectMultiplexed(
+        mux: RunStreamMux,
+        request: Request,
+        lastId: String?,
+        onFrame: suspend FlowCollector<RunStreamEvent>.(SseFrame) -> SseParser.Parsed,
+    ): Outcome? {
+        val stream = try {
+            mux.open(request.newBuilder().header("User-Agent", CursorApiFactory.USER_AGENT).build())
+        } catch (_: RunStreamMux.Http2Unavailable) {
+            return null
+        } catch (e: IOException) {
+            return Outcome.Retry(e.message ?: "connection failed")
+        }
+        try {
+            val head = try {
+                stream.awaitHead()
+            } catch (e: IOException) {
+                return Outcome.Retry(e.message ?: "connection failed")
+            }
+            if (head.code in 300..399) return null
+            if (head.code !in 200..299) {
+                val body = Buffer()
+                try {
+                    while (body.size < MAX_ERROR_BODY_BYTES && stream.read(body) >= 0) Unit
+                } catch (_: IOException) {
+                    // As OkHttp's path: an error body that did not arrive whole is no body.
+                    body.clear()
+                }
+                return rejected(head.code, body.readUtf8(), head.headers["Retry-After"], lastId)
+            }
+            val reader = SseStreamReader(stream, STREAM_IO, head.headers["Content-Length"]?.toLongOrNull() ?: -1L)
+            return readFrames(object : FrameSource {
+                override suspend fun next(): SseFrame? = reader.next()
+            }, onFrame)
+        } finally {
+            stream.close()
+        }
+    }
+
+    private suspend fun FlowCollector<RunStreamEvent>.connectOkHttp(
+        request: Request,
+        lastId: String?,
+        onStreamIo: Boolean,
+        onFrame: suspend FlowCollector<RunStreamEvent>.(SseFrame) -> SseParser.Parsed,
+    ): Outcome {
         val call: Call = client.newCall(request)
         // Blocking socket reads are not interruptible; cancelling the call is. On cancelling, not on completion: a job
         // blocked in a read never completes, so a completion handler waited for the next frame the server sent — on a
@@ -445,60 +510,86 @@ class SseRunStreamer(
         val handle = currentCoroutineContext()[Job]?.invokeOnCompletion(onCancelling = true, invokeImmediately = true) { call.cancel() }
         try {
             val response = try {
-                call.execute()
+                if (onStreamIo) call.execute() else withContext(STREAM_IO) { call.execute() }
             } catch (e: IOException) {
                 return Outcome.Retry(e.message ?: "connection failed")
             }
             response.use { resp ->
                 if (!resp.isSuccessful) {
                     val body = runCatching { resp.body?.string() }.getOrNull().orEmpty()
-                    val error = body.takeIf { it.isNotBlank() }?.let { runCatching { CursorJson.decodeFromString(ApiErrorBodyDto.serializer(), it) }.getOrNull() }?.error
-                    return when (resp.code) {
-                        410 -> Outcome.Stopped(RunStreamEvent.Error.STREAM_EXPIRED, "This run's live stream has expired.")
-                        401, 403 -> Outcome.Stopped("unauthorized", "Not authorized to stream this run.")
-                        404 -> Outcome.Stopped("run_not_found", "Run not found.")
-                        400 -> if (lastId != null && error?.code == RunStreamEvent.Error.INVALID_LAST_EVENT_ID) {
-                            Outcome.Restart(error.message.ifBlank { "The server rejected the resume position." })
-                        } else {
-                            Outcome.Stopped(error?.code ?: "http_400", error?.message?.ifBlank { null } ?: "Stream request failed (400)")
-                        }
-                        408, 429, in 500..599 -> Outcome.Retry("HTTP ${resp.code}", resp.retryAfterMillis(), rateLimited = resp.code == 429)
-                        else -> Outcome.Stopped(error?.code ?: "http_${resp.code}", error?.message?.ifBlank { null } ?: "Stream request failed (${resp.code})")
-                    }
+                    return rejected(resp.code, body, resp.header("Retry-After"), lastId)
                 }
                 val source = resp.body?.source() ?: return Outcome.Retry("empty body")
-                var sawResult = false
-                try {
-                    while (true) {
-                        val frame = SseParser.readFrame(source) ?: break
-                        val delivered = (onFrame(frame) as? SseParser.Parsed.Delivered)?.event
-                        when (frame.event) {
-                            // The server's word on why it is stopping. Not part of the run: the caller checks the
-                            // run record and, unless the log is gone for good, comes back with `Last-Event-ID`.
-                            "error" -> {
-                                val error = delivered as? RunStreamEvent.Error
-                                return Outcome.Stopped(error?.code ?: "stream_error", error?.message?.ifBlank { null } ?: "The run's stream reported an error.")
-                            }
-                            // Only a result this client could read ends the run. One it could not is a frame it
-                            // never received: the resume position stayed where it was, so another connection asks
-                            // the server to send it again rather than the pass declaring the run finished without it.
-                            "result" -> if (delivered is RunStreamEvent.Result) {
-                                sawResult = true
-                            } else {
-                                return Outcome.Retry("the run's result could not be read")
-                            }
-                            "done" -> return if (sawResult) Outcome.Terminal else Outcome.Stopped("stream_closed", "The stream ended before the run did.")
-                        }
+                val frames = if (onStreamIo) {
+                    object : FrameSource {
+                        override suspend fun next(): SseFrame? = SseParser.readFrame(source)
                     }
-                } catch (e: IOException) {
-                    if (!currentCoroutineContext().isActive) return Outcome.Terminal
-                    if (!sawResult) return Outcome.Retry(e.message ?: "stream interrupted")
+                } else {
+                    object : FrameSource {
+                        override suspend fun next(): SseFrame? = withContext(STREAM_IO) { SseParser.readFrame(source) }
+                    }
                 }
-                return if (sawResult) Outcome.Terminal else Outcome.Retry("stream closed before result")
+                return readFrames(frames, onFrame)
             }
         } finally {
             handle?.dispose()
         }
+    }
+
+    /** The server's refusal of a stream request, by its status and the API's error body in [body]. */
+    private fun rejected(code: Int, body: String, retryAfter: String?, lastId: String?): Outcome {
+        val error = body.takeIf { it.isNotBlank() }?.let { runCatching { CursorJson.decodeFromString(ApiErrorBodyDto.serializer(), it) }.getOrNull() }?.error
+        return when (code) {
+            410 -> Outcome.Stopped(RunStreamEvent.Error.STREAM_EXPIRED, "This run's live stream has expired.")
+            401, 403 -> Outcome.Stopped("unauthorized", "Not authorized to stream this run.")
+            404 -> Outcome.Stopped("run_not_found", "Run not found.")
+            400 -> if (lastId != null && error?.code == RunStreamEvent.Error.INVALID_LAST_EVENT_ID) {
+                Outcome.Restart(error.message.ifBlank { "The server rejected the resume position." })
+            } else {
+                Outcome.Stopped(error?.code ?: "http_400", error?.message?.ifBlank { null } ?: "Stream request failed (400)")
+            }
+            408, 429, in 500..599 -> Outcome.Retry("HTTP $code", retryAfterMillis(retryAfter), rateLimited = code == 429)
+            else -> Outcome.Stopped(error?.code ?: "http_$code", error?.message?.ifBlank { null } ?: "Stream request failed ($code)")
+        }
+    }
+
+    /** The frames of one connection, read one at a time; an [IOException] from [frames] ends the connection. */
+    private interface FrameSource {
+        suspend fun next(): SseFrame?
+    }
+
+    private suspend fun FlowCollector<RunStreamEvent>.readFrames(
+        frames: FrameSource,
+        onFrame: suspend FlowCollector<RunStreamEvent>.(SseFrame) -> SseParser.Parsed,
+    ): Outcome {
+        var sawResult = false
+        try {
+            while (true) {
+                val frame = frames.next() ?: break
+                val delivered = (onFrame(frame) as? SseParser.Parsed.Delivered)?.event
+                when (frame.event) {
+                    // The server's word on why it is stopping. Not part of the run: the caller checks the
+                    // run record and, unless the log is gone for good, comes back with `Last-Event-ID`.
+                    "error" -> {
+                        val error = delivered as? RunStreamEvent.Error
+                        return Outcome.Stopped(error?.code ?: "stream_error", error?.message?.ifBlank { null } ?: "The run's stream reported an error.")
+                    }
+                    // Only a result this client could read ends the run. One it could not is a frame it
+                    // never received: the resume position stayed where it was, so another connection asks
+                    // the server to send it again rather than the pass declaring the run finished without it.
+                    "result" -> if (delivered is RunStreamEvent.Result) {
+                        sawResult = true
+                    } else {
+                        return Outcome.Retry("the run's result could not be read")
+                    }
+                    "done" -> return if (sawResult) Outcome.Terminal else Outcome.Stopped("stream_closed", "The stream ended before the run did.")
+                }
+            }
+        } catch (e: IOException) {
+            if (!currentCoroutineContext().isActive) return Outcome.Terminal
+            if (!sawResult) return Outcome.Retry(e.message ?: "stream interrupted")
+        }
+        return if (sawResult) Outcome.Terminal else Outcome.Retry("stream closed before result")
     }
 
     /** The schedule this client keeps, never shorter than the reconnection time the server asked for in a `retry:`. */
@@ -513,8 +604,8 @@ class SseRunStreamer(
      * [Throwable.retryAfterMillis] only reads Retrofit's `HttpException`, and a rejected stream request never
      * becomes one. A rate limit that names a time was previously answered a second later, three more times.
      */
-    private fun Response.retryAfterMillis(): Long? {
-        val header = header("Retry-After")?.trim()?.ifEmpty { null } ?: return null
+    private fun retryAfterMillis(value: String?): Long? {
+        val header = value?.trim()?.ifEmpty { null } ?: return null
         header.toLongOrNull()?.let { return (it * 1000).coerceAtLeast(0L) }
         val at = runCatching { ZonedDateTime.parse(header, DateTimeFormatter.RFC_1123_DATE_TIME).toInstant().toEpochMilli() }
             .getOrNull() ?: return null
@@ -539,12 +630,125 @@ class SseRunStreamer(
          */
         const val EVENTS_AHEAD = 2
 
+        /** More of a refused stream's body than an API error ever is. */
+        const val MAX_ERROR_BODY_BYTES = 1L shl 20
+
         /**
-         * A stream holds its thread for as long as the run goes on (`execute()` blocks on the socket). Streams get
-         * threads of their own, beside the shared IO pool's 64: background live sync holds one per running chat, and
-         * thirty of them in the shared pool left the rest of the app's reads queueing for a thread.
+         * A stream read through OkHttp holds its thread for as long as the run goes on (`execute()` blocks on the
+         * socket), as does a multiplexed one while it gathers a frame too big to wait for (see [SseStreamReader]).
+         * Those get threads of their own, beside the shared IO pool's 64: thirty streams in the shared pool left the
+         * rest of the app's reads queueing for a thread. Unbounded: at 64, a coordinator's 150 working subagents left
+         * 86 of their streams opened and never read. Multiplexed streams (see [RunStreamMux]) hold none while waiting.
          */
         @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
-        val STREAM_IO = Dispatchers.IO.limitedParallelism(64)
+        val STREAM_IO = Dispatchers.IO.limitedParallelism(Int.MAX_VALUE)
+    }
+}
+
+/**
+ * SSE frames off a multiplexed stream as they arrive, without a thread waiting on it: a frame is handed to
+ * [SseParser.readFrame] only once it is all in [pending] — its blank line after a field — so the parser, which reads
+ * a buffer to its end, never meets half of one. What ends the stream (its end, a failure, a timeout) ends the frames
+ * as it does over OkHttp: the frames already whole are read, a half-written one is dropped, and then there are none.
+ * A frame that grows past [BLOCKING_FRAME_BYTES] unfinished is read on a thread of [blocking] as OkHttp's path reads
+ * every frame, so a multi-megabyte picture is skipped or kept by exactly the parser's rules, with no copy of them here.
+ */
+internal class SseStreamReader(
+    private val stream: RunStreamMux.Stream,
+    private val blocking: CoroutineDispatcher,
+    /** The body's declared length, or -1: as OkHttp holds a body to it, bytes past it end the stream as a failure. */
+    private val contentLength: Long = -1L,
+) {
+    private val pending = Buffer()
+    private var received = 0L
+    /** Where the next line to look at starts in [pending]. */
+    private var scanned = 0L
+    /** Whether the frame begun in [pending] has a field yet: until it does, a blank line ends nothing. */
+    private var sawField = false
+    private var ended = false
+
+    suspend fun next(): SseFrame? {
+        while (true) {
+            if (frameBuffered()) return SseParser.readFrame(pending).also { scanned = 0L; sawField = false }
+            if (ended) return null
+            if (pending.size > BLOCKING_FRAME_BYTES) return blockingFrame()
+            val before = pending.size
+            val read = try {
+                stream.read(pending)
+            } catch (_: IOException) {
+                -1L
+            }
+            if (read < 0) ended = true else overran(before, read)
+        }
+    }
+
+    /** Whether the [read] bytes just added after [before] ran past [contentLength]: then they are dropped, and the stream ends. */
+    private fun overran(before: Long, read: Long): Boolean {
+        received += read
+        if (contentLength < 0 || received <= contentLength) return false
+        val keep = (read - (received - contentLength)).coerceAtLeast(0L)
+        val tail = Buffer()
+        pending.copyTo(tail, 0L, before + keep)
+        pending.clear()
+        pending.writeAll(tail)
+        ended = true
+        return true
+    }
+
+    /**
+     * Whether [pending] holds a whole frame, by the lines [SseParser.readFrame] would read: LF or CRLF endings, a
+     * comment line (`:` first) no field, and blank lines and comments before a frame's first field read past, as
+     * the parser reads past them — so they are dropped here and the buffer holds only the frame being gathered.
+     */
+    private fun frameBuffered(): Boolean {
+        while (true) {
+            val newline = pending.indexOf(NEWLINE, scanned)
+            if (newline < 0) return false
+            val start = scanned
+            val end = if (newline > start && pending[newline - 1] == CR) newline - 1 else newline
+            scanned = newline + 1
+            when {
+                end == start -> if (sawField) return true
+                pending[start] == COLON -> Unit
+                else -> sawField = true
+            }
+            if (!sawField) {
+                pending.skip(scanned)
+                scanned = 0L
+            }
+        }
+    }
+
+    private suspend fun blockingFrame(): SseFrame? {
+        val source = object : Source {
+            override fun read(sink: Buffer, byteCount: Long): Long {
+                if (pending.size == 0L) {
+                    if (ended) return -1L
+                    val read = stream.readBlocking(pending)
+                    if (read < 0 || overran(0L, read) && pending.size == 0L) return -1L
+                }
+                return pending.read(sink, byteCount)
+            }
+            override fun timeout(): Timeout = Timeout.NONE
+            override fun close() = Unit
+        }.buffer()
+        val frame = runInterruptible(blocking) { SseParser.readFrame(source) }
+        // What reading the frame left in the parser's buffer comes before what arrived after it.
+        val rest = Buffer().apply {
+            writeAll(source.buffer)
+            writeAll(pending)
+        }
+        pending.writeAll(rest)
+        scanned = 0L
+        sawField = false
+        if (frame == null) ended = true
+        return frame
+    }
+
+    private companion object {
+        const val BLOCKING_FRAME_BYTES = 1L shl 20
+        const val NEWLINE = '\n'.code.toByte()
+        const val CR = '\r'.code.toByte()
+        const val COLON = ':'.code.toByte()
     }
 }

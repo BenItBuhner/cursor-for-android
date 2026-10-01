@@ -47,7 +47,19 @@ class StorePathTest {
         assertThat(self.ownerId(null)).isNull()
         val user = StorePath.parse("/cursor/stores/user/notes.md")!!
         assertThat(user.ownerId("bc-chat")).isNull()
+        assertThat(user.storeMount).isEqualTo("user")
+        assertThat(self.storeMount).isNull()
         assertThat(StorePath.parse("/cursor/stores/$store/docs/spec.md")!!.ownerId("bc-other")).isEqualTo(store)
+        assertThat(StorePath.parse("/cursor/stores/$store/docs/spec.md")!!.storeMount).isNull()
+    }
+
+    @Test
+    fun `self pinned to a chat keeps naming that chat's store wherever it is opened next`() {
+        val self = StorePath.parse("/cursor/stores/self/media/board.png")!!
+        assertThat(self.pinnedTo("bc-worker").text).isEqualTo("/cursor/stores/bc-worker/media/board.png")
+        assertThat(self.pinnedTo(null)).isEqualTo(self)
+        val project = StorePath.parse(imagePath)!!
+        assertThat(project.pinnedTo("bc-worker")).isEqualTo(project)
     }
 
     @Test
@@ -92,9 +104,16 @@ class StorePathTest {
         val inWorker = MediaRef.parse(imagePath, "bc-worker") as MediaRef.Store
         assertThat(inWorker.ownerId).isEqualTo(store)
         assertThat((MediaRef.parse("/cursor/stores/self/media/board.png", "bc-worker") as MediaRef.Store).ownerId).isEqualTo("bc-worker")
-        // Outside a chat, or in a mount naming nobody, there is no store to read.
+        // Outside a chat `self` names no one's store.
         assertThat(MediaRef.parse("/cursor/stores/self/media/board.png", null)).isInstanceOf(MediaRef.Unavailable::class.java)
-        assertThat(MediaRef.parse("/cursor/stores/user/media/board.png", store)).isInstanceOf(MediaRef.Unavailable::class.java)
+        // A mount naming the store itself — the user's, the team's, a store by its id — is that store, read in this chat.
+        assertThat(MediaRef.parse("/cursor/stores/user/media/board.png", store)).isEqualTo(MediaRef.Store(store, "media/board.png", store = "user"))
+        assertThat(MediaRef.parse("/cursor/stores/team/media/board.png", store)).isEqualTo(MediaRef.Store(store, "media/board.png", store = "team"))
+        val byId = MediaRef.parse("/cursor/stores/st-3f2a9c/media/raw_155132.png", store) as MediaRef.Store
+        assertThat(byId.store).isEqualTo("st-3f2a9c")
+        assertThat(byId.path.text).isEqualTo("/cursor/stores/st-3f2a9c/media/raw_155132.png")
+        assertThat(byId.cacheKey).isEqualTo("store:st-3f2a9c:media/raw_155132.png")
+        assertThat(byId.webUrl).isEqualTo("https://cursor.com/agents/$store")
         // An artifact path is still an artifact's.
         assertThat(MediaRef.parse("/opt/cursor/artifacts/demo.png", store)).isInstanceOf(MediaRef.Artifact::class.java)
     }

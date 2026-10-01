@@ -49,6 +49,9 @@ internal class PageCentring {
      */
     var squeeze: () -> Float = { 0f }
 
+    /** While true, the block stays where it is as the list changes; let go, it glides to the middle again. Read as state. */
+    var held: () -> Boolean = { false }
+
     /** The room above the composer; the list's first item, keyed [LEAD_KEY], ahead of the item keyed [COMPOSER_KEY]. */
     @Composable
     fun Lead() {
@@ -58,14 +61,15 @@ internal class PageCentring {
     /** Keeps the lead to [list]'s layouts for as long as it is called. */
     suspend fun follow(list: LazyListState) {
         var pane = Int.MIN_VALUE
-        snapshotFlow { list.layoutInfo.takeIf { it.totalItemsCount > 0 }?.let { centredLead(it) to it.viewportSize.height } }.collectLatest { laidOut ->
-            val (target, height) = laidOut ?: return@collectLatest
+        snapshotFlow { list.layoutInfo.takeIf { it.totalItemsCount > 0 }?.let { Triple(centredLead(it), it.viewportSize.height, held()) } }.collectLatest { laidOut ->
+            val (target, height, held) = laidOut ?: return@collectLatest
             val lead = lead
             val resized = height != pane
             pane = height
             when {
                 lead == null -> this.lead = Animatable(target)
                 resized -> lead.snapTo(target)
+                held -> Unit
                 else -> lead.animateTo(target, Glide)
             }
         }

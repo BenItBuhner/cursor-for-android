@@ -77,6 +77,7 @@ import com.cursorforandroid.ui.components.ProjectGlyph
 import com.cursorforandroid.ui.components.RefreshableSheetHeader
 import com.cursorforandroid.ui.components.SheetHeader
 import com.cursorforandroid.ui.components.SpinnerRing
+import com.cursorforandroid.ui.components.StylusTextInput
 import com.cursorforandroid.ui.components.fadingVerticalScroll
 import com.cursorforandroid.ui.components.pressable
 import com.cursorforandroid.ui.components.scrollEdgeFade
@@ -579,19 +580,21 @@ private fun NameField(value: String, onValueChange: (String) -> Unit) {
         Modifier.fillMaxWidth().padding(horizontal = CardGutter).stylusWriting().background(fill, CardShape).heightIn(min = 48.dp).padding(horizontal = 16.dp, vertical = 14.dp),
         contentAlignment = Alignment.CenterStart,
     ) {
-        BasicTextField(
-            value = value,
-            onValueChange = onValueChange,
-            singleLine = true,
-            interactionSource = interaction,
-            textStyle = type.base.copy(color = colors.textPrimary),
-            cursorBrush = SolidColor(colors.textPrimary),
-            keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences, imeAction = ImeAction.Done),
-            modifier = Modifier.fillMaxWidth().semantics { contentDescription = NAME_PLACEHOLDER }.testTag("project-name"),
-            decorationBox = { inner ->
-                Box { if (value.isEmpty()) Text(NAME_PLACEHOLDER, style = type.base, color = colors.textQuaternary); inner() }
-            },
-        )
+        StylusTextInput {
+            BasicTextField(
+                value = value,
+                onValueChange = onValueChange,
+                singleLine = true,
+                interactionSource = interaction,
+                textStyle = type.base.copy(color = colors.textPrimary),
+                cursorBrush = SolidColor(colors.textPrimary),
+                keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences, imeAction = ImeAction.Done),
+                modifier = Modifier.fillMaxWidth().semantics { contentDescription = NAME_PLACEHOLDER }.testTag("project-name"),
+                decorationBox = { inner ->
+                    Box { if (value.isEmpty()) Text(NAME_PLACEHOLDER, style = type.base, color = colors.textQuaternary); inner() }
+                },
+            )
+        }
     }
 }
 
@@ -606,16 +609,18 @@ private fun SearchField(value: String, onValueChange: (String) -> Unit, placehol
     ) {
         Icon(CursorIcons.Search, null, tint = colors.iconTertiary, modifier = Modifier.size(15.dp))
         Spacer(Modifier.width(10.dp))
-        BasicTextField(
-            value = value,
-            onValueChange = onValueChange,
-            singleLine = true,
-            textStyle = type.base.copy(color = colors.textPrimary),
-            cursorBrush = SolidColor(colors.textPrimary),
-            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-            modifier = Modifier.weight(1f),
-            decorationBox = { inner -> Box { if (value.isEmpty()) Text(placeholder, style = type.base, color = colors.textQuaternary); inner() } },
-        )
+        StylusTextInput {
+            BasicTextField(
+                value = value,
+                onValueChange = onValueChange,
+                singleLine = true,
+                textStyle = type.base.copy(color = colors.textPrimary),
+                cursorBrush = SolidColor(colors.textPrimary),
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                modifier = Modifier.weight(1f),
+                decorationBox = { inner -> Box { if (value.isEmpty()) Text(placeholder, style = type.base, color = colors.textQuaternary); inner() } },
+            )
+        }
     }
 }
 

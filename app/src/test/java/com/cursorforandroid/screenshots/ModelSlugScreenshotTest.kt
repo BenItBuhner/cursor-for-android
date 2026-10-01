@@ -5,10 +5,12 @@ import androidx.activity.ComponentActivity
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.LocalRippleConfiguration
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.lifecycle.ViewModelProvider
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.cursorforandroid.AppGraph
@@ -27,6 +29,7 @@ import com.cursorforandroid.domain.AgentParentKind
 import com.cursorforandroid.domain.RunStatus
 import com.cursorforandroid.fixtures.LiveModelCatalog
 import com.cursorforandroid.ui.conversation.ConversationScreen
+import com.cursorforandroid.ui.conversation.ConversationViewModel
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.ui.theme.ThemeMode
 import com.cursorforandroid.util.AppClock
@@ -120,7 +123,13 @@ class ModelSlugScreenshotTest {
             }
         }
         waitForText(REPLY)
-        compose.waitUntil(30_000) { graph.conversations.state(WORKER).value.let { !it.isLoading && it.traceStatus.pending == 0 } }
+        // The turn's activity settled in what the screen draws, so no frame catches its loading row: the transcript as
+        // the view model presented it off the main thread, which trails the repository's state by that presentation.
+        val screen = ViewModelProvider(compose.activity, ConversationViewModel.Factory(graph, WORKER))["conversation-$WORKER", ConversationViewModel::class.java]
+        compose.waitUntil(30_000) {
+            compose.onAllNodes(hasTestTag("trace-status")).fetchSemanticsNodes().isEmpty() &&
+                screen.presented.value.state.let { !it.isLoading && it.traceStatus.pending == 0 }
+        }
     }
 
     private fun waitForText(text: String) =

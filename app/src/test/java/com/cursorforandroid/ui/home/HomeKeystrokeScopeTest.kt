@@ -91,7 +91,7 @@ class HomeKeystrokeScopeTest {
                     projectsAvailable = projectsAvailable,
                     onNewProject = {},
                     onOpenSettings = {},
-                    onReorderProjects = {},
+                    onArrangeProjects = {},
                 )
             }
         }

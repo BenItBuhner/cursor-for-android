@@ -24,7 +24,7 @@ glance = "1.2.0"
 # Glance runs its compositions in WorkManager and pulls in 2.7.1, which predates the Android 14 rules for runtime
 # receivers and foreground-service types; pinned to a line that meets them (still on lifecycle 2.6+, room 2.6).
 work = "2.10.1"
-# Opt-in crash reports (crash/CrashReporting.kt). Only the core artifact: the app has no native code, so no NDK payload.
+# Crash reports (crash/CrashReporting.kt, currently unwired). Only the core artifact: the app has no native code, so no NDK payload.
 sentry = "8.16.0"
 # Fold and hinge positions (WindowInfoTracker): the shell keeps the chat off a separating fold.
 window = "1.4.0"

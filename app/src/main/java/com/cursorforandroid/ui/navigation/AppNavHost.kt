@@ -21,7 +21,6 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
-import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalConfiguration
@@ -38,7 +37,8 @@ import com.cursorforandroid.data.repo.NewChatDrafts
 import com.cursorforandroid.domain.AgentListOrganizer
 import com.cursorforandroid.domain.AgentRow
 import com.cursorforandroid.domain.CursorUser
-import com.cursorforandroid.domain.NewChatHome
+import com.cursorforandroid.domain.NewChatHomeChoice
+import com.cursorforandroid.domain.ProjectArrangement
 import com.cursorforandroid.domain.TranscriptHit
 import com.cursorforandroid.domain.UpdateState
 import com.cursorforandroid.notifications.NotificationPermissionPrompt
@@ -50,7 +50,6 @@ import com.cursorforandroid.ui.agents.DraftRow
 import com.cursorforandroid.ui.agents.Sidebar
 import com.cursorforandroid.ui.agents.SidebarCallbacks
 import com.cursorforandroid.ui.agents.SidebarDestination
-import com.cursorforandroid.ui.agents.SidebarShortLists
 import com.cursorforandroid.ui.components.CursorDrawer
 import com.cursorforandroid.ui.components.rememberCursorDrawerState
 import com.cursorforandroid.ui.conversation.ConversationScreen
@@ -59,6 +58,8 @@ import com.cursorforandroid.share.ShareTarget
 import com.cursorforandroid.ui.components.SpinnerRing
 import com.cursorforandroid.ui.components.hitTestBoundary
 import com.cursorforandroid.ui.home.HomeScreen
+import com.cursorforandroid.ui.home.RememberNewChatPage
+import com.cursorforandroid.ui.home.rememberNewChatHome
 import com.cursorforandroid.ui.media.MediaViewerHost
 import com.cursorforandroid.ui.media.rememberMediaViewerState
 import com.cursorforandroid.ui.settings.ExtendedModeUpgradeNotice
@@ -183,8 +184,6 @@ private fun AppShell(
     // else moves it.
     val railKeyedState = remember { mutableStateOf<Boolean?>(null) }
     var railKeyed by railKeyedState
-    // The long groups the reader listed in full, for this visit to the sidebar: not saved, cut back on leaving.
-    val shortLists = remember { SidebarShortLists() }
     val colors = CursorTheme.colors
     // The activity's hardware-keyboard reader (see MainActivity.dispatchKeyEvent and the shell's pre-IME node below);
     // null where the shell is composed without one, which leaves every key to the views.
@@ -272,14 +271,6 @@ private fun AppShell(
     SideEffect { if (railKeyed != null && railKeyed != railShown) railKeyed = null }
 
     /**
-     * The reader left the sidebar — a chat or a Project opened, another destination: its long groups go back to five
-     * rows. A drawer still on screen is cut back once it is off it (below), so its rows do not jump while it slides.
-     */
-    fun leaveSidebar() {
-        if (!drawerState.isOpen && drawerState.fraction == 0f) shortLists.reset()
-    }
-
-    /**
      * The wide window's sidebar asked for: the rail beside the chat where the window has room for it, and otherwise —
      * a panel pinned open where the rail and the chat would not both fit beside it — over the chat, as the phone's
      * drawer comes, until it is put away or there is room for it again.
@@ -287,13 +278,9 @@ private fun AppShell(
     fun revealSidebar() {
         if (panes.widths.railFits) sidebarCollapsed = false else slideDrawer(DrawerValue.Open)
     }
-    LaunchedEffect(drawerState) {
-        snapshotFlow { !drawerState.isOpen && drawerState.fraction == 0f }.collect { shut -> if (shut) shortLists.reset() }
-    }
-    // Back, a launch that failed, anything else that changes what is on top is leaving too; and a composer a key asked
-    // for that is no longer the one on screen is not to be focused once it comes back some other way.
+    // A composer a key asked for that is no longer the one on screen is not to be focused once it comes back some
+    // other way.
     LaunchedEffect(stack.top) {
-        leaveSidebar()
         if (shortcuts.composerFocus.let { it != null && it != stack.top.screen }) shortcuts.composerFocus = null
     }
 
@@ -307,8 +294,6 @@ private fun AppShell(
             // Where a panel pinned open leaves the rail no room, the drawer stays open over the chat as the rail would come.
             if (panes.widths.railFits) drawerState.snapTo(DrawerValue.Closed)
         }
-        // Folding back puts the rail away behind a shut drawer.
-        if (!wide) shortLists.reset()
     }
     // Room for the rail again — the panel put away, the window widened: the rail takes over from the drawer over the
     // chat, standing where the drawer stood rather than sliding in behind it.
@@ -335,14 +320,11 @@ private fun AppShell(
     fun openAgent(id: String) {
         closeDrawer()
         stack.openAgent(id)
-        // Also when the chat was already on top, which changes nothing on the stack.
-        leaveSidebar()
     }
 
     fun navigateTop(screen: Screen) {
         closeDrawer()
         stack.resetTo(screen)
-        leaveSidebar()
     }
 
     /**
@@ -363,7 +345,6 @@ private fun AppShell(
     fun openSettings() {
         closeDrawer()
         stack.open(Screen.Settings)
-        leaveSidebar()
     }
 
     /** "New chat": a fresh composer; what the composer held stays in the sidebar as a draft. */
@@ -382,14 +363,12 @@ private fun AppShell(
     fun openWhatsNew() {
         closeDrawer()
         stack.open(Screen.WhatsNew)
-        leaveSidebar()
     }
 
     /** Settings › Keyboard shortcuts, over Settings. */
     fun openKeyboardShortcuts() {
         closeDrawer()
         stack.open(Screen.KeyboardShortcuts)
-        leaveSidebar()
     }
 
     /** A chat opened on its launch that did not go through: back to the composer, if the user is still looking at it. */
@@ -452,12 +431,25 @@ private fun AppShell(
     }
     NotificationPermissionPrompt(graph = graph, hasRunningAgents = listState.runningCount > 0)
 
+    // The New Chat page as this account last left it (see NewChatPageCache): until the settings are read, their
+    // values from then, so the first frame lays the page out as it will stay.
+    val pageSeed = remember(graph, user) { graph.caches.newChatPage.seed(user) }
     // Extended mode: the account's rename is offered, and the sidebar footer says the mode is on. Until the setting
     // has been read the shell assumes the default, which only ever hides what the setting would allow.
-    val extendedMode by graph.extendedMode.enabled.collectAsStateWithLifecycle(initialValue = false)
+    val extendedMode by graph.extendedMode.enabled.collectAsStateWithLifecycle(initialValue = pageSeed?.extendedMode ?: false)
     val extendedNoticePending by graph.extendedMode.noticePending.collectAsStateWithLifecycle(initialValue = false)
-    // Null until read, so a pane set to Projects never shows the recents for a frame first.
-    val newChatHome by graph.prefs.newChatHome.collectAsStateWithLifecycle(initialValue = null)
+    // Null until read, so a pane set to Projects never shows the recents for a frame first; the switch is read again
+    // as nullable so the New Chat page's automatic pick waits on it rather than taking the shell's assumed "off".
+    val newChatHomeChoice by graph.prefs.newChatHomeChoice.collectAsStateWithLifecycle(initialValue = pageSeed?.choice)
+    val extendedModeRead by graph.extendedMode.enabled.collectAsStateWithLifecycle(initialValue = pageSeed?.extendedMode)
+    RememberNewChatPage(
+        cache = graph.caches.newChatPage,
+        user = user,
+        choice = newChatHomeChoice,
+        extendedMode = extendedModeRead,
+        list = listState,
+        projectsAvailable = isDemo || extendedMode,
+    )
     if (extendedNoticePending && !isDemo) {
         ExtendedModeUpgradeNotice(
             onOpenSettings = {
@@ -525,7 +517,6 @@ private fun AppShell(
             extendedMode = extendedMode && !isDemo,
             onQueryChange = agentsViewModel::setQuery,
             drafts = draftRows,
-            shortLists = shortLists,
             expansion = expansion,
             animateRows = animateRows,
             searchRequests = searchRequests,
@@ -534,12 +525,13 @@ private fun AppShell(
                 onSettings = ::openSettings,
                 onWhatsNew = ::openWhatsNew,
                 onCustomize = { customizeOpen = true },
-                onToggleSidebar = if (inDrawer) ({ closeDrawer() }) else ({ sidebarCollapsed = true; shortLists.reset() }),
+                onToggleSidebar = if (inDrawer) ({ closeDrawer() }) else ({ sidebarCollapsed = true }),
                 onRefresh = agentsViewModel::refresh,
                 rowActions = rowActions,
                 onLoadMore = { agentsViewModel.loadMore() },
                 onNewProject = if (isDemo || extendedMode) ({ closeDrawer(); projectEditor = ProjectEditorTarget.Create }) else null,
                 onSectionCollapsed = agentsViewModel::setSectionCollapsed,
+                onSectionListedInFull = agentsViewModel::setSectionListedInFull,
                 onVisibleRows = agentsViewModel::rowsVisible,
                 onRetryLoadMore = { agentsViewModel.retryLoadMore() },
                 onOpenDraft = ::openDraft,
@@ -575,11 +567,12 @@ private fun AppShell(
                         // The chat fades in over the pane, its prompt and composer carrying on from this one's.
                         onLaunchOpen = { id -> stack.gliding { openAgent(id) } },
                         rowActions = pane.rowActions,
-                        home = pane.newChatHome,
+                        // Picked here, inside the page's own entry, so each opening of the page picks afresh.
+                        home = rememberNewChatHome(pane.newChatHomeChoice, pane.projectsKnown, pane.listState, account = pane.user.email),
                         projectsAvailable = pane.projectsAvailable,
                         onNewProject = pane.onNewProject,
                         onOpenSettings = ::openSettings,
-                        onReorderProjects = pane.onReorderProjects,
+                        onArrangeProjects = pane.onArrangeProjects,
                         focusComposer = pane.composerFocus == screen,
                         onComposerFocused = pane.onComposerFocused,
                     )
@@ -623,10 +616,11 @@ private fun AppShell(
         onOpenAgent = rowActions.onOpen,
         rowActions = rowActions,
         backEnabled = !drawerState.isOpen,
-        newChatHome = newChatHome,
+        newChatHomeChoice = newChatHomeChoice,
         projectsAvailable = isDemo || extendedMode,
+        projectsKnown = if (isDemo) true else extendedModeRead,
         onNewProject = if (isDemo || extendedMode) ({ projectEditor = ProjectEditorTarget.Create }) else null,
-        onReorderProjects = { ids -> agentsViewModel.setProjectOrder(ids) },
+        onArrangeProjects = { arrangement -> agentsViewModel.arrangeProjects(arrangement) },
         composerFocus = shortcuts.composerFocus,
         onComposerFocused = { shortcuts.composerFocus = null },
     )
@@ -651,10 +645,7 @@ private fun AppShell(
         when {
             !wide -> slideDrawer(if (drawerState.targetValue == DrawerValue.Open) DrawerValue.Closed else DrawerValue.Open)
             drawerState.targetValue == DrawerValue.Open -> closeDrawer()
-            railShown -> {
-                sidebarCollapsed = true
-                shortLists.reset()
-            }
+            railShown -> sidebarCollapsed = true
             else -> revealSidebar()
         }
     }
@@ -675,8 +666,8 @@ private fun AppShell(
                 val current = (stack.top.screen as? Screen.Agent)?.id
                 val rows = when {
                     drawerShown || (wide && railShown) -> shortcuts.railRows
-                    wide -> ShellShortcuts.railRows(listState, emptyList(), current, shortLists)
-                    else -> ShellShortcuts.railRows(listState, drawerExpansion.value, current, shortLists)
+                    wide -> ShellShortcuts.railRows(listState, emptyList(), current)
+                    else -> ShellShortcuts.railRows(listState, drawerExpansion.value, current)
                 }
                 rows.getOrNull(action.position)?.let { openFromKeyboard(it.agent.id, focusComposer = true) }
             }
@@ -859,13 +850,15 @@ private data class DetailPane(
     val rowActions: AgentRowActions,
     /** False while the drawer is over the pane: the gesture is the drawer's to close, not the stack's to pop. */
     val backEnabled: Boolean,
-    /** Settings › New chat page; null until the preference has been read. */
-    val newChatHome: NewChatHome?,
+    /** Settings › New chat page as chosen, or nothing chosen; null until the preference has been read. */
+    val newChatHomeChoice: NewChatHomeChoice?,
     /** Projects exist to pin: Extended mode is on, or this is the demo. */
     val projectsAvailable: Boolean,
+    /** [projectsAvailable], null until Extended mode's switch has been read. */
+    val projectsKnown: Boolean?,
     val onNewProject: (() -> Unit)?,
-    /** The Projects as arranged on the New Chat page, first to last. */
-    val onReorderProjects: (List<String>) -> Unit,
+    /** The Projects as arranged on the New Chat page: their order, and the ones hidden there. */
+    val onArrangeProjects: (ProjectArrangement) -> Unit,
     /** The screen whose composer a key asked for (see [ShellShortcuts.composerFocus]); [onComposerFocused] once it has the caret. */
     val composerFocus: Screen?,
     val onComposerFocused: () -> Unit,

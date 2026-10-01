@@ -241,6 +241,7 @@ private fun MediaViewerOverlay(
     var frames by remember { mutableStateOf(if (state.phase == MediaViewerState.Phase.Opening) openingFrames() else null) }
     var notice by remember { mutableStateOf<Notice?>(null) }
     var interactions by remember { mutableIntStateOf(0) }
+    var speedMenuOpen by remember { mutableStateOf(false) }
     val actions = remember(loader) { MediaActions(context, loader) }
 
     fun currentPresentation(): PagePresentation? = presentations[state.currentIndex]
@@ -297,6 +298,7 @@ private fun MediaViewerOverlay(
             if (page != state.currentIndex) {
                 state.currentIndex = page
                 dismiss.reset()
+                speedMenuOpen = false
                 state.controlsVisible = true
                 interactions++
             }
@@ -305,10 +307,12 @@ private fun MediaViewerOverlay(
     // The page's save, if any, as its button shows it: the chrome stays while it runs, the button being where it shows.
     val currentSave = state.current?.let { entry -> saves.state(MediaRef.parse(entry.src, session.agentId)) } ?: MediaSaves.State.Idle
     val saving = currentSave is MediaSaves.State.Working
-    // The chrome goes on its own after a while without a touch; any touch, page or play brings it back and restarts the wait.
-    LaunchedEffect(state.controlsVisible, interactions, state.phase, autoHideControlsMillis, saving) {
+    LaunchedEffect(state.controlsVisible) { if (!state.controlsVisible) speedMenuOpen = false }
+    // The chrome goes on its own after a while without a touch; any touch, page or play brings it back and restarts the
+    // wait. Not while the speed menu is open: the menu hangs off the chrome's pill and would go with it.
+    LaunchedEffect(state.controlsVisible, interactions, state.phase, autoHideControlsMillis, saving, speedMenuOpen) {
         val wait = autoHideControlsMillis ?: return@LaunchedEffect
-        if (state.controlsVisible && state.phase == MediaViewerState.Phase.Open && !saving) {
+        if (state.controlsVisible && state.phase == MediaViewerState.Phase.Open && !saving && !speedMenuOpen) {
             delay(wait)
             state.controlsVisible = false
         }
@@ -447,6 +451,8 @@ private fun MediaViewerOverlay(
                         onMute = { state.muted = it },
                         onInteract = { interactions++ },
                         modifier = Modifier.align(Alignment.BottomCenter),
+                        speedMenuOpen = speedMenuOpen && state.phase == MediaViewerState.Phase.Open,
+                        onSpeedMenu = { speedMenuOpen = it },
                     )
                 }
             }

@@ -71,7 +71,7 @@ class ConversationDraftPersistenceTest {
 
     private val api = object : FakeCursorApi() {
         override suspend fun me(): ApiKeyInfoDto {
-            meCalls++
+            meCount.incrementAndGet()
             return ApiKeyInfoDto(apiKeyName = "test", userEmail = email, userId = if (email == BENNETT) 7L else 8L)
         }
     }

@@ -64,8 +64,9 @@ fun AttachmentCarousel(
  * picture and recording — pasted, shared in, picked from the gallery or the Files picker — as its own tile
  * ([MediaChip], no name, no size, a tap opening it in the app's viewer out of the tile), and a file of any other
  * kind as its chip ([FileChip]) with name, kind and size — the upload ring, the retry and the remove all working
- * wherever the row has been scrolled to. Bottom-aligned, so the tiles' badges overhang above the chips rather than
- * push them down. [surface] is the composer's own colour, which the fades are painted in.
+ * wherever the row has been scrolled to. Tiles and chips are one height ([MediaTile]) in slots of one height, each
+ * wearing the same remove badge over its top-end corner, so the row reads as one line of attachments whatever is in
+ * it. [surface] is the composer's own colour, which the fades are painted in.
  */
 @Composable
 fun ComposerAttachments(
@@ -141,7 +142,7 @@ fun ComposerAttachments(
                 onRetry = onRetryFile?.let { retry -> { retry(file) } },
                 onOpen = sound?.let { item -> { slot -> opener.open(item, slot) } },
                 openSrc = sound?.let { previews.src(it.id, it.mimeType) },
-                modifier = Modifier.sendAttachmentSource(
+                tileModifier = Modifier.sendAttachmentSource(
                     sendMotion, anchor, "file:${file.id}",
                     SendAttachment(ordinals[file.id] ?: -1, file.thumbnail, media = false, name = file.file.name, kind = file.file.kind, sizeBytes = file.file.sizeBytes.toLong()),
                 ),

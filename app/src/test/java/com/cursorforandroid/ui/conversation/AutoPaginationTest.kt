@@ -29,6 +29,7 @@ import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.swipeDown
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.ViewModelProvider
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.cursorforandroid.AppGraph
@@ -43,6 +44,7 @@ import com.cursorforandroid.data.api.dto.V0ConversationMessageDto
 import com.cursorforandroid.data.faults.FaultRig
 import com.cursorforandroid.data.faults.FaultServer
 import com.cursorforandroid.data.local.SecureKeyStore
+import com.cursorforandroid.data.repo.ConversationState
 import com.cursorforandroid.data.repo.CursorBackend
 import com.cursorforandroid.domain.RunStatus
 import com.cursorforandroid.domain.TranscriptEngine
@@ -178,7 +180,28 @@ class AutoPaginationTest {
         return nodes(text).any { it.boundsInRoot.let { b -> b.height > 0f && b.bottom > list.top && b.top < list.bottom } }
     }
 
-    private fun settled(): Boolean = graph.conversations.state(agentId).value.let { !it.isLoading && !it.isLoadingOlder && it.traceStatus.pending == 0 }
+    private fun presented(): PresentedTranscript = ViewModelProvider(compose.activity)["conversation-$agentId", ConversationViewModel::class.java].presented.value
+
+    /**
+     * Idles until the chat is at rest as drawn: the repository done loading, its last state the one the screen
+     * presented (off the main thread, landing on the paused main looper, which only `waitForIdle` runs), and nothing
+     * asked since — a page the list wants is asked a frame after the rows it is sized by are drawn, and loads on the
+     * repository's own scope, so the same state has to stand over a few idles before the chat counts as at rest.
+     */
+    private fun quiesce() {
+        val deadline = System.nanoTime() + 60_000_000_000L
+        var last: ConversationState? = null
+        var stable = 0
+        while (stable < QUIET_IDLES) {
+            check(System.nanoTime() < deadline) { "the chat never came to rest" }
+            compose.waitForIdle()
+            val state = graph.conversations.state(agentId).value
+            val atRest = !state.isLoading && !state.isLoadingOlder && state.traceStatus.pending == 0 && presented().state === state
+            stable = if (atRest && state === last) stable + 1 else 0
+            last = state
+            Thread.sleep(QUIET_MILLIS)
+        }
+    }
 
     /** The texts in view, top to bottom, with where each stands. */
     private fun textsInView(): List<Pair<String, Rect>> {
@@ -194,13 +217,12 @@ class AutoPaginationTest {
 
     @Test
     fun `a chat whose newest turns are events opens on its newest reply, nothing tapped`() {
-        seed(replies = 20, events = 16)
+        seed(replies = 40, events = 16)
         open()
-        compose.waitUntil(60_000) { settled() && nodes("Reply 20").isNotEmpty() }
-        compose.waitForIdle()
+        quiesce()
         // The newest turns' one line and the reply above it, on screen together; the window reached back as far as
         // the reply and a screen and a half more, not the whole chat.
-        assertThat(inView("Reply 20")).isTrue()
+        assertThat(inView("Reply 40")).isTrue()
         assertThat(compose.onAllNodes(hasAnyAncestor(transcript) and hasText("16 events", substring = true), useUnmergedTree = true).fetchSemanticsNodes()).isNotEmpty()
         val state = graph.conversations.state(agentId).value
         assertWithMessage("paged in whole: ${state.items.size} items").that(state.hasOlder).isTrue()
@@ -211,8 +233,8 @@ class AutoPaginationTest {
     fun `scrolling up brings the older turns in by itself, the rows being read held where they are`() {
         seed(replies = 60, events = 12)
         open()
-        compose.waitUntil(60_000) { settled() && nodes("Reply 60").isNotEmpty() }
-        compose.waitForIdle()
+        quiesce()
+        assertThat(nodes("Reply 60")).isNotEmpty()
         val opened = graph.conversations.state(agentId).value.items.size
         var swipes = 0
         var held = 0
@@ -220,10 +242,12 @@ class AutoPaginationTest {
             compose.onNode(transcript).performTouchInput { swipeDown(startY = top + height * 0.2f, endY = top + height * 0.8f, durationMillis = 300) }
             compose.waitForIdle()
             swipes++
-            // At rest, a page on its way lands above what the reader is looking at: every row in view stays put.
-            val before = unique(textsInView())
-            compose.waitUntil(60_000) { settled() }
-            compose.waitForIdle()
+            // At rest, a page on its way lands above what the reader is looking at: every row in view stays put. Rows
+            // whose turns' activity is still being read take their final shape when it lands, which is not a page
+            // landing; the rows are compared only when none drawn is waiting on it.
+            val final = presented().state.traceStatus.pending == 0
+            val before = if (final) unique(textsInView()) else emptyList()
+            quiesce()
             val after = unique(textsInView()).toMap()
             for ((text, bounds) in before) {
                 val now = after[text] ?: continue
@@ -298,5 +322,9 @@ class AutoPaginationTest {
 
     private companion object {
         const val CALLS = 12
+
+        /** The idles, [QUIET_MILLIS] apart, the same state has to stand over for the chat to count as at rest. */
+        const val QUIET_IDLES = 3
+        const val QUIET_MILLIS = 20L
     }
 }

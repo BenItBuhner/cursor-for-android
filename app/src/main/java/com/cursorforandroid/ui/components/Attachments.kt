@@ -21,6 +21,7 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
+import com.cursorforandroid.domain.FileBytes
 import com.cursorforandroid.domain.PromptImage
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -131,42 +132,13 @@ internal class AttachmentImport(
 internal fun attachmentLimitMessage(): String = "Only ${PromptImage.MAX_COUNT} images can be attached to a prompt."
 
 /**
- * Clipboard and IME image pastes often arrive as a wildcard image type or with no type at all. Magic bytes decide
- * when the declared type is missing or too vague, so a screenshot from the Android clipboard still becomes a prompt
- * image.
+ * The bytes a paste or share actually carries: some keyboards and browsers hand over an image as base64 text or a
+ * `data:` URI under an image type. Those are unwrapped here, so what goes out is the picture and not its encoding.
  */
-internal fun sniffImageMime(bytes: ByteArray): String? {
-    if (bytes.size >= 8 &&
-        bytes[0] == 0x89.toByte() && bytes[1] == 0x50.toByte() &&
-        bytes[2] == 0x4E.toByte() && bytes[3] == 0x47.toByte()
-    ) {
-        return "image/png"
-    }
-    if (bytes.size >= 3 && bytes[0] == 0xFF.toByte() && bytes[1] == 0xD8.toByte() && bytes[2] == 0xFF.toByte()) {
-        return "image/jpeg"
-    }
-    if (bytes.size >= 6 &&
-        bytes[0] == 0x47.toByte() && bytes[1] == 0x49.toByte() &&
-        bytes[2] == 0x46.toByte() && bytes[3] == 0x38.toByte()
-    ) {
-        return "image/gif"
-    }
-    if (bytes.size >= 12 &&
-        bytes[0] == 'R'.code.toByte() && bytes[1] == 'I'.code.toByte() &&
-        bytes[2] == 'F'.code.toByte() && bytes[3] == 'F'.code.toByte() &&
-        bytes[8] == 'W'.code.toByte() && bytes[9] == 'E'.code.toByte() &&
-        bytes[10] == 'B'.code.toByte() && bytes[11] == 'P'.code.toByte()
-    ) {
-        return "image/webp"
-    }
-    return null
-}
-
-internal fun resolveImageMime(declared: String?, bytes: ByteArray): String? {
-    val mime = declared?.substringBefore(';')?.trim()?.lowercase()
-    if (PromptImage.isSupported(mime)) return mime
-    val sniffed = sniffImageMime(bytes)
-    return sniffed.takeIf { PromptImage.isSupported(it) }
+internal fun unwrapImageBytes(bytes: ByteArray): ByteArray {
+    if (AttachmentImages.isPicture(bytes)) return bytes
+    val plain = FileBytes.of(bytes) as? FileBytes.Plain ?: return bytes
+    return plain.bytes.takeIf { plain.unwrapped != null && AttachmentImages.isPicture(it) } ?: bytes
 }
 
 internal fun clipLooksLikeImage(description: ClipDescription): Boolean {
@@ -194,11 +166,10 @@ internal fun imageUrisFromClip(resolver: ContentResolver, clip: ClipData): List<
 
 internal fun loadAttachment(bytes: ByteArray, declaredMime: String?, id: String): Result<PendingAttachment> = runCatching {
     if (bytes.size > PromptImage.MAX_BYTES) error(TooLargeMessage)
-    val mime = resolveImageMime(declaredMime, bytes)
-        ?: error("Unsupported image type (${declaredMime ?: "unknown"}). Use PNG, JPEG, GIF or WebP.")
-    // Downscaled and base64-encoded here, once, so the request — and the one the composer retries — carries only
-    // what the model uses and has nothing left to compute when it goes out.
-    val image = AttachmentImages.prepare(bytes, mime).encoded()
+    // Normalized and base64-encoded here, once, so the request — and the one the composer retries — carries an image
+    // the agent can view as sent and has nothing left to compute when it goes out. The bytes decide the type: a declared
+    // `image/png` over JPEG bytes would be refused by the model as a mismatch.
+    val image = AttachmentImages.prepare(unwrapImageBytes(bytes), declaredMime?.substringBefore(';')?.trim()?.lowercase()).encoded()
     PendingAttachment(id = id, image = image, thumbnail = thumbnailOf(image))
 }
 

@@ -14,8 +14,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.collectAsState
-import androidx.compose.runtime.compositionLocalOf
+import androidx.compose.runtime.State
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -54,7 +53,6 @@ import com.cursorforandroid.ui.components.RunningGlyph
 import com.cursorforandroid.ui.components.pressable
 import com.cursorforandroid.ui.icons.ProjectIcons
 import com.cursorforandroid.ui.theme.CursorTheme
-import kotlinx.coroutines.flow.flowOf
 
 /**
  * A subagent as Cursor's desktop draws it (`SubagentTaskCard`, Cursor 3.21.18): the indicator in a slot of its own
@@ -167,27 +165,31 @@ internal fun SubagentNoticeRow(item: SystemNotification, modifier: Modifier = Mo
 internal data class SubagentState(val child: SubagentChild?, val agent: Agent?, val look: SubagentLook)
 
 /**
- * The states of the subagents a stretch holds, by call id: resolved once by the stretch, whose line counts the ones
- * still at work while it is closed, and read by their rows once it opens rather than followed a second time.
- */
-internal val LocalSubagentStates = compositionLocalOf<Map<String, SubagentState>> { emptyMap() }
-
-/**
- * [call]'s state: the stretch's word for it when it has one (see [LocalSubagentStates]), else read here — the live
- * child of the newest row about a cloud worker or task, else the account record's in-VM subagent, else the list's
- * row, else how a notice after the call said its child ended (a background task's call returns before its child does).
+ * [call]'s state: the live child of the newest row about a cloud worker or task (see [followedChild]), else the
+ * account record's in-VM subagent, else the list's row, else how a notice after the call said its child ended (a
+ * background task's call returns before its child does).
  */
 @Composable
 internal fun rememberSubagentState(call: ToolCall, subagent: SubagentCall): SubagentState {
-    LocalSubagentStates.current[call.callId]?.let { return it }
     val controls = LocalTranscriptControls.current
-    val agentId = subagent.agentId
+    return subagentState(call, subagent, followedChild(call, subagent)?.value, controls)
+}
+
+/**
+ * The live child of [call]'s row while it is the newest about a cloud worker or task, followed on the transcript's
+ * [SubagentBoard]: the stretch's line and the row read the one state. Null for a row with no child to follow.
+ */
+@Composable
+internal fun followedChild(call: ToolCall, subagent: SubagentCall): State<SubagentChild?>? {
+    val controls = LocalTranscriptControls.current
+    val agentId = subagent.agentId?.takeIf { subagent.isCloudAgent && controls.subagents.isLatest(call, subagent) } ?: return null
+    return rememberSubagentBoard().followed(agentId)
+}
+
+/** [call]'s state with [live] as its followed child's word (see [rememberSubagentState]). */
+internal fun subagentState(call: ToolCall, subagent: SubagentCall, live: SubagentChild?, controls: TranscriptControls): SubagentState {
     val latest = controls.subagents.isLatest(call, subagent)
-    val agent = agentId?.takeIf { subagent.isCloudAgent }?.let(controls.agentById)
-    val activity = remember(agentId, latest, controls.subagentActivity) {
-        if (latest && agentId != null && subagent.isCloudAgent) controls.subagentActivity(agentId) else flowOf(null)
-    }
-    val live by activity.collectAsState(null)
+    val agent = subagent.agentId?.takeIf { subagent.isCloudAgent }?.let(controls.agentById)
     val child = live ?: controls.subagentRuns[call.callId] ?: agent?.let { SubagentRows.childOf(it, controls.models) }
         ?: controls.subagents.endingOf(call)?.let { SubagentChild(status = it) }
     return SubagentState(child, agent, SubagentRows.look(call, subagent, child, latest))

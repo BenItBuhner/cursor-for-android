@@ -13,6 +13,7 @@ import com.cursorforandroid.data.repo.ConversationState
 import com.cursorforandroid.data.repo.FollowUpRepository
 import com.cursorforandroid.data.repo.SlashCommandRepository
 import com.cursorforandroid.data.repo.SlashScope
+import com.cursorforandroid.data.repo.SteerRefusedException
 import com.cursorforandroid.data.repo.TraceStatus
 import com.cursorforandroid.domain.AccountModel
 import com.cursorforandroid.domain.Agent
@@ -209,6 +210,12 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), graph.agents.agent(agentId))
 
     val conversation: StateFlow<ConversationState> = graph.conversations.state(agentId)
+
+    /**
+     * The device queue's rows the chat has filed as bubbles as of now — ahead of the frame on screen, which is
+     * presented after it (see [QueueHandover]).
+     */
+    fun filedFromQueue(): Set<String> = conversation.value.queuePlacement.filedQueueIds
 
     /**
      * The transcript as the screen draws it: each published state presented into rows off the main thread (see
@@ -691,6 +698,10 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
         }
         val accountQueue = caps.accountQueue && !graph.session.isDemo
         val waiting = graph.followUps.state(agentId).value.queue.isNotEmpty()
+        // Messages on the account's card are the server's to deliver first: a new one goes behind them, as the
+        // placeholder says it will ("queues on your account"). Sent as a run request instead, it was refused as busy
+        // and, the account's answer taken for a run started, shown sent under "Starting…" — every send after a reload.
+        val accountHolds = accountQueue && controls.value.queue.isNotEmpty()
         val message = OutgoingMessages.Draft(
             // The account's follow-up refuses a message with no text; an attachment-only one says what it carries.
             text = text.ifEmpty { if (withFiles) attachmentOnlyText(images.size, attached.size) else QueuedFollowUp.IMAGE_ONLY_TEXT },
@@ -704,7 +715,7 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
         when {
             // Mid-turn in Extended mode: into the account's queue, behind the turn under way — on the card above the
             // composer from the tap, never a bubble first, until it is delivered (see ConversationRepository.queueAhead).
-            busy && accountQueue -> {
+            (busy || accountHolds) && accountQueue -> {
                 dispatch(message, graph.outgoing.accountRoute(agentId, message, queued = true))
                 return Sent.Queued(text)
             }
@@ -835,6 +846,13 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
      */
     private fun refusedOnItsWay(id: String) {
         if (!graph.followUps.isOnItsWay(agentId, id)) return
+        showRefusal(id)
+    }
+
+    /** A glyph of an account row being steered was tapped: the steer cannot be called back, and the row says so (see [refusedQueuedId]). */
+    fun refuseSteering(id: String) = showRefusal(id)
+
+    private fun showRefusal(id: String) {
         refused.value = id
         refusalShown?.cancel()
         refusalShown = viewModelScope.launch {
@@ -897,8 +915,10 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
      * under way (`InjectBackgroundComposerContext` with it promoted), never stopping it; with nothing running it is
      * sent now (`SubmitPendingFollowupNow`), there being no turn for it to take the place of.
      */
-    fun queueSteer(id: String, turnUnderWay: Boolean) = control {
-        if (turnUnderWay) graph.steering.promotePending(agentId, id) else graph.steering.submitPendingNow(agentId, id)
+    fun queueSteer(id: String, turnUnderWay: Boolean) = viewModelScope.launch {
+        val done = if (turnUnderWay) graph.steering.promotePending(agentId, id) else graph.steering.submitPendingNow(agentId, id)
+        // A steer the account refused says so under the row, which keeps its place in the queue: no snackbar besides.
+        done.onFailure { if (it !is SteerRefusedException) toast.value = it.userMessage() }
     }
 
     fun queueDelete(id: String) = control { graph.steering.deletePending(agentId, id) }

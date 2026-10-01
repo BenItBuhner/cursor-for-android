@@ -1,6 +1,7 @@
 package com.cursorforandroid.audit
 
 import android.app.Application
+import android.os.Looper
 import androidx.activity.ComponentActivity
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -33,6 +34,7 @@ import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
+import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 
@@ -186,6 +188,12 @@ class DrawerRecompositionTest {
         assertTrue("the drag opens the drawer", drawerOpen())
         compose.mainClock.autoAdvance = false
         vm.setSectionCollapsed(folded, false)
+        // The fold is written to the store and read back on the wall clock, not the held frame clock: the frames
+        // counted start once it is in the list, with no frame stepped meanwhile, so they see the slide from its start.
+        compose.waitUntil(10_000) {
+            shadowOf(Looper.getMainLooper()).idle()
+            folded !in vm.uiState.value.collapsedSections
+        }
         val moving = (1..40).map {
             compose.pumpSynced()
             compose.mainClock.advanceTimeByFrame()

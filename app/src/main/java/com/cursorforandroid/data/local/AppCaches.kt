@@ -40,6 +40,8 @@ class AppCaches(private val root: JsonDiskCache) {
     val catalog = CatalogCache(root.child("catalog"))
     val pullRequests = PullRequestCache(root.child("pullrequests"))
     val slashCommands = SlashCommandCache(root.child("slashcommands"))
+    /** The New Chat page as last drawn, for the next launch's first frame (see [NewChatPageCache]). */
+    val newChatPage = NewChatPageCache(root.child("newchat"))
     /** Which store each Project's coordinator owns, and the context documents opened from a chat (see `StoreFileRepository`). */
     val storeFiles: JsonDiskCache = root.child("storefiles")
     /** The account records' blobs (the Beta transcript engine's, see `BlobCache`). */
@@ -236,6 +238,13 @@ data class CachedAwaiting(
     val priorTranscriptCopies: Int = 0,
     /** Its staged copies (see `AttachmentStore.staged`), to be filed under the run it starts. */
     val attachments: List<MessageAttachment> = emptyList(),
+    /**
+     * Where the account's record stood when it was queued (`ConversationRepository.Awaiting.recordStep`): a turn index
+     * of the blob-backed record when [recordTurnIndexed], else a step index of the step-indexed one — read against a
+     * window of the same kind alone.
+     */
+    val recordStep: Int? = null,
+    val recordTurnIndexed: Boolean = false,
 )
 
 /**

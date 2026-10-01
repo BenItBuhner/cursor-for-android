@@ -16,9 +16,7 @@ import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollToNode
-import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
-import com.cursorforandroid.data.local.PreferencesStore
 import com.cursorforandroid.domain.Capabilities
 import com.cursorforandroid.domain.ConversationControls
 import com.cursorforandroid.domain.QueueLoad
@@ -32,7 +30,6 @@ import com.cursorforandroid.ui.components.rememberRunStopConfirmation
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.ui.theme.ThemeMode
 import com.google.common.truth.Truth.assertThat
-import kotlinx.coroutines.runBlocking
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -97,10 +94,10 @@ class PanelControlsTest {
     }
 
     /** The panel as the chat hosts it: under the screen's stop confirmation, with its dialog. */
-    private fun showConfirming(prefs: PreferencesStore) {
+    private fun showConfirming() {
         compose.setContent {
             CursorTheme(mode = ThemeMode.Dark) {
-                val confirmation = rememberRunStopConfirmation(prefs)
+                val confirmation = rememberRunStopConfirmation()
                 CompositionLocalProvider(LocalRunStopConfirmation provides confirmation) {
                     ConversationPanel(state, actions, onClose = {})
                 }
@@ -112,8 +109,8 @@ class PanelControlsTest {
     private fun dialogShown() = compose.onAllNodes(hasTestTag(RunStopTags.DIALOG)).fetchSemanticsNodes().isNotEmpty()
 
     @Test
-    fun `with Confirm before stopping on, Pause and Stop ask first and act only on the dialog's answer`() {
-        showConfirming(PreferencesStore(ApplicationProvider.getApplicationContext()))
+    fun `Pause and Stop always ask first and act only on the dialog's answer`() {
+        showConfirming()
         scrollTo("run-controls")
 
         compose.onAllNodesWithTag("control-Stop")[0].performClick()
@@ -135,20 +132,6 @@ class PanelControlsTest {
         compose.onNodeWithTag(RunStopTags.CONFIRM).performClick()
         compose.waitUntil(10_000) { !dialogShown() }
         assertThat(asked.filter { it == "stop" || it == "pause" }).containsExactly("pause", "stop").inOrder()
-    }
-
-    @Test
-    fun `with Confirm before stopping off, Pause and Stop act at once`() {
-        val prefs = PreferencesStore(ApplicationProvider.getApplicationContext())
-        runBlocking { prefs.setConfirmStop(false) }
-        showConfirming(prefs)
-        scrollTo("run-controls")
-
-        compose.onAllNodesWithTag("control-Pause")[0].performClick()
-        compose.onAllNodesWithTag("control-Stop")[0].performClick()
-        compose.waitUntil(10_000) { "stop" in asked }
-        assertThat(asked).containsAtLeast("pause", "stop").inOrder()
-        assertThat(dialogShown()).isFalse()
     }
 
     @Test

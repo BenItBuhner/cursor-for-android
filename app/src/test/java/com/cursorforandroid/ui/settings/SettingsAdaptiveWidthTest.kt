@@ -68,16 +68,16 @@ class SettingsAdaptiveWidthTest {
     }
 
     @Test
-    fun `a phone's miniature is nine tenths of its option, the whole page in proportion`() {
+    fun `a phone's miniature is as tall as the cap and narrower than its option, the whole page in proportion`() {
         val page = miniaturePage(DpSize(411.dp, 914.dp))
         assertThat(page).isEqualTo(DpSize(411.dp, 411.dp * 1.75f))
         val size = miniature(pane = 411.dp, page)
-        assertThat(size.width.value).isWithin(0.01f).of(room(411.dp).value * 0.9f)
+        assertThat(size.height.value).isWithin(0.01f).of(MiniatureMaxHeight.value)
         assertThat(size.height.value).isWithin(0.01f).of(size.width.value * 1.75f)
-        assertThat(size.height).isLessThan(MiniatureMaxHeight)
+        assertThat(size.width).isLessThan(room(411.dp) * 0.8f)
         // A small phone's is smaller in step, not squeezed.
         val small = miniature(pane = 360.dp, miniaturePage(DpSize(360.dp, 780.dp)))
-        assertThat(small.width.value).isWithin(0.01f).of(room(360.dp).value * 0.9f)
+        assertThat(small.width.value).isWithin(0.01f).of(room(360.dp).value * 0.8f)
         assertThat(small.width).isLessThan(size.width)
     }
 
@@ -85,7 +85,7 @@ class SettingsAdaptiveWidthTest {
     fun `a large phone's miniature is no taller than the cap`() {
         val size = miniature(pane = 448.dp, miniaturePage(DpSize(448.dp, 998.dp)))
         assertThat(size.height.value).isWithin(0.01f).of(MiniatureMaxHeight.value)
-        assertThat(size.width).isLessThan(room(448.dp) * 0.9f)
+        assertThat(size.width).isLessThan(room(448.dp) * 0.8f)
     }
 
     @Test
@@ -117,8 +117,9 @@ class SettingsAdaptiveWidthTest {
 
     @Test
     fun `a miniature's corner is a screen's at its scale, between 4dp and 6dp`() {
-        assertThat(miniatureRadius(miniature(pane = 411.dp, miniaturePage(DpSize(411.dp, 914.dp))).width).value).isWithin(0.1f).of(4.5f)
-        assertThat(miniatureRadius(MiniatureMaxWidth)).isEqualTo(6.dp)
+        assertThat(miniatureRadius(miniature(pane = 411.dp, miniaturePage(DpSize(411.dp, 914.dp))).width)).isEqualTo(4.dp)
+        assertThat(miniatureRadius(MiniatureMaxWidth).value).isWithin(0.01f).of(4.8f)
+        assertThat(miniatureRadius(120.dp)).isEqualTo(6.dp)
         assertThat(miniatureRadius(40.dp)).isEqualTo(4.dp)
     }
 
@@ -127,11 +128,14 @@ class SettingsAdaptiveWidthTest {
 
     private fun miniature(pane: Dp, page: DpSize): DpSize = miniatureSize(page, room(pane))
 
-    /** Drawn at no less than four fifths of a phone's scale, so the words in it read about as large. */
+    /**
+     * Drawn at no less than three quarters of a phone's scale, so the words in it read about as large. An upright
+     * tablet's page and a phone's both stop at the height cap, so the tablet's scale is the phone's times 411 / 522.
+     */
     private fun assertReadable(page: DpSize, size: DpSize) {
         val phonePage = miniaturePage(DpSize(411.dp, 914.dp))
         val phone = miniature(pane = 411.dp, phonePage).width / phonePage.width
-        assertThat(size.width / page.width).isAtLeast(phone * 0.8f)
+        assertThat(size.width / page.width).isAtLeast(phone * 0.75f)
     }
 
     private companion object {

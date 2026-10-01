@@ -58,8 +58,14 @@ class VideoPlayback(val player: Player) : Player.Listener {
     /** The reader is dragging the scrubber: the thumb follows the finger, not the player, until it is let go. */
     var scrubbingToMs by mutableStateOf<Long?>(null)
         private set
-    /** The rate it plays at: 1 unless the reader picked another ([cycleSpeed]). */
+    /** The rate it plays at right now: [HOLD_SPEED] while a finger is held on the page, [selectedSpeed] otherwise. */
     var speed by mutableFloatStateOf(player.playbackParameters.speed)
+        private set
+    /** The rate the reader picked from the speed menu ([selectSpeed]), 1 until then; what a hold goes back to. */
+    var selectedSpeed by mutableFloatStateOf(player.playbackParameters.speed)
+        private set
+    /** A finger is held on the page ([beginHold]): it plays at [HOLD_SPEED] until the finger lifts ([endHold]). */
+    var holding by mutableStateOf(false)
         private set
 
     val isEnded: Boolean get() = playbackState == Player.STATE_ENDED
@@ -100,11 +106,34 @@ class VideoPlayback(val player: Player) : Player.Listener {
         player.volume = if (muted) 0f else 1f
     }
 
-    /** The next of [SPEEDS] after the one it plays at, round to the start again. */
-    fun cycleSpeed() {
-        val next = SPEEDS[(SPEEDS.indexOfFirst { it == speed } + 1).mod(SPEEDS.size)]
-        player.setPlaybackSpeed(next)
-        speed = next
+    /** Plays at [rate] from now on; picked during a hold, it is where the hold lets go to. */
+    fun selectSpeed(rate: Float) {
+        selectedSpeed = rate
+        if (!holding) applySpeed(rate)
+    }
+
+    /**
+     * A finger held on the page: [HOLD_SPEED] until [endHold]. Only while it plays (or is about to, buffering): a
+     * held paused or finished recording has nothing to speed up, and the press is not taken. Answers whether it was.
+     */
+    fun beginHold(): Boolean {
+        if (holding || !player.playWhenReady || isEnded) return false
+        holding = true
+        applySpeed(HOLD_SPEED)
+        return true
+    }
+
+    /** The held finger lifted (or the gesture was taken away): back to the rate the reader picked. */
+    fun endHold() {
+        if (!holding) return
+        holding = false
+        applySpeed(selectedSpeed)
+    }
+
+    private fun applySpeed(rate: Float) {
+        // Pitch 1 keeps voices natural at any rate: ExoPlayer time-stretches the sound (Sonic) instead of resampling it.
+        player.playbackParameters = PlaybackParameters(rate, 1f)
+        speed = rate
     }
 
     fun scrubTo(fraction: Float) {
@@ -157,6 +186,7 @@ class VideoPlayback(val player: Player) : Player.Listener {
 
     override fun onPlaybackParametersChanged(playbackParameters: PlaybackParameters) {
         speed = playbackParameters.speed
+        if (!holding) selectedSpeed = playbackParameters.speed
     }
 
     override fun onPlayerError(error: PlaybackException) {
@@ -173,10 +203,13 @@ class VideoPlayback(val player: Player) : Player.Listener {
     }
 
     companion object {
-        /** The rates the speed button steps through. */
-        val SPEEDS = listOf(1f, 1.5f, 2f, 0.75f)
+        /** The rates the speed menu offers, slowest first. */
+        val SPEEDS = listOf(0.5f, 1f, 2f, 4f)
 
-        /** "1×", "1.5×", "0.75×": a rate as the button shows it. */
+        /** What a finger held on a playing page plays at. */
+        const val HOLD_SPEED = 2f
+
+        /** "1×", "0.5×", "4×": a rate as the speed pill and the menu show it. */
         fun speedLabel(speed: Float): String = (if (speed == speed.toInt().toFloat()) speed.toInt().toString() else speed.toString()) + "\u00D7"
 
         private fun VideoSize.toIntSize(): IntSize =

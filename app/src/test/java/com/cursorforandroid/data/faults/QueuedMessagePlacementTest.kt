@@ -8,7 +8,11 @@ import com.cursorforandroid.data.api.dto.V0AgentDto
 import com.cursorforandroid.data.faults.FaultServer.Fault
 import com.cursorforandroid.data.faults.FaultServer.Route
 import com.cursorforandroid.data.repo.ConversationState
+import com.cursorforandroid.data.repo.SteerRefusedException
+import com.cursorforandroid.data.repo.SteeringRepository
 import com.cursorforandroid.domain.ConversationControls
+import com.cursorforandroid.domain.SteerOutcome
+import com.cursorforandroid.domain.SteerPhase
 import com.cursorforandroid.domain.PromptFile
 import com.cursorforandroid.domain.PromptImage
 import com.cursorforandroid.domain.QueuePlacement
@@ -18,6 +22,7 @@ import java.io.File
 import com.google.common.truth.Truth.assertThat
 import com.google.common.truth.Truth.assertWithMessage
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.combine
@@ -31,6 +36,7 @@ import org.junit.rules.TemporaryFolder
 import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.Executors
 
 /**
  * A message sent while the coordinator is mid-turn goes into the account's queue: the card above the composer is what
@@ -66,6 +72,11 @@ class QueuedMessagePlacementTest {
     private lateinit var turns: List<LongProject.Turn>
     private val live get() = turns.last()
     private var recorder: Job? = null
+    // One thread, as the screen's main thread: the two flows' collectors on a pool race each other, so a frame could
+    // pair the transcript's newer publish with the queue value the repository had already replaced before it — the
+    // read that lets a filed message go publishes its empty list, then prunes the message's hold, and a frame of the
+    // old list with the new hold showed the message on the card and in the transcript at once.
+    private val screenThread = Executors.newSingleThreadExecutor().asCoroutineDispatcher()
 
     /** What the screen pairs: the account's queue as last read, and the transcript's frame, with when the pair was seen. */
     private class Frame(val controls: ConversationControls, val state: ConversationState, val atNanos: Long) {
@@ -107,6 +118,7 @@ class QueuedMessagePlacementTest {
         recorder?.cancel()
         rig?.let { it.steering.detach(agentId); it.close() }
         server.close()
+        screenThread.close()
     }
 
     /** The rig, its account queue read every [pollMs]: the card's staleness (production: 10 s). */
@@ -135,7 +147,7 @@ class QueuedMessagePlacementTest {
         agents.refresh()
         conversations.attach(agentId)
         steering.attach(agentId)
-        recorder = scope.launch {
+        recorder = scope.launch(screenThread) {
             combine(steering.state(agentId), conversations.state(agentId)) { c, s -> c to s }.collect { (c, s) -> frames += Frame(c, s, System.nanoTime()) }
         }
         awaitUntil(60_000) { state.let { !it.isLoading && it.isStreaming } && steering.state(agentId).value.isQueueAvailable }
@@ -272,6 +284,86 @@ class QueuedMessagePlacementTest {
         assertThat(s.activeRunId).isEqualTo(live.runId)
     }
 
+    /**
+     * Bennett's frame of v0.4.26: an account row's up arrow tapped mid-turn, and the row sat there with its glyphs live
+     * and "Being delivered to the agent." under it, the words of a message waiting its turn, not of a steer. The row
+     * reads as a steer from the tap — "Steering…" while the promote is out, then "Steered" — in its place, until the
+     * frame the transcript files it among the running turn's rows; never "being delivered", never a sent bubble ahead
+     * of the run (#512's fake send), never in both places or in neither.
+     */
+    @Test
+    fun `an account row steered mid-turn reads as a steer until the frame the transcript files it, never as a delivery`() = runBlocking<Unit> {
+        // The account lets the message go the moment it promotes it: the card carries it on this device's own word
+        // until the transcript shows it — the stretch Bennett's frame was drawn in.
+        server.queueLagMs = 0L
+        val rig = rig(pollMs = 1_500L)
+        rig.open()
+        val sentAt = System.nanoTime()
+        val followupId = rig.queueOnAccount(MESSAGE)
+        rig.awaitUntilOr(20_000, "the list to name it") { rig.steering.state(agentId).value.queue.any { it.id == followupId } }
+        rig.awaitNextQueueRead()
+        fun row() = state.let { s -> rig.steering.state(agentId).value.placed(s.queuePlacement) }.queue.singleOrNull { it.id == followupId }
+        assertThat(row()?.steer).isNull()
+        // The promote held at the account: the row reads "Steering…" in its place meanwhile.
+        val promote = Fault.Held(processedOnRelease = true)
+        server.script(Route.Steer, promote)
+        val steer = async { rig.steering.promotePending(agentId, followupId) }
+        rig.awaitUntilOr(10_000, "the promote at the account") { promote.reached }
+        assertThat(row()?.steer).isEqualTo(SteerPhase.STEERING)
+        assertThat(row()?.note).isNull()
+        promote.release()
+        assertThat(steer.await().getOrThrow()).isEqualTo(SteerOutcome.QUEUED)
+        rig.awaitUntilOr(45_000, "the steer filed") { state.items.any { it is UserMessage && it.text == MESSAGE } }
+        rig.awaitUntilOr(20_000, "the list to let it go") { rig.steering.state(agentId).value.queue.none { it.id == followupId } }
+        rig.awaitUntilOr(10_000, "the steer let go of") { rig.steering.state(agentId).value.steers.isEmpty() }
+        delay(1_500)
+        assertOnePlace(followupId, MESSAGE, fromNanos = sentAt)
+        // From the first frame the steer was out: every frame that has the row on the card has it as a steer, never
+        // with a delivery's words under it.
+        val sinceSteer = frames.dropWhile { !it.controls.steers.containsKey(followupId) }
+        assertWithMessage("the recorder never saw the steer").that(sinceSteer).isNotEmpty()
+        sinceSteer.forEachIndexed { i, frame ->
+            val onCard = frame.controls.placed(frame.state.queuePlacement).queue.singleOrNull { it.id == followupId } ?: return@forEachIndexed
+            assertWithMessage("frame $i: the steered row reads ${onCard.note} (steer ${onCard.steer})").that(onCard.steer).isNotNull()
+            assertWithMessage("frame $i: the steered row reads ${onCard.note}").that(onCard.note).isNull()
+        }
+        // The case of Bennett's frame came up: the list had let go of it and the card carried it, as "steered".
+        assertWithMessage("the card never carried the steered message on its own word").that(
+            sinceSteer.any { f -> f.controls.queue.none { it.id == followupId } && f.controls.placed(f.state.queuePlacement).queue.any { it.id == followupId && it.steer == SteerPhase.STEERED } },
+        ).isTrue()
+        // A steer, not a send: never a pending bubble, nothing started or cancelled, one promote.
+        assertThat(frames.none { f -> f.state.items.any { it is UserMessage && it.text == MESSAGE && it.isPending } }).isTrue()
+        assertThat(server.requests(Route.CreateRun)).isEmpty()
+        assertThat(server.requests(Route.CancelRun)).isEmpty()
+        assertThat(server.requests(Route.Steer)).hasSize(1)
+        val s = state
+        assertThat(s.items.count { it is UserMessage && it.text == MESSAGE }).isEqualTo(1)
+        val at = s.items.indexOfFirst { it is UserMessage && it.text == MESSAGE }
+        assertWithMessage("among the running turn's rows").that(s.items.take(at).any { it.id.startsWith("activity-${live.runId}-") }).isTrue()
+        assertThat(s.activeRunId).isEqualTo(live.runId)
+    }
+
+    /** A steer the account refuses leaves the row waiting in its place, saying so under it; the promote is a failure, never taken for a steer. */
+    @Test
+    fun `a steer the account refuses leaves the row waiting where it was, saying so`() = runBlocking<Unit> {
+        server.queueLagMs = 0L
+        server.steerOutcome = "OUTCOME_REJECTED"
+        val rig = rig(pollMs = 1_500L)
+        rig.open()
+        val followupId = rig.queueOnAccount(MESSAGE)
+        rig.awaitUntilOr(20_000, "the list to name it") { rig.steering.state(agentId).value.queue.any { it.id == followupId } }
+        val refused = rig.steering.promotePending(agentId, followupId)
+        assertThat(refused.exceptionOrNull()).isInstanceOf(SteerRefusedException::class.java)
+        rig.watch(2_000) {
+            val s = state
+            val row = rig.steering.state(agentId).value.placed(s.queuePlacement).queue.single { it.id == followupId }
+            assertThat(row.steer).isNull()
+            assertThat(row.note).isEqualTo(SteeringRepository.STEER_REFUSED_NOTE)
+            assertThat(s.items.none { it is UserMessage && it.text == MESSAGE }).isTrue()
+        }
+        assertThat(server.pending.getValue(agentId).single { it.followupId == followupId }.consumedAtMs).isNull()
+    }
+
     @Test
     fun `the up arrow on this device's queued message steers it into the running turn - no cancel, filed once among the turn's rows`() = runBlocking<Unit> {
         server.queueLagMs = 3_000L
@@ -315,7 +407,7 @@ class QueuedMessagePlacementTest {
         rig.agents.refresh()
         rig.conversations.attach(agentId)
         rig.steering.attach(agentId)
-        recorder = rig.scope.launch {
+        recorder = rig.scope.launch(screenThread) {
             combine(rig.steering.state(agentId), rig.conversations.state(agentId)) { c, s -> c to s }.collect { (c, s) -> frames += Frame(c, s, System.nanoTime()) }
         }
         rig.awaitUntilOr(60_000, "the chat open") { state.let { !it.isLoading && it.items.isNotEmpty() } && rig.steering.state(agentId).value.isQueueAvailable }
@@ -512,7 +604,7 @@ class QueuedMessagePlacementTest {
         first.awaitUntilOr(10_000, "the list to name it") { first.steering.state(agentId).value.queue.any { it.id == followupId } }
         val listed = first.steering.state(agentId).value.queue.single { it.id == followupId }
         assertThat(listed.attachments).isEmpty()
-        val card = first.steering.state(agentId).value.placed(state.queuePlacement).queue.single { it.id == followupId }
+        val card = state.let { s -> first.steering.state(agentId).value.placed(s.queuePlacement) }.queue.single { it.id == followupId }
         assertThat(card.attachments.map { it.isFile }).containsExactly(false, true).inOrder()
         card.attachments.forEach { assertThat(File(it.path).isFile).isTrue() }
 
@@ -525,7 +617,7 @@ class QueuedMessagePlacementTest {
         again.awaitUntilOr(10_000, "the waiting message back") { state.queuePlacement.waiting.any { it.id == followupId } }
         assertThat(state.queuePlacement.waiting.single { it.id == followupId }.attachments).isEqualTo(card.attachments)
         again.awaitUntilOr(10_000, "the list read again") { again.steering.state(agentId).value.queue.any { it.id == followupId } }
-        val restored = again.steering.state(agentId).value.placed(state.queuePlacement).queue.single { it.id == followupId }
+        val restored = state.let { s -> again.steering.state(agentId).value.placed(s.queuePlacement) }.queue.single { it.id == followupId }
         assertThat(restored.attachments).isEqualTo(card.attachments)
     }
 
@@ -722,7 +814,8 @@ class QueuedMessagePlacementTest {
         }
         val (first, second, third) = queued.map { it.first }
         rig.awaitUntilOr(20_000, "the list to name all three") { rig.steering.state(agentId).value.queue.map { it.id }.containsAll(listOf(first, second, third)) }
-        fun card() = rig.steering.state(agentId).value.placed(state.queuePlacement).queue
+        // The transcript's frame first, then the queue: the screen never pairs a frame with a queue value older than it.
+        fun card() = state.let { s -> rig.steering.state(agentId).value.placed(s.queuePlacement) }.queue
         assertThat(card().map { it.id }).containsExactly(first, second, third).inOrder()
 
         // Edit the second: its row reads the new words under the same id, the others untouched.
@@ -812,6 +905,64 @@ class QueuedMessagePlacementTest {
             rig.awaitUntilOr(30_000, "run ${next.id} followed (message ${k + 1})") { state.activeRunId == next.id && state.items.any { it.id.startsWith("activity-${next.id}-") } }
             rig.awaitUntilOr(20_000, "the list to let message ${k + 1} go") { rig.steering.state(agentId).value.queue.none { it.id == ids[k] } }
         }
+    }
+
+    // -- (11) reads answered out of order: the answer landing last is from before the account let the message go -------
+
+    /**
+     * Reads of the account's queue overlap — the poll, the one a filing asks for, the one after an edit — and nothing
+     * orders the account's answers but when they land. A read that reaches a busy backend late is answered after the
+     * account let the filed message go, and lands first; one sent behind it is answered at once, from before, and
+     * lands last. That answer is the older word: it must not put the message back on the card beside its filing, nor
+     * back in the list the controls hold, for the poll it would otherwise stand for (10 s in the app).
+     */
+    @Test
+    fun `an answer from before the account let a filed message go, landing last, does not put it back on the card`() = runBlocking<Unit> {
+        // The account keeps naming the consumed followup until the test lets it go, and no poll comes in between.
+        server.queueLagMs = Long.MAX_VALUE / 4
+        val rig = rig(pollMs = 600_000L)
+        rig.open()
+        val sentAt = System.nanoTime()
+        val followupId = rig.queueOnAccount(MESSAGE)
+        rig.awaitUntilOr(20_000, "the list to name it") { rig.steering.state(agentId).value.queue.any { it.id == followupId } }
+        // The account starts the next run on it; the transcript files it, and the read the filing asks for still names it.
+        server.endTurn(agentId)
+        val next = server.deliverNext(agentId, log = LongProject.turns(firstAt, turns = TURNS + 1).last().log)!!
+        server.outage(Route.Stream, Fault.StreamCut(events = 3), path = "/${next.id}/")
+        val readsBeforeFiling = server.requests(Route.QueueList).size
+        rig.awaitUntilOr(45_000, "the filing") { state.queuePlacement.deliveredIds.contains(followupId) && state.items.any { it is UserMessage && it.text == MESSAGE } }
+        rig.awaitUntilOr(10_000, "the read the filing asks for") { server.requests(Route.QueueList).size > readsBeforeFiling && rig.steering.state(agentId).value.queueLoad == com.cursorforandroid.domain.QueueLoad.Loaded }
+        assertThat(rig.steering.state(agentId).value.queue.map { it.id }).contains(followupId)
+        assertThat(state.let { s -> rig.steering.state(agentId).value.placed(s.queuePlacement) }.queue).isEmpty()
+
+        // Two reads overlap: the first held at the server unanswered, the second answered at once — the account still
+        // naming the message — and held on its way back.
+        val late = Fault.Held(processedOnRelease = true)
+        val slow = Fault.Held()
+        server.script(Route.QueueList, late, slow)
+        val first = async { rig.steering.refreshQueue(agentId) }
+        rig.awaitUntilOr(10_000, "the first read at the server") { late.reached }
+        val second = async { rig.steering.refreshQueue(agentId) }
+        rig.awaitUntilOr(10_000, "the second read answered") { slow.reached }
+        // The account lets the message go; the first read is answered now and lands first: the delivery confirmed.
+        server.queueLagMs = 0L
+        late.release()
+        first.await()
+        assertThat(rig.steering.state(agentId).value.queue.map { it.id }).doesNotContain(followupId)
+        rig.awaitUntilOr(5_000, "the delivery confirmed") { state.queuePlacement.deliveredIds.isEmpty() }
+        // The second's answer, from before, lands last.
+        slow.release()
+        second.await()
+        assertWithMessage("the answers, in the order the account made them").that(server.queueAnswers.takeLast(2)).containsExactly(listOf(followupId), emptyList<String>()).inOrder()
+        assertThat(rig.steering.state(agentId).value.queueLoad).isEqualTo(com.cursorforandroid.domain.QueueLoad.Loaded)
+        rig.watch(1_500) {
+            val s = state
+            val controls = rig.steering.state(agentId).value
+            assertWithMessage("the filed message back on the card — placement=${s.queuePlacement}").that(controls.placed(s.queuePlacement).queue.map { it.id }).doesNotContain(followupId)
+            assertWithMessage("the filed message back in the account's list as the controls hold it").that(controls.queue.map { it.id }).doesNotContain(followupId)
+        }
+        assertThat(state.items.count { it is UserMessage && it.text == MESSAGE }).isEqualTo(1)
+        assertOnePlace(followupId, MESSAGE, fromNanos = sentAt)
     }
 
     /** A real 4 x 3 PNG, one colour: the platform's decoder reads its size off it, as it would off a paste (a fake decodes to nothing). */

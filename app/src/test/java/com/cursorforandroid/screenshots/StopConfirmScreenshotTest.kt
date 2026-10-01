@@ -11,7 +11,6 @@ import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
-import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.test.core.app.ApplicationProvider
@@ -24,15 +23,11 @@ import com.cursorforandroid.data.api.dto.SseToolCallDto
 import com.cursorforandroid.data.api.dto.V0ConversationMessageDto
 import com.cursorforandroid.data.local.SecureKeyStore
 import com.cursorforandroid.data.repo.CursorBackend
-import com.cursorforandroid.domain.CursorUser
 import com.cursorforandroid.domain.RunStatus
 import com.cursorforandroid.ui.components.RunInterruption
 import com.cursorforandroid.ui.components.RunStopCopy
 import com.cursorforandroid.ui.components.RunStopTags
 import com.cursorforandroid.ui.conversation.ConversationScreen
-import com.cursorforandroid.ui.settings.SettingsCopy
-import com.cursorforandroid.ui.settings.SettingsScreen
-import com.cursorforandroid.ui.settings.SettingsTags
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.ui.theme.ThemeMode
 import com.cursorforandroid.util.AppClock
@@ -55,8 +50,8 @@ import java.util.Locale
 import java.util.TimeZone
 
 /**
- * Settings › Confirm before stopping, in four frames, dark and light: the question over a running chat once its
- * composer's Stop has been tapped, and the switch in Settings. The chat is held open by the fakes (served through the
+ * The stop confirmation, dark and light: the question over a running chat once its composer's Stop has been tapped,
+ * as it always is. The chat is held open by the fakes (served through the
  * demo seat of the graph), so the run never finishes under the capture. Same device qualifiers as [AppScreenshotTest].
  */
 @OptIn(ExperimentalMaterial3Api::class)
@@ -141,36 +136,13 @@ class StopConfirmScreenshotTest {
         capture(name)
     }
 
-    private fun settingsFrame(mode: ThemeMode, name: String) {
-        compose.setContent {
-            CursorTheme(mode = mode) {
-                CompositionLocalProvider(LocalRippleConfiguration provides null) {
-                    SettingsScreen(graph = graph, user = USER, isDemo = false, onOpenSidebar = null, onBack = {})
-                }
-            }
-        }
-        compose.waitUntil(30_000) { compose.onAllNodes(hasTestTag(SettingsTags.CONFIRM_STOP)).fetchSemanticsNodes().isNotEmpty() }
-        // Below the New chat page picker: the Chats group is brought up to the top.
-        compose.scrollSettingsGroupToTop(SettingsCopy.GROUP_CHATS)
-        compose.onNodeWithTag(SettingsTags.CONFIRM_STOP).assertIsDisplayed()
-        compose.onNodeWithText(RunStopCopy.SETTING_DETAIL).assertIsDisplayed()
-        capture(name)
-    }
-
     @Test
     fun stopConfirmDialogDark() = dialogFrame(ThemeMode.Dark, "143_stop_confirm_dialog_dark")
 
     @Test
     fun stopConfirmDialogLight() = dialogFrame(ThemeMode.Light, "144_stop_confirm_dialog_light")
 
-    @Test
-    fun settingsConfirmStopDark() = settingsFrame(ThemeMode.Dark, "145_settings_confirm_stop_dark")
-
-    @Test
-    fun settingsConfirmStopLight() = settingsFrame(ThemeMode.Light, "146_settings_confirm_stop_light")
-
     private companion object {
         const val STARTED_AT = "2025-01-15T13:57:00.000Z"
-        val USER = CursorUser("Cursor for Android (Pixel 9)", "alex@example.com", "Alex", "Rivera", 7L)
     }
 }

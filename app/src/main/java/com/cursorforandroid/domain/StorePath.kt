@@ -27,12 +27,24 @@ data class StorePath(val mount: String, val relativePath: String) {
     /** The store the path is in, once `self` is read against the chat of [chatAgentId]: the owner's id, or null when the mount names no agent. */
     fun ownerId(chatAgentId: String?): String? = agentId ?: chatAgentId?.takeIf { isSelf }
 
+    /**
+     * The store the mount names without an agent to read it against: the user's or the team's (`user`, `team`), or a
+     * store by the id `ListAgentStores` gives it — what a Context document's relative links resolve to. Null for an
+     * agent's mount and for `self`.
+     */
+    val storeMount: String? get() = mount.takeIf { agentId == null && !isSelf }
+
+    /** The same file with `self` read as [chatAgentId]'s own mount, so the path keeps naming it wherever it is opened next. */
+    fun pinnedTo(chatAgentId: String?): StorePath = if (isSelf && chatAgentId != null) copy(mount = chatAgentId) else this
+
     /** The path as written, for captions and copies. */
     val text: String get() = "$ROOT$mount/$relativePath"
 
     companion object {
         const val ROOT = "/cursor/stores/"
         const val SELF = "self"
+        const val USER = "user"
+        const val TEAM = "team"
 
         private val IMAGE_EXTENSIONS = setOf("png", "jpg", "jpeg", "gif", "webp", "bmp", "svg", "heic", "avif")
         private val VIDEO_EXTENSIONS = setOf("mp4", "webm", "mov", "m4v", "mkv")

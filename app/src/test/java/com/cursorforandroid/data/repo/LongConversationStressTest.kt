@@ -88,7 +88,7 @@ class LongConversationStressTest {
         override suspend fun listRuns(id: String, limit: Int, cursor: String?): ListRunsResponseDto {
             runListCalls.merge(cursor ?: "first", 1, Int::plus)
             if (!ascendingRuns) return super.listRuns(id, limit, cursor)
-            listRunsCalls++
+            listRunsCount.incrementAndGet()
             runsGate?.await()
             val all = runs.values.filter { it.agentId == id && it.id !in runsHiddenFromList }.sortedWith(compareBy({ it.createdAt }, { it.id }))
             val start = cursor?.let { c -> all.indexOfFirst { it.id == c }.takeIf { it >= 0 } } ?: 0
@@ -102,7 +102,7 @@ class LongConversationStressTest {
         override suspend fun conversationV0(id: String): V0ConversationResponseDto {
             if (transcriptTimeouts.get() > 0) {
                 transcriptTimeouts.decrementAndGet()
-                conversationCalls++
+                conversationCount.incrementAndGet()
                 throw SocketTimeoutException("timeout")
             }
             return super.conversationV0(id)

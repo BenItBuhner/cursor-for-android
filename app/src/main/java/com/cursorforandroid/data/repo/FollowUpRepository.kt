@@ -11,8 +11,10 @@ import com.cursorforandroid.domain.AgentMode
 import com.cursorforandroid.domain.DraftFile
 import com.cursorforandroid.domain.DraftImage
 import com.cursorforandroid.domain.DraftModel
+import com.cursorforandroid.domain.EnvType
 import com.cursorforandroid.domain.FollowUpComposerState
 import com.cursorforandroid.domain.FollowUpDraft
+import com.cursorforandroid.domain.MachineStatus
 import com.cursorforandroid.domain.McpServer
 import com.cursorforandroid.domain.ModelParam
 import com.cursorforandroid.domain.QueuedFollowUp
@@ -95,6 +97,14 @@ class FollowUpRepository(
     private val accountQueueAvailable: suspend () -> Boolean = { false },
     /** Steers a queued message into the turn under way through the account (Extended mode; see [steerNow]). Null: no steering here. */
     private val accountSteering: AccountSteering? = null,
+    /**
+     * Where the machine a Remote Control chat runs on stands (`GET /v0/private-workers`; see
+     * `RemoteRepository.machineStatus`), asked before a message goes to such a chat and after one it refused:
+     * a machine that is not reporting to Cursor cannot take the message, and the card says so instead of sending
+     * into the void (see [dispatch]). With `fresh` the listing is read again rather than taken from its cache.
+     * Null when it cannot be told, and for a chat that does not run on a machine.
+     */
+    private val machineStatus: suspend (agent: Agent, fresh: Boolean) -> MachineStatus? = { _, _ -> null },
     private val store: FollowUpStore? = null,
     /** False (the demo) keeps everything in memory. */
     private val persist: () -> Boolean = { true },
@@ -422,7 +432,7 @@ class FollowUpRepository(
         val e = entry(agentId)
         synchronized(e) {
             e.update {
-                copy(queue = queue.map { if (it.id == id) it.copy(error = null, needsConfirmation = false, sendStartedAtMillis = null, heldSinceMillis = null, busyRefusals = 0, serverReason = null, notBeforeMillis = null, holdReason = null, throttleRefusals = 0, steerError = null) else it })
+                copy(queue = queue.map { if (it.id == id) it.copy(error = null, needsConfirmation = false, sendStartedAtMillis = null, heldSinceMillis = null, busyRefusals = 0, serverReason = null, notBeforeMillis = null, holdReason = null, throttleRefusals = 0, offlineChecks = 0, steerError = null) else it })
             }
             e.ensureDispatcher()
         }
@@ -437,7 +447,7 @@ class FollowUpRepository(
         val e = entry(agentId)
         synchronized(e) {
             val found = e.state.value.queue.firstOrNull { it.id == id && !it.isSending && !it.isSteered } ?: return false
-            val cleared = found.copy(error = null, needsConfirmation = false, sendStartedAtMillis = null, heldSinceMillis = null, busyRefusals = 0, serverReason = null, notBeforeMillis = null, holdReason = null, throttleRefusals = 0, steerError = null)
+            val cleared = found.copy(error = null, needsConfirmation = false, sendStartedAtMillis = null, heldSinceMillis = null, busyRefusals = 0, serverReason = null, notBeforeMillis = null, holdReason = null, throttleRefusals = 0, offlineChecks = 0, steerError = null)
             e.update { copy(queue = listOf(cleared) + queue.filterNot { it.id == id }) }
             e.ensureDispatcher()
         }
@@ -779,6 +789,64 @@ class FollowUpRepository(
     /** The pause before the attempt after [busyStreak] refusals in a row: [retryBaseMs] doubled each time, to [MAX_BUSY_PAUSE_MS]. */
     private fun busyPause(busyStreak: Int): Long = (retryBaseMs shl busyStreak.coerceIn(0, MAX_BUSY_BACKOFF_STEPS)).coerceAtMost(MAX_BUSY_PAUSE_MS)
 
+    /**
+     * The pause before the machine is looked at again after [checks] looks that found it not connected: a long
+     * first wait — a machine being switched on takes a while to report — doubled each time, to [MAX_OFFLINE_PAUSE_MS].
+     * Scaled with [retryBaseMs] so a test's short base shortens it alike.
+     */
+    private fun offlinePause(checks: Int): Long =
+        ((retryBaseMs * OFFLINE_PAUSE_MS / RETRY_BASE_MS) shl checks.coerceIn(0, MAX_BUSY_BACKOFF_STEPS)).coerceIn(retryBaseMs, retryBaseMs * MAX_OFFLINE_PAUSE_MS / RETRY_BASE_MS)
+
+    /** Where [row]'s machine stands, or null when it cannot be told; a failure to ask is an unknown, never a verdict. */
+    private suspend fun machineStatusOf(row: Agent, fresh: Boolean): MachineStatus? =
+        try {
+            machineStatus(row, fresh)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Throwable) {
+            null
+        }
+
+    /**
+     * Parks [item] on a machine that is not reporting to Cursor: held, the card naming [machine] (and the server's
+     * own words, [serverWords], when a request was refused), looked at again after [offlinePause]; or, after
+     * [OFFLINE_HOLDS] looks in a row, failed on the card for the user to retry once the machine is on. Nothing is
+     * sent meanwhile — a message a machine that is off cannot take is not posted to find that out again.
+     */
+    private fun holdForMachine(e: Entry, item: QueuedFollowUp, machine: String, serverWords: String?) {
+        val now = AppClock.now()
+        val checks = item.offlineChecks + 1
+        e.update {
+            copy(queue = queue.map {
+                if (it.id != item.id) it
+                else if (checks > OFFLINE_HOLDS) {
+                    it.copy(
+                        isSending = false,
+                        sendStartedAtMillis = null,
+                        heldSinceMillis = null,
+                        notBeforeMillis = null,
+                        holdReason = null,
+                        serverReason = null,
+                        offlineChecks = checks,
+                        error = QueuedFollowUp.machineOfflineError(machine),
+                    )
+                } else {
+                    it.copy(
+                        isSending = false,
+                        sendStartedAtMillis = null,
+                        heldSinceMillis = it.heldSinceMillis ?: now,
+                        notBeforeMillis = now + offlinePause(item.offlineChecks),
+                        holdReason = QueuedFollowUp.machineOffline(machine),
+                        serverReason = serverWords?.takeIf { w -> w.isNotBlank() } ?: it.serverReason,
+                        offlineChecks = checks,
+                        throttleRefusals = 0,
+                    )
+                }
+            })
+        }
+        e.scheduleSave()
+    }
+
     /** Drops everything held for an agent, on disk too; used when it is deleted. */
     fun forget(agentId: String) {
         val e = synchronized(entries) { entries.remove(agentId) } ?: return
@@ -984,7 +1052,7 @@ class FollowUpRepository(
                 // clock stands still.
                 val pending = e.state.value.queue.firstOrNull()?.let { h -> h.notBeforeMillis?.let { nb -> h.id to nb } }
                 if (pending != null && e.pausedFor != pending) {
-                    awaitPauseOrFinish(e.agentId, (pending.second - AppClock.now()).coerceIn(0L, MAX_BUSY_PAUSE_MS))
+                    awaitPauseOrFinish(e.agentId, (pending.second - AppClock.now()).coerceIn(0L, MAX_OFFLINE_PAUSE_MS))
                     e.pausedFor = pending
                     settleRow(e.agentId)
                     continue
@@ -1030,9 +1098,27 @@ class FollowUpRepository(
      *  - lost in transit (the connection, the server slow): the server is asked whether the message arrived before
      *    anything is decided — a message it took is never sent again — and only then is the failure shown.
      *  - refused for any other reason: shown in the server's words; nothing behind it goes until the user decides.
+     *
+     * A Remote Control chat's message has one more gate: the machine it runs on must be reporting to Cursor. One
+     * that is not (powered off, Cursor closed on it) is found out before the request goes — the fleet listing read,
+     * not the message sent — and the card says the machine is not connected, looked at again after a pause that
+     * doubles to [MAX_OFFLINE_PAUSE_MS]; the message goes by itself when the machine is back, and after
+     * [OFFLINE_HOLDS] looks the card stops waiting and leaves the retry to the user. A `503` for such a chat is
+     * read the same way when the listing agrees the machine is gone — never as a rate limit, which only a `429` is
+     * (Bennett, v0.4.31: a send to a machine that was off read "rate limited").
      */
     private suspend fun dispatch(e: Entry, item: QueuedFollowUp, startedIn: Int) {
         if (generation.get() != startedIn) return
+        val row = agents.agent(e.agentId)
+        if (row?.envType == EnvType.MACHINE) {
+            val machine = machineStatusOf(row, fresh = item.offlineChecks > 0)
+            if (generation.get() != startedIn) return
+            if (machine?.connected == false) {
+                e.attempt(item, VIA_MACHINE, "machine-offline", machine.name)
+                holdForMachine(e, item, machine.name, serverWords = null)
+                return
+            }
+        }
         val via = if (item.files.isEmpty()) VIA_RUN else VIA_ACCOUNT
         val result: Result<String?> = if (item.files.isEmpty()) {
             conversations.sendFollowUp(
@@ -1045,9 +1131,10 @@ class FollowUpRepository(
                 modelParams = item.modelParams,
                 modelDisplayName = item.modelDisplayName,
                 showEcho = false,
+                queuedId = item.id,
             ).map { it.id }
         } else {
-            val staged = conversations.stageFollowUp(e.agentId, item.previewText, item.images.map { it.image }, item.files.map { it.file }, show = false)
+            val staged = conversations.stageFollowUp(e.agentId, item.previewText, item.images.map { it.image }, item.files.map { it.file }, show = false, queuedId = item.id)
             sendStagedItem(e, staged, item)
         }
         if (generation.get() != startedIn) return
@@ -1062,6 +1149,9 @@ class FollowUpRepository(
             onFailure = { t ->
                 if (t is CancellationException) throw t
                 val error = t.toCursorError()
+                // A `503` for a Remote Control chat: the fleet listing, read again now, says whether it is the machine that is gone.
+                val offlineMachine = if (error?.httpCode == 503 && row?.envType == EnvType.MACHINE) machineStatusOf(row, fresh = true)?.takeIf { !it.connected } else null
+                if (generation.get() != startedIn) return
                 when {
                     error?.code == AGENT_BUSY -> {
                         e.attempt(item, via, "busy", error.message)
@@ -1072,7 +1162,9 @@ class FollowUpRepository(
                             handed.fold(
                                 onSuccess = { (runId, followupId) ->
                                     // A run named behind a turn under way has not started: the message is queued all the same.
-                                    val queued = runId == null || conversations.waitsBehindTurn(e.agentId, runId)
+                                    // So is one the server does not have under way: it has just refused the run request as busy.
+                                    val queued = runId == null || conversations.waitsBehindTurn(e.agentId, runId) || !agents.runStarted(e.agentId, runId, turnUnderWay = true)
+                                    if (generation.get() != startedIn) return
                                     e.attempt(item, VIA_ACCOUNT, if (runId == null) "queued-on-account" else if (queued) "queued-behind-turn" else "accepted", runId)
                                     runId?.let { e.acceptedId(it) }
                                     e.update { copy(queue = queue.filterNot { it.id == item.id }) }
@@ -1116,11 +1208,19 @@ class FollowUpRepository(
                         }
                         e.scheduleSave()
                     }
-                    // The server asked every caller to slow down: a `429`, or a `503` naming when to come back.
-                    // Once, the wait it named is waited out — the card saying so, the server's words under it — and
-                    // the message goes out by itself; a second refusal in a row is the user's to hear.
+                    // A Remote Control chat's machine could not be reached: a `503` (with or without a wait named)
+                    // for a chat whose machine the fleet listing, read again now, does not have. Held as a machine
+                    // that is off is held — the card naming the machine, not a rate limit.
+                    offlineMachine != null -> {
+                        e.attempt(item, via, "machine-offline", error?.message)
+                        holdForMachine(e, item, offlineMachine.name, serverWords = error?.message)
+                    }
+                    // The server asked every caller to slow down (`429`), or could not take the message for the moment
+                    // and said when to come back (`503` with `Retry-After`). Once, the wait it named is waited out —
+                    // the card saying which it was, the server's words under it — and the message goes out by itself;
+                    // a second refusal in a row is the user's to hear.
                     error != null && (error.isRateLimited || (error.httpCode == 503 && t.retryAfterMillis() != null)) && item.throttleRefusals < THROTTLE_RETRIES -> {
-                        e.attempt(item, via, "throttled", error.message)
+                        e.attempt(item, via, if (error.isRateLimited) "throttled" else "unavailable", error.message)
                         val now = AppClock.now()
                         val wait = (t.retryAfterMillis() ?: busyPause(0)).coerceIn(retryBaseMs, MAX_BUSY_PAUSE_MS)
                         e.update {
@@ -1131,7 +1231,7 @@ class FollowUpRepository(
                                         sendStartedAtMillis = null,
                                         heldSinceMillis = it.heldSinceMillis ?: now,
                                         notBeforeMillis = now + wait,
-                                        holdReason = QueuedFollowUp.RATE_LIMITED,
+                                        holdReason = if (error.isRateLimited) QueuedFollowUp.RATE_LIMITED else QueuedFollowUp.SERVICE_UNAVAILABLE,
                                         serverReason = error.message.takeIf { m -> m.isNotBlank() } ?: it.serverReason,
                                         throttleRefusals = it.throttleRefusals + 1,
                                     )
@@ -1186,7 +1286,15 @@ class FollowUpRepository(
         private const val VIA_RUN = "runs"
         private const val VIA_ACCOUNT = "account"
         private const val VIA_STEER = "steer"
+        /** The attempt that went no further than the fleet listing: the machine was not there to send to. */
+        private const val VIA_MACHINE = "machine"
         private const val RETRY_BASE_MS = 1_000L
+        /** The first wait before a machine found not connected is looked at again; doubles each look (see [offlinePause]). */
+        private const val OFFLINE_PAUSE_MS = 30_000L
+        /** The longest wait between two looks at a machine that stays off — and the longest a held message's pause is waited at once. */
+        private const val MAX_OFFLINE_PAUSE_MS = 300_000L
+        /** Looks in a row that find the machine off before the card stops waiting and leaves the retry to the user (about half an hour). */
+        private const val OFFLINE_HOLDS = 8
         /** A cancel that failed for a passing reason is asked this many more times (1 s, then 2 s later). */
         private const val MAX_CANCEL_RETRIES = 2
         /** A steered send that failed for a passing reason is tried this many more times (1 s, 2 s, then 4 s later). */

@@ -12,8 +12,9 @@ import java.io.File
 
 /**
  * A text a payload carries that may be kept on disk instead of the heap (see [TextSpill]): read through [value]
- * whenever it is wanted, which for a spilled one is a file read (or the recent texts' copy). Serialized as the plain
- * string, so what is written to the trace caches is what it always was.
+ * whenever it is wanted, which for a spilled one is a file read (or the recent texts' copy). The file is kept for as
+ * long as this object can be reached. Serialized as the plain string, so what is written to the trace caches is what
+ * it always was.
  *
  * Two are equal when their texts are: spilled ones by their files, which are named by the text's digest, so a
  * transcript rebuilt from the same record compares equal without reading anything back.
@@ -36,7 +37,7 @@ class SpillText private constructor(private val inline: String?, private val fil
     override fun toString(): String = if (file != null) "SpillText(length=$length, on disk)" else value
 
     companion object {
-        fun of(text: String): SpillText = TextSpill.put(text)?.let { SpillText(null, it, text.length) } ?: SpillText(text, null, text.length)
+        fun of(text: String): SpillText = TextSpill.put(text) { SpillText(null, it, text.length) } ?: SpillText(text, null, text.length)
     }
 
     object Serializer : KSerializer<SpillText> {

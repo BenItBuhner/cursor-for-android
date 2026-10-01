@@ -36,6 +36,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.cursorforandroid.data.repo.AttachmentUploads
+import com.cursorforandroid.domain.FileFormat
 import com.cursorforandroid.domain.PromptFile
 import com.cursorforandroid.domain.PromptFileKind
 import com.cursorforandroid.domain.PromptImage
@@ -264,9 +265,33 @@ internal fun loadFile(resolver: ContentResolver, uri: Uri): Result<PendingFile> 
     val name = displayName(resolver, uri) ?: generatedName(declared)
     val tooLarge = PromptFile.tooLargeMessage(declared ?: PromptFile.resolveMimeType(null, name), name)
     val bytes = readBoundedBytes(declaredSize(resolver, uri), maxBytes = PromptFile.MAX_BYTES, tooLarge = tooLarge) { resolver.openInputStream(uri) }
-    // The bytes have the last word on an image's type, as they do for a paste: a gallery export declared as `image/*`.
-    val mime = sniffImageMime(bytes) ?: PromptFile.resolveMimeType(declared, name)
-    PendingFile.of(PromptFile(bytes, name, mime), id = uri.toString() + "@" + System.nanoTime())
+    val id = uri.toString() + "@" + System.nanoTime()
+    pictureFile(bytes, name, declared)?.let { return@runCatching PendingFile.of(it, id) }
+    // The bytes have the last word on a picture's type: a gallery export declared as `image/*` or not at all.
+    val mime = FileFormat.sniff(bytes)?.takeIf { it.isImage }?.mimeType ?: PromptFile.resolveMimeType(declared, name)
+    PendingFile.of(PromptFile(bytes, name, mime), id = id)
+}
+
+/**
+ * A picked picture as the prompt names it, `selected_images[]`: prepared the way an inline image is
+ * ([AttachmentImages.prepare]), transparency kept — cut at its end marker, so whatever the phone appended after it does
+ * not stop the agent viewing it, and re-encoded only where it has to be — and renamed to the format it now is. Null for bytes that are
+ * no PNG, JPEG, GIF or WebP, which travel as the document they are; one of those that will not decode is refused,
+ * with the reason.
+ */
+internal fun pictureFile(bytes: ByteArray, name: String, declaredMime: String?): PromptFile? {
+    if (!AttachmentImages.isPicture(bytes)) return null
+    val image = AttachmentImages.prepare(bytes, declaredMime, keepTransparency = true)
+    return PromptFile(image.bytes, renamedFor(name, image.mimeType), image.mimeType)
+}
+
+/** [name] with the extension of [mimeType], when the image was converted to a format its name does not say. */
+internal fun renamedFor(name: String, mimeType: String): String {
+    val format = FileFormat.entries.firstOrNull { it.mimeType == mimeType } ?: return name
+    if (FileFormat.ofName(name) == format) return name
+    val dot = name.lastIndexOf('.')
+    val stem = if (dot > 0) name.substring(0, dot) else name
+    return "$stem.${format.extension}"
 }
 
 /**
@@ -326,10 +351,14 @@ fun PromptFileKind.icon(): ImageVector = when (this) {
 
 /**
  * The composer's chip for an attached file of any kind but a picture or a recording (those are [MediaChip]s), one per
- * file in the attachment row ([ComposerAttachments]): its kind's glyph, its name and its size, and a remove cross —
+ * file in the attachment row ([ComposerAttachments]): its kind's glyph, its name and its size, and a remove badge —
  * as the desktop's `context-pill` names a document, with the size the desktop's guard checks made visible. From the
- * moment a file is attached its glyph is a ring filling with the upload, the cross cancelling it; up, the chip is the
+ * moment a file is attached its glyph is a ring filling with the upload, the badge cancelling it; up, the chip is the
  * file at rest; a file that did not get up shows a warning and a retry of the upload.
+ *
+ * It stands beside the pictures as one of them: [MediaTile] tall (taller only when a large font needs it), its
+ * content centred, the tile's corners, and the tile's remove badge over its top-end corner in a slot with the same
+ * [MediaBadgeRoom] above and past its end — so a row of pictures and files is one height, its badges in one line.
  */
 @Composable
 internal fun FileChip(
@@ -341,11 +370,14 @@ internal fun FileChip(
     onOpen: ((ThumbnailSlot) -> Unit)? = null,
     openSrc: String? = null,
     modifier: Modifier = Modifier,
+    /** For the chip itself, without the room its badge overhangs into. */
+    tileModifier: Modifier = Modifier,
 ) {
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
     val kind = file.file.kind
-    val slot = openSrc?.let { rememberThumbnailSlot(it, CursorTheme.shapes.lg, crop = true) }
+    val shape = CursorTheme.shapes.base
+    val slot = openSrc?.let { rememberThumbnailSlot(it, shape, crop = true) }
     val size = PromptFile.formatSize(file.file.sizeBytes.toLong())
     // At rest — nothing known of an upload, or one that is done — the chip is the file: glyph or thumbnail, kind, size.
     val atRest = upload == null || upload.done
@@ -355,58 +387,60 @@ internal fun FileChip(
         failed -> "not uploaded"
         else -> "uploading ${(upload!!.progress * 100).toInt()}%"
     }
-    Row(
-        modifier
-            .then(if (slot != null) Modifier.thumbnailSlot(slot) else Modifier)
-            .widthIn(max = ChipMaxWidth)
-            .cursorSurface(colors.fill, colors.stroke, CursorTheme.shapes.lg)
-            .then(if (onOpen != null && slot != null) Modifier.pressable({ onOpen(slot) }, CursorTheme.shapes.lg) else Modifier)
-            .heightIn(min = ChipHeight)
-            .padding(start = 8.dp, end = 4.dp)
-            .testTag("file-chip")
-            .semantics { contentDescription = listOfNotNull("Attached file ${file.file.name}", "${kind.label}, $size", status).joinToString(", ") },
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Box(Modifier.size(if (file.thumbnail != null && atRest) 28.dp else 18.dp), contentAlignment = Alignment.Center) {
-            when {
-                atRest && file.thumbnail != null -> Image(
-                    file.thumbnail,
-                    contentDescription = null,
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier.size(28.dp).clip(CursorTheme.shapes.sm),
-                )
-                atRest -> Icon(kind.icon(), null, tint = colors.iconSecondary, modifier = Modifier.size(16.dp))
-                failed -> Icon(CursorIcons.Warning, null, tint = colors.red, modifier = Modifier.size(15.dp))
-                else -> ProgressRing(progress = upload!!.progress, size = 15.dp, color = colors.accent)
-            }
-        }
-        Spacer(Modifier.width(8.dp))
-        Column(Modifier.weight(1f, fill = false).padding(vertical = 4.dp)) {
-            Text(file.file.name, style = type.base, color = colors.textPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            Text(
+    Box(modifier) {
+        Row(
+            Modifier
+                .padding(top = MediaBadgeRoom, end = MediaBadgeRoom)
+                .then(tileModifier)
+                .then(if (slot != null) Modifier.thumbnailSlot(slot) else Modifier)
+                .widthIn(max = ChipMaxWidth)
+                .cursorSurface(colors.fill, colors.stroke, shape)
+                .then(if (onOpen != null && slot != null) Modifier.pressable({ onOpen(slot) }, shape) else Modifier)
+                .testTag("file-chip")
+                .semantics { contentDescription = listOfNotNull("Attached file ${file.file.name}", "${kind.label}, $size", status).joinToString(", ") }
+                .heightIn(min = MediaTile)
+                .padding(start = 12.dp, end = if (failed && onRetry != null) 6.dp else 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box(Modifier.size(if (file.thumbnail != null && atRest) 28.dp else 18.dp), contentAlignment = Alignment.Center) {
                 when {
-                    atRest -> "${kind.label} · $size"
-                    failed -> "Upload failed · tap to retry"
-                    else -> "Uploading · ${(upload!!.progress * 100).toInt()}%"
-                },
-                style = type.small,
-                color = if (failed) colors.red else colors.textTertiary,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-        }
-        Spacer(Modifier.width(4.dp))
-        if (failed && onRetry != null) {
-            TouchTarget(size = 24.dp, touchSize = 36.dp, shape = CircleShape, onClick = onRetry) {
-                Icon(CursorIcons.Refresh, "Retry upload", tint = colors.iconPrimary, modifier = Modifier.size(14.dp))
+                    atRest && file.thumbnail != null -> Image(
+                        file.thumbnail,
+                        contentDescription = null,
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.size(28.dp).clip(CursorTheme.shapes.sm),
+                    )
+                    atRest -> Icon(kind.icon(), null, tint = colors.iconSecondary, modifier = Modifier.size(16.dp))
+                    failed -> Icon(CursorIcons.Warning, null, tint = colors.red, modifier = Modifier.size(15.dp))
+                    else -> ProgressRing(progress = upload!!.progress, size = 15.dp, color = colors.accent)
+                }
+            }
+            Spacer(Modifier.width(10.dp))
+            Column(Modifier.weight(1f, fill = false).padding(vertical = 4.dp)) {
+                Text(file.file.name, style = type.base, color = colors.textPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(
+                    when {
+                        atRest -> "${kind.label} · $size"
+                        failed -> "Upload failed · tap to retry"
+                        else -> "Uploading · ${(upload!!.progress * 100).toInt()}%"
+                    },
+                    style = type.small,
+                    color = if (failed) colors.red else colors.textTertiary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            if (failed && onRetry != null) {
+                Spacer(Modifier.width(6.dp))
+                TouchTarget(size = 24.dp, touchSize = 36.dp, shape = CircleShape, onClick = onRetry) {
+                    Icon(CursorIcons.Refresh, "Retry upload", tint = colors.iconPrimary, modifier = Modifier.size(14.dp))
+                }
             }
         }
-        // The cross stays through the upload: taking the file off cancels it.
-        TouchTarget(size = 24.dp, touchSize = 36.dp, shape = CircleShape, onClick = onRemove) {
-            Icon(CursorIcons.Close, "Remove attachment", tint = colors.iconTertiary, modifier = Modifier.size(12.dp))
-        }
+        // The badge stays through the upload: taking the file off cancels it.
+        AttachmentRemoveBadge(onRemove, Modifier.align(Alignment.TopEnd).testTag("file-remove"))
     }
 }
 
-private val ChipHeight = 40.dp
-private val ChipMaxWidth = 320.dp
+/** Narrow enough that a picture and a long-named file fit a phone's row together, both badges in view. */
+private val ChipMaxWidth = 248.dp

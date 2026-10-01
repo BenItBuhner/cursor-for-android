@@ -77,10 +77,12 @@ import com.cursorforandroid.ui.components.CursorIcons
 import com.cursorforandroid.ui.components.FlatIconButton
 import com.cursorforandroid.ui.components.HairlineDivider
 import com.cursorforandroid.ui.components.SpinnerRing
+import com.cursorforandroid.ui.components.StylusTextInput
 import com.cursorforandroid.ui.components.cursorSurface
 import com.cursorforandroid.ui.components.fadingVerticalScroll
 import com.cursorforandroid.ui.components.pressable
 import com.cursorforandroid.ui.components.scrollEdgeFade
+import com.cursorforandroid.ui.components.stylusWriting
 import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
 import kotlinx.coroutines.Dispatchers
@@ -291,25 +293,27 @@ private fun ColumnScope.SearchPane(
         }
     }
 
-    Row(Modifier.fillMaxWidth().height(50.dp).padding(start = 16.dp, end = 14.dp), verticalAlignment = Alignment.CenterVertically) {
+    Row(Modifier.fillMaxWidth().stylusWriting().height(50.dp).padding(start = 16.dp, end = 14.dp), verticalAlignment = Alignment.CenterVertically) {
         Icon(CursorIcons.Search, null, tint = colors.iconTertiary, modifier = Modifier.size(16.dp))
         Spacer(Modifier.width(10.dp))
-        BasicTextField(
-            value = field,
-            onValueChange = { field = it },
-            singleLine = true,
-            textStyle = type.title.copy(fontWeight = FontWeight.Normal, color = colors.textPrimary),
-            cursorBrush = SolidColor(colors.textPrimary),
-            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
-            keyboardActions = KeyboardActions(onGo = { openSelected() }),
-            modifier = Modifier.weight(1f).focusRequester(focus).onPreviewKeyEvent(::onKey).testTag(PaletteTags.FIELD),
-            decorationBox = { inner ->
-                Box {
-                    if (field.text.isEmpty()) Text(PaletteCopy.PLACEHOLDER, style = type.title.copy(fontWeight = FontWeight.Normal), color = colors.textQuaternary, maxLines = 1)
-                    inner()
-                }
-            },
-        )
+        StylusTextInput {
+            BasicTextField(
+                value = field,
+                onValueChange = { field = it },
+                singleLine = true,
+                textStyle = type.title.copy(fontWeight = FontWeight.Normal, color = colors.textPrimary),
+                cursorBrush = SolidColor(colors.textPrimary),
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
+                keyboardActions = KeyboardActions(onGo = { openSelected() }),
+                modifier = Modifier.weight(1f).focusRequester(focus).onPreviewKeyEvent(::onKey).testTag(PaletteTags.FIELD),
+                decorationBox = { inner ->
+                    Box {
+                        if (field.text.isEmpty()) Text(PaletteCopy.PLACEHOLDER, style = type.title.copy(fontWeight = FontWeight.Normal), color = colors.textQuaternary, maxLines = 1)
+                        inner()
+                    }
+                },
+            )
+        }
         if (reading) {
             Spacer(Modifier.width(8.dp))
             SpinnerRing(size = 12.dp)

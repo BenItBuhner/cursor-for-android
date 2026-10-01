@@ -111,12 +111,12 @@ class ExtendedModeSettingsTest {
         fun assertToggleAlone() {
             // One switch, one line under it whichever way it is, and none of what used to sit under it: no
             // acknowledgment date, no note, no pin sync option or its status — the pins follow the mode itself — and
-            // no transcript engine, which is a setting of its own beside this one.
+            // no transcript engine, as the full record is always read while the mode is on.
             compose.onAllNodes(isToggleable()).assertCountEquals(1)
             compose.onNodeWithText(ExtendedModeCopy.SETTING_DETAIL).assertIsDisplayed()
             listOf(
                 "Warning acknowledged", "Sync pinned chats", "Last synced", "undocumented Cursor endpoints. They are in effect",
-                "Transcript engine", ExtendedModeCopy.ENGINE_TITLE, "Stable", "Beta", "Off.", "On.",
+                "Transcript engine", "Full transcript history", "Stable", "Beta", "Off.", "On.",
             ).forEach { removed ->
                 compose.onAllNodes(hasText(removed, substring = true, ignoreCase = true)).assertCountEquals(0)
             }

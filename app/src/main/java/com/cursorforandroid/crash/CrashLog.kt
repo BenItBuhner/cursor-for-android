@@ -117,15 +117,19 @@ class CrashLog(
     /**
      * Looks at the heap every [periodMs] on a thread of its own, and has the [install]ed log take a [snapshot] when
      * more than [PRESSURE] of it is in use: the state that led to an out-of-memory crash, kept before there is no
-     * memory left to read it with. One watcher for the process, like the handler; a later call only restarts it with
-     * the new [periodMs] and [heap] reading.
+     * memory left to read it with. [onPressure] then gives back what can be read again: the system's trim callbacks
+     * answer the device running short, never this process's heap nearing its own limit. One watcher for the process,
+     * like the handler; a later call only restarts it with the new [periodMs], [heap] reading and [onPressure].
      */
-    fun watchMemory(periodMs: Long = WATCH_PERIOD_MS, heap: () -> Pair<Long, Long> = ::heapUsedAndMax) {
+    fun watchMemory(periodMs: Long = WATCH_PERIOD_MS, heap: () -> Pair<Long, Long> = ::heapUsedAndMax, onPressure: () -> Unit = {}) {
         val watcher = Thread({
             while (true) {
                 runCatching {
                     val (used, max) = heap()
-                    if (max > 0 && used > max * PRESSURE) active?.snapshot("heap ${used shr 20} of ${max shr 20} MB")
+                    if (max > 0 && used > max * PRESSURE) {
+                        active?.snapshot("heap ${used shr 20} of ${max shr 20} MB")
+                        onPressure()
+                    }
                 }
                 try { Thread.sleep(periodMs) } catch (_: InterruptedException) { return@Thread }
             }

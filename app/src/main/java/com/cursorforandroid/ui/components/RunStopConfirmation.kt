@@ -5,22 +5,14 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Stable
-import androidx.compose.runtime.State
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.cursorforandroid.data.local.PreferencesStore
 import com.cursorforandroid.ui.theme.CursorTheme
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.launch
 
 /**
  * A tap that would end or hold a running agent's turn, in the words its confirmation asks with. [Stop] is the
@@ -33,11 +25,9 @@ enum class RunInterruption(val title: String, val detail: String, val confirm: S
     Pause("Pause the agent?", "It holds where it is until you resume it.", "Pause"),
 }
 
-/** The words the confirmation and its Settings switch show, shared with the tests. */
+/** The words the confirmation shows, shared with the tests. */
 object RunStopCopy {
     const val KEEP_RUNNING = "Keep running"
-    const val SETTING_TITLE = "Confirm before stopping"
-    const val SETTING_DETAIL = "Ask before Stop or Pause interrupts a run."
 }
 
 object RunStopTags {
@@ -47,34 +37,21 @@ object RunStopTags {
 }
 
 /**
- * Settings › Confirm before stopping, where the taps are. [ask] runs the action at once with the setting off, and
- * otherwise holds it for [RunStopDialog]: run on the dialog's Stop (or Pause), dropped on Keep running, a
- * tap outside or the back gesture. The composer's Stop rides the keyboard's edge, where a palm finds it, and a run
- * stopped by accident costs a re-prompt — so the question is asked unless the user has said not to.
- *
- * The setting is read as the screen collects it; a tap in the moment before its first value has arrived reads the
- * store instead of guessing either way. The interruption is felt as a [Haptic.Confirm] when it goes through, whichever
- * way it does.
+ * The question before a tap interrupts a run, where the taps are. [ask] holds the action for [RunStopDialog]: run on
+ * the dialog's Stop (or Pause), dropped on Keep running, a tap outside or the back gesture. The composer's Stop rides
+ * the keyboard's edge, where a palm finds it, and a run stopped by accident costs a re-prompt — so the question is
+ * always asked. The interruption is felt as a [Haptic.Confirm] when it goes through.
  */
 @Stable
-class RunStopConfirmation internal constructor(
-    private val setting: State<Boolean?>,
-    private val prefs: PreferencesStore,
-    private val scope: CoroutineScope,
-    private val haptics: Haptics? = null,
-) {
+class RunStopConfirmation internal constructor(private val haptics: Haptics? = null) {
     internal class Pending(val kind: RunInterruption, val subject: String, val action: () -> Unit)
 
     internal var pending by mutableStateOf<Pending?>(null)
         private set
 
-    /** Asks before [action], or runs it now with the setting off. [subject] is the chat whose run it interrupts (see [dismissFor]). */
+    /** Asks before [action]. [subject] is the chat whose run it interrupts (see [dismissFor]). */
     fun ask(kind: RunInterruption, subject: String, action: () -> Unit) {
-        when (setting.value) {
-            true -> pending = Pending(kind, subject, action)
-            false -> interrupt(action)
-            null -> scope.launch { if (prefs.confirmStop.first()) pending = Pending(kind, subject, action) else interrupt(action) }
-        }
+        pending = Pending(kind, subject, action)
     }
 
     /**
@@ -113,13 +90,9 @@ fun RunStopConfirmation?.askOrRun(kind: RunInterruption, subject: String, action
 }
 
 @Composable
-fun rememberRunStopConfirmation(prefs: PreferencesStore): RunStopConfirmation {
-    // On the main dispatcher, as Settings collects its switches: written from the store's IO thread, a first value
-    // can be lost to the recomposer's bookkeeping under the test harness's unconfined dispatcher.
-    val setting: State<Boolean?> = prefs.confirmStop.collectAsStateWithLifecycle(initialValue = null, context = Dispatchers.Main.immediate)
-    val scope = rememberCoroutineScope()
+fun rememberRunStopConfirmation(): RunStopConfirmation {
     val haptics = rememberHaptics()
-    return remember(setting, prefs, scope, haptics) { RunStopConfirmation(setting, prefs, scope, haptics) }
+    return remember(haptics) { RunStopConfirmation(haptics) }
 }
 
 /** The question [confirmation] holds, while it holds one. */

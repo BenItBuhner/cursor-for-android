@@ -6,14 +6,16 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.State
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.structuralEqualityPolicy
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.testTag
@@ -73,34 +75,54 @@ internal fun StretchView(stretch: TranscriptRow.Stretch, modifier: Modifier = Mo
     val openStretches = LocalOpenStretches.current
     var toggled by rememberSaveable(stretch.key) { mutableStateOf(false) }
     val expanded = openStretches?.isOpen(stretch.key) ?: toggled
-    val coordinator = LocalTranscriptControls.current.coordinatorMode
-    val subagents = subagentStates(stretch)
-    val working = subagents.mapNotNull { (entry, state) -> state.look.takeIf { SubagentRows.isWorking(entry.subagent!!, it, state.child, stretch.live) } }
-    val summary = if (working.isEmpty()) stretch.summary else remember(stretch, working, coordinator) { StretchSummary.of(stretch, working, coordinator) }
-    CompositionLocalProvider(LocalSubagentStates provides subagents.associate { (entry, state) -> entry.call.callId to state }) {
-        Column(modifier.fillMaxWidth().testTag("stretch")) {
-            DisclosureRow(
-                action = summary.action,
-                details = summary.details,
-                expanded = expanded,
-                onToggle = { if (openStretches != null) openStretches.setOpen(stretch.key, !expanded) else toggled = !expanded },
-                busy = summary.busy,
-                lineStats = summary.lineStats,
-            )
-            if (openStretches == null) AnimatedVisibility(visible = expanded) {
-                Column(Modifier.fillMaxWidth().padding(top = 6.dp, bottom = 4.dp).testTag("stretch-steps"), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                    // Each entry owns its slot, so an opened output stays with the call it was opened on as the list grows.
-                    stretch.listed.forEach { entry -> key(entry.key) { EntryView(entry) } }
-                }
+    val controls = LocalTranscriptControls.current
+    val coordinator = controls.coordinatorMode
+    val working by workingLine(stretch, controls)
+    val summary = if (working.count == 0) stretch.summary else remember(stretch, working, coordinator) { StretchSummary.of(stretch, working.count, working.newest, coordinator) }
+    Column(modifier.fillMaxWidth().testTag("stretch")) {
+        DisclosureRow(
+            action = summary.action,
+            details = summary.details,
+            expanded = expanded,
+            onToggle = { if (openStretches != null) openStretches.setOpen(stretch.key, !expanded) else toggled = !expanded },
+            busy = summary.busy,
+            lineStats = summary.lineStats,
+        )
+        if (openStretches == null) AnimatedVisibility(visible = expanded) {
+            Column(Modifier.fillMaxWidth().padding(top = 6.dp, bottom = 4.dp).testTag("stretch-steps"), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                // Each entry owns its slot, so an opened output stays with the call it was opened on as the list grows.
+                stretch.listed.forEach { entry -> key(entry.key) { EntryView(entry) } }
             }
         }
     }
 }
 
-/** Where each subagent of [stretch] stands, in order, followed once here whether or not the stretch is open. */
+/** How many of a stretch's subagents are at work, and where the newest of them stands: all its line says of them. */
+private data class WorkingLine(val count: Int, val newest: String?)
+
+/**
+ * [stretch]'s subagents at work, each followed here whether or not the stretch is open (its rows read the same
+ * states, see [SubagentBoard]). Read as one derived state, so the line is composed again only when what it says of
+ * them changes, not whenever one of them moves.
+ */
 @Composable
-private fun subagentStates(stretch: TranscriptRow.Stretch): List<Pair<TranscriptRow.Entry.Call, SubagentState>> =
-    stretch.subagents.map { entry -> key(entry.key) { entry to rememberSubagentState(entry.call, entry.subagent!!) } }
+private fun workingLine(stretch: TranscriptRow.Stretch, controls: TranscriptControls): State<WorkingLine> {
+    val followed = stretch.subagents.map { entry -> key(entry.key) { followedChild(entry.call, entry.subagent!!) } }
+    return remember(stretch, controls, followed) {
+        derivedStateOf(structuralEqualityPolicy()) {
+            var count = 0
+            var newest: String? = null
+            stretch.subagents.forEachIndexed { i, entry ->
+                val state = subagentState(entry.call, entry.subagent!!, followed[i]?.value, controls)
+                if (SubagentRows.isWorking(entry.subagent, state.look, state.child, stretch.live)) {
+                    count++
+                    newest = state.look.status
+                }
+            }
+            WorkingLine(count, newest)
+        }
+    }
+}
 
 /** One entry of an open stretch, as Cursor lists a step. */
 @Composable

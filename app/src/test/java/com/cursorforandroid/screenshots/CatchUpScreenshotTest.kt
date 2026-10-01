@@ -31,10 +31,10 @@ import com.cursorforandroid.domain.UserMessage
 import com.cursorforandroid.ui.components.ComposerBox
 import com.cursorforandroid.ui.components.composerDockPadding
 import com.cursorforandroid.ui.conversation.CatchUpIndicator
-import com.cursorforandroid.ui.conversation.CatchUpPull
-import com.cursorforandroid.ui.conversation.CatchUpPullThreshold
 import com.cursorforandroid.ui.conversation.CatchUpStatus
 import com.cursorforandroid.ui.conversation.TimelineItemView
+import com.cursorforandroid.ui.conversation.catchUpLift
+import com.cursorforandroid.ui.conversation.catchUpPullFor
 import com.cursorforandroid.ui.conversation.word
 import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
@@ -55,9 +55,9 @@ import org.robolectric.annotation.GraphicsMode
 import java.io.File
 
 /**
- * The pull to catch up at the bottom of a transcript, over the follow-up composer: the sidebar's pull-to-refresh
- * indicator turned to rise out of the transcript's bottom edge. Partway up with the finger, its arrow filling; past
- * the threshold, the arrow whole; let go and spinning at the threshold while the chat is caught up, through any pause
+ * The pull to catch up at the bottom of a transcript, over the follow-up composer: the transcript lifted with the
+ * finger and the pull-to-refresh indicator centred in the gap it opens. Partway up, its arrow filling; past the
+ * threshold, the arrow whole; let go and spinning in the held gap while the chat is caught up, through any pause
  * the server asked for. Then home: the turn started elsewhere simply on screen, nothing said of an answer, and only a
  * failure in a toast, in the words the app has for it (see ConversationScreen).
  */
@@ -108,7 +108,7 @@ class CatchUpScreenshotTest {
         var items by mutableStateOf(shown)
         val status = MutableStateFlow<CatchUpStatus>(CatchUpStatus.Idle)
         var toast by mutableStateOf<String?>(null)
-        val pull = with(compose.density) { CatchUpPull(CatchUpPullThreshold.toPx()) }
+        val pull = catchUpPullFor(compose.density)
         compose.mainClock.autoAdvance = false
         compose.setContent {
             CursorTheme(mode = ThemeMode.Dark) {
@@ -124,7 +124,7 @@ class CatchUpScreenshotTest {
                     Column(Modifier.fillMaxSize().background(colors.canvas)) {
                         Box(Modifier.weight(1f).fillMaxWidth()) {
                             Column(
-                                Modifier.fillMaxSize().padding(start = 16.dp, end = 16.dp, bottom = 12.dp),
+                                Modifier.fillMaxSize().catchUpLift(pull).padding(start = 16.dp, end = 16.dp, bottom = 12.dp),
                                 verticalArrangement = Arrangement.spacedBy(10.dp, Alignment.Bottom),
                                 horizontalAlignment = Alignment.CenterHorizontally,
                             ) {
@@ -135,6 +135,7 @@ class CatchUpScreenshotTest {
                                 status,
                                 onSettled = { toast = it.word() },
                                 modifier = Modifier.align(Alignment.BottomCenter),
+                                edgeGap = 12.dp,
                                 onRise = { snackbar.currentSnackbarData?.dismiss() },
                             )
                             SnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter)) { data ->

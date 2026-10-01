@@ -188,7 +188,18 @@ class RunMonitor(
                 // The row may flip to a terminal status a beat before the tracker sees the terminal snapshot.
                 val snapshot = hub.current(agentId, tracker.runId)
                 val agent = agents.agent(agentId)
-                if (snapshot?.finished == true && agent != null) publishFinished(toTracked(agent, snapshot))
+                if (agent != null && snapshot != null) {
+                    if (snapshot.finished) {
+                        publishFinished(toTracked(agent, snapshot))
+                    } else if (agent.latestRunId == tracker.runId && agent.runStatus?.isTerminal == true && agent.runStatus != RunStatus.CANCELLED) {
+                        // The list's look at the record ended the run while its stream never said so: a connection
+                        // the run's events no longer reached is held, not taken up again, for a run no chat is on
+                        // (see LiveRunHub.stallTimeoutMs). The finish is the row's, with the step digest the stream
+                        // had told; the record's final reply, duration and branches are already folded into the row.
+                        // A stop is not a finish, here as anywhere.
+                        publishFinished(finishedFromRow(agent, snapshot))
+                    }
+                }
             }
         }
         wanted.values.filter { !trackers.containsKey(it.id) }.forEach { agent ->
@@ -262,6 +273,16 @@ class RunMonitor(
 
     private fun toTracked(agent: Agent, snapshot: LiveRunHub.Snapshot): TrackedRun =
         trackedRun(agent, snapshot, stopping = agent.id in stopping, now = nowProvider())
+
+    /** The finish of a run the row says is over (see `Agent.withLatestRun`) and whose followed stream never did. */
+    private fun finishedFromRow(agent: Agent, snapshot: LiveRunHub.Snapshot): TrackedRun {
+        val finishedAt = agent.updatedAtMillis.takeIf { it > snapshot.startedAtMillis } ?: nowProvider()
+        val tracked = toTracked(agent, snapshot.copy(finished = true, status = agent.runStatus ?: snapshot.status, finishedAtMillis = finishedAt))
+        return tracked.copy(
+            durationMs = agent.durationMs ?: tracked.durationMs,
+            summary = agent.summary?.takeIf { it.isNotBlank() } ?: tracked.summary,
+        )
+    }
 
     private fun TrackedRun.withAgent(agent: Agent) = copy(
         title = agent.name,

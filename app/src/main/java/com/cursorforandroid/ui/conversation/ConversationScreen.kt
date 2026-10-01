@@ -296,8 +296,14 @@ fun ConversationScreen(
     // phone (2026-09-20).
     val controls = remember(accountControls, queuePlacement) { accountControls.placed(queuePlacement) }
     // A card being steered stays on the device's queue, standing for the account's row of the message, until the same
-    // frame files it as a bubble (see SteeredCards).
-    val queue = remember(deviceQueue, queuePlacement) { SteeredCards.standing(deviceQueue, queuePlacement) }
+    // frame files it as a bubble (see SteeredCards). The device's cards off that same frame: a message the run takes
+    // leaves the card in the frame its bubble is filed in, so the card's room and the bubble's change hands at once and
+    // the transcript moves once (see QueueHandover).
+    val queueHandover = remember(agentId) { QueueHandover() }
+    val queue = remember(deviceQueue, queuePlacement) {
+        queueHandover.standing(SteeredCards.standing(deviceQueue, queuePlacement), queuePlacement.filedQueueIds, viewModel::filedFromQueue)
+    }
+    SideEffect { queueHandover.composed(queue) }
     val isDemo = graph.session.isDemo
     // A Project coordinator's cards name its workers by the list's live rows and open their chats (either mode).
     val agentList by graph.agents.state.collectAsStateWithLifecycle()
@@ -337,11 +343,12 @@ fun ConversationScreen(
     val listState = rememberLazyListState(prefetchStrategy = remember { TranscriptPrefetchStrategy() })
     val transcriptScroll = rememberTranscriptScroll(listState, agentId)
     val scope = rememberCoroutineScope()
-    // The pull past the newest message that catches the chat up (see CatchUpOverscroll), drawn as the sidebar's pull
-    // to refresh is, from the transcript's bottom edge (see CatchUpIndicator). Read only where it is drawn, and its
-    // status only by the indicator: a frame of the pull recomposes nothing, an answer the indicator alone.
+    // The pull past the newest message that catches the chat up (see CatchUpOverscroll): it lifts the transcript off
+    // the composer (catchUpLift) and the sidebar's pull-to-refresh indicator stands in the gap (CatchUpIndicator).
+    // Read only where it is drawn, and its status only by the indicator: a frame of the pull recomposes nothing, an
+    // answer the indicator alone.
     val density = LocalDensity.current
-    val catchUpPull = remember(agentId, density) { with(density) { CatchUpPull(CatchUpPullThreshold.toPx()) } }
+    val catchUpPull = remember(agentId, density) { catchUpPullFor(density) }
     val readerScroll = rememberReaderScroll(transcriptScroll, pull = catchUpPull, canCatchUp = viewModel::canCatchUp, onCatchUp = viewModel::catchUp)
     var menuOpen by rememberSaveable { mutableStateOf(false) }
     var modelSheet by rememberSaveable { mutableStateOf(false) }
@@ -349,7 +356,7 @@ fun ConversationScreen(
     var snoozeOpen by rememberSaveable { mutableStateOf(false) }
     // Every tap here that would stop, pause or interrupt the run asks first while the setting is on (see
     // RunStopConfirmation): the composer's Stop, the menu's, the queues' Send now, the panel's controls.
-    val stopConfirmation = rememberRunStopConfirmation(graph.prefs)
+    val stopConfirmation = rememberRunStopConfirmation()
     val haptics = rememberHaptics()
     val uriHandler = LocalUriHandler.current
     val clipboard = LocalClipboardManager.current
@@ -370,6 +377,9 @@ fun ConversationScreen(
 
     // A sent message's bubble comes up from its sending fade on the screen's clock, over the server's copy of it too.
     val sentFades = rememberSentFades(agentId)
+    // A queued message the run takes flies from its card to its bubble, as a send flies from the composer; the
+    // transcript glides to that bubble as the card folds (see the list's scroll to its newest row below).
+    val queueFlights = rememberQueueFlights(agentId)
     LaunchedEffect(isActive) { if (!isActive) stopConfirmation.dismissFor(agentId) }
     ChatHaptics(agentId, runStatus, outgoing)
     // The steps of the stretches the reader has opened, listed after them as rows of their own (see StretchSteps):
@@ -583,9 +593,14 @@ fun ConversationScreen(
                 // Following, a new row lands past the bottom edge, where the list's keyed anchoring leaves it; the list
                 // is taken back to it. Pinned, it stays there. The jump button's glide aims at rows landing under way
                 // itself; taking the list there at once would cut it short, so this waits for it.
+                // A queued card that handed its message over in the frame these rows came in is folding: the list glides
+                // to the bubble on the fold's clock instead, the card's room and the new rows changing hands without a
+                // jump. The count is read as the rows compose, before that frame's delivery adds to it.
+                val handoversBefore = queueFlights.handovers
                 LaunchedEffect(listedRows.size, listedRows.lastOrNull()?.key, showWorking) {
                     snapshotFlow { transcriptScroll.isJumping }.first { !it }
-                    if (transcriptScroll.following) listState.requestScrollToItem(0)
+                    if (!transcriptScroll.following) return@LaunchedEffect
+                    if (queueFlights.handovers != handoversBefore) transcriptScroll.settleToNewest(scope) else listState.requestScrollToItem(0)
                 }
                 // The chat opens on its newest turns; the ones before them are paged in by what the list draws — until a
                 // reply is shown and a screen and a half lies above the viewport, at rest as the chat opens and ahead of
@@ -703,8 +718,9 @@ fun ConversationScreen(
                             .holdingHeight(openStretches, topDown = !following)
                             .scrollEdgeFade(listState, reverseLayout = listReversed, surface = colors.canvas)
                             .readerScrolling(readerScroll)
+                            .catchUpLift(catchUpPull)
                             .testTag("transcript"),
-                        contentPadding = PaddingValues(start = TranscriptGutter, end = TranscriptGutter, top = 6.dp, bottom = 12.dp),
+                        contentPadding = PaddingValues(start = TranscriptGutter, end = TranscriptGutter, top = 6.dp, bottom = TranscriptBottomPadding),
                         verticalArrangement = Arrangement.spacedBy(TranscriptItemSpacing),
                         horizontalAlignment = Alignment.CenterHorizontally,
                     ) {
@@ -723,12 +739,13 @@ fun ConversationScreen(
                 }
             }
             transcriptList()
-            // Out of the area's bottom edge, the top of the composer's stack; a word up there gives way as it rises.
+            // In the gap the lifted transcript opens over the composer's stack; a word up there gives way as it rises.
             CatchUpIndicator(
                 catchUpPull,
                 viewModel.catchUpStatus,
                 onSettled = viewModel::catchUpSettled,
                 modifier = Modifier.align(Alignment.BottomCenter),
+                edgeGap = TranscriptBottomPadding,
                 onRise = { snackbar.currentSnackbarData?.dismiss() },
             )
 
@@ -765,7 +782,6 @@ fun ConversationScreen(
         val sendMotion = LocalSendMotion.current
         val composerAnchor = remember(agentId) { ComposerAnchor() }
         val composerExpansion = rememberComposerExpansion()
-        val queueFlights = rememberQueueFlights(agentId)
         val arrival = rememberArrivalGlide(agentId)
         // Extended mode keeps the queue on the account, where the desktop and the web keep theirs; otherwise on this device.
         val accountQueue = capabilities.accountQueue && !isDemo
@@ -886,6 +902,9 @@ fun ConversationScreen(
                             onMove = { item, up -> viewModel.queueMove(item.id, up) },
                             flights = queueFlights,
                             face = face,
+                            // A row being steered refuses its glyphs, as a steering device card does: it says why, in place.
+                            refused = refusedQueuedId == accountRows[at].id,
+                            onRefused = { item -> haptics.perform(Haptic.Reject); viewModel.refuseSteering(item.id) },
                         )
                     }
                 }
@@ -1033,6 +1052,9 @@ private const val LOADING_KEY = "loading"
 
 /** The transcript's side margins, inside which its rows take [CursorDimens.composerMaxWidth] at most. */
 private val TranscriptGutter = 16.dp
+
+/** The room under the newest row, above the composer's stack: the gap the pull to catch up widens. */
+private val TranscriptBottomPadding = 12.dp
 
 /** The jump button's lift off the transcript's bottom edge. */
 private val JumpButtonGap = 10.dp

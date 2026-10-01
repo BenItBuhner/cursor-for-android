@@ -626,6 +626,51 @@ class LiveRunMonitorTest {
     }
 
     @Test
+    fun `a followed run whose held stream goes quiet is not taken up again - its finish comes from the list's look at the record`() = runBlocking<Unit> {
+        // A hub whose stall window is short enough to show here, were it to run for the notification's follower.
+        hub = LiveRunHub(session, agents, nowProvider = { now }, pollIntervalMs = 50, releaseGraceMs = 50, reconnectBaseMs = 20, reconnectMaxMs = 40, stallTimeoutMs = 200, stallMaxMs = 800, scope = scope)
+        monitor.stop()
+        finishedJob?.cancel()
+        monitor = RunMonitor(agents, hub, runRecord = { agentId, runId -> api.getRun(agentId, runId) }, refreshIntervalMs = 600_000, nowProvider = { now })
+        finishedJob = scope.launch { monitor.finished.collect { finished += it } }
+        api.addRunningAgent("bc-1", "Agent", "run-1")
+        agents.refresh()
+        monitor.start()
+        awaitUntil { running().size == 1 }
+        streamer.emit("run-1", RunStreamEvent.Status("run-1", RunStatus.RUNNING))
+        streamer.emit("run-1", tool("e1", "edit_file", "running", "app/src/Composer.kt"))
+        awaitUntil { running().singleOrNull()?.digest?.activity?.label == "Editing Composer.kt" }
+
+        // The open connection hears nothing more of the run for many stall windows. With no chat on the run it is
+        // held: no record read of its own, no second connection, nothing announced.
+        val reads = api.getRunCalls
+        streamer.strand("run-1")
+        delay(1_000)
+        assertThat(streamer.connections.count { it == "run-1" }).isEqualTo(1)
+        assertThat(api.getRunCalls).isEqualTo(reads)
+        assertThat(finished).isEmpty()
+        assertThat(running().single().phase).isEqualTo(LivePhase.Running)
+
+        // The run ends on the server; the agent list's refresh reads the record, and that is what ends the tracking.
+        now += 60_000
+        api.runs["run-1"] = api.runs.getValue("run-1").copy(status = "FINISHED", result = "Restyled the pills.", durationMs = 60_000, updatedAt = "2026-04-13T18:31:00.000Z")
+        agents.refresh()
+        awaitUntil { finished.size == 1 && running().isEmpty() }
+        val done = finished.single()
+        assertThat(done.agentId).isEqualTo("bc-1")
+        assertThat(done.status).isEqualTo(RunStatus.FINISHED)
+        assertThat(done.phase).isEqualTo(LivePhase.Finished)
+        assertThat(done.summary).isEqualTo("Restyled the pills.")
+        assertThat(done.durationMs).isEqualTo(60_000L)
+        assertThat(done.digest.activity?.label).isEqualTo("Editing Composer.kt")
+        assertThat(streamer.connections.count { it == "run-1" }).isEqualTo(1)
+        // Reported once, though the hub's entry never finished of its own.
+        delay(200)
+        assertThat(finished).hasSize(1)
+        assertThat(agents.agent("bc-1")!!.isRunning).isFalse()
+    }
+
+    @Test
     fun `a replay through an entry once followed live reads history too and leaves the agent row alone`() = runBlocking {
         api.addRunningAgent("bc-1", "Agent", "run-1")
         agents.refresh()

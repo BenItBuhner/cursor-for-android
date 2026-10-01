@@ -15,12 +15,9 @@ import com.google.common.truth.Truth.assertThat
 import com.cursorforandroid.domain.TranscriptEngine
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
-import androidx.compose.ui.test.assertIsOff
-import androidx.compose.ui.test.assertIsOn
-import androidx.compose.ui.test.performClick
-import androidx.compose.ui.test.isNotEnabled
 import androidx.compose.ui.test.isOff
 import androidx.compose.ui.test.isOn
+import androidx.compose.ui.test.isSelected
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.onAllNodesWithText
@@ -41,6 +38,7 @@ import com.cursorforandroid.ui.settings.SettingsCopy
 import com.cursorforandroid.ui.settings.SettingsDebugCopy
 import com.cursorforandroid.ui.settings.SettingsScreen
 import com.cursorforandroid.ui.settings.SettingsTags
+import com.cursorforandroid.ui.settings.ThemeSwitchTags
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.ui.theme.ThemeMode
 import com.cursorforandroid.util.AppClock
@@ -65,9 +63,8 @@ import java.util.TimeZone
 /**
  * Settings on a signed-in install — the demo walkthrough in [AppScreenshotTest] never shows the account's own rows
  * or the Advanced section. The whole list on one tall canvas, dark and light, so its structure reads in one image;
- * its scroll edges on a phone-height frame at the top, the middle and the end, dark and light; the bottom of the page with Extended mode off (the transcript engine beside it dimmed, with the reason) and on
- * (the engine live and on, Beta being the default), and with it switched off; the account sheet, dark and light; and the debug sheet a long
- * press on the version row opens, with the exports, About and the credits that left the list, dark and light. Same
+ * its scroll edges on a phone-height frame at the top, the middle and the end, dark and light; the bottom of the page
+ * with Extended mode off and on; and the debug sheet a long press on the version row opens, with the exports, About and the credits that left the list, dark and light. Same
  * device qualifiers as [AppScreenshotTest], but for the tall frames.
  */
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalRoborazziApi::class)
@@ -136,15 +133,8 @@ class SettingsScreenshotTest {
         compose.waitForIdle()
     }
 
-    private fun openAccountSheet() {
-        compose.onNodeWithTag(SettingsTags.ACCOUNT_ROW).performClick()
-        compose.waitUntil(30_000) { compose.onAllNodes(hasTestTag(SettingsTags.ACCOUNT_SHEET)).fetchSemanticsNodes().isNotEmpty() }
-        compose.waitForIdle()
-    }
-
     /**
-     * The bottom of the page: the Extended mode section, the version with its updater and the crash report consent, the
-     * disclaimer — and the list's own bottom padding, so nothing is left past the edge to fade.
+     * The bottom of the page: the Extended mode section, the version with its updater, the disclaimer — and the list's own bottom padding, so nothing is left past the edge to fade.
      */
     private fun scrollToBottom() {
         compose.onNodeWithText(SettingsCopy.DISCLAIMER).performScrollTo()
@@ -180,7 +170,8 @@ class SettingsScreenshotTest {
         compose.onNodeWithText(SettingsCopy.GROUP_ACCOUNT).assertIsDisplayed()
         compose.onNodeWithText(SettingsCopy.SIGN_OUT).assertIsDisplayed()
         compose.onNode(hasTestTag(ExtendedModeTags.TOGGLE) and isOff()).assertIsDisplayed()
-        compose.onNode(hasTestTag(ExtendedModeTags.ENGINE_TOGGLE) and isNotEnabled()).assertIsDisplayed()
+        compose.onNode(hasTestTag(ThemeSwitchTags.of(ThemeMode.System)) and isSelected()).assertIsDisplayed()
+        compose.onNodeWithTag(SettingsTags.OLED_BLACK).assertIsDisplayed()
         compose.onNodeWithText(SettingsCopy.DISCLAIMER).assertIsDisplayed()
         // Tall enough that nothing is left past either edge, so neither fades.
         assertThat(listRange().maxValue()).isEqualTo(0f)
@@ -242,16 +233,7 @@ class SettingsScreenshotTest {
         composeSettings()
         scrollToBottom()
         compose.onNode(hasTestTag(ExtendedModeTags.TOGGLE) and isOff()).assertIsDisplayed()
-        // The engine beside the switch, dimmed and off, saying why it does nothing yet: default mode's row as it always
-        // was. Voice input is no switch of its own, so nothing else waits on the mode here.
-        compose.onAllNodesWithText(ExtendedModeCopy.NEEDS_MODE).assertCountEquals(1)
-        compose.onNodeWithTag(ExtendedModeTags.ENGINE_TOGGLE).assertIsNotEnabled().assertIsOff()
-        // Background live sync sits with the mode and the engine, on for whoever never turned it off; nothing is
-        // experimental any more, and voice input has no switch.
-        compose.onAllNodesWithText("Experimental").assertCountEquals(0)
-        compose.onAllNodesWithText(SettingsCopy.LIVE_SYNC).assertCountEquals(1)
-        compose.onNodeWithTag(SettingsTags.LIVE_SYNC_TOGGLE).assertIsOn()
-        compose.onAllNodesWithText("Voice input").assertCountEquals(0)
+        assertAlone()
         capture("66_settings_extended_off")
     }
 
@@ -261,64 +243,22 @@ class SettingsScreenshotTest {
         composeSettings()
         compose.waitUntil(30_000) { modeReadsOn() }
         scrollToBottom()
-        // The transcript engine beside the switch, on — Beta, the default for every install that never chose.
-        compose.waitUntil(10_000) { compose.onAllNodes(isOn() and hasTestTag(ExtendedModeTags.ENGINE_TOGGLE)).fetchSemanticsNodes().isNotEmpty() }
-        compose.onNodeWithText(ExtendedModeCopy.ENGINE_DETAIL).assertIsDisplayed()
-        compose.onNodeWithTag(ExtendedModeTags.ENGINE_TOGGLE).assertIsEnabled()
-        assertThat(runBlocking { graph.extendedMode.engine() }).isEqualTo(TranscriptEngine.BETA)
-        // Voice input comes with the mode, in the composers.
-        // Background live sync sits with the mode and the engine, on for whoever never turned it off; nothing is
-        // experimental any more, and voice input has no switch.
-        compose.onAllNodesWithText("Experimental").assertCountEquals(0)
-        compose.onAllNodesWithText(SettingsCopy.LIVE_SYNC).assertCountEquals(1)
-        compose.onNodeWithTag(SettingsTags.LIVE_SYNC_TOGGLE).assertIsOn()
-        compose.onAllNodesWithText("Voice input").assertCountEquals(0)
+        // The full record is read whenever the mode is on; nothing beside the switch chooses otherwise.
+        assertThat(graph.extendedMode.engine()).isEqualTo(TranscriptEngine.BETA)
+        assertThat(runBlocking { graph.extendedMode.capabilities() }.accountTranscript).isTrue()
+        assertAlone()
         capture("67_settings_extended_on")
     }
 
-    /** Switched off, the way back to the documented path: the flip writes Stable and the switch reads off. */
-    @Test
-    fun transcriptEngineSwitchedOff() {
-        turnExtendedModeOn()
-        composeSettings()
-        compose.waitUntil(30_000) { modeReadsOn() }
-        scrollToBottom()
-        compose.waitUntil(10_000) { compose.onAllNodes(isOn() and hasTestTag(ExtendedModeTags.ENGINE_TOGGLE)).fetchSemanticsNodes().isNotEmpty() }
-        compose.onNodeWithText(ExtendedModeCopy.ENGINE_TITLE).performClick()
-        compose.waitUntil(10_000) { compose.onAllNodes(isOff() and hasTestTag(ExtendedModeTags.ENGINE_TOGGLE)).fetchSemanticsNodes().isNotEmpty() }
-        assertThat(runBlocking { graph.extendedMode.engine() }).isEqualTo(TranscriptEngine.STABLE)
-        assertThat(runBlocking { graph.extendedMode.capabilities() }.accountTranscript).isFalse()
-        capture("477_settings_transcript_engine_off")
-    }
-
-    /** With the mode off the engine chooses nothing: its switch is shown dimmed and off, and a tap on it changes nothing. */
-    @Test
-    fun transcriptEngineInertWithModeOff() {
-        composeSettings()
-        scrollToBottom()
-        compose.onNodeWithText(ExtendedModeCopy.ENGINE_TITLE).performClick()
-        compose.waitForIdle()
-        compose.onNodeWithTag(ExtendedModeTags.ENGINE_TOGGLE).assertIsNotEnabled().assertIsOff()
-        assertThat(runBlocking { graph.extendedMode.engine() }).isEqualTo(TranscriptEngine.BETA)
-        assertThat(runBlocking { graph.extendedMode.capabilities() }.accountTranscript).isFalse()
-    }
-
-    /** The account row's sheet: how the key is kept and the pages where it and the agents are managed. */
-    @Test
-    fun accountSheet() {
-        composeSettings()
-        openAccountSheet()
-        compose.onNodeWithText("Manage API keys").assertIsDisplayed()
-        capture("161_settings_account_sheet")
-    }
-
-    @Test
-    @Config(sdk = [35], qualifiers = "w411dp-h914dp-notnight-420dpi")
-    fun accountSheetLight() {
-        composeSettings(ThemeMode.Light)
-        openAccountSheet()
-        compose.onNodeWithText("Manage API keys").assertIsDisplayed()
-        capture("162_settings_account_sheet_light")
+    /**
+     * Extended mode is the Advanced card's one row: the transcript engine and background live sync are always on, the
+     * crash report consent is gone, nothing is experimental and voice input has no switch.
+     */
+    private fun assertAlone() {
+        listOf("Full transcript history", "Keep chats live", "Send crash reports", "Experimental", "Voice input").forEach {
+            compose.onAllNodesWithText(it).assertCountEquals(0)
+        }
+        compose.onAllNodesWithText(ExtendedModeCopy.SETTING_TITLE).assertCountEquals(1)
     }
 
     /**

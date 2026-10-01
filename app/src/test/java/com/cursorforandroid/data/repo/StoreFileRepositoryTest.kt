@@ -6,9 +6,12 @@ import com.cursorforandroid.data.api.PresignedStoreRead
 import com.cursorforandroid.data.api.PresignedStoreWrite
 import com.cursorforandroid.data.api.StoreReadTarget
 import com.cursorforandroid.data.local.JsonDiskCache
+import com.cursorforandroid.domain.AgentStoreKind
+import com.cursorforandroid.domain.AgentStoreRef
 import com.cursorforandroid.domain.Capabilities
 import com.cursorforandroid.domain.ContextEntry
 import com.cursorforandroid.domain.MediaRef
+import com.cursorforandroid.domain.StorePath
 import com.cursorforandroid.fixtures.CoordinatorFixtures
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.Dispatchers
@@ -50,6 +53,8 @@ class StoreFileRepositoryTest {
         /** Presigned URLs point at the local server when the test serves bytes, at a made-up host otherwise. */
         var serve = false
         override suspend fun storeFor(sourceId: String): String? { calls += "store:$sourceId"; storeFailure?.let { throw it }; return storeId }
+        var listed = listOf(AgentStoreRef("st-proj", AgentStoreKind.CLOUD, sourceId = "bc-coord"), AgentStoreRef("st-user", AgentStoreKind.USER))
+        override suspend fun stores(): List<AgentStoreRef> { calls += "stores"; return listed }
         override suspend fun entries(storeId: String, relativePath: String): List<ContextEntry> = emptyList()
         override suspend fun readFile(storeId: String, relativePath: String): String { calls += "read:$storeId:$relativePath"; return text }
         /** What each presign named: `store:<id>` or `agent:<id>`, one of them. */
@@ -133,6 +138,41 @@ class StoreFileRepositoryTest {
         assertThat(read).isEqualTo(bytes)
         assertThat(api.calls).containsExactly("store:$store", "presign:media/transcript-store-images.png").inOrder()
         assertThat(steps).containsExactly(StoreFileRepository.Step.STORE, StoreFileRepository.Step.LINK, StoreFileRepository.Step.DOWNLOAD).inOrder()
+    }
+
+    /**
+     * v0.4.23's "Image isn't available / raw_155132.png": a Context document's picture, resolved against the store it
+     * was read from, is `/cursor/stores/<storeId>/…` — a mount no chat owns. It is read by that id, no owner asked.
+     */
+    @Test
+    fun `a picture under a store's own id is presigned by that id and its document read from it`() = runBlocking<Unit> {
+        val picture = MediaRef.store(StorePath.parse("/cursor/stores/st-3f2a9c/media/raw_155132.png")!!, "bc-chat")!!
+        val doc = MediaRef.store(StorePath.parse("/cursor/stores/st-3f2a9c/notes/brief.md")!!, "bc-chat")!!
+        val files = repository(cache = null)
+
+        files.downloadUrl(picture)
+        files.readText(doc)
+
+        assertThat(api.targets).containsExactly(StoreReadTarget.Store("st-3f2a9c"))
+        assertThat(api.calls).containsExactly("presign:media/raw_155132.png", "read:st-3f2a9c:notes/brief.md").inOrder()
+    }
+
+    @Test
+    fun `a picture in the user's store is read from the store the account lists as the user's, looked up once`() = runBlocking<Unit> {
+        val picture = MediaRef.store(StorePath.parse("/cursor/stores/user/25177987-8ce3-4647-8e50-298144.png")!!, "bc-chat")!!
+        val files = repository(cache = null)
+
+        files.downloadUrl(picture)
+        files.invalidate(picture)
+        files.downloadUrl(picture)
+
+        assertThat(api.targets).containsExactly(StoreReadTarget.Store("st-user"), StoreReadTarget.Store("st-user"))
+        assertThat(api.calls.count { it == "stores" }).isEqualTo(1)
+        assertThat(api.calls.none { it.startsWith("store:") }).isTrue()
+
+        api.listed = emptyList()
+        val none = MediaRef.store(StorePath.parse("/cursor/stores/team/board.png")!!, "bc-chat")!!
+        assertThrows(IOException::class.java) { runBlocking { files.downloadUrl(none) } }
     }
 
     @Test

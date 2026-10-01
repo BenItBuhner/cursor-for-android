@@ -901,6 +901,12 @@ class QueueFlights {
     /** The rows as last composed, id to words, and the transcript's user messages then: what a delivery is told apart from. */
     internal var shown: Map<String, String> = emptyMap()
     internal var transcript: Set<String> = emptySet()
+    /**
+     * How many frames have seen a row leave the card for the transcript: the transcript, whose new bubble lands past
+     * its edge in that frame, glides to it rather than jumping (see `TranscriptScroll.settleToNewest`).
+     */
+    var handovers = 0
+        internal set
 
     /** The anchor of the row for [id]. */
     fun anchor(id: String): ComposerAnchor = anchors.getOrPut(id) { ComposerAnchor() }
@@ -954,6 +960,7 @@ fun QueueDeliveries(flights: QueueFlights, rows: Map<String, String>, transcript
         flights.shown = rows
         flights.transcript = transcript
         flights.keepOnly(rows.keys)
+        if (leaving.isNotEmpty()) flights.handovers++
     }
 }
 

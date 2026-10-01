@@ -5,6 +5,7 @@ import android.view.InputDevice
 import android.view.MotionEvent
 import android.view.View
 import android.view.inputmethod.InputMethodManager
+import android.widget.Magnifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.test.junit4.ComposeTestRule
 import org.robolectric.annotation.Implementation
@@ -17,7 +18,13 @@ import org.robolectric.shadows.ShadowInputMethodManager
  * sends fingers). Positions are the window's pixels ([androidx.compose.ui.semantics.SemanticsNode.boundsInWindow]);
  * each move is one 16 ms frame of event time, well inside the long-press timeout.
  */
-class PointerStroke(private val compose: ComposeTestRule, private val view: View, private val toolType: Int) {
+class PointerStroke(
+    private val compose: ComposeTestRule,
+    private val view: View,
+    private val toolType: Int,
+    /** `MotionEvent.getButtonState()` for the whole stroke: the S Pen's side button held is [MotionEvent.BUTTON_STYLUS_PRIMARY]. */
+    private val buttonState: Int = 0,
+) {
     private val downTime = SystemClock.uptimeMillis()
     private var eventTime = downTime
     private var at = Offset.Zero
@@ -34,6 +41,13 @@ class PointerStroke(private val compose: ComposeTestRule, private val view: View
             eventTime += FrameMillis
             send(MotionEvent.ACTION_MOVE)
         }
+    }
+
+    /** Stays down where it is for [millis], on the event clock and on the clock Compose's timeouts (a long press) run on. */
+    fun hold(millis: Long): PointerStroke = apply {
+        eventTime += millis
+        compose.mainClock.advanceTimeBy(millis)
+        compose.waitForIdle()
     }
 
     fun up(): PointerStroke = apply {
@@ -53,7 +67,8 @@ class PointerStroke(private val compose: ComposeTestRule, private val view: View
             it.size = 1f
         }
         val source = if (toolType == MotionEvent.TOOL_TYPE_FINGER) InputDevice.SOURCE_TOUCHSCREEN else InputDevice.SOURCE_STYLUS
-        val event = MotionEvent.obtain(downTime, eventTime, action, 1, arrayOf(properties), arrayOf(coords), 0, 0, 1f, 1f, 0, 0, source, 0)
+        val buttons = if (action == MotionEvent.ACTION_UP) 0 else buttonState
+        val event = MotionEvent.obtain(downTime, eventTime, action, 1, arrayOf(properties), arrayOf(coords), 0, buttons, 1f, 1f, 0, 0, source, 0)
         compose.runOnUiThread { view.dispatchTouchEvent(event) }
         event.recycle()
         compose.waitForIdle()
@@ -62,15 +77,16 @@ class PointerStroke(private val compose: ComposeTestRule, private val view: View
     companion object {
         const val FrameMillis = 16L
 
-        fun stylus(compose: ComposeTestRule, view: View) = PointerStroke(compose, view, MotionEvent.TOOL_TYPE_STYLUS)
+        fun stylus(compose: ComposeTestRule, view: View, buttonState: Int = 0) = PointerStroke(compose, view, MotionEvent.TOOL_TYPE_STYLUS, buttonState)
 
         fun finger(compose: ComposeTestRule, view: View) = PointerStroke(compose, view, MotionEvent.TOOL_TYPE_FINGER)
     }
 }
 
 /**
- * The input method manager with an IME that writes: what a text field calls to hand a stylus stroke to it is recorded
- * instead of reaching a system service Robolectric does not have.
+ * The input method manager with an IME that writes ([writes], Gboard's case) or one that does not (Samsung Keyboard's):
+ * what a text field calls to hand a stylus stroke to it is recorded instead of reaching a system service Robolectric
+ * does not have.
  */
 @Implements(InputMethodManager::class)
 class ShadowHandwritingInputMethodManager : ShadowInputMethodManager() {
@@ -79,7 +95,27 @@ class ShadowHandwritingInputMethodManager : ShadowInputMethodManager() {
         started += view
     }
 
+    @Implementation(minSdk = 34)
+    protected fun isStylusHandwritingAvailable(): Boolean = writes
+
     companion object {
         val started = mutableListOf<View>()
+        var writes = true
     }
+}
+
+/**
+ * The magnifier a held press over text opens, kept from the screen: Robolectric cannot copy the window's pixels into
+ * it, and the platform's own magnifier crashes dismissing itself when that copy fails.
+ */
+@Implements(Magnifier::class, minSdk = 28)
+class ShadowOffscreenMagnifier {
+    @Implementation
+    protected fun show(sourceCenterX: Float, sourceCenterY: Float, magnifierCenterX: Float, magnifierCenterY: Float) = Unit
+
+    @Implementation
+    protected fun update() = Unit
+
+    @Implementation
+    protected fun dismiss() = Unit
 }

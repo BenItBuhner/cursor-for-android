@@ -52,8 +52,10 @@ import com.cursorforandroid.domain.Agent
 import com.cursorforandroid.domain.AgentStoreKind
 import com.cursorforandroid.domain.AgentStoreRef
 import com.cursorforandroid.domain.ContextDocument
+import com.cursorforandroid.domain.ContextEntry
 import com.cursorforandroid.domain.MediaRef
 import com.cursorforandroid.domain.RecentContextFile
+import com.cursorforandroid.domain.StorePath
 import com.cursorforandroid.ui.components.CursorIcons
 import com.cursorforandroid.ui.components.FadingLazyColumn
 import com.cursorforandroid.ui.components.FlatIconButton
@@ -255,12 +257,13 @@ private fun LazyListScope.folderItems(store: AgentStoreRef, path: String, depth:
                 } else {
                     item(key) {
                         val picture = RecentContextFile.isImageName(entry.name)
+                        val canRead = LocalMarkdownMedia.current?.canReadStores == true
                         TreeRow(
                             name = entry.name,
                             icon = if (picture) CursorIcons.Image else CursorIcons.File,
                             depth = depth,
                             detail = written,
-                            onClick = { actions.openDocument(store, entry.relativePath) },
+                            onClick = { openStoreFile(store, entry, canRead, thumbnailUrl = null, actions) },
                             inset = inset,
                             description = "File ${entry.name}",
                             modifier = Modifier.testTag("tree-file"),
@@ -365,11 +368,8 @@ private fun RecentTile(recent: RecentContextFile, actions: PanelActions) {
     val bitmap by produceState<ImageBitmap?>(initialValue = null, url, media) {
         value = if (url == null || media == null) null else runCatching { media.loader.image(MediaRef.parse(url, media.agentId), px.first * 2, px.second * 2).asImageBitmap() }.getOrNull()
     }
-    val open = remember(recent, url, actions) {
-        {
-            if (recent.isImage && url != null) actions.openMedia(url, recent.entry.name) else actions.openDocument(recent.store, recent.entry.relativePath)
-        }
-    }
+    val canRead = media?.canReadStores == true
+    val open = remember(recent, url, canRead, actions) { { openStoreFile(recent.store, recent.entry, canRead, url, actions) } }
     Column(Modifier.width(RecentTileWidth).testTag("recent-tile")) {
         Box(
             Modifier
@@ -387,6 +387,20 @@ private fun RecentTile(recent: RecentContextFile, actions: PanelActions) {
             }
         }
         Text(recent.entry.name, style = type.base, color = colors.textSecondary, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 8.dp))
+    }
+}
+
+/**
+ * Opens a file of [store] from the tree or Recents: a picture or a recording as a media tab on its store path, read
+ * afresh whenever the tab loads it (a presigned [thumbnailUrl] is dead a quarter of an hour later), anything else as
+ * a document. Without the account's store reads (the demo), a picture has only its [thumbnailUrl].
+ */
+internal fun openStoreFile(store: AgentStoreRef, entry: ContextEntry, canReadStores: Boolean, thumbnailUrl: String?, actions: PanelActions) {
+    val path = StorePath(store.storeId, entry.relativePath.trim('/'))
+    when {
+        canReadStores && (path.isImage || path.isVideo) -> actions.openMedia(path.text, entry.name, isVideo = path.isVideo)
+        path.isImage && thumbnailUrl != null -> actions.openMedia(thumbnailUrl, entry.name)
+        else -> actions.openDocument(store, entry.relativePath)
     }
 }
 

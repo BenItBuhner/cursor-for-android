@@ -87,16 +87,24 @@ internal class ShellPanes(
     /** The shell's width: as last measured, and the configuration's from a change until the shell is measured again. */
     val window: Dp get() = measured ?: configured
 
-    val widths: PaneWidths by derivedStateOf {
-        PaneWidths.of(
-            window = window,
-            railExpanded = railExpanded(),
-            railWidth = railWant ?: CursorDimens.sidebarWidth,
-            panelOpen = chatOnTop() && open == true,
-            panelFraction = panelFraction,
-            hinge = hinge()?.fromStart(window, rtl()),
-        )
-    }
+    /**
+     * The panes as the window has them now, worked out from the state behind them on every read rather than held in
+     * derived state: the rail and the chat's panel read it at layout, each observing that state itself, so a change
+     * heard off the main thread while one of them is laid out again still reaches the other. Read in composition only
+     * through `derivedStateOf`, so a change that leaves what is read as it was recomposes nothing.
+     */
+    val widths: PaneWidths
+        get() {
+            val window = window
+            return PaneWidths.of(
+                window = window,
+                railExpanded = railExpanded(),
+                railWidth = railWant ?: CursorDimens.sidebarWidth,
+                panelOpen = chatOnTop() && openAt(window) == true,
+                panelFraction = panelFraction,
+                hinge = hinge()?.fromStart(window, rtl()),
+            )
+        }
 
     /** The rail is away for want of room beside a pinned panel, not put away by the reader. */
     val railYields: Boolean get() = railExpanded() && !widths.railShown
@@ -131,12 +139,12 @@ internal class ShellPanes(
      * Open or shut as the window's size class was left; shut on a window with no room to pin it, a Fold's cover. Read
      * coarse, so what reads it in composition sees the window's class change and not every width.
      */
-    override val open: Boolean? by derivedStateOf {
-        when {
-            !PaneWidths.pinnable(window) -> false
-            PaneWidthClass.of(window) == PaneWidthClass.Medium -> openMedium
-            else -> openExpanded
-        }
+    override val open: Boolean? by derivedStateOf { openAt(window) }
+
+    private fun openAt(window: Dp): Boolean? = when {
+        !PaneWidths.pinnable(window) -> false
+        PaneWidthClass.of(window) == PaneWidthClass.Medium -> openMedium
+        else -> openExpanded
     }
 
     override val width: Dp get() = widths.panel

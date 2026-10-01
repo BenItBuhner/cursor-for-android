@@ -22,7 +22,8 @@ import java.util.concurrent.atomic.AtomicBoolean
  *
  * Nothing here runs unless two things hold: the build carries a project to report to ([dsn], baked in from the
  * `SENTRY_DSN` repository secret by the release workflow — a PR or debug build has none and this class is inert), and
- * the user has turned "Send crash reports" on in Settings. The SDK's own start-up hooks are removed from the manifest,
+ * a consent the user can withdraw is followed through [follow]. Settings no longer asks for one, so nothing creates
+ * this class today and no report is ever sent. The SDK's own start-up hooks are removed from the manifest,
  * so it is only ever initialised from [apply], and [apply]'s `false` closes it again.
  *
  * What a report carries: the stack trace of the crash or ANR, the app version and build, the device model and OS

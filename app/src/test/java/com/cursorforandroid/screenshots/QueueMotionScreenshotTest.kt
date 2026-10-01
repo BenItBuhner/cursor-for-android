@@ -160,6 +160,8 @@ class QueueMotionScreenshotTest {
         scene.accountTakes("a-1")
         scene.awaitTilePreviews()
         assertThat(motion.flights).isEmpty()
+        // The row's ring crossfades back to its glyphs once the account lists it.
+        scene.frames(300L)
         capture("696_account_queue_row_tiles")
     }
 

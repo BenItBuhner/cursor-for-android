@@ -113,7 +113,11 @@ class MediaLoads(private val now: () -> Long = System::currentTimeMillis) {
         fun kindOf(ref: MediaRef): String = when (ref) {
             is MediaRef.Remote -> "https:" + (runCatching { java.net.URI(ref.url).host }.getOrNull() ?: "?")
             is MediaRef.Artifact -> "artifact"
-            is MediaRef.Store -> if (ref.ownerId == StorePath.SELF) "store:self" else "store"
+            is MediaRef.Store -> when (ref.store) {
+                null -> if (ref.ownerId == StorePath.SELF) "store:self" else "store"
+                StorePath.USER, StorePath.TEAM -> "store:${ref.store}"
+                else -> "store:id"
+            }
             is MediaRef.Workspace -> if (AgentFileRepository.isInWorkspace(ref.path, null)) "workspace" else "machine"
             is MediaRef.Local -> "local"
             is MediaRef.Inline -> "data-uri"

@@ -95,6 +95,64 @@ class FileImportTest {
         assertThat(extended.files[1].file.kind).isEqualTo(PromptFileKind.Video)
     }
 
+    /**
+     * Extended mode used to upload a gallery picture with whatever the phone appended after its end marker, which the
+     * agent's image reader refuses. It is cut at the marker and otherwise goes up as the PNG it is, at full size.
+     */
+    @Test
+    fun `a full-size Samsung screenshot in Extended mode is cut at its end marker and uploaded as the PNG it is`() {
+        val photo = Bitmap.createBitmap(2400, 1800, Bitmap.Config.ARGB_8888)
+        val pixels = IntArray(2400 * 1800) { i -> Color.rgb(i % 251, (i / 2400) % 241, (i * 7) % 239) }
+        photo.setPixels(pixels, 0, 2400, 0, 0, 2400, 1800)
+        val png = ByteArrayOutputStream().also { photo.compress(Bitmap.CompressFormat.PNG, 100, it) }.toByteArray()
+        val samsung = png + "SEFHk\u0000\u0000\u0000SEFT".toByteArray(Charsets.ISO_8859_1)
+
+        val imported = importMedia(context, listOf(temp("Screenshot_20260930.png", samsung)), extended = true, counts = none)
+
+        assertThat(imported.error).isNull()
+        val picked = imported.files.single()
+        assertThat(picked.isImage).isTrue()
+        assertThat(picked.file.mimeType).isEqualTo("image/png")
+        assertThat(picked.file.name).isEqualTo("Screenshot_20260930.png")
+        assertThat(picked.file.bytes).isEqualTo(png)
+        assertThat(picked.thumbnail).isNotNull()
+    }
+
+    @Test
+    fun `a transparent picture picked in Extended mode goes up as it is, transparency and all`() {
+        val logo = Bitmap.createBitmap(2000, 2000, Bitmap.Config.ARGB_8888)
+        logo.setPixels(IntArray(2000 * 2000) { i -> if ((i % 2000) < 1000) Color.argb(255, i % 251, 90, 200) else Color.TRANSPARENT }, 0, 2000, 0, 0, 2000, 2000)
+        val png = ByteArrayOutputStream().also { logo.compress(Bitmap.CompressFormat.PNG, 100, it) }.toByteArray()
+
+        val picked = importMedia(context, listOf(temp("logo.png", png)), extended = true, counts = none).files.single()
+
+        assertThat(picked.file.mimeType).isEqualTo("image/png")
+        assertThat(picked.file.name).isEqualTo("logo.png")
+        assertThat(picked.file.bytes).isEqualTo(png)
+    }
+
+    @Test
+    fun `a broken picture is refused with the reason, and a HEIC stays the document it was`() {
+        val broken = importFiles(context, listOf(temp("shot.png", png().copyOf(30)), temp("notes.txt", "hi".toByteArray())), none)
+        assertThat(broken.error).isEqualTo("Couldn't read this PNG image. Re-save it as PNG or JPEG and attach it again.")
+        assertThat(broken.files.map { it.file.name }).containsExactly("notes.txt")
+
+        val heic = byteArrayOf(0, 0, 0, 0x18) + "ftypheic".toByteArray() + ByteArray(4) + "mif1heic".toByteArray() + ByteArray(64)
+        val kept = importFiles(context, listOf(temp("IMG_0042.heic", heic)), none)
+        assertThat(kept.error).isNull()
+        assertThat(kept.files.single().file.bytes).isEqualTo(heic)
+        assertThat(kept.files.single().file.mimeType).isEqualTo("image/heic")
+        assertThat(kept.files.single().isImage).isFalse()
+    }
+
+    @Test
+    fun `a picture renamed for its new format keeps its name when it already says it`() {
+        assertThat(renamedFor("IMG_0042.HEIC", "image/jpeg")).isEqualTo("IMG_0042.jpg")
+        assertThat(renamedFor("photo.jpeg", "image/jpeg")).isEqualTo("photo.jpeg")
+        assertThat(renamedFor("logo.png", "image/png")).isEqualTo("logo.png")
+        assertThat(renamedFor("clipboard", "image/png")).isEqualTo("clipboard.png")
+    }
+
     @Test
     fun `a file over 15 MB is refused before it is in memory, in the words of its kind, and the rest still load`() {
         fun huge(name: String): File = File.createTempFile("huge", name).also { file ->

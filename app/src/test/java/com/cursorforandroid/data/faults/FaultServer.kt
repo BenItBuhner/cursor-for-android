@@ -4,6 +4,7 @@ import com.cursorforandroid.data.api.ConnectRpc
 import com.cursorforandroid.data.api.ConnectStreamFixtures
 import com.cursorforandroid.data.api.CursorJson
 import com.cursorforandroid.data.api.dto.AgentDto
+import com.cursorforandroid.data.api.dto.AgentEnvDto
 import com.cursorforandroid.data.api.dto.AgentSummaryDto
 import com.cursorforandroid.data.api.dto.ApiKeyInfoDto
 import com.cursorforandroid.data.api.dto.CreateRunRequestDto
@@ -137,6 +138,8 @@ class FaultServer(
     val pending: MutableMap<String, MutableList<Pending>> = ConcurrentHashMap()
     /** How long the account's list keeps naming a followup after the run it started (or the steer it became) exists. */
     @Volatile var queueLagMs: Long = 0L
+    /** What each `ListPendingFollowups` answer named, by followup id, in the order the server made them. */
+    val queueAnswers = CopyOnWriteArrayList<List<String>>()
     /**
      * A Project's coordinator: behind a turn under way the account names, in its answer, the run the queued message
      * will start ([Pending.runId]) and starts that very run once the turn is over (see [deliverNext]), the list naming
@@ -159,8 +162,17 @@ class FaultServer(
      * for the tests written before the record carried deliveries.
      */
     @Volatile var recordsDeliveries = false
+    /**
+     * Chats the account is on a turn of that the agent's latest run is not: a Project's injected turn (a worker's
+     * report, a timer), which runs with no run in the `/v1` list, or an older run the account went on with past a newer
+     * one it cancelled. A follow-up joins the queue behind that turn — named a run in a Project (see [namesQueuedRuns])
+     * — and `POST /runs` is refused as busy, until [endAccountTurn].
+     */
+    val accountTurns: MutableSet<String> = ConcurrentHashMap.newKeySet()
     /** Whether the account may start the next run on a queued message on its own the moment the turn ends (see [endTurn]); tests deliver by hand otherwise. */
     @Volatile var autoDeliver = false
+    /** An outcome every steer is answered with instead (`OUTCOME_REJECTED`, say), the queued message left where it was; null steers as the account does. */
+    @Volatile var steerOutcome: String? = null
     /** The followups delivered, in order, and the run each started (a steer's run is the one it was delivered into). */
     val delivered = CopyOnWriteArrayList<Pair<String, String>>()
     /** The largest page the list endpoints serve whatever `limit` asks, so a small account still pages. */
@@ -269,11 +281,19 @@ class FaultServer(
          * The request is processed at once and its answer held on its way back until [release]: a reply exactly as
          * slow as the test needs, where a round trip set long enough stood in for one — and slowed every other request
          * the server met meanwhile, the queue's poll among them (#281's CI, `QueuedMessagePlacementTest`).
+         * [processedOnRelease] holds the request itself instead, unprocessed until [release], and answers it from what
+         * the server holds then: a request that reached a busy backend late, answered after one sent behind it.
          */
-        class Held : Fault {
+        class Held(val processedOnRelease: Boolean = false) : Fault {
             private val gate = java.util.concurrent.CountDownLatch(1)
+            /** A request has met this fault: its answer made and held, or — [processedOnRelease] — the request waiting unanswered. */
+            @Volatile var reached = false
+                private set
             fun release() = gate.countDown()
-            internal fun await() = gate.await(HOLD_CEILING_S, TimeUnit.SECONDS)
+            internal fun await(): Boolean {
+                reached = true
+                return gate.await(HOLD_CEILING_S, TimeUnit.SECONDS)
+            }
         }
     }
 
@@ -326,8 +346,8 @@ class FaultServer(
 
     // -- the account ---------------------------------------------------------------------------------------------
 
-    fun addIdleAgent(id: String, name: String, runId: String, createdAt: String = "2026-04-13T18:30:00.000Z", prompt: String = "Do the thing", reply: String = "Done.") {
-        agents[id] = AgentDto(id = id, name = name, status = "IDLE", createdAt = createdAt, updatedAt = createdAt, latestRunId = runId, url = "https://cursor.com/agents/$id")
+    fun addIdleAgent(id: String, name: String, runId: String, createdAt: String = "2026-04-13T18:30:00.000Z", prompt: String = "Do the thing", reply: String = "Done.", env: AgentEnvDto = AgentEnvDto()) {
+        agents[id] = AgentDto(id = id, name = name, status = "IDLE", env = env, createdAt = createdAt, updatedAt = createdAt, latestRunId = runId, url = "https://cursor.com/agents/$id")
         v0[id] = V0AgentDto(id = id, name = name, status = "FINISHED")
         runs[runId] = RunDto(id = runId, agentId = id, status = "FINISHED", createdAt = createdAt, updatedAt = createdAt, durationMs = 65_000, result = reply)
         transcripts[id] = listOf(V0ConversationMessageDto("$runId-u", "user_message", prompt), V0ConversationMessageDto("$runId-a", "assistant_message", reply))
@@ -409,6 +429,10 @@ class FaultServer(
         val fault = faults[route]?.let { queue -> take(queue, url.encodedPath) }?.fault
             ?: standing[route]?.takeIf { it.matches(url.encodedPath) }?.fault
         seen += Seen(route, request.method ?: "", request.path ?: "", nowMillis(), fault, request.getHeader("Last-Event-ID"))
+        if (fault is Fault.Held && fault.processedOnRelease) {
+            held += fault
+            fault.await()
+        }
         val segments = url.encodedPath.trimStart('/').split('/')
         val processed = when (fault) {
             is Fault.LostReply -> fault.processed
@@ -490,8 +514,10 @@ class FaultServer(
             Fault.TruncatedBody -> answer.setSocketPolicy(SocketPolicy.DISCONNECT_DURING_RESPONSE_BODY).withWeather()
             is Fault.Silence -> MockResponse().setSocketPolicy(SocketPolicy.NO_RESPONSE)
             is Fault.Held -> {
-                held += fault
-                fault.await()
+                if (!fault.processedOnRelease) {
+                    held += fault
+                    fault.await()
+                }
                 answer.withWeather()
             }
         }
@@ -513,7 +539,7 @@ class FaultServer(
         val agent = agents[agentId] ?: return notFound()
         // One turn at a time, as the real server has it: a second request while the latest run is under way is
         // refused as busy — which is what a duplicate of an accepted follow-up meets.
-        val onATurn = agent.latestRunId?.let { runs[it]?.status }?.let { com.cursorforandroid.domain.RunStatus.parse(it).isActive } == true
+        val onATurn = agentId in accountTurns || agent.latestRunId?.let { runs[it]?.status }?.let { com.cursorforandroid.domain.RunStatus.parse(it).isActive } == true
         if (busy || onATurn) return json(409, error("agent_busy", "Agent is busy."))
         if (!processed) return json(500, error("not_processed", "The fault said this request was never processed."))
         val sequence = ids.incrementAndGet()
@@ -591,7 +617,7 @@ class FaultServer(
         val synchronous = body["synchronous"]?.jsonPrimitive?.booleanOrNull == true
         val agent = agents[agentId] ?: return json(404, connectError("not_found", "no such composer"))
         if (!processed) return json(500, connectError("internal", "The fault said this request was never processed."))
-        val onATurn = agent.latestRunId?.let { runs[it]?.status }?.let { com.cursorforandroid.domain.RunStatus.parse(it).isActive } == true
+        val onATurn = agentId in accountTurns || agent.latestRunId?.let { runs[it]?.status }?.let { com.cursorforandroid.domain.RunStatus.parse(it).isActive } == true
         if (onATurn && !synchronous) {
             if (!namesQueuedRuns) {
                 pending.getOrPut(agentId) { CopyOnWriteArrayList() } += Pending(followupId, text, clock())
@@ -621,6 +647,7 @@ class FaultServer(
         val agentId = body["bcId"]?.jsonPrimitive?.contentOrNull ?: return json(400, connectError("invalid_argument", "bcId is required"))
         val now = nowMillis()
         val listed = pending[agentId].orEmpty().filter { p -> p.consumedAtServerMs?.let { now < it + queueLagMs } ?: true }
+        queueAnswers += listed.map { it.followupId }
         val items = listed.joinToString(",") { p ->
             """{"followupId":"${p.followupId}","text":${CursorJson.encodeToString(String.serializer(), p.text)},"createdAtMs":"${p.createdAtMs}","source":"BACKGROUND_COMPOSER_SOURCE_MOBILE"}"""
         }
@@ -698,6 +725,7 @@ class FaultServer(
         val body = CursorJson.parseToJsonElement(request.body.readUtf8()).jsonObject
         val agentId = body["bcId"]?.jsonPrimitive?.contentOrNull ?: return json(400, connectError("invalid_argument", "bcId is required"))
         val agent = agents[agentId] ?: return json(404, connectError("not_found", "no such composer"))
+        steerOutcome?.let { return json(200, """{"outcome":"$it"}""") }
         val runId = agent.latestRunId?.takeIf { runs[it]?.status?.let { st -> com.cursorforandroid.domain.RunStatus.parse(st).isActive } == true }
             ?: return json(200, """{"outcome":"OUTCOME_REJECTED"}""")
         val promote = body["promoteFollowupId"]?.jsonPrimitive?.contentOrNull
@@ -771,6 +799,21 @@ class FaultServer(
         agents[agentId] = agent.copy(status = "IDLE", updatedAt = endedAt)
         v0[agentId]?.let { v0[agentId] = it.copy(status = "FINISHED") }
         // The account's list says the turn is over too; still saying running, it kept a chat at RUNNING in Extended mode.
+        composers[agentId]?.takeIf { it.running }?.let { composers[agentId] = it.copy(running = false) }
+        return if (autoDeliver) deliverNext(agentId, nextLog) else null
+    }
+
+    /**
+     * The turn [accountTurns] holds [agentId] on ends — [runId], when it is a listed run (the older one the account
+     * went on with), FINISHED with its result — and the account's list says the chat is idle; then, with
+     * [autoDeliver], the next queued message is delivered.
+     */
+    fun endAccountTurn(agentId: String, runId: String? = null, durationMs: Long = 40_000L, nextLog: List<Pair<String, String>> = emptyList()): RunDto? {
+        accountTurns.remove(agentId)
+        runId?.let { id ->
+            runs[id]?.let { run -> runs[id] = run.copy(status = "FINISHED", durationMs = durationMs, updatedAt = Instant.ofEpochMilli(clock()).toString(), result = null) }
+            appendRunEvents(id, listOf("result" to """{"runId":"$id","status":"FINISHED","text":"","durationMs":$durationMs}"""))
+        }
         composers[agentId]?.takeIf { it.running }?.let { composers[agentId] = it.copy(running = false) }
         return if (autoDeliver) deliverNext(agentId, nextLog) else null
     }
@@ -1055,30 +1098,61 @@ class FaultServer(
         synchronized(liveLock) { liveLock.notifyAll() }
     }
 
+    private val strandings = ConcurrentHashMap<String, Int>()
+    private val liveDrops = ConcurrentHashMap<String, Int>()
+
+    /**
+     * The held streams of [runId] open now are stranded: the connection stays up and its keep-alives keep coming, but
+     * nothing more of the log reaches it — the server's side of the stream let go of the run (a message steered into
+     * the turn, a turn handed to the next) while the gateway in front of it keeps the connection warm. A connection
+     * opened afterwards, resumed from the last id it saw, is sent the log as usual.
+     */
+    fun strandLiveStreams(runId: String) {
+        strandings.merge(runId, 1, Int::plus)
+        synchronized(liveLock) { liveLock.notifyAll() }
+    }
+
+    /** The held streams of [runId] open now end mid-turn without `done`: a network blip under a run that goes on. */
+    fun dropLiveStreams(runId: String) {
+        liveDrops.merge(runId, 1, Int::plus)
+        synchronized(liveLock) { liveLock.notifyAll() }
+    }
+
     private fun heldRun(runId: String, skip: Int): MockResponse =
         MockResponse().setResponseCode(200).removeHeader("Content-Length").setHeader("Content-Type", "text/event-stream").setBody(object : DuplexResponseBody {
             override fun onRequest(request: RecordedRequest, http2Stream: Http2Stream) {
                 liveRunOpen.incrementAndGet()
+                val strandedAt = strandings[runId] ?: 0
+                val droppedAt = liveDrops[runId] ?: 0
                 try {
                     val sink = http2Stream.getSink().buffer()
                     var sent = skip
                     var tick = 0
                     while (!closed) {
-                        val log = logs[runId].orEmpty()
+                        if ((liveDrops[runId] ?: 0) > droppedAt) {
+                            sink.flush()
+                            sink.close()
+                            return
+                        }
+                        val stranded = (strandings[runId] ?: 0) > strandedAt
+                        val log = if (stranded) logs[runId].orEmpty().take(sent) else logs[runId].orEmpty()
                         while (sent < log.size) {
                             val (event, data) = log[sent++]
                             sink.writeUtf8("event: ").writeUtf8(event).writeUtf8("\nid: ").writeUtf8(runId).writeUtf8("#").writeUtf8(sent.toString()).writeUtf8("\ndata: ").writeUtf8(data).writeUtf8("\n\n")
                         }
-                        if (runs[runId]?.status != "RUNNING") {
+                        if (!stranded && runs[runId]?.status != "RUNNING") {
                             sink.writeUtf8("event: done\ndata: {}\n\n").flush()
                             sink.close()
                             return
                         }
-                        liveRunGenerator?.invoke(runId, ++tick)?.forEach { (event, data) ->
+                        if (!stranded) liveRunGenerator?.invoke(runId, ++tick)?.forEach { (event, data) ->
                             sink.writeUtf8("event: ").writeUtf8(event).writeUtf8("\nid: ").writeUtf8(runId).writeUtf8("#g").writeUtf8(tick.toString()).writeUtf8("\ndata: ").writeUtf8(data).writeUtf8("\n\n")
                         }
                         sink.writeUtf8(": keep-alive\n\n").flush()
-                        synchronized(liveLock) { if (logs[runId].orEmpty().size == sent && !closed) liveLock.wait(liveRunBeatMs) }
+                        synchronized(liveLock) {
+                            val caughtUp = stranded || logs[runId].orEmpty().size == sent
+                            if (caughtUp && !closed && (liveDrops[runId] ?: 0) == droppedAt) liveLock.wait(liveRunBeatMs)
+                        }
                     }
                 } catch (_: IOException) {
                     // The client reset the stream: it is gone.

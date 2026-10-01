@@ -19,6 +19,7 @@ import com.cursorforandroid.data.repo.NewChatDrafts
 import com.cursorforandroid.domain.CursorUser
 import com.cursorforandroid.domain.DeviceTarget
 import com.cursorforandroid.domain.ModelParam
+import com.cursorforandroid.domain.NewChatHome
 import com.cursorforandroid.ui.navigation.AppShell
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.ui.theme.ThemeMode
@@ -85,6 +86,9 @@ class NewChatDraftScreenshotTest {
         runBlocking {
             graph.session.enterDemo()
             graph.drafts.clear()
+            // The draft over the recent chats, as a reader who chose Recent agents has the page; the demo's Project
+            // would otherwise be the page's own pick.
+            graph.prefs.setNewChatHome(NewChatHome.RECENT)
             graph.drafts.write(
                 DraftStore.Record(
                     id = DRAFT,

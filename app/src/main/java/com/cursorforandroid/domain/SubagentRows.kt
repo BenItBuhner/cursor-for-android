@@ -303,20 +303,30 @@ object SubagentRows {
         }
     }
 
-    /** A reply's first words as plain text: markdown's marks dropped, lines joined, cut to [REPLY_CHARS]. */
+    /**
+     * A reply's first words as plain text: markdown's marks dropped, lines joined, cut to [REPLY_CHARS]. Read again on
+     * every token the reply streams, so a long reply is read only as far as its opening [PLAIN_HEAD] characters when
+     * they are enough: every mark and run of spaces is decided within a few characters of where it stands, a link
+     * alone reaching further (hence none in the head), and [PLAIN_MARGIN] characters past the cut keep the head's end
+     * from reaching back into what is shown.
+     */
     private fun plain(markdown: String): String? {
-        val text = markdown
-            .replace(MARKDOWN_LINK, "$1")
-            .replace(MARKDOWN_MARKS, "")
-            .replace(WHITESPACE, " ")
-            .trim()
-        if (text.isEmpty()) return null
-        return if (text.length <= REPLY_CHARS) text else text.take(REPLY_CHARS)
+        val head = markdown.takeIf { it.length > PLAIN_HEAD }?.substring(0, PLAIN_HEAD)?.takeIf { '[' !in it }
+        val text = head?.let(::stripped)?.takeIf { it.length >= REPLY_CHARS + PLAIN_MARGIN } ?: stripped(markdown)
+        return text.takeIf { it.isNotEmpty() }?.take(REPLY_CHARS)
     }
+
+    private fun stripped(markdown: String): String = markdown
+        .replace(MARKDOWN_LINK, "$1")
+        .replace(MARKDOWN_MARKS, "")
+        .replace(WHITESPACE, " ")
+        .trim()
 
     private val MARKDOWN_LINK = Regex("\\[([^\\]]*)]\\([^)]*\\)")
     private val MARKDOWN_MARKS = Regex("(^|\\s)#{1,6}\\s|[*_`>~]|^\\s*[-+]\\s", RegexOption.MULTILINE)
     private val WHITESPACE = Regex("\\s+")
+    private const val PLAIN_HEAD = 160
+    private const val PLAIN_MARGIN = 20
 
     // -- the model's label --------------------------------------------------------------------------------------
 

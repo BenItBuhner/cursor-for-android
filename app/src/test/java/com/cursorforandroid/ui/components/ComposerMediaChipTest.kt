@@ -1,6 +1,7 @@
 package com.cursorforandroid.ui.components
 
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.requiredWidth
 import androidx.compose.foundation.layout.width
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
@@ -18,6 +19,7 @@ import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.unit.dp
@@ -57,10 +59,10 @@ class ComposerMediaChipTest {
     private val pdf = PendingFile("f-pdf", PromptFile(ByteArray(2_400), "Q3 report.pdf", "application/pdf"))
 
     @Composable
-    private fun Row(viewer: MediaViewerState? = null, onRemoveImage: (PendingAttachment) -> Unit = {}, onRemoveFile: (PendingFile) -> Unit = {}, onRetry: ((PendingFile) -> Unit)? = null, uploads: Map<String, FileUploadState> = emptyMap(), files: List<PendingFile> = listOf(picked, clip, pdf), images: List<PendingAttachment> = listOf(pasted)) {
+    private fun Row(viewer: MediaViewerState? = null, onRemoveImage: (PendingAttachment) -> Unit = {}, onRemoveFile: (PendingFile) -> Unit = {}, onRetry: ((PendingFile) -> Unit)? = null, uploads: Map<String, FileUploadState> = emptyMap(), files: List<PendingFile> = listOf(picked, clip, pdf), images: List<PendingAttachment> = listOf(pasted), width: Modifier = Modifier.width(400.dp)) {
         CursorTheme(mode = ThemeMode.Dark) {
             CompositionLocalProvider(LocalMediaViewer provides viewer) {
-                Box(Modifier.width(400.dp)) {
+                Box(width) {
                     ComposerAttachments(images = images, onRemoveImage = onRemoveImage, files = files, onRemoveFile = onRemoveFile, surface = CursorTheme.colors.elevated, uploads = uploads, onRetryFile = onRetry, agentId = "bc-1")
                 }
             }
@@ -156,6 +158,36 @@ class ComposerMediaChipTest {
         assertThat(viewer.session!!.autoplay).isTrue()
         assertThat(removedFiles).isEmpty()
         viewer.finishClose()
+    }
+
+    /**
+     * Pictures and files side by side are one height: every tile and every chip — at rest, going up, failed — is 48dp
+     * tall on one top and one bottom, and each wears the same remove badge, the badges' targets on one line, 12dp past
+     * their chip's top-end corner.
+     */
+    @Test
+    fun `tiles and file chips are one height, their badges on one line`() {
+        val zip = PendingFile("f-zip", PromptFile(ByteArray(102 * 1024), "Burrow diagnostics- samsung SM-S948U.zip", "application/zip"))
+        val trace = PendingFile("f-har", PromptFile(ByteArray(48 * 1024), "network-trace.har", "application/json"))
+        compose.setContent {
+            Row(files = listOf(clip, zip, pdf, trace), uploads = mapOf(pdf.id to FileUploadState(progress = 0.4f), trace.id to FileUploadState(failed = true)), onRetry = {}, width = Modifier.requiredWidth(1000.dp))
+        }
+        compose.waitForIdle()
+        val tiles = compose.onAllNodesWithTag("media-tile").fetchSemanticsNodes().map { it.boundsInRoot }
+        val chips = compose.onAllNodesWithTag("file-chip").fetchSemanticsNodes().map { it.boundsInRoot }
+        assertThat(tiles).hasSize(2)
+        assertThat(chips).hasSize(3)
+        val density = compose.onRoot().fetchSemanticsNode().layoutInfo.density.density
+        (tiles + chips).forEach { bounds ->
+            assertThat(bounds.height / density).isWithin(0.5f).of(48f)
+            assertThat(bounds.top).isWithin(0.5f).of(tiles[0].top)
+        }
+        val badges = (compose.onAllNodesWithTag("media-remove").fetchSemanticsNodes() + compose.onAllNodesWithTag("file-remove").fetchSemanticsNodes()).map { it.boundsInRoot }
+        assertThat(badges).hasSize(5)
+        badges.forEach { assertThat(it.top).isWithin(0.5f).of(tiles[0].top - 12f * density) }
+        // Each chip's badge target sits in its slot's corner: its end 12dp past the chip's end.
+        val fileBadges = compose.onAllNodesWithTag("file-remove").fetchSemanticsNodes().map { it.boundsInRoot }
+        chips.zip(fileBadges).forEach { (chip, badge) -> assertThat(badge.right - chip.right).isWithin(0.5f).of(12f * density) }
     }
 
     /** A hold on a tile offers Open and Remove — and Retry upload when the upload failed — as the transcript's media offer their actions on a hold. */

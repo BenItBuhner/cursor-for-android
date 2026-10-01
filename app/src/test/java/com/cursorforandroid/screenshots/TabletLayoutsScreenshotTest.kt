@@ -124,6 +124,8 @@ class TabletLayoutsScreenshotTest {
         runBlocking {
             graph.session.enterDemo()
             graph.drafts.clear()
+            // Recent agents chosen: with nothing chosen the fixtures' Projects would be the layout ringed.
+            graph.prefs.setNewChatHome(NewChatHome.RECENT)
             graph.catalog.loadRepositories()
             graph.catalog.loadModels()
             graph.agents.refresh()

@@ -49,10 +49,9 @@ import org.robolectric.shadows.ShadowDialog
 import java.time.Instant
 
 /**
- * Settings › Confirm before stopping, on the chat a palm can stop by accident: a run held open by the fakes (served
- * through the demo seat of the graph, so the whole pipeline runs — repository, view model, screen), and the Stop
- * that sits on the composer. With the setting on — the default — every way of stopping asks first and only the
- * dialog's Stop cancels the run; with it off, Stop cancels at once, as it always did.
+ * The stop confirmation, on the chat a palm can stop by accident: a run held open by the fakes (served through the
+ * demo seat of the graph, so the whole pipeline runs — repository, view model, screen), and the Stop that sits on the
+ * composer. Every way of stopping asks first, always, and only the dialog's Stop cancels the run.
  */
 @RunWith(AndroidJUnit4::class)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
@@ -176,18 +175,6 @@ class StopConfirmationTest {
             streamer.emit(runId, RunStreamEvent.Done)
         }
         compose.waitUntil(10_000) { !composerStopShown() }
-    }
-
-    @Test
-    fun `turned off, the composer's Stop stops the run at once`() {
-        runBlocking { graph.prefs.setConfirmStop(false) }
-        openChat()
-
-        compose.onNodeWithContentDescription("Stop").performClick()
-        awaitCancelled()
-        compose.waitForIdle()
-        assertThat(dialogShown()).isFalse()
-        assertThat(api.cancelled).containsExactly(runId)
     }
 
     @Test

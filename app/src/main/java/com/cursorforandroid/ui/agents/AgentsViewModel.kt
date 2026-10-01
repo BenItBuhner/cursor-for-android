@@ -5,9 +5,11 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.cursorforandroid.AppGraph
 import com.cursorforandroid.data.api.userMessage
+import com.cursorforandroid.data.local.NewChatPageCache
 import com.cursorforandroid.data.repo.RefreshDepth
 import com.cursorforandroid.data.repo.AgentListState
 import com.cursorforandroid.data.repo.RefreshOutcome
+import com.cursorforandroid.data.repo.SessionState
 import com.cursorforandroid.domain.Agent
 import com.cursorforandroid.domain.AgentListOrganizer
 import com.cursorforandroid.domain.AgentRow
@@ -20,6 +22,7 @@ import com.cursorforandroid.domain.ListPreferences
 import com.cursorforandroid.domain.PendingWork
 import com.cursorforandroid.domain.KnownRoot
 import com.cursorforandroid.domain.LocalAgentState
+import com.cursorforandroid.domain.ProjectArrangement
 import com.cursorforandroid.domain.SortOrder
 import com.cursorforandroid.domain.SourceFilter
 import com.cursorforandroid.domain.StatusFilter
@@ -43,6 +46,7 @@ import kotlinx.coroutines.flow.merge
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.random.Random
 
 /**
@@ -102,6 +106,12 @@ data class AgentListUiState(
     /** The one row past the last chat: what the list is doing at its end, or nothing (see [SidebarTail]). */
     val tail: SidebarTail = SidebarTail.None,
     val hasLoaded: Boolean = false,
+    /**
+     * The list is this session's word and not only the disk's: a fetch has put its rows up, or has ended (see
+     * [com.cursorforandroid.data.repo.AgentListState.fetchEnded]). Until then an account with no Projects on disk may
+     * yet have some.
+     */
+    val isCurrent: Boolean = false,
     /** The server lists agents older than the ones loaded; the sidebar's end asks for them (see [AgentsViewModel.loadMore]). */
     val hasMore: Boolean = false,
     val isLoadingMore: Boolean = false,
@@ -113,6 +123,12 @@ data class AgentListUiState(
      * [AgentsViewModel.setSectionCollapsed]); a closed group's header still carries its count and its unread dot.
      */
     val collapsedSections: Set<String> = emptySet(),
+    /**
+     * The long groups the reader listed in full with "Show N more", by [AgentSection.key], as the device remembers
+     * them (see [AgentsViewModel.setSectionListedInFull]): they stay listed when the sidebar is shut and opened again,
+     * a chat is opened, the activity is recreated or the app started again, until "Show less" cuts them back.
+     */
+    val listedInFullSections: Set<String> = emptySet(),
     /**
      * Settings › Appearance › "Shorten long Projects list": a long Projects or Pinned group lists its first five rows
      * until "Show N more" is tapped (see [SidebarShortList]). On unless turned off.
@@ -142,8 +158,18 @@ private class DeviceState(
     val memberCounts: Map<String, Int> = emptyMap(),
     /** The sidebar groups the reader folded closed (see [AgentListUiState.collapsedSections]). */
     val collapsedSections: Set<String> = emptySet(),
+    /** The long groups the reader listed in full (see [AgentListUiState.listedInFullSections]). */
+    val listedInFullSections: Set<String> = emptySet(),
     /** Whether long Projects and Pinned groups are cut to five rows (see [AgentListUiState.shortenLongGroups]). */
     val shortenLongGroups: Boolean = true,
+)
+
+/** The device's word on the sidebar's groups, bundled so the device combine stays within its arity. */
+private class SidebarGroupPrefs(
+    val memberCounts: Map<String, Int>,
+    val collapsedSections: Set<String>,
+    val listedInFullSections: Set<String>,
+    val shortenLongGroups: Boolean,
 )
 
 private data class OrganizedUi(
@@ -276,12 +302,25 @@ class AgentsViewModel(
     }.distinctUntilChanged()
     private val listPreferences: Flow<ListPreferences> = graph.prefs.listPreferences.distinctUntilChanged()
 
-    /** The three smallest device facts, bundled so the device combine stays within its arity. */
-    private val countsAndFolds: Flow<Triple<Map<String, Int>, Set<String>, Boolean>> =
-        combine(graph.projects.memberCounts, graph.prefs.collapsedSidebarSections, graph.prefs.shortenSidebarLists) { counts, folds, shorten -> Triple(counts, folds, shorten) }
+    /** The smallest device facts about the sidebar's groups, bundled so the device combine stays within its arity. */
+    private val groupPrefs: Flow<SidebarGroupPrefs> = combine(
+        graph.projects.memberCounts,
+        graph.prefs.collapsedSidebarSections,
+        graph.prefs.listedInFullSidebarSections,
+        graph.prefs.shortenSidebarLists,
+    ) { counts, folds, listedInFull, shorten -> SidebarGroupPrefs(counts, folds, listedInFull, shorten) }
 
-    private val device: Flow<DeviceState> = combine(localState, actionError, graph.projects.unavailableParents, graph.agents.knownRoots, countsAndFolds) { local, failed, unavailable, roots, (counts, folds, shorten) ->
-        DeviceState(local = local, actionError = failed, unavailableProjects = unavailable.keys, knownRoots = roots, memberCounts = counts, collapsedSections = folds, shortenLongGroups = shorten)
+    private val device: Flow<DeviceState> = combine(localState, actionError, graph.projects.unavailableParents, graph.agents.knownRoots, groupPrefs) { local, failed, unavailable, roots, groups ->
+        DeviceState(
+            local = local,
+            actionError = failed,
+            unavailableProjects = unavailable.keys,
+            knownRoots = roots,
+            memberCounts = groups.memberCounts,
+            collapsedSections = groups.collapsedSections,
+            listedInFullSections = groups.listedInFullSections,
+            shortenLongGroups = groups.shortenLongGroups,
+        )
     }
 
     /**
@@ -320,6 +359,19 @@ class AgentsViewModel(
 
     private val clock: Flow<Long> = merge(minuteClock, snoozeAlarm)
 
+    /**
+     * The New Chat page's Projects as the last session drew them (see [NewChatPageCache]): the page's shortcuts from
+     * the first frame, until the list's own first load — the disk's copy or the network's — takes over, after which
+     * they are never shown again.
+     */
+    private val seedAccount: String? = signedInAccount()
+    private val seed = graph.caches.newChatPage.seed(signedInUser())
+    private val seedRows = AtomicReference(seed?.projectRows().orEmpty())
+
+    private fun signedInUser() = (graph.session.state.value as? SessionState.SignedIn)?.user
+
+    private fun signedInAccount(): String? = signedInUser()?.let(NewChatPageCache::accountOf)
+
     // Expiry is [LocalAgentState.isSnoozed] against this clock. Do not persist it from a collector here:
     // writing DataStore while the list flow is on Default races Robolectric's Compose slot table.
 
@@ -332,10 +384,16 @@ class AgentsViewModel(
     ) { list, prefs, device, q, (now, work) ->
         val local = device.local
         val organized = listComputation.organize(list, prefs, device, q, now)
+        val seeded = if (list.hasLoaded || signedInAccount() != seedAccount) {
+            seedRows.set(emptyList())
+            null
+        } else {
+            seedRows.get().takeIf { it.isNotEmpty() }
+        }
         AgentListUiState(
             sections = organized.sections,
             recentRows = organized.recentRows,
-            projectRows = organized.projectRows,
+            projectRows = seeded ?: organized.projectRows,
             allAgents = list.agents,
             repoSlugs = listComputation.repoSlugs(list.agents),
             prefs = prefs,
@@ -344,6 +402,7 @@ class AgentsViewModel(
             isRefreshing = list.isRefreshing,
             tail = sidebarTail(list, work),
             hasLoaded = list.hasLoaded,
+            isCurrent = list.hasLoaded && (!list.isFromCache || list.fetchEnded),
             hasMore = list.hasMore,
             isLoadingMore = list.isLoadingMore,
             // A refused row action is the newer news, and the one the user is waiting on.
@@ -351,6 +410,7 @@ class AgentsViewModel(
             unreadCount = organized.unreadCount,
             runningCount = organized.runningCount,
             collapsedSections = device.collapsedSections,
+            listedInFullSections = device.listedInFullSections,
             shortenLongGroups = device.shortenLongGroups,
             nowMillis = now,
         )
@@ -358,7 +418,12 @@ class AgentsViewModel(
         // Grouping, filtering and sorting a few hundred rows is cheap, but not free on every keystroke of the search
         // field or every streamed patch; it runs off the main thread and only the result reaches the UI.
         .flowOn(graph.agentListDispatcher)
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), AgentListUiState())
+        // Until the settings are read, the snapshot's hidden set is the one the page leaves its seeded Projects off by.
+        .stateIn(
+            viewModelScope,
+            SharingStarted.WhileSubscribed(5_000),
+            AgentListUiState(projectRows = seedRows.get(), local = LocalAgentState(hiddenProjectIds = seed?.hiddenProjectIds.orEmpty())),
+        )
 
     init {
         // A Project the list names but lacks is fetched by id so its workers can sit under it rather than under a
@@ -517,8 +582,14 @@ class AgentsViewModel(
     /** Folds a sidebar group closed or open, remembered on the device across restarts (see [AgentListUiState.collapsedSections]). */
     fun setSectionCollapsed(sectionKey: String, collapsed: Boolean) = viewModelScope.launch { graph.prefs.setSidebarSectionCollapsed(sectionKey, collapsed) }
 
+    /** Lists a long sidebar group in full, or cuts it back, remembered on the device across restarts (see [AgentListUiState.listedInFullSections]). */
+    fun setSectionListedInFull(sectionKey: String, listedInFull: Boolean) = viewModelScope.launch { graph.prefs.setSidebarSectionListedInFull(sectionKey, listedInFull) }
+
     /** The Projects arranged on the New Chat page, first to last; the sidebar's Projects group follows (see [LocalAgentState.projectOrder]). */
     fun setProjectOrder(ids: List<String>) = viewModelScope.launch { graph.prefs.setProjectOrder(ids) }
+
+    /** The Projects as left on the New Chat page: their order, and the ones hidden there (see [LocalAgentState.hiddenProjectIds]). */
+    fun arrangeProjects(arrangement: ProjectArrangement) = viewModelScope.launch { graph.prefs.setProjectArrangement(arrangement) }
 
     /** Marks every loaded conversation read at its current `updatedAt`, the same stamp opening a chat would write. */
     fun markAllRead() = viewModelScope.launch {

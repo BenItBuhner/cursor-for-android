@@ -43,6 +43,7 @@ import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 import kotlin.math.abs
+import kotlin.math.roundToInt
 
 /**
  * The composer's attachments as one row that scrolls sideways (Bennett's frame `attachment-chips-wrap.png`: a
@@ -72,7 +73,7 @@ class AttachmentCarouselTest {
     /**
      * Five attachments in 320dp: the row overflows to the right, so only its end fades; scrolled, the start fades
      * too; at the end, the end's fade eases off and the start's stays. The affordances are live at every position:
-     * the ring on the chip going up, the retry on the failed one, the cross on the last.
+     * the ring on the chip going up, the retry on the failed one, the badge on the last.
      */
     @Test
     fun `an overflowing row fades at the end that has more, the fade follows the scroll, and the chips keep working`() {
@@ -116,7 +117,7 @@ class AttachmentCarouselTest {
         compose.onNodeWithContentDescription("Retry upload").assertIsDisplayed().performClick()
         assertThat(retried.map { it.id }).containsExactly("f3")
 
-        // At the end: the start fades, the end no longer; the last chip's cross takes it off.
+        // At the end: the start fades, the end no longer; the last chip's badge takes it off.
         compose.onNodeWithTag("attachment-row").performScrollToIndex(4)
         compose.waitForIdle()
         assertThat(state.canScrollForward).isFalse()
@@ -174,9 +175,10 @@ class AttachmentCarouselTest {
         row.performScrollToIndex(4)
         compose.waitForIdle()
         shot = rendered()
-        // At the end: the first column is covered, the last — the last chip's own edge — is not.
+        // At the end: the first column is covered, the last chip's own edge — inside the room its badge overhangs — is not.
+        val chipEdge = width - 1 - (MediaBadgeRoom.value * compose.activity.resources.displayMetrics.density).roundToInt() - 2
         assertThat(shot.column(0).isSurface()).isTrue()
-        assertThat(shot.column(width - 1).isSurface()).isFalse()
+        assertThat(shot.column(chipEdge).isSurface()).isFalse()
     }
 
     /** A row that fits has nothing past either end: neither fades, and nothing scrolls. */

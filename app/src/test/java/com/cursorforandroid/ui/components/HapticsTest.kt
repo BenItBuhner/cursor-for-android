@@ -6,7 +6,6 @@ import android.view.HapticFeedbackConstants
 import android.view.View
 import androidx.activity.BackEventCompat
 import androidx.activity.ComponentActivity
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.hapticfeedback.HapticFeedback
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.ClipboardManager
@@ -17,14 +16,11 @@ import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.text.AnnotatedString
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
-import com.cursorforandroid.data.local.PreferencesStore
 import com.cursorforandroid.domain.RunStatus
 import com.cursorforandroid.ui.compose.launchRefused
 import com.cursorforandroid.ui.conversation.ChatHapticCues
 import com.cursorforandroid.ui.conversation.OutgoingStatus
 import com.google.common.truth.Truth.assertThat
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
@@ -258,11 +254,9 @@ class HapticsTest {
     }
 
     @Test
-    fun `the stop confirmation is felt when the interruption goes through, either way`() {
+    fun `the stop confirmation is felt when the interruption goes through, and not when the run is kept`() {
         val view = RecordingView(ApplicationProvider.getApplicationContext())
-        val prefs = PreferencesStore(ApplicationProvider.getApplicationContext())
-        val setting = mutableStateOf<Boolean?>(true)
-        val confirmation = RunStopConfirmation(setting, prefs, CoroutineScope(Dispatchers.Unconfined), Haptics(view))
+        val confirmation = RunStopConfirmation(Haptics(view))
         var stopped = 0
 
         confirmation.ask(RunInterruption.Stop, "agent-1") { stopped++ }
@@ -275,8 +269,10 @@ class HapticsTest {
         assertThat(stopped).isEqualTo(1)
         assertThat(view.played.map { it.first }).containsExactly(HapticFeedbackConstants.CONFIRM)
 
-        setting.value = false
+        // Pause asks too; nothing is felt until it goes through.
         confirmation.ask(RunInterruption.Pause, "agent-1") { stopped++ }
+        assertThat(stopped).isEqualTo(1)
+        confirmation.accept()
         assertThat(stopped).isEqualTo(2)
         assertThat(view.played.map { it.first }).containsExactly(HapticFeedbackConstants.CONFIRM, HapticFeedbackConstants.CONFIRM)
     }

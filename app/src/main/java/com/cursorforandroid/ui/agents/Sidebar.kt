@@ -83,6 +83,7 @@ import com.cursorforandroid.domain.NestedRow
 import com.cursorforandroid.ui.components.CursorIcons
 import com.cursorforandroid.ui.components.FlatIconButton
 import com.cursorforandroid.ui.components.PullRefreshHaptics
+import com.cursorforandroid.ui.components.StylusTextInput
 import com.cursorforandroid.ui.components.rememberHaptics
 import com.cursorforandroid.ui.components.pressable
 import com.cursorforandroid.ui.components.SpinnerRing
@@ -113,6 +114,11 @@ data class SidebarCallbacks(
      * ([AgentListUiState.collapsedSections]); the sidebar reads it back from the state rather than keeping its own.
      */
     val onSectionCollapsed: (sectionKey: String, collapsed: Boolean) -> Unit = { _, _ -> },
+    /**
+     * A long group's "Show N more" ([listedInFull] true) or "Show less" was tapped. Like the fold, the device's to
+     * remember ([AgentListUiState.listedInFullSections]); the sidebar reads it back from the state.
+     */
+    val onSectionListedInFull: (sectionKey: String, listedInFull: Boolean) -> Unit = { _, _ -> },
     /** The rows on screen, by agent id, as the list scrolls: what the pull request badges are read for (see `AgentsViewModel.rowsVisible`). */
     val onVisibleRows: (List<String>) -> Unit = {},
     /** The "What's new in …" card above the account footer was tapped: opens the installed version's notes. */
@@ -141,8 +147,8 @@ object SidebarTags {
  * it), Projects / Pinned / date groups of 32dp rows, and the account footer, whose trailing icon filters and groups
  * the chats as the official app's does. A chat's workers, side chats and subagents sit under it as a tree, closed
  * until its count is tapped. Each group folds closed from its header (see [SidebarSectionHeader]), and stays folded
- * across restarts; a long Projects or Pinned group lists its first five rows until "Show N more" is tapped (see
- * [SidebarShortList]). Surface is `--cursor-sidebar` (#181818).
+ * across restarts; a long Projects or Pinned group lists its first five rows until "Show N more" is tapped, and stays
+ * listed in full the same way until "Show less" (see [SidebarShortList]). Surface is `--cursor-sidebar` (#181818).
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -166,8 +172,6 @@ fun Sidebar(
     extendedMode: Boolean = false,
     /** New chats written and not sent, most recent first: listed above every group (see [DraftRow.listed]). */
     drafts: List<DraftRow> = emptyList(),
-    /** Which long groups are listing every row; the shell's, so leaving the sidebar can cut them back (see [SidebarShortLists]). */
-    shortLists: SidebarShortLists = remember { SidebarShortLists() },
     /** Bumped by the shell when something outside asks for the search field (the widget's search button): each bump opens it. */
     searchRequests: Int = 0,
     /** Ctrl is held on a hardware keyboard: the first ten chat rows show the digit that opens them. */
@@ -268,17 +272,16 @@ fun Sidebar(
                 snapshotFlow { listState.layoutInfo.let { info -> (info.visibleItemsInfo.lastOrNull()?.index ?: -1) to info.totalItemsCount } }
                     .collect { (lastVisible, total) -> if (total > 0 && lastVisible >= total - MoreAgentsPrefetchRows) callbacks.onLoadMore() }
             }
-            // Derived, for the long groups listed in full are read from [shortLists] as the groups are worked out.
             val groups by remember(
                 state.sections,
                 state.collapsedSections,
+                state.listedInFullSections,
                 state.shortenLongGroups,
                 query,
                 expandedParents,
                 selectedAgentId,
-                shortLists,
             ) {
-                derivedStateOf { sidebarGroups(state, query, expandedParents, selectedAgentId, shortLists) }
+                derivedStateOf { sidebarGroups(state, query, expandedParents, selectedAgentId) }
             }
             val numbered = remember(groups) { SidebarGroup.numbered(groups) }
             val shortcutNumbers = remember(numbered) { SidebarGroup.shortcutNumbers(numbered) }
@@ -368,7 +371,7 @@ fun Sidebar(
                                     expanded = listedInFull,
                                     hidden = cut.hidden,
                                     hasUnread = section.rows.any { it.agent.id !in shownIds && it.isUnread },
-                                    onClick = { if (listedInFull) shortLists.collapse(section.key) else shortLists.expand(section.key) },
+                                    onClick = { callbacks.onSectionListedInFull(section.key, !listedInFull) },
                                     modifier = rowMotion(animateRows).padding(vertical = CursorDimens.sidebarRowGap / 2),
                                 )
                             }
@@ -468,16 +471,15 @@ internal class SidebarGroup(
 }
 
 /**
- * The groups of [state] as the sidebar lists them. Folded groups are the device's memory, read back from the state; a
- * search opens every group, and every tree in it, for as long as it is typed, since its matches may sit behind a fold,
- * and lists every match rather than a long group's first rows.
+ * The groups of [state] as the sidebar lists them. Folded groups, and the long groups listed in full, are the device's
+ * memory, read back from the state; a search opens every group, and every tree in it, for as long as it is typed,
+ * since its matches may sit behind a fold, and lists every match rather than a long group's first rows.
  */
 internal fun sidebarGroups(
     state: AgentListUiState,
     query: String,
     expandedParents: List<String>,
     selectedAgentId: String?,
-    shortLists: SidebarShortLists,
 ): List<SidebarGroup> = state.sections.map { section ->
     val searching = query.isNotBlank()
     val expanded = searching || section.key !in state.collapsedSections
@@ -487,7 +489,7 @@ internal fun sidebarGroups(
     } else {
         null
     }
-    SidebarGroup(section, expanded, expandedIds, cut, shortLists.isExpanded(section.key))
+    SidebarGroup(section, expanded, expandedIds, cut, section.key in state.listedInFullSections)
 }
 
 /** How the sidebar's rows come, go and move: animated, or where [animate] is false put straight where they belong. */
@@ -583,22 +585,24 @@ private fun SearchField(value: String, onValueChange: (String) -> Unit, onClose:
     ) {
         Icon(CursorIcons.Search, null, tint = colors.iconTertiary, modifier = Modifier.size(15.dp))
         Spacer(Modifier.width(8.dp))
-        BasicTextField(
-            value = field,
-            onValueChange = {
-                field = it
-                if (it.text != value) onValueChange(it.text)
-            },
-            singleLine = true,
-            textStyle = type.base.copy(color = colors.textPrimary),
-            cursorBrush = SolidColor(colors.textPrimary),
-            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-            keyboardActions = KeyboardActions(onSearch = {}),
-            modifier = Modifier.weight(1f).focusRequester(focusRequester),
-            decorationBox = { inner ->
-                Box { if (field.text.isEmpty()) Text("Search chats", style = type.base, color = colors.textQuaternary); inner() }
-            },
-        )
+        StylusTextInput {
+            BasicTextField(
+                value = field,
+                onValueChange = {
+                    field = it
+                    if (it.text != value) onValueChange(it.text)
+                },
+                singleLine = true,
+                textStyle = type.base.copy(color = colors.textPrimary),
+                cursorBrush = SolidColor(colors.textPrimary),
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                keyboardActions = KeyboardActions(onSearch = {}),
+                modifier = Modifier.weight(1f).focusRequester(focusRequester),
+                decorationBox = { inner ->
+                    Box { if (field.text.isEmpty()) Text("Search chats", style = type.base, color = colors.textQuaternary); inner() }
+                },
+            )
+        }
         FlatIconButton(CursorIcons.Close, "Close search", onClick = onClose, size = 28.dp, iconSize = 14.dp)
     }
 }

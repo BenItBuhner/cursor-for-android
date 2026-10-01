@@ -28,11 +28,10 @@ import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
 
 /**
- * The Beta transcript engine is the default (2026-09-24): for a fresh install, and for every upgrade that never chose
- * an engine, while an install that chose Stable keeps it. The preference tells the two apart without a migration —
- * only the Settings switch (and the Stable / Beta picker before it) ever wrote it, so an absent key is "never chosen"
- * and a stored `stable` is the reader's own opt-out. Beta reads a private surface, so the default applies in Extended
- * mode alone: default mode stays on the documented API whatever the preference says.
+ * The Beta transcript engine is the only one Extended mode renders with (2026-10-01, "Full transcript history" always
+ * on): for a fresh install, for every upgrade that never chose an engine, and for one that had turned the switch off —
+ * its stored `stable` is no longer read, and the retired-settings sweep deletes it. Beta reads a private surface, so
+ * it applies in Extended mode alone: default mode stays on the documented API whatever the engine.
  */
 @RunWith(AndroidJUnit4::class)
 @Config(sdk = [35])
@@ -71,7 +70,6 @@ class TranscriptEngineDefaultTest {
         mode.migrateInstall()
 
         assertThat(mode.engine()).isEqualTo(TranscriptEngine.BETA)
-        assertThat(prefs.transcriptEngine.first()).isEqualTo(TranscriptEngine.BETA)
         // Default mode: the documented API only, exactly as before the default changed.
         assertThat(mode.capabilities()).isEqualTo(Capabilities.DOCUMENTED)
 
@@ -99,7 +97,7 @@ class TranscriptEngineDefaultTest {
     }
 
     @Test
-    fun `an upgrade that had turned the engine off stays on Stable, through the mode going off and on and a sign-out`() = runBlocking<Unit> {
+    fun `an upgrade that had turned the engine off is on Beta, and the stored choice is swept away`() = runBlocking<Unit> {
         earlierBuild {
             it.extendedModeOn()
             it[stringPreferencesKey("transcript_engine")] = "stable"
@@ -109,20 +107,14 @@ class TranscriptEngineDefaultTest {
         val mode = mode(prefs)
         mode.migrateInstall()
 
-        assertThat(mode.engine()).isEqualTo(TranscriptEngine.STABLE)
-        assertThat(mode.capabilities()).isEqualTo(Capabilities.EXTENDED_STABLE)
-        assertThat(mode.capabilities().accountTranscript).isFalse()
+        assertThat(mode.engine()).isEqualTo(TranscriptEngine.BETA)
+        assertThat(mode.capabilities()).isEqualTo(Capabilities.EXTENDED)
+        assertThat(mode.capabilities().accountTranscript).isTrue()
 
+        assertThat(prefs.forgetRetiredSettings()).isTrue()
         assertThat(mode.disable()).isTrue()
         assertThat(mode.capabilities()).isEqualTo(Capabilities.DOCUMENTED)
         assertThat(mode.enable()).isTrue()
-        assertThat(mode.engine()).isEqualTo(TranscriptEngine.STABLE)
-        assertThat(mode.capabilities()).isEqualTo(Capabilities.EXTENDED_STABLE)
-
-        prefs.clearSession()
-        assertThat(PreferencesStore(context).transcriptEngine.first()).isEqualTo(TranscriptEngine.STABLE)
-        // And the switch still goes back to Beta.
-        assertThat(mode.setEngine(TranscriptEngine.BETA)).isTrue()
         assertThat(mode.capabilities()).isEqualTo(Capabilities.EXTENDED)
     }
 
@@ -158,7 +150,7 @@ class TranscriptEngineDefaultTest {
     }
 
     @Test
-    fun `nothing but the switch writes the engine, so a never-chosen install keeps following the default`() = runBlocking<Unit> {
+    fun `nothing writes the engine, so no install can be left on Stable`() = runBlocking<Unit> {
         val key = stringPreferencesKey("transcript_engine")
         val store: DataStore<Preferences> = PreferenceDataStoreFactory.create(
             scope = CoroutineScope(Dispatchers.IO + SupervisorJob()),
@@ -167,8 +159,8 @@ class TranscriptEngineDefaultTest {
         val prefs = PreferencesStore(context, store)
         val mode = mode(prefs)
 
-        // Every path an install goes through without touching the switch: the first launch's step, reading the
-        // engine and the capabilities, the mode on (its first pin sync owed) and off (the wipe), a sign-out.
+        // Every path an install goes through: the first launch's step, reading the engine and the capabilities, the
+        // mode on (its first pin sync owed) and off (the wipe), a sign-out — and the tests' seam swapping the engine.
         mode.migrateInstall()
         mode.engine()
         mode.capabilities()
@@ -177,11 +169,9 @@ class TranscriptEngineDefaultTest {
         mode.capabilities.first()
         mode.disable()
         prefs.clearSession()
-        assertThat(store.data.first()[key]).isNull()
-        assertThat(mode.engine()).isEqualTo(TranscriptEngine.BETA)
-
-        // The switch, turned off: an explicit Stable, stored as such.
         assertThat(mode.setEngine(TranscriptEngine.STABLE)).isTrue()
-        assertThat(store.data.first()[key]).isEqualTo("stable")
+        assertThat(store.data.first()[key]).isNull()
+        // A new process starts on Beta again.
+        assertThat(mode(prefs).engine()).isEqualTo(TranscriptEngine.BETA)
     }
 }

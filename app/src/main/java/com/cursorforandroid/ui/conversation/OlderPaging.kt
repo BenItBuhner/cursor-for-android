@@ -76,17 +76,23 @@ internal class OlderPaging {
 
 /**
  * Pages older turns into the transcript [list] as [OlderPaging] says, through [loadOlder], while [canPage] (the chat
- * has older turns, rows are shown, and no page is on its way). [rows] are the transcript's rows as drawn.
+ * has older turns, rows are shown, and no page is on its way). [rows] are the transcript's rows as drawn, oldest first.
+ *
+ * Each page landed is asked about afresh, by the oldest row drawn: the page's loading is read off a conflated
+ * presentation, which can go from one page to the next without ever showing it loading. Keyed on [canPage] alone, a
+ * page that landed with the reader already at the top left the list wanting one more page all along, and the wish,
+ * never having lapsed, was never asked again: the reader was left at "Older messages" (Bennett, 2026-09-29).
  */
 @Composable
 internal fun OlderPagingEffect(key: Any, list: LazyListState, rows: List<TranscriptRow>, canPage: Boolean, loadOlder: () -> Unit) {
     val paging = remember(key) { OlderPaging() }
     val load by rememberUpdatedState(loadOlder)
     val replyShown = remember(rows) { OlderPaging.replyShown(rows) }
+    val oldest = rows.firstOrNull()?.key
     LaunchedEffect(paging, list) {
         snapshotFlow { list.isScrollInProgress }.collect { scrolling -> if (scrolling) paging.scrolled() }
     }
-    LaunchedEffect(paging, list, canPage, replyShown) {
+    LaunchedEffect(paging, list, canPage, replyShown, oldest) {
         if (!canPage) return@LaunchedEffect
         snapshotFlow { paging.wants(list.layoutInfo, list.isScrollInProgress, replyShown) }
             .distinctUntilChanged()

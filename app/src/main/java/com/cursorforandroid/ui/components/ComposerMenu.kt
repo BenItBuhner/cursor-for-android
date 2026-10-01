@@ -480,16 +480,18 @@ private fun MenuSearchField(value: String, onValueChange: (String) -> Unit, plac
     ) {
         Icon(CursorIcons.Search, null, tint = colors.iconTertiary, modifier = Modifier.size(14.dp))
         Spacer(Modifier.width(6.dp))
-        BasicTextField(
-            value = value,
-            onValueChange = onValueChange,
-            singleLine = true,
-            textStyle = type.base.copy(color = colors.textPrimary),
-            cursorBrush = SolidColor(colors.textPrimary),
-            keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.None, autoCorrectEnabled = false),
-            modifier = Modifier.weight(1f).focusRequester(requester).onFocusChanged { focused = it.isFocused },
-            decorationBox = { inner -> Box { if (value.isEmpty()) Text(placeholder, style = type.base, color = colors.textQuaternary, maxLines = 1); inner() } },
-        )
+        StylusTextInput {
+            BasicTextField(
+                value = value,
+                onValueChange = onValueChange,
+                singleLine = true,
+                textStyle = type.base.copy(color = colors.textPrimary),
+                cursorBrush = SolidColor(colors.textPrimary),
+                keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.None, autoCorrectEnabled = false),
+                modifier = Modifier.weight(1f).focusRequester(requester).onFocusChanged { focused = it.isFocused },
+                decorationBox = { inner -> Box { if (value.isEmpty()) Text(placeholder, style = type.base, color = colors.textQuaternary, maxLines = 1); inner() } },
+            )
+        }
     }
 }
 
@@ -615,20 +617,22 @@ private fun SheetField(
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
     val style = if (mono) type.code.copy(fontSize = type.base.fontSize, lineHeight = type.base.lineHeight) else type.base
-    BasicTextField(
-        value = value,
-        onValueChange = onValueChange,
-        singleLine = singleLine,
-        minLines = if (singleLine) 1 else 2,
-        textStyle = style.copy(color = colors.textPrimary),
-        cursorBrush = SolidColor(colors.textPrimary),
-        keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.None, autoCorrectEnabled = false, keyboardType = keyboardType),
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 16.dp)
-            .stylusWriting()
-            .background(colors.fillFaint, CursorTheme.shapes.base)
-            .padding(horizontal = 10.dp, vertical = 8.dp),
-        decorationBox = { inner -> Box { if (value.isEmpty()) Text(placeholder, style = style, color = colors.textQuaternary); inner() } },
-    )
+    StylusTextInput {
+        BasicTextField(
+            value = value,
+            onValueChange = onValueChange,
+            singleLine = singleLine,
+            minLines = if (singleLine) 1 else 2,
+            textStyle = style.copy(color = colors.textPrimary),
+            cursorBrush = SolidColor(colors.textPrimary),
+            keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.None, autoCorrectEnabled = false, keyboardType = keyboardType),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp)
+                .stylusWriting()
+                .background(colors.fillFaint, CursorTheme.shapes.base)
+                .padding(horizontal = 10.dp, vertical = 8.dp),
+            decorationBox = { inner -> Box { if (value.isEmpty()) Text(placeholder, style = style, color = colors.textQuaternary); inner() } },
+        )
+    }
 }

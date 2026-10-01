@@ -15,6 +15,7 @@ import com.cursorforandroid.data.repo.VmRead
 import com.cursorforandroid.domain.Agent
 import com.cursorforandroid.domain.AgentDiff
 import com.cursorforandroid.domain.AgentDiffFile
+import com.cursorforandroid.domain.AgentStoreKind
 import com.cursorforandroid.domain.AgentStoreRef
 import com.cursorforandroid.domain.AgentUsage
 import com.cursorforandroid.domain.ContextDocument
@@ -590,11 +591,13 @@ class PanelViewModel(private val graph: AppGraph, val agentId: String) : ViewMod
      */
     fun openStorePath(path: StorePath, chatAgentId: String, otherwise: () -> Unit) {
         if (path.isImage || path.isVideo) {
-            openMedia(path.text, path.fileName, path.isVideo)
+            // The tab is read in this chat's panel, whose `self` may be another agent's than the one the link was in.
+            openMedia(path.pinnedTo(chatAgentId).text, path.fileName, path.isVideo)
             return
         }
         val owner = path.ownerId(chatAgentId)
-        fun holds(store: AgentStoreRef) = store.storeId == path.mount || (owner != null && store.sourceId == owner)
+        fun holds(store: AgentStoreRef) = store.storeId == path.mount || (owner != null && store.sourceId == owner) ||
+            (path.mount == StorePath.USER && store.kind == AgentStoreKind.USER) || (path.mount == StorePath.TEAM && store.kind == AgentStoreKind.TEAM)
         context.value.stores.valueOrNull?.all?.firstOrNull(::holds)?.let { store ->
             openDocument(store, path.relativePath)
             return

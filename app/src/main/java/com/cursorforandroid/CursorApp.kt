@@ -38,7 +38,7 @@ class CursorApp : Application(), Configuration.Provider {
         graph = AppGraph(this, crashLog = crashLog)
         graph.warmUp()
         crashLog.install { graph.crashContext() }
-        crashLog.watchMemory()
+        crashLog.watchMemory(onPressure = { graph.trimMemory(ComponentCallbacks2.TRIM_MEMORY_UI_HIDDEN) })
         // How the last processes ended, by Android's own record: the deaths no handler sees (the low-memory killer,
         // an ANR, a native crash), then the card for whatever was not dismissed yet. Off the main thread: disk reads.
         Thread({

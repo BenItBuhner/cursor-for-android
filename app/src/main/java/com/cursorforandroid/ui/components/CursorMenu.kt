@@ -97,6 +97,8 @@ fun CursorMenu(
     keepsKeyboard: Boolean = false,
     /** Where a right-click opened the menu, in window coordinates: the menu opens at that point, not beside its anchor. */
     at: IntOffset? = null,
+    /** Narrower for a menu of a few short choices (the viewer's speeds); rows never make it narrower than they need. */
+    minWidth: Dp = CursorDimens.menuMinWidth,
     content: @Composable ColumnScope.() -> Unit,
 ) {
     val state = remember { MutableTransitionState(false) }
@@ -150,7 +152,7 @@ fun CursorMenu(
                     .menuShadow(colors.elevated, colors.shadow)
                     .cursorSurface(colors.elevated, colors.strokeSubtle, CursorTheme.shapes.menu)
                     .heightIn(max = maxHeight)
-                    .widthIn(min = CursorDimens.menuMinWidth, max = CursorDimens.menuMaxWidth)
+                    .widthIn(min = minWidth, max = CursorDimens.menuMaxWidth)
                     .width(IntrinsicSize.Max)
                     .fadingVerticalScroll(surface = colors.elevated)
                     .padding(vertical = CursorDimens.menuInset),

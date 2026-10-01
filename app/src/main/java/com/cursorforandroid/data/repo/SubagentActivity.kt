@@ -6,6 +6,9 @@ import com.cursorforandroid.domain.RunStatus
 import com.cursorforandroid.domain.SubagentChild
 import com.cursorforandroid.domain.SubagentRows
 import com.cursorforandroid.domain.TimelineItem
+import kotlin.coroutines.CoroutineContext
+import kotlin.coroutines.EmptyCoroutineContext
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.SharingStarted
@@ -16,6 +19,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onStart
@@ -36,6 +40,12 @@ class SubagentActivity(
     /** The live snapshots of one run of a chat. */
     private val run: (agentId: String, runId: String) -> Flow<Run>,
     private val models: StateFlow<List<ModelOption>>,
+    /**
+     * Where each child's row and stream are worked into its state: every event its run streams, a hundred a second
+     * for each child at work. The app's is [Dispatchers.Default], so none of it runs on the main thread, which is
+     * handed only the result (see `SubagentBoard`); none here, for a caller that steps through it.
+     */
+    private val context: CoroutineContext = EmptyCoroutineContext,
 ) {
     /** What a run's stream has said so far: its items, and whether it has seen the run end and how. */
     data class Run(val items: List<TimelineItem>, val finished: Boolean, val status: RunStatus)
@@ -45,6 +55,7 @@ class SubagentActivity(
         load = { id -> agents.loadDetail(id).getOrNull() },
         run = { agentId, runId -> hub.snapshots(agentId, runId).map { Run(it.items, it.finished, it.status) } },
         models = models,
+        context = Dispatchers.Default,
     )
 
     /** The child [agentId] as its row and its live run say it, as it moves; null until anything is known of it. */
@@ -72,7 +83,7 @@ class SubagentActivity(
             }
             .distinctUntilChanged()
         combine(agent, live, models) { a, l, m -> merge(a?.let { SubagentRows.childOf(it, m) }, l) }.distinctUntilChanged().collect { send(it) }
-    }
+    }.flowOn(context)
 
     /** The list's word on the child, with its live run's over it: the run's status, step and action, and a question it waits on. */
     private fun merge(listed: SubagentChild?, live: SubagentChild?): SubagentChild? {

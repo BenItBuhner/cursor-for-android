@@ -47,7 +47,7 @@ class ExtendedModeTest {
     }
 
     @Test
-    fun `the transcript engine is Beta for everyone until Stable is chosen, and only Beta reads the record`() = runBlocking<Unit> {
+    fun `the transcript engine is Beta for everyone, and only Beta reads the record`() = runBlocking<Unit> {
         val mode = mode()
         // The default, for a fresh install and an upgrade alike: nothing on the device says otherwise.
         assertThat(mode.engine()).isEqualTo(TranscriptEngine.BETA)
@@ -59,8 +59,8 @@ class ExtendedModeTest {
         // Extended mode on, never chosen: Beta, what 0.3.58 did, the record included.
         assertThat(mode.capabilities()).isEqualTo(Capabilities.EXTENDED)
         assertThat(mode.capabilities.first()).isEqualTo(Capabilities.EXTENDED)
-        // Stable chosen: every private surface but the record read and the goal it carries; persisted, and read by
-        // the flow the screens collect.
+        // Stable, as the tests' seam sets it for this process: every private surface but the record read and the goal
+        // it carries, read by the flow the screens collect too.
         assertThat(mode.setEngine(TranscriptEngine.STABLE)).isTrue()
         assertThat(mode.engine()).isEqualTo(TranscriptEngine.STABLE)
         val stable = mode.capabilities()
@@ -74,7 +74,8 @@ class ExtendedModeTest {
         assertThat(stable.anyExtended).isTrue()
         assertThat(stable.copy(accountTranscript = true, accountGoal = true)).isEqualTo(Capabilities.EXTENDED)
         assertThat(mode.capabilities.first()).isEqualTo(Capabilities.EXTENDED_STABLE)
-        assertThat(mode().engine()).isEqualTo(TranscriptEngine.STABLE)
+        // Never stored: another process is on Beta.
+        assertThat(mode().engine()).isEqualTo(TranscriptEngine.BETA)
         // Back to Beta.
         assertThat(mode.setEngine(TranscriptEngine.BETA)).isTrue()
         assertThat(mode.capabilities()).isEqualTo(Capabilities.EXTENDED)
