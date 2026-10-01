@@ -126,9 +126,12 @@ class UpdateCache(private val cache: JsonDiskCache) {
  * outcome comes back through [onInstallStatus]. On Android 12+ the update applies without a dialog once "Install
  * unknown apps" has been allowed (the installer is updating itself); earlier releases always confirm.
  *
- * Automatic mode, driven by the periodic job and the process lifecycle: check, download on an unmetered network,
- * then install while the app is not on screen and no agent is being streamed — or, where a confirmation is needed,
- * post a notification instead. Everything is single-flight; a second request while one is running is ignored.
+ * Only the *check* ever happens on the app's own initiative — from the periodic job and whenever the app comes
+ * forward — and all a check does is settle [state], which the sidebar's hint and the Settings row read. The
+ * download and the install are the user's: each starts from a button in Settings and nowhere else. Nothing here
+ * downloads, commits a session, shows a confirmation or posts a notification while the app is off screen, and a
+ * release found by a check is never acted on beyond being shown. Everything is single-flight; an automatic pass
+ * that finds another operation in flight is skipped.
  */
 class UpdateManager(
     private val client: GitHubReleasesClient,
@@ -137,12 +140,8 @@ class UpdateManager(
     private val platform: UpdatePlatform,
     /** Where downloaded APKs live (`cacheDir/updates`); anything in it is a verified download named by versionCode. */
     private val downloadDir: File,
-    /** Whether an agent is being streamed live; a silent install would kill that connection. */
-    private val agentsRunning: () -> Boolean,
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
     private val now: () -> Long = AppClock::now,
-    /** How long the app has to stay off screen and idle before a silent install is committed. */
-    private val backgroundIdleMs: Long = BACKGROUND_IDLE_MS,
     /** Waits out a duration. A seam so the install watchdog can be driven without waiting ten real minutes. */
     private val sleep: suspend (Long) -> Unit = { delay(it) },
 ) {
@@ -176,11 +175,8 @@ class UpdateManager(
 
     fun checkNow() = launchExclusive { check() }
 
-    /** The user asked for the download; if they leave before it lands, it is applied or announced as usual. */
-    fun downloadNow() = launchExclusive {
-        download()
-        if (autoUpdate.first()) installOrNotifyInBackground()
-    }
+    /** The user asked for the download. It lands as [UpdateState.Downloaded] and waits there for their Install. */
+    fun downloadNow() = launchExclusive { download() }
 
     fun installNow() = launchExclusive { install() }
 
@@ -201,8 +197,9 @@ class UpdateManager(
     suspend fun setAutoUpdate(enabled: Boolean) = prefs.setAutoUpdate(enabled)
 
     /**
-     * From the "ready to install" notification, or an install left half-way by a previous process: shows the
-     * pending confirmation again if there is one, otherwise starts the install over from the downloaded file.
+     * Settings' "Confirm", for an install the system is waiting on the user for — or one a previous process left
+     * half-way: shows the pending confirmation again if there is one, otherwise starts the install over from the
+     * downloaded file.
      */
     fun resumePendingInstall() = launchExclusive {
         val confirmation = pendingConfirmation
@@ -227,54 +224,28 @@ class UpdateManager(
         giveUpOnSession(current.release)
     }
 
-    // ---- automatic mode (job + process lifecycle) --------------------------------------------------------------------
+    // ---- automatic checks (job + process lifecycle) ----------------------------------------------------------------
 
-    /** The periodic job: check, download on Wi-Fi, install or notify. */
+    /**
+     * The periodic job: a check, and only a check. What it finds is shown — the sidebar's hint, the Settings row —
+     * and left there for the user; nothing is downloaded or installed, and nothing is announced.
+     */
     suspend fun runScheduled() = exclusive {
         if (!autoUpdate.first()) return@exclusive
         if (state.value is UpdateState.Installing) return@exclusive
         check()
-        downloadIfUnmetered()
-        installOrNotifyInBackground()
     }
 
     /**
      * The app came to the foreground: a check, at most once every [FOREGROUND_CHECK_INTERVAL_MS] (cheap, thanks to
-     * the ETag), and whether or not one was due, the download a metered network deferred last time can happen now
-     * that the phone may be on Wi-Fi. The periodic job keeps its own twelve-hour schedule for a device the app is
-     * not opened on; this is what keeps a release from arriving a day late on one it is.
+     * the ETag), so that an update is in the sidebar within the hour of its release. The periodic job keeps its own
+     * twelve-hour schedule for a device the app is not opened on. Like the job, this checks and does nothing else.
      */
     suspend fun onAppStarted() = exclusive {
         if (!autoUpdate.first()) return@exclusive
         if (state.value is UpdateState.Installing) return@exclusive
         val last = prefs.updateLastCheckedAt.first() ?: 0L
         if (now() - last >= FOREGROUND_CHECK_INTERVAL_MS) check()
-        downloadIfUnmetered()
-    }
-
-    /** The app left the screen: a downloaded update can now be applied without pulling the rug from under the user. */
-    suspend fun onAppStopped() = exclusive {
-        if (!autoUpdate.first()) return@exclusive
-        installOrNotifyInBackground()
-    }
-
-    private suspend fun downloadIfUnmetered() {
-        val available = state.value as? UpdateState.Available ?: return
-        if (available.signatureMismatch || platform.isMeteredNetwork()) return
-        download()
-    }
-
-    private suspend fun installOrNotifyInBackground() {
-        val downloaded = state.value as? UpdateState.Downloaded ?: return
-        if (platform.isAppVisible()) return
-        val silent = platform.sdkInt >= SILENT_SELF_UPDATE_SDK && platform.canRequestInstalls()
-        if (silent) {
-            if (!agentsRunning()) install(background = true)
-        } else if (prefs.notifiedUpdateVersionCode.first() != downloaded.release.versionCode) {
-            // Recorded only once it was really posted: a card that notifications were off for has not been shown, and
-            // the next pass must offer it again rather than treat this release as announced forever.
-            if (platform.notifyReadyToInstall(downloaded.release)) prefs.setNotifiedUpdateVersionCode(downloaded.release.versionCode)
-        }
     }
 
     // ---- the operations ---------------------------------------------------------------------------------------------
@@ -367,14 +338,12 @@ class UpdateManager(
         return _state.value
     }
 
-    /** Hands the downloaded APK to the package installer; [onInstallStatus] receives the outcome. */
-    suspend fun install(): UpdateState = install(background = false)
-
     /**
-     * [background] is an install the app decided on rather than the user: it may only be committed while the app is
-     * off screen with nothing streaming, and it has to still be true after [backgroundIdleMs] of that.
+     * Hands the downloaded APK to the package installer; [onInstallStatus] receives the outcome. Reached from the
+     * user's Install (or Retry, or Confirm after a lost session) in Settings and from nowhere else: the app never
+     * decides on an install by itself.
      */
-    private suspend fun install(background: Boolean): UpdateState {
+    suspend fun install(): UpdateState {
         ensureRestored()
         val current = state.value
         val release = when (current) {
@@ -400,36 +369,18 @@ class UpdateManager(
                 }
                 validate(apk, release)
             }
-            if (background && !awaitInstallWindow()) {
-                _state.value = UpdateState.Downloaded(release, apk)
-                return _state.value
-            }
             prefs.setPendingUpdateVersionCode(release.versionCode)
             pendingConfirmation = null
             _state.value = UpdateState.Installing(release)
             var recorded: PendingInstall? = null
-            val committed = withContext(Dispatchers.IO) {
-                platform.install(
-                    apk,
-                    release,
-                    // Staging the APK is the slow part, and the window the decision was made in can close during
-                    // it. A user-initiated install has no window to lose.
-                    canCommit = { !background || installWindowOpen() },
-                ) { sessionId ->
+            withContext(Dispatchers.IO) {
+                platform.install(apk, release) { sessionId ->
                     // On disk before the session is committed: the verdict can arrive in a process that has nothing
                     // in memory about this install, including one the verdict itself started.
                     val record = PendingInstall(sessionId, release, now())
                     recorded = record
                     cache.writePending(record)
                 }
-            }
-            if (!committed) {
-                // The gate closed while the bytes were being staged; the session is abandoned and nothing was
-                // committed, so there is no verdict to wait for and the download is simply still ready.
-                prefs.setPendingUpdateVersionCode(null)
-                cache.clearPending()
-                _state.value = UpdateState.Downloaded(release, apk)
-                return _state.value
             }
             // Reached only when the commit did not replace this process on the spot: from here the record says a
             // verdict is genuinely owed, and the watchdog gives up on it if none arrives.
@@ -447,19 +398,6 @@ class UpdateManager(
         }
         return _state.value
     }
-
-    /**
-     * Whether the app is settled enough to be replaced under itself: off screen with no run being streamed, still so
-     * after a moment of it. The user can come back, or a stream can start, between a decision and a commit; this is
-     * the last look before the point of no return.
-     */
-    private suspend fun awaitInstallWindow(): Boolean {
-        if (!installWindowOpen()) return false
-        delay(backgroundIdleMs)
-        return installWindowOpen()
-    }
-
-    private fun installWindowOpen(): Boolean = !platform.isAppVisible() && !agentsRunning()
 
     /**
      * Gives a committed session [PENDING_INSTALL_TTL_MS] to produce a verdict. `PackageInstaller` is not obliged to
@@ -496,7 +434,6 @@ class UpdateManager(
         runCatching { platform.abandonSessions() }
         cache.clearPending()
         prefs.setPendingUpdateVersionCode(null)
-        platform.cancelNotifications()
         val apk = verifiedApk(release)
         _state.value = if (apk != null) UpdateState.Downloaded(release, apk) else UpdateState.Available(release, now())
     }
@@ -522,16 +459,16 @@ class UpdateManager(
             PackageInstaller.STATUS_PENDING_USER_ACTION -> {
                 pendingConfirmation = confirmation
                 _state.value = UpdateState.Installing(release, awaitingConfirmation = true)
-                if (confirmation == null) return
-                // From the background an activity cannot be started; the notification brings the user back to it.
-                if (platform.isAppVisible() && platform.startConfirmation(confirmation)) return
-                platform.notifyReadyToInstall(release)
+                // The user pressed Install a moment ago, so the confirmation follows straight on while they are
+                // still looking. Off screen it is not started — a dialog over whatever they moved on to is exactly
+                // what this updater never does — and nothing is posted about it either: the state says what is
+                // waiting, the sidebar's hint and Settings' Confirm bring it up when they come back.
+                if (confirmation != null && platform.isAppVisible()) platform.startConfirmation(confirmation)
             }
             PackageInstaller.STATUS_SUCCESS -> {
                 // Rare for a self-update (the process is usually gone by now); the next start sees the pending record.
                 pendingConfirmation = null
                 prefs.setPendingUpdateVersionCode(null)
-                platform.cancelNotifications()
                 pruneDownloads(keep = null)
                 _state.value = UpdateState.Installed(release.versionName)
             }
@@ -539,13 +476,11 @@ class UpdateManager(
                 // The user declined the confirmation; the download stays ready for another go.
                 pendingConfirmation = null
                 prefs.setPendingUpdateVersionCode(null)
-                platform.cancelNotifications()
                 _state.value = UpdateState.Downloaded(release, apkFile(release))
             }
             else -> {
                 pendingConfirmation = null
                 prefs.setPendingUpdateVersionCode(null)
-                platform.cancelNotifications()
                 if (status == PackageInstaller.STATUS_FAILURE_INVALID) discard(release)
                 _state.value = UpdateState.Failed(UpdatePhase.Install, installFailureMessage(status, message), release)
             }
@@ -565,7 +500,6 @@ class UpdateManager(
                 pruneDownloads(keep = null)
                 cache.clear()
                 cache.clearPending()
-                platform.cancelNotifications()
                 _state.value = UpdateState.Installed(platform.installedVersionName)
                 return
             }
@@ -748,9 +682,9 @@ class UpdateManager(
 
     /**
      * Something the user asked for: runs on the manager's scope once whatever is in flight has finished. Never
-     * dropped — the automatic pass that runs when the app comes forward briefly holds the lock at the very moment a
-     * notification tap or a Settings button arrives, and a request that vanished then would look like a dead button.
-     * Each operation re-reads the state when its turn comes, so one that no longer applies is a no-op.
+     * dropped — the check that runs when the app comes forward briefly holds the lock at the very moment a Settings
+     * button arrives, and a request that vanished then would look like a dead button. Each operation re-reads the
+     * state when its turn comes, so one that no longer applies is a no-op.
      */
     private fun launchExclusive(block: suspend () -> Unit) {
         scope.launch {
@@ -761,7 +695,7 @@ class UpdateManager(
         }
     }
 
-    /** An automatic pass: runs [block] in the caller's coroutine unless another operation is in flight, in which case it is skipped. */
+    /** An automatic check: runs [block] in the caller's coroutine unless another operation is in flight, in which case it is skipped. */
     private suspend fun exclusive(block: suspend () -> Unit) {
         if (!busy.tryLock()) return
         try {
@@ -773,16 +707,12 @@ class UpdateManager(
     }
 
     companion object {
-        /** Android 12: `setRequireUserAction(USER_ACTION_NOT_REQUIRED)` lets an app update itself without a prompt. */
-        const val SILENT_SELF_UPDATE_SDK = 31
         /**
          * The least time between two checks made because the app came forward. An hour: a release cut while the
          * app was open is seen within the hour, and an app opened many times a day spends at most 24 of the 60
          * anonymous requests GitHub allows the address each hour — leaving room for the periodic job and the button.
          */
         const val FOREGROUND_CHECK_INTERVAL_MS = 60 * 60 * 1000L
-        /** Long enough that leaving a screen and coming straight back is not an install window. */
-        const val BACKGROUND_IDLE_MS = 5_000L
         /** How long a committed session's verdict is still expected; after that the session is treated as orphaned. */
         const val PENDING_INSTALL_TTL_MS = 10 * 60 * 1000L
         const val SIGNATURE_MISMATCH_MESSAGE = "This release is signed with a different key than the installed build, so Android can't update it in place. Uninstall Cursor, then install the APK from the release page; you'll sign in again afterwards."

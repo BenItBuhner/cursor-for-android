@@ -15,9 +15,12 @@ class ApkInfo(
 )
 
 /**
- * The device-side operations behind [UpdateManager]: package facts, connectivity, process visibility and the
- * `PackageInstaller` session itself. Kept behind an interface so the manager's state machine is exercised in
- * tests with a fake, while the Android implementation stays thin.
+ * The device-side operations behind [UpdateManager]: package facts, process visibility and the `PackageInstaller`
+ * session itself. Kept behind an interface so the manager's state machine is exercised in tests with a fake, while
+ * the Android implementation stays thin.
+ *
+ * Deliberately no way to post a notification or to reach the network for a download decision: an update is shown
+ * in the app and acted on from Settings, so the platform has nothing to announce.
  */
 interface UpdatePlatform {
     val installedVersionCode: Int
@@ -37,9 +40,10 @@ interface UpdatePlatform {
     /** Whether the user has allowed this app to install packages ("Install unknown apps"). */
     fun canRequestInstalls(): Boolean
 
-    fun isMeteredNetwork(): Boolean
-
-    /** True while any of the app's screens is started; false in the background. */
+    /**
+     * True while any of the app's screens is started; false in the background. Decides one thing: whether the
+     * system's confirmation for an install the user just started is brought up now or left for Settings' Confirm.
+     */
     fun isAppVisible(): Boolean
 
     /** Digests of the installed build's signing certificates; empty when they cannot be read. */
@@ -54,17 +58,8 @@ interface UpdatePlatform {
      *
      * [onSessionCreated] runs with the new session's id before it is committed, so a caller can record what the
      * verdict will be about while there is still no verdict to miss.
-     *
-     * [canCommit] is asked once the bytes are staged and again immediately before the commit, because staging a
-     * release takes seconds during which what the decision was made from can change. False abandons the staged
-     * session and returns false; nothing has been committed and no verdict will arrive.
      */
-    suspend fun install(
-        apk: File,
-        release: AppRelease,
-        canCommit: suspend () -> Boolean,
-        onSessionCreated: suspend (Int) -> Unit,
-    ): Boolean
+    suspend fun install(apk: File, release: AppRelease, onSessionCreated: suspend (Int) -> Unit)
 
     /** Abandons install sessions this app still owns, e.g. one whose confirmation was never answered. */
     fun abandonSessions()
@@ -78,12 +73,4 @@ interface UpdatePlatform {
 
     /** Brings up the system's install confirmation; false when it could not be started. */
     fun startConfirmation(intent: Intent): Boolean
-
-    /**
-     * A notification inviting the user to install [release]; tapping it returns to the app. False when it could not
-     * be shown at all (no permission, notifications or the channel switched off), which is not the same as unseen.
-     */
-    fun notifyReadyToInstall(release: AppRelease): Boolean
-
-    fun cancelNotifications()
 }

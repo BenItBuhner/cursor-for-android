@@ -150,7 +150,6 @@ class PreferencesStore(
         val autoUpdate = booleanPreferencesKey("auto_update")
         val updateLastCheckedAt = longPreferencesKey("update_last_checked_at")
         val pendingUpdateVersionCode = intPreferencesKey("update_pending_version_code")
-        val notifiedUpdateVersionCode = intPreferencesKey("update_notified_version_code")
         /** The versionName whose What's new page has been opened on this device. */
         val whatsNewReadVersion = stringPreferencesKey("whats_new_read_version")
         val pinsMigrated = booleanPreferencesKey("pins_migrated")
@@ -200,6 +199,8 @@ class PreferencesStore(
             stringPreferencesKey("transcript_engine"),
             // Send crash reports: with no switch left to withdraw it, a consent given once is not kept.
             booleanPreferencesKey("crash_reports"),
+            // The release the "ready to install" notification was last posted for; the updater posts nothing now.
+            intPreferencesKey("update_notified_version_code"),
         )
     }
 
@@ -243,16 +244,17 @@ class PreferencesStore(
 
     // ---- app updates (device-level; deliberately untouched by clearSession) --------------------------------------
 
-    /** Check GitHub for new releases in the background, download them on Wi-Fi and install when the app is idle. On by default. */
+    /**
+     * Check GitHub for new releases on the app's own initiative (the periodic job, and when the app comes forward),
+     * so that one shows in the sidebar. On by default. A check is all it permits: downloading and installing are the
+     * user's, from Settings, whatever this says.
+     */
     val autoUpdate: Flow<Boolean> = data.map { it[Keys.autoUpdate] ?: true }.distinctUntilChanged()
 
     val updateLastCheckedAt: Flow<Long?> = data.map { it[Keys.updateLastCheckedAt] }.distinctUntilChanged()
 
     /** versionCode of the update whose install session was committed; equal to the running build once it succeeded. */
     val pendingUpdateVersionCode: Flow<Int?> = data.map { it[Keys.pendingUpdateVersionCode] }.distinctUntilChanged()
-
-    /** versionCode the "ready to install" notification was last shown for, so it is posted once per release. */
-    val notifiedUpdateVersionCode: Flow<Int?> = data.map { it[Keys.notifiedUpdateVersionCode] }.distinctUntilChanged()
 
     suspend fun setAutoUpdate(enabled: Boolean) = edit { it[Keys.autoUpdate] = enabled }
 
@@ -277,10 +279,6 @@ class PreferencesStore(
 
     suspend fun setPendingUpdateVersionCode(versionCode: Int?) = edit { p ->
         if (versionCode == null) p.remove(Keys.pendingUpdateVersionCode) else p[Keys.pendingUpdateVersionCode] = versionCode
-    }
-
-    suspend fun setNotifiedUpdateVersionCode(versionCode: Int?) = edit { p ->
-        if (versionCode == null) p.remove(Keys.notifiedUpdateVersionCode) else p[Keys.notifiedUpdateVersionCode] = versionCode
     }
 
     /**

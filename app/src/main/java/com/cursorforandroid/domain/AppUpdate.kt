@@ -153,8 +153,9 @@ data class ReleaseNotes(
 enum class UpdatePhase { Check, Download, Install }
 
 /**
- * Where the updater stands. One value at a time; the Settings row, the sidebar hint and the background job all read
- * it. A [Failed] state keeps the release it concerns (if any) so the user can retry from where it stopped.
+ * Where the updater stands. One value at a time; the Settings row and the sidebar hint read it, and it is all a
+ * background check ever changes. A [Failed] state keeps the release it concerns (if any) so the user can retry from
+ * where it stopped.
  */
 sealed interface UpdateState {
     /** The release this state is about, when there is one. */
@@ -187,7 +188,7 @@ sealed interface UpdateState {
     /**
      * An install session has been committed. [awaitingConfirmation] is true once the system asked for the user's
      * consent (Android 8–11, or Android 12+ before "Install unknown apps" was allowed); the confirmation is on
-     * screen, or a notification is waiting to bring it up.
+     * screen, or Settings' Confirm (and the sidebar's hint leading to it) is waiting to bring it up.
      */
     data class Installing(override val release: AppRelease, val awaitingConfirmation: Boolean = false) : UpdateState
 

@@ -997,9 +997,6 @@ class AppGraph(
             cache = UpdateCache(JsonDiskCache(File(app.cacheDir, "update-check"))),
             platform = AndroidUpdatePlatform(app, installedVersionName = appVersion),
             downloadDir = File(app.cacheDir, "updates"),
-            // The background service streaming a run is the one thing a silent self-update would cut off; a monitor
-            // this process never built is holding no stream, and asking is not worth building one.
-            agentsRunning = { lazyRunMonitor.isInitialized() && runMonitor.isRunning },
         ).also { builtUpdates.value = it }
     }
     val updates: UpdateManager get() = lazyUpdates.value

@@ -18,11 +18,24 @@ object LiveNotifications {
     const val CHANNEL_LIVE = "live_agents"
     const val CHANNEL_FINISHED = "agent_finished"
 
+    /**
+     * The channel builds before 0.4.32 posted "Cursor X is ready to install" on, and that card's id. The updater no
+     * longer announces anything — an update is the sidebar's hint and Settings' Install, nothing more — so the first
+     * start of a build without it takes the channel out of the system's notification settings and any card an
+     * earlier build left in the shade with it.
+     */
+    const val RETIRED_CHANNEL_UPDATES = "app_updates"
+    const val RETIRED_UPDATE_READY_ID = 0x55504454
+
     /** `Settings.ACTION_MANAGE_APP_PROMOTED_NOTIFICATIONS`; referenced by value because it only exists from Android 16 QPR1. */
     private const val ACTION_MANAGE_APP_PROMOTED_NOTIFICATIONS = "android.settings.MANAGE_APP_PROMOTED_NOTIFICATIONS"
 
     fun ensureChannels(context: Context) {
         val manager = context.getSystemService(NotificationManager::class.java) ?: return
+        runCatching {
+            manager.cancel(RETIRED_UPDATE_READY_ID)
+            manager.deleteNotificationChannel(RETIRED_CHANNEL_UPDATES)
+        }
         manager.createNotificationChannel(
             NotificationChannel(CHANNEL_LIVE, context.getString(R.string.channel_live_name), NotificationManager.IMPORTANCE_LOW).apply {
                 description = context.getString(R.string.channel_live_description)

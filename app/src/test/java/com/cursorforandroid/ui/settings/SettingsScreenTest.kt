@@ -109,13 +109,13 @@ class SettingsScreenTest {
             NewChatHomePickerCopy.GROUP, NewChatHomePickerCopy.NEEDS_MODE, SettingsCopy.GROUP_CHATS,
             SettingsCopy.UNREAD_THIS_PHONE, SettingsCopy.SHORTEN_PROJECTS, ShortcutsCopy.TITLE, SettingsCopy.GROUP_NOTIFICATIONS,
             SettingsCopy.GROUP_ADVANCED, ExtendedModeCopy.SETTING_TITLE,
-            SettingsCopy.GROUP_UPDATES, "Version ${BuildConfig.VERSION_NAME}", "Automatic updates", SettingsCopy.DISCLAIMER,
+            SettingsCopy.GROUP_UPDATES, "Version ${BuildConfig.VERSION_NAME}", "Check for updates automatically", SettingsCopy.DISCLAIMER,
         )
         val tops = order.map(::top)
         assertThat(tops).isInOrder()
 
         // The essentials themselves.
-        listOf("Auto", "Light", "Dark", "OLED black", "Live notifications", "Check for updates", "Automatic updates")
+        listOf("Auto", "Light", "Dark", "OLED black", "Live notifications", "Check for updates", "Check for updates automatically")
             .forEach { compose.onNodeWithText(it).assertExists() }
         listOf("notif-count-project-agents", "notif-project-coordinators", "notif-project-members", ExtendedModeTags.TOGGLE, SettingsTags.VERSION_ROW, SettingsTags.SIGN_OUT, ThemeSwitchTags.SWITCH)
             .forEach { compose.onNodeWithTag(it).assertExists() }
@@ -167,7 +167,7 @@ class SettingsScreenTest {
         // The lead line is the row's detail.
         compose.onNodeWithText(WhatsNewFixtures.LEAD).assertExists()
         assertThat(top("Version $version")).isLessThan(top(title))
-        assertThat(top(title)).isLessThan(top("Automatic updates"))
+        assertThat(top(title)).isLessThan(top("Check for updates automatically"))
 
         compose.onNodeWithTag(SettingsTags.WHATS_NEW_ROW).assertHasClickAction().performScrollTo().performClick()
         assertThat(opened).isEqualTo(1)

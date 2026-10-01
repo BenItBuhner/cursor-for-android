@@ -121,7 +121,7 @@ class UpdateManagerTest {
         server.shutdown()
     }
 
-    private fun manager(backgroundIdleMs: Long = 0L, sleep: suspend (Long) -> Unit = { delay(it) }): UpdateManager = UpdateManager(
+    private fun manager(sleep: suspend (Long) -> Unit = { delay(it) }): UpdateManager = UpdateManager(
         client = GitHubReleasesClient(
             OkHttpClient.Builder().readTimeout(5, TimeUnit.SECONDS).build(),
             GitHubFixtures.OWNER_REPO,
@@ -133,14 +133,10 @@ class UpdateManagerTest {
         cache = cache,
         platform = platform,
         downloadDir = downloads,
-        agentsRunning = { agentsRunning },
         scope = scope,
         now = { now },
-        backgroundIdleMs = backgroundIdleMs,
         sleep = sleep,
     )
-
-    private var agentsRunning = false
 
     private fun sha256(bytes: ByteArray) = MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
 
@@ -188,7 +184,6 @@ class UpdateManagerTest {
         assertThat(manager.state.value).isEqualTo(UpdateState.Installed("0.2.0"))
         assertThat(apk(20099).exists()).isFalse()
         withTimeout(5_000) { while (prefs.pendingUpdateVersionCode.first() != null) delay(10) }
-        assertThat(platform.cancelledNotifications).isEqualTo(1)
         watcher.cancel()
     }
 
@@ -441,53 +436,86 @@ class UpdateManagerTest {
         withTimeout(5_000) { while (downloads.listFiles()!!.isNotEmpty()) delay(20) }
     }
 
-    // ---- automatic mode ---------------------------------------------------------------------------------------------
+    // ---- automatic checks -------------------------------------------------------------------------------------------
 
     @Test
-    fun `the scheduled run downloads only on Wi-Fi and installs only once the app is off screen`() = runBlocking {
+    fun `a background pass only checks - a release it finds is shown, never downloaded, installed or announced`() = runBlocking {
+        // The most permissive device there is for an install: Android 12+, "Install unknown apps" allowed, the app off
+        // screen. The old updater downloaded on Wi-Fi and committed a silent install from exactly here.
+        platform.sdkInt = 35
+        platform.canInstall = true
+        platform.visible = false
         val manager = manager()
-        platform.metered = true
+
         manager.runScheduled()
+        val found = manager.state.value as UpdateState.Available
+        assertThat(found.release.tagName).isEqualTo("v0.2.0")
+        assertThat(downloadRequests).isEmpty()
+        assertThat(platform.installs).isEmpty()
+        assertThat(platform.sessions).isEmpty()
+        assertThat(platform.confirmations).isEmpty()
+
+        // Pass after pass: the state is re-read, nothing more. Before Android 12, and without the install permission —
+        // where the old updater posted "ready to install" — the same nothing.
+        now += 2 * 60 * 60 * 1000
+        manager.onAppStarted()
+        platform.sdkInt = 30
+        manager.runScheduled()
+        platform.sdkInt = 35
+        platform.canInstall = false
+        manager.runScheduled()
+        manager.onAppStarted()
         assertThat(manager.state.value).isInstanceOf(UpdateState.Available::class.java)
         assertThat(downloadRequests).isEmpty()
-
-        platform.metered = false
-        platform.visible = true
-        manager.runScheduled()
-        assertThat(manager.state.value).isInstanceOf(UpdateState.Downloaded::class.java)
         assertThat(platform.installs).isEmpty()
-        assertThat(platform.notified).isEmpty()
+        assertThat(platform.sessions).isEmpty()
+        assertThat(platform.confirmations).isEmpty()
+        assertThat(downloads.listFiles()!!).isEmpty()
+    }
 
-        // Off screen, but an agent's run is being streamed by the service: not now.
+    @Test
+    fun `a download the user asked for stays ready while they are away - no pass installs it for them`() = runBlocking {
+        platform.sdkInt = 35
+        platform.canInstall = true
         platform.visible = false
-        agentsRunning = true
-        manager.onAppStopped()
-        assertThat(platform.installs).isEmpty()
+        val manager = manager()
+        manager.check()
+        manager.downloadNow()
+        val downloaded = manager.awaitState { it is UpdateState.Downloaded } as UpdateState.Downloaded
+        assertThat(downloaded.apk).isEqualTo(apk(20099))
 
-        agentsRunning = false
-        manager.onAppStopped()
-        assertThat(platform.installs).hasSize(1)
-        assertThat(manager.state.value).isInstanceOf(UpdateState.Installing::class.java)
-        // The session is committed; another background pass must not commit a second one.
+        // Everything that runs on the app's own initiative, with the app off screen and the file ready to go.
         manager.runScheduled()
+        now += 2 * 60 * 60 * 1000
+        manager.onAppStarted()
+        manager.runScheduled()
+        assertThat(manager.state.value).isEqualTo(downloaded)
+        assertThat(platform.installs).isEmpty()
+        assertThat(platform.sessions).isEmpty()
+        assertThat(platform.confirmations).isEmpty()
+        assertThat(prefs.pendingUpdateVersionCode.first()).isNull()
+
+        // Install is the user's, in Settings; only then is a session committed.
+        manager.installNow()
+        manager.awaitState { it is UpdateState.Installing }
+        withTimeout(5_000) { while (platform.installs.isEmpty()) delay(10) }
         assertThat(platform.installs).hasSize(1)
     }
 
     @Test
-    fun `a user's action that arrives while an automatic pass holds the lock waits its turn instead of being dropped`() = runBlocking {
+    fun `a user's action that arrives while an automatic check holds the lock waits its turn instead of being dropped`() = runBlocking {
         val manager = manager()
         manager.check()
         manager.download()
         assertThat(manager.state.value).isInstanceOf(UpdateState.Downloaded::class.java)
 
-        // The app comes forward: the automatic pass takes the lock and sits in its (held-back) check.
+        // The periodic job takes the lock and sits in its (held-back) check.
         val gate = CountDownLatch(1)
         listGate = gate
-        platform.visible = true
         val pass = launch(Dispatchers.Default) { manager.runScheduled() }
         withTimeout(5_000) { while (listRequests.size < 2) delay(10) }
 
-        // Meanwhile the user taps Install (or the "ready to install" notification). It must not vanish.
+        // Meanwhile the user taps Install in Settings. It must not vanish.
         manager.installNow()
         delay(300)
         assertThat(platform.installs).isEmpty()
@@ -501,7 +529,7 @@ class UpdateManagerTest {
     }
 
     @Test
-    fun `cancelling from Settings ends the transfer without cancelling the pass that was running it`() = runBlocking {
+    fun `cancelling from Settings ends the transfer without cancelling the caller that was running it`() = runBlocking {
         val manager = manager()
         manager.check()
         val slow = server.dispatcher
@@ -511,8 +539,7 @@ class UpdateManagerTest {
                 return if (request.path!!.endsWith(".apk")) response.throttleBody(8 * 1024, 100, TimeUnit.MILLISECONDS) else response
             }
         }
-        // The periodic job is what is downloading here; the user cancels from Settings.
-        val pass = launch(Dispatchers.Default) { manager.runScheduled() }
+        val pass = launch(Dispatchers.Default) { manager.download() }
         manager.awaitState { it is UpdateState.Downloading && it.bytesRead > 0 }
         manager.cancelDownload()
         pass.join() // completes normally: only the transfer was cancelled
@@ -521,123 +548,13 @@ class UpdateManagerTest {
     }
 
     @Test
-    fun `automatic updates switched off leave everything alone`() = runBlocking {
+    fun `the automatic check switched off leaves everything alone`() = runBlocking {
         prefs.setAutoUpdate(false)
         val manager = manager()
         manager.runScheduled()
         manager.onAppStarted()
-        manager.onAppStopped()
         assertThat(listRequests).isEmpty()
         assertThat(manager.state.value).isEqualTo(UpdateState.Idle)
-    }
-
-    @Test
-    fun `before Android 12, or without install permission, a downloaded update is announced once`() = runBlocking {
-        platform.sdkInt = 30
-        val manager = manager()
-        manager.runScheduled()
-        assertThat(manager.state.value).isInstanceOf(UpdateState.Downloaded::class.java)
-        assertThat(platform.installs).isEmpty()
-        assertThat(platform.notified.map { it.tagName }).containsExactly("v0.2.0")
-        manager.runScheduled()
-        manager.onAppStopped()
-        assertThat(platform.notified).hasSize(1)
-
-        // Android 12 without "Install unknown apps" allowed behaves the same way.
-        platform.sdkInt = 35
-        platform.canInstall = false
-        prefs.setNotifiedUpdateVersionCode(null)
-        manager.onAppStopped()
-        assertThat(platform.installs).isEmpty()
-        assertThat(platform.notified).hasSize(2)
-    }
-
-    @Test
-    fun `a notification the system would not show is not remembered as shown`() = runBlocking {
-        platform.sdkInt = 30
-        platform.notificationsPost = false
-        val manager = manager()
-        manager.runScheduled()
-        assertThat(manager.state.value).isInstanceOf(UpdateState.Downloaded::class.java)
-        assertThat(platform.notified).isEmpty()
-        assertThat(prefs.notifiedUpdateVersionCode.first()).isNull()
-
-        // Notifications allowed later: the offer is made again rather than counted as already announced.
-        platform.notificationsPost = true
-        manager.onAppStopped()
-        assertThat(platform.notified.map { it.tagName }).containsExactly("v0.2.0")
-        assertThat(prefs.notifiedUpdateVersionCode.first()).isEqualTo(20099)
-        manager.onAppStopped()
-        assertThat(platform.notified).hasSize(1)
-    }
-
-    @Test
-    fun `an install the app decided on is abandoned when the user comes back, or a run starts, while it settles`() = runBlocking {
-        val manager = manager(backgroundIdleMs = 300)
-        manager.check()
-        manager.download()
-
-        // The app is off screen when the decision is made and on screen a moment later: nothing is committed.
-        val pass = launch(Dispatchers.Default) { manager.onAppStopped() }
-        delay(100)
-        platform.visible = true
-        pass.join()
-        assertThat(platform.installs).isEmpty()
-        assertThat(manager.state.value).isInstanceOf(UpdateState.Downloaded::class.java)
-
-        // Same for a stream that begins while the window is being waited out.
-        platform.visible = false
-        val second = launch(Dispatchers.Default) { manager.onAppStopped() }
-        delay(100)
-        agentsRunning = true
-        second.join()
-        assertThat(platform.installs).isEmpty()
-
-        agentsRunning = false
-        manager.onAppStopped()
-        assertThat(platform.installs).hasSize(1)
-    }
-
-    @Test
-    fun `an install the app decided on is abandoned when the window closes while the APK is being staged`() = runBlocking {
-        val manager = manager()
-        manager.check()
-        manager.download()
-        val release = manager.state.value.release!!
-
-        // Off screen and idle when the window was decided, and the user is back by the time the bytes are down.
-        // Copying a release into the session is the slow part, and the old check was over before it began.
-        platform.staging = { platform.visible = true }
-        manager.onAppStopped()
-        assertThat(platform.installs).isEmpty()
-        assertThat(manager.state.value).isEqualTo(UpdateState.Downloaded(release, apk(20099)))
-        assertThat(platform.abandoned).isEqualTo(1)
-        assertThat(cache.readPending()).isNull()
-        assertThat(prefs.pendingUpdateVersionCode.first()).isNull()
-
-        // A run that starts while the APK is being staged is the other half of the same contract.
-        platform.visible = false
-        platform.staging = { agentsRunning = true }
-        manager.onAppStopped()
-        assertThat(platform.installs).isEmpty()
-        assertThat(platform.abandoned).isEqualTo(2)
-
-        // And the last look, after the session has been recorded and with nothing left between it and the commit.
-        agentsRunning = false
-        platform.staging = null
-        platform.beforeCommit = { platform.visible = true }
-        manager.onAppStopped()
-        assertThat(platform.installs).isEmpty()
-        assertThat(platform.abandoned).isEqualTo(3)
-        assertThat(cache.readPending()).isNull()
-        assertThat(manager.state.value).isEqualTo(UpdateState.Downloaded(release, apk(20099)))
-
-        // With the window still open at the commit, the same install goes through.
-        platform.visible = false
-        platform.beforeCommit = null
-        manager.onAppStopped()
-        assertThat(platform.installs).hasSize(1)
-        assertThat(cache.readPending()!!.commitIssued).isTrue()
     }
 
     @Test
@@ -646,7 +563,8 @@ class UpdateManagerTest {
         val manager = manager()
         manager.onAppStarted()
         assertThat(listRequests).hasSize(1)
-        assertThat(manager.state.value).isInstanceOf(UpdateState.Downloaded::class.java) // Wi-Fi, so it downloaded too
+        assertThat(manager.state.value).isInstanceOf(UpdateState.Available::class.java)
+        assertThat(downloadRequests).isEmpty()
 
         // Opened again and again within the hour: the list is not asked for once more.
         for (minutes in listOf(1L, 20L, 38L)) {
@@ -668,14 +586,11 @@ class UpdateManagerTest {
 
     @Test
     fun `the foreground check is throttled from the last check of any kind, and a manual check is never throttled`() = runBlocking {
-        // On screen throughout, so the scheduled pass stops at the download rather than committing an install, which
-        // would block every check for a reason that has nothing to do with the throttle.
-        platform.visible = true
         val manager = manager()
         // The periodic job checked ten minutes ago: coming forward does not check again.
         manager.runScheduled()
         assertThat(listRequests).hasSize(1)
-        assertThat(manager.state.value).isInstanceOf(UpdateState.Downloaded::class.java)
+        assertThat(manager.state.value).isInstanceOf(UpdateState.Available::class.java)
         now += 10 * 60 * 1000
         manager.onAppStarted()
         assertThat(listRequests).hasSize(1)
@@ -685,22 +600,6 @@ class UpdateManagerTest {
         withTimeout(5_000) { while (listRequests.size < 2) delay(10) }
         manager.awaitState { !it.isBusy }
         assertThat(listRequests).hasSize(2)
-    }
-
-    @Test
-    fun `a download deferred on a metered network happens on the next foreground pass over Wi-Fi, check or no check`() = runBlocking {
-        platform.metered = true
-        val manager = manager()
-        manager.onAppStarted()
-        assertThat(manager.state.value).isInstanceOf(UpdateState.Available::class.java)
-        assertThat(downloadRequests).isEmpty()
-
-        // Ten minutes later, on Wi-Fi: the check is still throttled (an hour), the download is not.
-        now += 10 * 60 * 1000
-        platform.metered = false
-        manager.onAppStarted()
-        assertThat(listRequests).hasSize(1)
-        assertThat(manager.state.value).isInstanceOf(UpdateState.Downloaded::class.java)
     }
 
     // ---- across processes -------------------------------------------------------------------------------------------
@@ -920,13 +819,14 @@ class UpdateManagerTest {
         assertThat(after.state.value).isEqualTo(UpdateState.Idle)
         after.onInstallStatus(release.versionCode, session, PackageInstaller.STATUS_PENDING_USER_ACTION, null, Intent("confirm"))
         assertThat(after.state.value).isEqualTo(UpdateState.Installing(release, awaitingConfirmation = true))
-        assertThat(platform.notified.map { it.tagName }).containsExactly("v0.2.0")
+        // Off screen (this process was started by the verdict): the confirmation waits for Settings, unannounced.
+        assertThat(platform.confirmations).isEmpty()
 
         // The installer redelivering a verdict must not undo the one already acted on.
         after.onInstallStatus(release.versionCode, session, PackageInstaller.STATUS_SUCCESS, null, null)
         assertThat(after.state.value).isEqualTo(UpdateState.Installed("0.2.0"))
         after.onInstallStatus(release.versionCode, session, PackageInstaller.STATUS_SUCCESS, null, null)
-        assertThat(platform.cancelledNotifications).isEqualTo(1)
+        assertThat(after.state.value).isEqualTo(UpdateState.Installed("0.2.0"))
     }
 
     @Test
@@ -946,7 +846,7 @@ class UpdateManagerTest {
     // ---- the installer's verdicts -----------------------------------------------------------------------------------
 
     @Test
-    fun `a pending confirmation is shown at once when the app is visible, and announced otherwise`() = runBlocking {
+    fun `a pending confirmation is shown at once when the app is visible, and waits for Settings otherwise`() = runBlocking {
         val manager = manager()
         manager.check()
         manager.download()
@@ -954,17 +854,20 @@ class UpdateManagerTest {
         val release = manager.state.value.release!!
         val confirmation = Intent("android.content.pm.action.CONFIRM_INSTALL")
 
+        // The user pressed Install a moment ago and is still looking: the system's dialog follows straight on.
         platform.visible = true
         manager.onInstallStatus(20099, lastSession(), PackageInstaller.STATUS_PENDING_USER_ACTION, null, confirmation)
         assertThat(manager.state.value).isEqualTo(UpdateState.Installing(release, awaitingConfirmation = true))
         assertThat(platform.confirmations).containsExactly(confirmation)
-        assertThat(platform.notified).isEmpty()
 
+        // They left in the meantime: no dialog over whatever they moved on to, and nothing announced. The state says
+        // what is waiting, which the sidebar's hint and Settings' Confirm read.
         platform.visible = false
         manager.onInstallStatus(20099, lastSession(), PackageInstaller.STATUS_PENDING_USER_ACTION, null, confirmation)
-        assertThat(platform.notified.map { it.tagName }).containsExactly("v0.2.0")
+        assertThat(platform.confirmations).hasSize(1)
+        assertThat(manager.state.value).isEqualTo(UpdateState.Installing(release, awaitingConfirmation = true))
 
-        // Back in the app from the notification: the same confirmation comes up again.
+        // Back in the app, Confirm in Settings: the same confirmation comes up again.
         manager.resumePendingInstall()
         withTimeout(5_000) { while (platform.confirmations.size < 2) delay(10) }
         assertThat(platform.installs).hasSize(1)

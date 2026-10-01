@@ -30,7 +30,6 @@ import com.cursorforandroid.ui.shortcuts.LocalKeyboardShortcuts
 import com.cursorforandroid.ui.theme.AppNightMode
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.ui.theme.ThemeMode
-import com.cursorforandroid.update.UpdateNotifications
 import com.cursorforandroid.util.DeepLinks
 import kotlinx.coroutines.launch
 
@@ -131,22 +130,15 @@ class MainActivity : ComponentActivity() {
     }
 
     /**
-     * Takes what the intent asks for: a chat to open, the New Chat pane, the sidebar's search, a share to draft, or an update to finish
-     * installing.
+     * Takes what the intent asks for: a chat to open, the New Chat pane, the sidebar's search, or a share to draft.
+     * An update is never one of them: the updater has no notification and no intent of its own, so an install is
+     * only ever started from Settings.
      */
     private fun readRequests(intent: Intent?) {
         DeepLinks.agentId(intent)?.let { pendingAgentId = it }
         if (intent?.action == ACTION_NEW_CHAT) pendingNewChat = true
         if (intent?.action == ACTION_SEARCH) pendingSearch = true
         appGraph.share.receive(intent) { ShareIntent.clear(intent) }
-        resumeUpdateIfAsked(intent)
-    }
-
-    /** The "ready to install" notification opens the app with this action; the confirmation the system wants follows. */
-    private fun resumeUpdateIfAsked(intent: Intent?) {
-        if (intent?.action != UpdateNotifications.ACTION_INSTALL_UPDATE) return
-        DeepLinks.clearAction(intent, UpdateNotifications.ACTION_INSTALL_UPDATE)
-        appGraph.updates.resumePendingInstall()
     }
 
     /**

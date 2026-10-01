@@ -1,7 +1,6 @@
 package com.cursorforandroid.ui.settings
 
 import android.content.Intent
-import android.os.Build
 import android.provider.Settings
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -36,7 +35,6 @@ import androidx.core.net.toUri
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.cursorforandroid.AppGraph
-import com.cursorforandroid.data.update.UpdateManager
 import com.cursorforandroid.domain.AppRelease
 import com.cursorforandroid.domain.CursorUser
 import com.cursorforandroid.domain.ProjectNotificationPrefs
@@ -362,7 +360,7 @@ private fun NotificationRows(graph: AppGraph) {
 /**
  * The in-app updater: the installed version with what the last check found and the one action that follows from it
  * (check, download, install, retry); beneath it, while they are unread, the installed version's release notes
- * ([onOpenWhatsNew]); automatic updates; and — until the user has allowed it — the system page where installing
+ * ([onOpenWhatsNew]); the automatic check; and — until the user has allowed it — the system page where installing
  * from this app is permitted. The permission is re-read when the screen resumes. A long press on the version row is
  * the way into the debug sheet ([onDebug]); a tap does nothing, so the row is not announced as a button.
  */
@@ -438,12 +436,8 @@ private fun UpdateRows(graph: AppGraph, open: (String) -> Unit, onDebug: () -> U
     }
     HairlineDivider()
     SettingsToggleRow(
-        title = "Automatic updates",
-        description = if (Build.VERSION.SDK_INT >= UpdateManager.SILENT_SELF_UPDATE_SDK) {
-            "Downloads on Wi-Fi, installs when idle."
-        } else {
-            "Downloads on Wi-Fi, then asks to install."
-        },
+        title = "Check for updates automatically",
+        description = "Shows a new release in the sidebar. Nothing downloads or installs until you choose to here.",
         checked = autoUpdate,
         onCheckedChange = { scope.launch { updates.setAutoUpdate(it) } },
     )
