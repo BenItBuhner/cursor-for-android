@@ -44,7 +44,7 @@ class SpotlightFeed(
     constructor(agents: AgentRepository, hub: LiveRunHub) : this(
         rows = agents.state.map { it.agents },
         load = { id -> agents.loadDetail(id).getOrNull() },
-        run = { agentId, runId, startedAt, watched -> hub.snapshots(agentId, runId, startedAt, if (watched) null else UNWATCHED) },
+        run = { agentId, runId, startedAt, watched -> follow(hub, agentId, runId, startedAt, watched) },
     )
 
     sealed interface Frame {
@@ -162,5 +162,14 @@ class SpotlightFeed(
     companion object {
         const val PROJECT_GRACE_MS = 30_000L
         private val UNWATCHED: StateFlow<Boolean> = MutableStateFlow(false)
+
+        /**
+         * One run as the Spotlight subscribes to it: at the live notification's pace, since the card shows what the run
+         * is doing rather than every word of it. That also keeps a run only the Spotlight follows out of the hub's stall
+         * watch, which is for a chat on screen: a quiet tool call holds the connection instead of costing a record
+         * and a fresh stream per stall window.
+         */
+        fun follow(hub: LiveRunHub, agentId: String, runId: String, startedAtMillis: Long?, watched: Boolean): Flow<LiveRunHub.Snapshot> =
+            hub.snapshots(agentId, runId, startedAtMillis, if (watched) null else UNWATCHED, sampleMs = RunMonitor.SAMPLE_MS)
     }
 }
