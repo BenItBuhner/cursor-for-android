@@ -487,6 +487,20 @@ private fun updateStatusLine(state: UpdateState): String = when (state) {
 object UpdateCopy {
     /** "Update available: v0.3.9" — the version with the tag's `v`, so it reads as the release it names. */
     fun available(release: AppRelease): String = "Update available: v${release.versionName}"
+
+    /**
+     * The sidebar's hint for [state], or null when there is nothing to lead the user to Settings for. This row is
+     * the only way the app ever raises an update with the user: a release found by a check reads "Update available",
+     * one they downloaded "ready to install", one the system is waiting on them for "waiting for your confirmation".
+     * A release this install cannot take (signed with another key) is Settings' business alone, and no other state
+     * is worth a word.
+     */
+    fun hint(state: UpdateState): String? = when (state) {
+        is UpdateState.Available -> if (state.signatureMismatch) null else available(state.release)
+        is UpdateState.Downloaded -> "Update ready to install · ${state.release.versionName}"
+        is UpdateState.Installing -> if (state.awaitingConfirmation) "Update waiting for your confirmation" else null
+        else -> null
+    }
 }
 
 /** "checked just now", "checked 4m ago", "checked Sep 4". */
