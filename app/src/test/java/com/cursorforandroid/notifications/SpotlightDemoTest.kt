@@ -12,6 +12,7 @@ import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.RectF
 import android.graphics.Typeface
+import android.graphics.drawable.Icon
 import android.os.Looper
 import android.os.SystemClock
 import android.view.ContextThemeWrapper
@@ -560,7 +561,7 @@ class SpotlightDemoTest {
 
     private fun card(n: Notification, width: Int): Card {
         val parent = inflated.getOrPut(n.contentKey()) {
-            val builder = Notification.Builder.recoverBuilder(shadeContext, n)
+            val builder = Notification.Builder.recoverBuilder(shadeContext, n).setSmallIcon(smallIcon(n))
             val remote = builder.createBigContentView() ?: builder.createContentView()
             FrameLayout(shadeContext).apply {
                 val pad = dp(4f).toInt()
@@ -587,6 +588,21 @@ class SpotlightDemoTest {
         return Card(bmp, actions)
     }
 
+    /**
+     * The small icon decoded once and handed to the template as a bitmap: a resource icon is decoded again on every
+     * inflation, and Robolectric's native decoder crashes after a few thousand.
+     */
+    private val icons = mutableMapOf<Int, Icon>()
+
+    private fun smallIcon(n: Notification): Icon = icons.getOrPut(n.smallIcon.resId) {
+        val drawable = checkNotNull(n.smallIcon.loadDrawable(app))
+        val size = dp(24f).toInt()
+        val bmp = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+        drawable.setBounds(0, 0, size, size)
+        drawable.draw(Canvas(bmp))
+        Icon.createWithBitmap(bmp)
+    }
+
     private fun View.boundsIn(ancestor: View): RectF {
         var x = 0f
         var y = 0f
@@ -600,8 +616,8 @@ class SpotlightDemoTest {
     }
 
     private fun View.findText(text: String): View? = when {
-        this is TextView && this.text?.toString().equals(text, ignoreCase = true) && isShown -> this
-        this is ViewGroup -> (0 until childCount).firstNotNullOfOrNull { getChildAt(it).findText(text) }
+        this is TextView && this.text?.toString().equals(text, ignoreCase = true) && visibility == View.VISIBLE && width > 0 -> this
+        this is ViewGroup && visibility == View.VISIBLE -> (0 until childCount).firstNotNullOfOrNull { getChildAt(it).findText(text) }
         else -> null
     }
 
