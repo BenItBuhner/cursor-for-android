@@ -1,13 +1,13 @@
 [versions]
 agp = "8.10.1"
 kotlin = "2.2.21"
-coreKtx = "1.17.0"
+coreKtx = "1.19.1"
 activityCompose = "1.9.3"
 lifecycle = "2.8.7"
-composeBom = "2024.12.01"
+composeBom = "2026.09.00"
 datastore = "1.1.1"
-securityCrypto = "1.1.0-alpha06"
-splashscreen = "1.0.1"
+securityCrypto = "1.1.0"
+splashscreen = "1.2.0"
 # Installs app/src/main/baseline-prof.txt from the APK on first launch; Compose already pulls in this version.
 profileinstaller = "1.4.1"
 retrofit = "2.11.0"
@@ -15,15 +15,15 @@ okhttp = "4.12.0"
 serialization = "1.7.3"
 # 1.10.x is what coil-core 3.3.0 compiles against; keeping the app on the same line avoids two coroutine runtimes.
 coroutines = "1.10.2"
-browser = "1.8.0"
+browser = "1.10.0"
 # Coil 3.3.0 is the last line built against Kotlin 2.2 / lifecycle 2.8 (3.4+ pulls Kotlin 2.3 and lifecycle 2.9).
 coil = "3.3.0"
-media3 = "1.11.0"
+media3 = "1.11.1"
 # Home-screen widgets. 1.2.0 compiles against Compose runtime 1.7 and needs nothing newer than lifecycle 2.8.
 glance = "1.2.0"
 # Glance runs its compositions in WorkManager and pulls in 2.7.1, which predates the Android 14 rules for runtime
 # receivers and foreground-service types; pinned to a line that meets them (still on lifecycle 2.6+, room 2.6).
-work = "2.10.1"
+work = "2.12.0"
 # Crash reports (crash/CrashReporting.kt, currently unwired). Only the core artifact: the app has no native code, so no NDK payload.
 sentry = "8.16.0"
 # Fold and hinge positions (WindowInfoTracker): the shell keeps the chat off a separating fold.
