@@ -146,15 +146,9 @@ class OlderMessagesPaginationDemoTest {
         File(frames, "frame-%04d.png".format(frame++)).outputStream().use { scaled.compress(Bitmap.CompressFormat.PNG, 100, it) }
     }
 
-    private fun tick() {
-        compose.mainClock.advanceTimeBy(FRAME_MS)
-        compose.waitForIdle()
-        capture()
-    }
-
     @OptIn(ExperimentalMaterial3Api::class)
     private fun open(device: String) {
-        frames = File(out, device).also { it.mkdirs() }
+        frames = File(checkNotNull(out), device).also { it.mkdirs() }
         frame = 0
         seed()
         val context = ApplicationProvider.getApplicationContext<Context>()
@@ -165,7 +159,6 @@ class OlderMessagesPaginationDemoTest {
         )
         runBlocking { graph.session.enterDemo() }
         runBlocking { graph.agents.refresh() }
-        compose.mainClock.autoAdvance = false
         compose.setContent {
             CursorTheme(mode = ThemeMode.Dark) {
                 CompositionLocalProvider(LocalRippleConfiguration provides null) {
@@ -177,17 +170,22 @@ class OlderMessagesPaginationDemoTest {
         var lastItems = -1
         var ticks = 0
         while (ticks < MAX_TICKS && stable < REST_TICKS) {
-            tick()
+            compose.waitForIdle()
+            capture()
             ticks++
             val state = graph.conversations.state(agentId).value
             val items = state.items.size
             val atRest = !state.isLoading && !state.isLoadingOlder && state.traceStatus.pending == 0
             stable = if (atRest && items == lastItems) stable + 1 else 0
             lastItems = items
+            Thread.sleep(FRAME_MS)
         }
-        repeat(HOLD_TICKS) { tick() }
-        val still = File(frames, "still.png")
-        File(frames, "frame-%04d.png".format(frame - 1)).copyTo(still, overwrite = true)
+        repeat(HOLD_TICKS) {
+            compose.waitForIdle()
+            capture()
+            Thread.sleep(FRAME_MS)
+        }
+        File(frames, "frame-%04d.png".format(frame - 1)).copyTo(File(frames, "still.png"), overwrite = true)
     }
 
     @Test
@@ -204,8 +202,8 @@ class OlderMessagesPaginationDemoTest {
         const val CALLS = 8
         const val LIVE = "run-${REPLIES + EVENTS + 1}"
         const val FRAME_MS = 33L
-        const val MAX_TICKS = 240
-        const val REST_TICKS = 8
-        const val HOLD_TICKS = 24
+        const val MAX_TICKS = 180
+        const val REST_TICKS = 6
+        const val HOLD_TICKS = 12
     }
 }
