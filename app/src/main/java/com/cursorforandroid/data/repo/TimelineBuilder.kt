@@ -5,6 +5,7 @@ import com.cursorforandroid.data.api.dto.RunDto
 import com.cursorforandroid.data.api.dto.SseInteractionUpdateDto
 import com.cursorforandroid.data.api.dto.SseToolCallDto
 import com.cursorforandroid.data.api.dto.V0ConversationMessageDto
+import com.cursorforandroid.data.local.PromptAttachments
 import com.cursorforandroid.domain.ActivityGroup
 import com.cursorforandroid.domain.ActivityStep
 import com.cursorforandroid.domain.AssistantMessage
@@ -122,7 +123,7 @@ object TimelineBuilder {
                 // A turn Cursor injected (a goal continuing, a subagent's report) starts a run like any prompt,
                 // but is shown as the notification it is rather than as something the user said.
                 items += SystemNotifications.parse(prompt.id, prompt.text, startedAt)?.items
-                    ?: listOf(UserMessage(prompt.id, prompt.text, startedAt, attachments = run?.let { attachments[it.id] } ?: emptyList(), isPending = run != null && run.id in pending))
+                    ?: listOf(UserMessage(prompt.id, prompt.text, startedAt, attachments = PromptAttachments.find(attachments, run?.id, null, prompt.text, startedAt?.takeIf { it > 0 }) ?: emptyList(), isPending = run != null && run.id in pending))
             }
             val replies = turn.replies.map { AssistantMessage(it.id, it.text) }
             when {

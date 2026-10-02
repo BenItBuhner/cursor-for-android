@@ -234,7 +234,36 @@ object BlobRecord {
             steer -> "blob:user_message[steer]"
             else -> "blob:user_message"
         }
-        return HeadlessStep(userMessage = text.ifBlank { null }, projectMode = project, shape = StepShape(position, branch, RecordShapes.describe(JsonObject(message - TEXT_FROM_BLOB))), turnIndex = index, steer = steer)
+        val images = selectedImages(message)
+        // A prompt of pictures alone is a prompt still: its bubble is the pictures.
+        val prompt = text.ifBlank { if (images.isNotEmpty()) "" else null }
+        return HeadlessStep(
+            userMessage = prompt, projectMode = project, shape = StepShape(position, branch, RecordShapes.describe(JsonObject(message - TEXT_FROM_BLOB))), turnIndex = index, steer = steer,
+            messageId = message.string("messageId")?.takeIf { it.isNotBlank() }, images = images,
+        )
+    }
+
+    /**
+     * The pictures attached to the prompt (`selected_context.selected_images`), each by where its bytes are: inline
+     * (`data`), in a blob of the chat's (`blob_id`), or both (`blob_id_with_data`). The shape's bytes fields decode to
+     * base64, so a blob id here is spelled as the state spells the turns' (see `AgentSchemas`).
+     */
+    internal fun selectedImages(message: JsonObject): List<RecordImage> {
+        val context = message["selectedContext"] as? JsonObject ?: return emptyList()
+        val images = context["selectedImages"] as? JsonArray ?: return emptyList()
+        return images.mapNotNull { element ->
+            val image = element as? JsonObject ?: return@mapNotNull null
+            val both = image["blobIdWithData"] as? JsonObject
+            val dimension = image["dimension"] as? JsonObject
+            RecordImage(
+                uuid = image.string("uuid"),
+                mimeType = image.string("mimeType"),
+                data = image.string("data") ?: both?.string("data"),
+                blobId = image.string("blobId") ?: both?.string("blobId"),
+                width = (dimension?.get("width") as? JsonPrimitive)?.intOrNull ?: 0,
+                height = (dimension?.get("height") as? JsonPrimitive)?.intOrNull ?: 0,
+            ).takeIf { it.readable }
+        }
     }
 
     /** The key [withBlobText] marks a prompt with whose text came from its text blob. */

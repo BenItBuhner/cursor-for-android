@@ -1,0 +1,121 @@
+name: Cache maintenance
+
+# Keeps the repository's GitHub Actions cache under its 10 GB limit by choice rather than by GitHub's eviction. The
+# cache holds what setup-gradle (.github/actions/android-toolchain) saves from the main runs: one "gradle-home" entry
+# per job per commit (~36 MB, with the per-run state) plus content-addressed bundles the entries share (dependencies
+# ~0.2-0.8 GB each, transforms ~0.2 GB, the local build cache ~35 MB per job per run). Every main run adds another
+# set and nothing removes the old ones until GitHub, over the limit, drops the least recently used entry, whatever it
+# is. Found at 11.5 GB over 202 entries on 1 Oct, every one of them created in the last two days.
+#
+# The rules, in order:
+#   1. A closed pull request's caches go (pull-request runs are read-only, so there should be none; cheap to be sure).
+#   2. Of the gradle-home entries, the newest KEEP_HOMES per job are kept; the rest only served as fallbacks for
+#      restore keys the newest already match.
+#   3. Anything not restored in STALE_DAYS goes: a bundle no current entry refers to is never read again.
+#   4. What remains is kept newest-read first until BUDGET_GB is reached; the rest goes.
+# Rules 2-4 run after every main CI run (so the cache never grows past one run's worth over the budget), nightly, and
+# by hand ("Run workflow"). Deleting an entry a job is about to restore costs that job a fallback restore, nothing more.
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  pull_request_target:
+    types: [closed]
+  schedule:
+    - cron: "17 4 * * *"
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: [.github/workflows/cache-maintenance.yml]
+
+permissions:
+  actions: write # list and delete caches
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  GH_TOKEN: ${{ github.token }}
+  GH_REPO: ${{ github.repository }}
+  BUDGET_GB: "6"
+  KEEP_HOMES: "2"
+  STALE_DAYS: "3"
+
+jobs:
+  prune:
+    name: Prune the Actions cache
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency:
+      group: cache-maintenance
+      cancel-in-progress: false
+    steps:
+      # Nothing of the pull request is checked out or run: only its number and branch are read.
+      - name: Drop the closed pull request's caches
+        if: github.event_name == 'pull_request_target'
+        env:
+          PR: ${{ github.event.pull_request.number }}
+          BRANCH: ${{ github.event.pull_request.head.ref }}
+        run: |
+          # Deleting by ref alone is not an API call (it needs a key too), so the ref's entries are listed and deleted by id.
+          for ref in "refs/pull/$PR/merge" "refs/heads/$BRANCH"; do
+            ids="$(gh api --paginate "repos/$GH_REPO/actions/caches?per_page=100&ref=$ref" --jq '.actions_caches[].id')"
+            for id in $ids; do gh api -X DELETE "repos/$GH_REPO/actions/caches/$id" >/dev/null; done
+            echo "$ref: $(wc -w <<<"$ids") cache(s) deleted"
+          done
+
+      - name: Prune by job, age and budget
+        run: |
+          gh api --paginate "repos/$GH_REPO/actions/caches?per_page=100" --jq '.actions_caches[]' | jq -s '.' > caches.json
+          total="$(jq '[.[].size_in_bytes] | add // 0' caches.json)"
+          count="$(jq 'length' caches.json)"
+          gb() { awk -v b="$1" 'BEGIN { printf "%.2f", b / 1e9 }'; }
+          printf 'Before: %d entries, %s GB\n' "$count" "$(gb "$total")"
+
+          stale_before="$(date -u -d "-${STALE_DAYS} days" +%Y-%m-%dT%H:%M:%SZ)"
+          jq -r --argjson keep "$KEEP_HOMES" --arg stale "$stale_before" --argjson budget "$((BUDGET_GB * 1000000000))" '
+            # Rule 2: the gradle-home entries, grouped by their key without the trailing commit sha.
+            def home_prefix: .key | sub("-[0-9a-f]{40}$"; "");
+            (map(select(.key | startswith("gradle-home-")))
+              | group_by(home_prefix) | map(sort_by(.created_at) | reverse | .[$keep:]) | flatten) as $old_homes
+            | map(select(.id | IN($old_homes[].id) | not)) as $kept
+            # Rule 3: not restored in STALE_DAYS.
+            | ($kept | map(select(.last_accessed_at < $stale))) as $stale_entries
+            | ($kept | map(select(.id | IN($stale_entries[].id) | not))) as $live
+            # Rule 4: newest-read first until the budget is spent.
+            | ($live | sort_by(.last_accessed_at) | reverse
+               | reduce .[] as $e ({sum: 0, over: []};
+                   .sum += $e.size_in_bytes | if .sum > $budget then .over += [$e] else . end)
+               | .over) as $over
+            | (($old_homes | map(.reason = "an older gradle-home entry of \(home_prefix)"))
+               + ($stale_entries | map(.reason = "not restored since \(.last_accessed_at)"))
+               + ($over | map(.reason = "over the budget")))[]
+            | [.id, .size_in_bytes, .reason, .key] | @tsv
+          ' caches.json > delete.tsv
+
+          deleted_bytes=0; deleted=0
+          while IFS=$'\t' read -r id size reason key; do
+            if gh api -X DELETE "repos/$GH_REPO/actions/caches/$id" >/dev/null; then
+              deleted=$((deleted + 1)); deleted_bytes=$((deleted_bytes + size))
+              printf 'deleted %5d MB  %s  (%s)\n' "$((size / 1000000))" "$key" "$reason"
+            else
+              echo "could not delete $key ($id)"
+            fi
+          done < delete.tsv
+
+          after=$((total - deleted_bytes))
+          printf 'After: %d entries, %s GB (%d deleted, %s GB)\n' "$((count - deleted))" "$(gb "$after")" "$deleted" "$(gb "$deleted_bytes")"
+          {
+            echo "## Actions cache"
+            printf -- '- Before: %d entries, %s GB\n' "$count" "$(gb "$total")"
+            printf -- '- Deleted: %d entries, %s GB\n' "$deleted" "$(gb "$deleted_bytes")"
+            printf -- '- After: %d entries, %s GB (budget %s GB)\n' "$((count - deleted))" "$(gb "$after")" "$BUDGET_GB"
+            if [[ -s delete.tsv ]]; then
+              echo; echo "| MB | Key | Why |"; echo "|---:|---|---|"
+              awk -F'\t' '{printf "| %d | `%s` | %s |\n", $2 / 1000000, $4, $3}' delete.tsv
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -52,6 +52,18 @@ class NewChatPageCacheTest {
         assertThat(seeded.map { it.shownCount }).isEqualTo(rows.map { it.shownCount })
     }
 
+    /** The stacked layout opens on its Projects from the first frame as the Projects layout does: its choice seeds the page. */
+    @Test
+    fun `a page laid out as Projects + Recent seeds the next launch with that choice and its shortcuts`() = runBlocking<Unit> {
+        val rows = NewChatHomeFixtures.list().projectRows
+        launch().save(snapshot(choice = NewChatHome.PROJECTS_RECENT, projects = rows))
+        assertThat(pageFile.readText()).contains("\"chosenHome\":\"projects_recent\"")
+
+        val seed = launch().apply { warm() }.seed(alex)!!
+        assertThat(seed.choice).isEqualTo(NewChatHomeChoice(NewChatHome.PROJECTS_RECENT))
+        assertThat(seed.projectRows().map { it.agent.id }).isEqualTo(rows.map { it.agent.id })
+    }
+
     @Test
     fun `what each shortcut's corner shows comes back as it was`() = runBlocking<Unit> {
         val rows = NewChatHomeFixtures.shortcutStates()

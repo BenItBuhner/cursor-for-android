@@ -14,7 +14,10 @@ import com.cursorforandroid.ui.agents.AgentListUiState
 import com.google.common.truth.Truth.assertThat
 import org.junit.Test
 
-/** What the New Chat pane lists under its composer for each New chat page setting, and what a Project shortcut says. */
+/**
+ * What the New Chat pane lists under its composer for each New chat page setting — Recent, Projects, the two stacked,
+ * Composer only — and what a Project shortcut says.
+ */
 class NewChatHomeBlocksTest {
 
     private fun agent(id: String, running: Boolean = false, appearance: ProjectAppearance? = null, parent: AgentParent? = null) = Agent(
@@ -89,6 +92,37 @@ class NewChatHomeBlocksTest {
         assertThat(homeBlocks(NewChatHome.PROJECTS, AgentListUiState(), projectsAvailable = true)).isEmpty()
         assertThat(homeBlocks(NewChatHome.PROJECTS, AgentListUiState(hasLoaded = true, error = "Offline"), projectsAvailable = true))
             .containsExactly(HomeBlock.Empty("Offline"))
+    }
+
+    @Test
+    fun `Projects + Recent stacks the Projects over the recent chats, a section's gap between them`() {
+        val blocks = homeBlocks(NewChatHome.PROJECTS_RECENT, loaded, projectsAvailable = true)
+        assertThat(blocks).containsExactly(HomeBlock.Projects(projects), HomeBlock.Gap, HomeBlock.Chat(recents[0]), HomeBlock.Chat(recents[1])).inOrder()
+        assertThat(blocks.map { it.key }).containsNoDuplicates()
+    }
+
+    @Test
+    fun `Projects + Recent keeps the Projects hidden from the page with them, as Projects does`() {
+        val list = loaded.copy(local = loaded.local.copy(hiddenProjectIds = setOf("billing")))
+        assertThat(homeBlocks(NewChatHome.PROJECTS_RECENT, list, projectsAvailable = true).first()).isEqualTo(HomeBlock.Projects(projects, setOf("billing")))
+    }
+
+    @Test
+    fun `Projects + Recent with no recent chats leaves the Projects alone, and shows a failed read as the error under them`() {
+        assertThat(homeBlocks(NewChatHome.PROJECTS_RECENT, loaded.copy(recentRows = emptyList()), projectsAvailable = true)).containsExactly(HomeBlock.Projects(projects))
+        assertThat(homeBlocks(NewChatHome.PROJECTS_RECENT, loaded.copy(recentRows = emptyList(), hasLoaded = false), projectsAvailable = true)).containsExactly(HomeBlock.Projects(projects))
+        assertThat(homeBlocks(NewChatHome.PROJECTS_RECENT, loaded.copy(recentRows = emptyList(), error = "Offline"), projectsAvailable = true))
+            .containsExactly(HomeBlock.Projects(projects), HomeBlock.Empty("Offline")).inOrder()
+    }
+
+    @Test
+    fun `Projects + Recent without Projects to show is the Projects layout, note and all`() {
+        for (home in listOf(NewChatHome.PROJECTS, NewChatHome.PROJECTS_RECENT)) {
+            assertThat(homeBlocks(home, loaded, projectsAvailable = false)).containsExactly(HomeBlock.Note(ProjectsNote.NeedsExtendedMode), HomeBlock.Chat(recents[0]), HomeBlock.Chat(recents[1])).inOrder()
+            assertThat(homeBlocks(home, loaded.copy(projectRows = emptyList()), projectsAvailable = true)).containsExactly(HomeBlock.Note(ProjectsNote.NoProjects), HomeBlock.Chat(recents[0]), HomeBlock.Chat(recents[1])).inOrder()
+            assertThat(homeBlocks(home, AgentListUiState(), projectsAvailable = true)).isEmpty()
+            assertThat(homeBlocks(home, AgentListUiState(hasLoaded = true, error = "Offline"), projectsAvailable = true)).containsExactly(HomeBlock.Empty("Offline"))
+        }
     }
 
     @Test

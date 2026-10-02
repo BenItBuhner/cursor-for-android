@@ -46,6 +46,7 @@ import com.cursorforandroid.ui.components.CursorIcons
 import com.cursorforandroid.ui.components.FlatIconButton
 import com.cursorforandroid.ui.components.GroupLabel
 import com.cursorforandroid.ui.components.PullRefreshHaptics
+import com.cursorforandroid.ui.components.RefreshIndicator
 import com.cursorforandroid.ui.components.StylusTextInput
 import com.cursorforandroid.ui.components.contentColumn
 import com.cursorforandroid.ui.components.hitTestBoundary
@@ -103,7 +104,13 @@ fun ShareDestinationScreen(
         SearchField(value = query, onValueChange = { query = it }, onClear = { query = "" })
         val pull = rememberPullToRefreshState()
         PullRefreshHaptics(pull, listState.isRefreshing)
-        PullToRefreshBox(isRefreshing = listState.isRefreshing, onRefresh = onRefresh, modifier = Modifier.weight(1f), state = pull) {
+        PullToRefreshBox(
+            isRefreshing = listState.isRefreshing,
+            onRefresh = onRefresh,
+            modifier = Modifier.weight(1f),
+            state = pull,
+            indicator = { RefreshIndicator(pull, listState.isRefreshing, Modifier.align(Alignment.TopCenter)) },
+        ) {
             val scroll = rememberLazyListState()
             LazyColumn(
                 Modifier.fillMaxSize().scrollEdgeFade(scroll).navigationBarsPadding(),

@@ -361,6 +361,10 @@ class PreferencesStoreTest {
         assertThat(prefs.newChatHome.first()).isEqualTo(NewChatHome.COMPOSER)
         prefs.clearSession()
         assertThat(prefs.newChatHome.first()).isEqualTo(NewChatHome.COMPOSER)
+        prefs.setNewChatHome(NewChatHome.PROJECTS_RECENT)
+        assertThat(prefs.newChatHome.first()).isEqualTo(NewChatHome.PROJECTS_RECENT)
+        prefs.clearSession()
+        assertThat(prefs.newChatHome.first()).isEqualTo(NewChatHome.PROJECTS_RECENT)
         prefs.setNewChatHome(NewChatHome.RECENT)
         assertThat(prefs.newChatHome.first()).isEqualTo(NewChatHome.RECENT)
     }
@@ -399,6 +403,8 @@ class PreferencesStoreTest {
         assertThat(prefs.newChatHomeChoice.first()).isEqualTo(NewChatHomeChoice(NewChatHome.RECENT))
         prefs.setNewChatHome(NewChatHome.COMPOSER)
         assertThat(prefs.newChatHomeChoice.first()).isEqualTo(NewChatHomeChoice(NewChatHome.COMPOSER))
+        prefs.setNewChatHome(NewChatHome.PROJECTS_RECENT)
+        assertThat(prefs.newChatHomeChoice.first()).isEqualTo(NewChatHomeChoice(NewChatHome.PROJECTS_RECENT))
     }
 
     @Test
@@ -414,6 +420,7 @@ class PreferencesStoreTest {
         assertThat(NewChatHome.chosen(null)).isNull()
         assertThat(NewChatHome.chosen("pinned")).isNull()
         assertThat(NewChatHome.chosen("projects")).isEqualTo(NewChatHome.PROJECTS)
+        assertThat(NewChatHome.chosen("projects_recent")).isEqualTo(NewChatHome.PROJECTS_RECENT)
     }
 
     @Test
@@ -422,6 +429,9 @@ class PreferencesStoreTest {
         assertThat(NewChatHome.parse(null)).isEqualTo(NewChatHome.RECENT)
         assertThat(NewChatHome.parse(NewChatHome.PROJECTS.key)).isEqualTo(NewChatHome.PROJECTS)
         assertThat(NewChatHome.parse("composer")).isEqualTo(NewChatHome.COMPOSER)
+        assertThat(NewChatHome.parse("projects_recent")).isEqualTo(NewChatHome.PROJECTS_RECENT)
+        // Each spelling is its own, so no two layouts can ever read back as one.
+        assertThat(NewChatHome.entries.map { it.key }).containsNoDuplicates()
     }
 
     @Test

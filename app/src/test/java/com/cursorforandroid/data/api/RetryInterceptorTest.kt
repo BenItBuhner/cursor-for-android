@@ -1,6 +1,7 @@
 package com.cursorforandroid.data.api
 
 import com.google.common.truth.Truth.assertThat
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -45,6 +46,8 @@ class RetryInterceptorTest {
         .url(server.url(path))
         .apply { accept?.let { header("Accept", it) } }
         .build()
+
+    private fun post(path: String) = Request.Builder().url(server.url(path)).post("{}".toRequestBody("application/json".toMediaType())).build()
 
     @Test
     fun `a transient server error is retried with backoff and the retry succeeds`() {
@@ -109,12 +112,13 @@ class RetryInterceptorTest {
     }
 
     /**
-     * A `429` on one call is the host's word to every call of this client: the ones that follow within the wait hold
-     * before going out — a write too, which is never retried but need not run into the same refusal — rather than
-     * each meeting the refusal and backing off on its own. Once the wait has passed, nothing holds.
+     * A `429` on one call is its endpoint's word to every call of this client to it: the ones that follow within the
+     * wait hold before going out — another chat's run list as much as this one's — rather than each meeting the
+     * refusal and backing off on its own. Once the wait has passed, nothing holds. Another endpoint never holds:
+     * Cursor scopes its limits to the endpoint.
      */
     @Test
-    fun `a rate limit heard on one call holds the client's other calls for the rest of the wait`() {
+    fun `a rate limit heard on one call holds the client's other calls to that endpoint for the rest of the wait`() {
         server.enqueue(MockResponse().setResponseCode(429).setHeader("Retry-After", "3"))
         server.enqueue(MockResponse().setResponseCode(200))
         client.newCall(get()).execute().use { response -> assertThat(response.code).isEqualTo(200) }
@@ -126,27 +130,39 @@ class RetryInterceptorTest {
         client.newCall(get()).execute().use { response -> assertThat(response.code).isEqualTo(200) }
         assertThat(sleeps).isEmpty()
 
-        // A refusal answered on the last attempt (returned as is) leaves the pause standing for the next call, a write included.
-        server.enqueue(MockResponse().setResponseCode(429).setHeader("Retry-After", "5"))
-        server.enqueue(MockResponse().setResponseCode(429).setHeader("Retry-After", "5"))
-        server.enqueue(MockResponse().setResponseCode(429).setHeader("Retry-After", "5"))
-        client.newCall(get()).execute().use { response -> assertThat(response.code).isEqualTo(429) }
+        // A refusal answered on the last attempt (returned as is) leaves the pause standing for the next call to the
+        // endpoint — another chat's — and for no other.
+        repeat(3) { server.enqueue(MockResponse().setResponseCode(429).setHeader("Retry-After", "5")) }
+        client.newCall(get("/v1/agents/a/runs")).execute().use { response -> assertThat(response.code).isEqualTo(429) }
         sleeps.clear()
         server.enqueue(MockResponse().setResponseCode(200))
-        val post = Request.Builder().url(server.url("/v1/agents")).post("{}".toRequestBody("application/json".toMediaType())).build()
-        client.newCall(post).execute().use { response -> assertThat(response.code).isEqualTo(200) }
+        client.newCall(get("/v1/agents/a/conversation")).execute().use { response -> assertThat(response.code).isEqualTo(200) }
+        assertThat(sleeps).isEmpty()
+        server.enqueue(MockResponse().setResponseCode(200))
+        client.newCall(get("/v1/agents/b/runs")).execute().use { response -> assertThat(response.code).isEqualTo(200) }
         assertThat(sleeps).containsExactly(5_000L)
+
+        // A write's refusal holds the next write to its endpoint, a write included, and not the reads beside it.
+        sleeps.clear()
+        server.enqueue(MockResponse().setResponseCode(429).setHeader("Retry-After", "4"))
+        client.newCall(post("/v1/agents/a/runs")).execute().use { response -> assertThat(response.code).isEqualTo(429) }
+        server.enqueue(MockResponse().setResponseCode(200))
+        client.newCall(get("/v1/agents/a/runs")).execute().use { response -> assertThat(response.code).isEqualTo(200) }
+        assertThat(sleeps).isEmpty()
+        server.enqueue(MockResponse().setResponseCode(200))
+        client.newCall(post("/v1/agents/b/runs")).execute().use { response -> assertThat(response.code).isEqualTo(200) }
+        assertThat(sleeps).containsExactly(4_000L)
     }
 
     /**
      * A wait longer than a call sleeps here is the caller's: the refusal comes back at once rather than being retried
-     * inside the window, the host's other reads hear it without going out, a write still holds a bounded moment and
-     * goes out once, and past the window everything goes out again.
+     * inside the window, the endpoint's other reads hear it without going out, and past the window everything goes
+     * out again.
      */
     @Test
-    fun `a Retry-After longer than a call sleeps is handed back at once and held by the host's other reads`() {
+    fun `a Retry-After longer than a call sleeps is handed back at once and held by the endpoint's other reads`() {
         server.enqueue(MockResponse().setResponseCode(429).setHeader("Retry-After", "30"))
-        client.newCall(get()).execute().use { response ->
+        client.newCall(get("/v1/agents/a")).execute().use { response ->
             assertThat(response.code).isEqualTo(429)
             assertThat(response.header("Retry-After")).isEqualTo("30")
         }
@@ -160,18 +176,65 @@ class RetryInterceptorTest {
         }
         assertThat(server.requestCount).isEqualTo(1)
 
-        server.enqueue(MockResponse().setResponseCode(200))
-        val post = Request.Builder().url(server.url("/v1/agents")).post("{}".toRequestBody("application/json".toMediaType())).build()
-        client.newCall(post).execute().use { response -> assertThat(response.code).isEqualTo(200) }
-        assertThat(server.requestCount).isEqualTo(2)
-        assertThat(sleeps).containsExactly(10_000L)
-
-        now += 8_000
+        now += 18_000
         sleeps.clear()
         server.enqueue(MockResponse().setResponseCode(200))
-        client.newCall(get()).execute().use { response -> assertThat(response.code).isEqualTo(200) }
-        assertThat(server.requestCount).isEqualTo(3)
+        client.newCall(get("/v1/agents/a")).execute().use { response -> assertThat(response.code).isEqualTo(200) }
+        assertThat(server.requestCount).isEqualTo(2)
         assertThat(sleeps).isEmpty()
+    }
+
+    /**
+     * The repositories' list allows one call a minute (cursor.com/docs/cloud-agent/api/endpoints). Its refusal holds
+     * the repositories' list for the minute and nothing else: a new Project's chat opened inside that minute read its
+     * runs and transcript from Cursor, not a refusal of this client's own making (v0.4.31: "Rate limited by Cursor.
+     * Try again in 26 s." over an empty chat whose reads Cursor had never been asked).
+     */
+    @Test
+    fun `the repositories' minute holds the repositories alone`() {
+        server.enqueue(MockResponse().setResponseCode(429).setHeader("Retry-After", "60"))
+        client.newCall(get("/v1/repositories")).execute().use { response -> assertThat(response.code).isEqualTo(429) }
+
+        now += 34_000
+        repeat(3) { server.enqueue(MockResponse().setResponseCode(200)) }
+        client.newCall(get("/v1/agents/bc-new/runs")).execute().use { response -> assertThat(response.code).isEqualTo(200) }
+        client.newCall(get("/v0/agents/bc-new/conversation")).execute().use { response -> assertThat(response.code).isEqualTo(200) }
+        client.newCall(get("/v1/agents/bc-new")).execute().use { response -> assertThat(response.code).isEqualTo(200) }
+        assertThat(server.requestCount).isEqualTo(4)
+        assertThat(sleeps).isEmpty()
+
+        client.newCall(get("/v1/repositories")).execute().use { response ->
+            assertThat(response.code).isEqualTo(429)
+            assertThat(response.header("Retry-After")).isEqualTo("26")
+        }
+        assertThat(server.requestCount).isEqualTo(4)
+    }
+
+    /** A `503` that names a wait is the server's trouble, not a rate limit (#545): handed back, and no endpoint is held for it. */
+    @Test
+    fun `a 503 naming a wait holds nothing`() {
+        server.enqueue(MockResponse().setResponseCode(503).setHeader("Retry-After", "30"))
+        client.newCall(get("/v1/agents/a/runs")).execute().use { response -> assertThat(response.code).isEqualTo(503) }
+        assertThat(server.requestCount).isEqualTo(1)
+
+        sleeps.clear()
+        server.enqueue(MockResponse().setResponseCode(200))
+        client.newCall(get("/v1/agents/b/runs")).execute().use { response -> assertThat(response.code).isEqualTo(200) }
+        assertThat(server.requestCount).isEqualTo(2)
+        assertThat(sleeps).isEmpty()
+    }
+
+    @Test
+    fun `an endpoint is its host, method and path with each resource's id stood in for`() {
+        fun key(method: String, url: String) = HostPause.endpoint(method, url.toHttpUrl())
+        assertThat(key("GET", "https://api.cursor.com/v1/agents/bc-1/runs?limit=10")).isEqualTo("api.cursor.com GET /v1/agents/*/runs")
+        assertThat(key("GET", "https://api.cursor.com/v1/agents/bc-2/runs")).isEqualTo(key("GET", "https://api.cursor.com/v1/agents/bc-1/runs"))
+        assertThat(key("GET", "https://api.cursor.com/v1/agents/bc-1/runs/run-9/stream")).isEqualTo("api.cursor.com GET /v1/agents/*/runs/*/stream")
+        assertThat(key("GET", "https://api.cursor.com/v0/agents/bc-1/conversation")).isEqualTo("api.cursor.com GET /v0/agents/*/conversation")
+        assertThat(key("GET", "https://api.cursor.com/v1/agents/bc-1/artifacts/download")).isEqualTo("api.cursor.com GET /v1/agents/*/artifacts/download")
+        assertThat(key("GET", "https://api.cursor.com/v1/repositories")).isEqualTo("api.cursor.com GET /v1/repositories")
+        assertThat(key("POST", "https://api.cursor.com/v1/agents/bc-1/runs")).isNotEqualTo(key("GET", "https://api.cursor.com/v1/agents/bc-1/runs"))
+        assertThat(key("GET", "https://api.cursor.com/v1/agents")).isNotEqualTo(key("GET", "https://api.cursor.com/v1/agents/bc-1"))
     }
 
     @Test

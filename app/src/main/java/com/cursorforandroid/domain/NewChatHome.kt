@@ -9,15 +9,18 @@ package com.cursorforandroid.domain
  *  - [PROJECTS]: the account's Projects as shortcuts — each in its own icon and colour, saying when it is working —
  *    that open the Project. Projects are Extended mode's (the demo has one of its own); without them the pane says so
  *    and lists the recent chats under the note, so it is never left empty.
+ *  - [PROJECTS_RECENT]: both, one under the other — the Project shortcuts as [PROJECTS] lays them out, then the recent
+ *    chats as [RECENT] does — on the one page, which scrolls as one. Without Projects it is what [PROJECTS] is.
  *  - [COMPOSER]: nothing; the composer alone, in the middle of the pane. The chats are the sidebar's.
  */
 enum class NewChatHome {
     RECENT,
     PROJECTS,
+    PROJECTS_RECENT,
     COMPOSER,
     ;
 
-    /** How the preference spells it. */
+    /** How the preference spells it (`recent`, `projects`, `projects_recent`, `composer`). */
     val key: String get() = name.lowercase()
 
     companion object {

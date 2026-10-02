@@ -68,24 +68,26 @@ class SettingsAdaptiveWidthTest {
     }
 
     @Test
-    fun `a phone's miniature is as tall as the cap and narrower than its option, the whole page in proportion`() {
+    fun `a phone's miniature fills its quarter of the row, just under the cap, the whole page in proportion`() {
         val page = miniaturePage(DpSize(411.dp, 914.dp))
         assertThat(page).isEqualTo(DpSize(411.dp, 411.dp * 1.75f))
         val size = miniature(pane = 411.dp, page)
-        assertThat(size.height.value).isWithin(0.01f).of(MiniatureMaxHeight.value)
+        assertThat(size.width.value).isWithin(0.01f).of(room(411.dp).value)
         assertThat(size.height.value).isWithin(0.01f).of(size.width.value * 1.75f)
-        assertThat(size.width).isLessThan(room(411.dp) * 0.8f)
+        assertThat(size.height).isAtMost(MiniatureMaxHeight)
+        assertThat(size.height).isGreaterThan(MiniatureMaxHeight - 1.dp)
         // A small phone's is smaller in step, not squeezed.
         val small = miniature(pane = 360.dp, miniaturePage(DpSize(360.dp, 780.dp)))
-        assertThat(small.width.value).isWithin(0.01f).of(room(360.dp).value * 0.8f)
+        assertThat(small.width.value).isWithin(0.01f).of(room(360.dp).value)
         assertThat(small.width).isLessThan(size.width)
+        assertThat(small.height.value).isWithin(0.01f).of(small.width.value * 1.75f)
     }
 
     @Test
     fun `a large phone's miniature is no taller than the cap`() {
         val size = miniature(pane = 448.dp, miniaturePage(DpSize(448.dp, 998.dp)))
         assertThat(size.height.value).isWithin(0.01f).of(MiniatureMaxHeight.value)
-        assertThat(size.width).isLessThan(room(448.dp) * 0.8f)
+        assertThat(size.width).isLessThan(room(448.dp))
     }
 
     @Test
@@ -123,8 +125,8 @@ class SettingsAdaptiveWidthTest {
         assertThat(miniatureRadius(40.dp)).isEqualTo(4.dp)
     }
 
-    /** An option's room for its miniature in a pane [pane] wide: a third of the card, less its insets, gaps and ring. */
-    private fun room(pane: Dp): Dp = ((minOf(pane - 32.dp, 640.dp) - RowInset * 2 - 12.dp * 2) / 3) - 8.dp
+    /** An option's room for its miniature in a pane [pane] wide: a quarter of the card, less its insets, gaps and ring. */
+    private fun room(pane: Dp): Dp = ((minOf(pane - 32.dp, 640.dp) - RowInset * 2 - 12.dp * 3) / 4) - 8.dp
 
     private fun miniature(pane: Dp, page: DpSize): DpSize = miniatureSize(page, room(pane))
 

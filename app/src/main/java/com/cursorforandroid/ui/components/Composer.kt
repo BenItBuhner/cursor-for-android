@@ -131,8 +131,9 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 /**
- * Cursor's prompt box as measured on cursor.com/agents: `--cursor-editor` surface, 8 % stroke (20 % focused),
- * 12px padding, 14/22 text, and a footer of round buttons — "+" on the left, opening the
+ * Cursor's prompt box as measured on cursor.com/agents: `--cursor-editor` surface, 8 % stroke — the same focused
+ * and not, as the cards docked over it wear ([dockedCard]) — 12px padding, 14/22 text, and a footer of round buttons —
+ * "+" on the left, opening the
  * Plan / Files / Skills / MCP Servers menu ([ComposerPlusMenu]), send / stop on the right — with the 13px
  * model selector hugging send. The field is inset a further [CursorDimens.composerTextInset] on every side so
  * the placeholder and typed text share the edges of the glyphs in those discs, not the discs themselves: the
@@ -303,7 +304,9 @@ fun ComposerBox(
     // it never stops a run, cancels a launch, or sends past files still going up.
     val sendsNow = canSend && !isSending
     val pad = CursorDimens.composerPadding
-    val border by animateColorAsState(if (focused) colors.strokeStrong else colors.strokeSubtle, tween(160), label = "border")
+    // The stroke of every card docked over the box (see dockedCard), focused or not: the caret says the field is
+    // taken, and a box that lit up when tapped stood out from the queue and the goal strip it is one family with.
+    val border = colors.strokeSubtle
     // The field owns the text and the selection; [value] only says what the owner last made of it. Comparing the two
     // directly would mean rewriting the field whenever they disagree, which is wrong while they are meant to: the
     // owner may answer onValueChange a frame late — a debounce, a trim, a length cap, a flow — and the rewrite would

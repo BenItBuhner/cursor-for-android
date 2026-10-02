@@ -83,6 +83,7 @@ import com.cursorforandroid.domain.NestedRow
 import com.cursorforandroid.ui.components.CursorIcons
 import com.cursorforandroid.ui.components.FlatIconButton
 import com.cursorforandroid.ui.components.PullRefreshHaptics
+import com.cursorforandroid.ui.components.RefreshIndicator
 import com.cursorforandroid.ui.components.StylusTextInput
 import com.cursorforandroid.ui.components.rememberHaptics
 import com.cursorforandroid.ui.components.pressable
@@ -244,7 +245,13 @@ fun Sidebar(
 
         val pull = rememberPullToRefreshState()
         PullRefreshHaptics(pull, state.isRefreshing)
-        PullToRefreshBox(isRefreshing = state.isRefreshing, onRefresh = callbacks.onRefresh, modifier = Modifier.weight(1f), state = pull) {
+        PullToRefreshBox(
+            isRefreshing = state.isRefreshing,
+            onRefresh = callbacks.onRefresh,
+            modifier = Modifier.weight(1f),
+            state = pull,
+            indicator = { RefreshIndicator(pull, state.isRefreshing, Modifier.align(Alignment.TopCenter)) },
+        ) {
             // Rows dissolve at the top and bottom of the pane while more of the list sits past that edge; there is no
             // rule above the footer, the fade is what separates the two.
             val listState = rememberLazyListState()

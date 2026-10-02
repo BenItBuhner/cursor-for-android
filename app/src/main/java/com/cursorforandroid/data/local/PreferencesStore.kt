@@ -167,7 +167,7 @@ class PreferencesStore(
         val listedInFullSidebarSections = stringSetPreferencesKey("sidebar_listed_in_full_sections")
         /** Settings › Chats › Shorten long Projects list; absent reads as on (see [shortenSidebarLists]). */
         val shortenSidebarLists = booleanPreferencesKey("sidebar_shorten_long_lists")
-        /** Settings › New chat page: what the New Chat pane lists under its composer (`recent` / `projects`); absent is Recent. */
+        /** Settings › New chat page: what the New Chat pane lists under its composer ([NewChatHome.key]); absent is the page's own pick. */
         val newChatHome = stringPreferencesKey("new_chat_home")
         /** Settings › Keyboard shortcuts: the shortcuts moved off their default keys (see `ShortcutBindings.encode`); absent is every default. */
         val shortcutBindings = stringPreferencesKey("keyboard_shortcut_bindings")

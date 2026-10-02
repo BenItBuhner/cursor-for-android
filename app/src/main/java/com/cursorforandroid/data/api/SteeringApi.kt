@@ -49,9 +49,19 @@ data class AccountFollowup(
     /** Client-minted, so a retry after a lost reply files nothing twice — and so the card's row and the transcript's copy of the message are one (see `QueuePlacement`). */
     val followupId: String = newId(),
 ) {
+    /** The message's own id as it goes out (`userMessage.messageId`), which the account's record keeps: made from [followupId], so what was sent can be known by it later (see [messageIdOf]). */
+    val messageId: String get() = messageIdOf(followupId)
+
     companion object {
         /** A followup id as this client mints them (`ListPendingFollowups` gives it back as `followupId`). */
         fun newId(): String = "fu-${UUID.randomUUID()}"
+
+        /**
+         * The id the message filed under [followupId] carries in the account's record (`agent.v1.UserMessage.message_id`):
+         * the same mint under the message prefix, so the device's copy of the message's pictures is named by the record's
+         * own id for the message (see `AttachmentStore`).
+         */
+        fun messageIdOf(followupId: String): String = "msg-" + followupId.removePrefix("fu-")
     }
 }
 
@@ -199,7 +209,7 @@ class SteeringApi(
                 userMessageAction = UserMessageActionDto(
                     userMessage = UserMessageDto(
                         text = text,
-                        messageId = "msg-${UUID.randomUUID()}",
+                        messageId = followup.messageId,
                         mode = mode,
                         selectedContext = context,
                     ),

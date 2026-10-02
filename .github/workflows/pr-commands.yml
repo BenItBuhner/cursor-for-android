@@ -10,6 +10,9 @@ name: PR commands
 #                                    the branch, and starts `CI` on the new head.
 #   /update-screenshots merge-main   the same, after merging origin/main into the branch first; conflicting goldens are
 #                                    taken from main and then re-recorded, any other conflict stops the command.
+#   /rerun-main [run-id]             on any pull request or issue: re-runs the failed jobs of the newest red `CI` run on
+#                                    main (or of the run given), for the case main-rerun.yml does not take by itself:
+#                                    a second flake in a row, or a run it judged not a flake.
 #
 # The command answers with a reaction (eyes: started, rocket: done, confused: failed) and a comment linking its run.
 # Pushes made with the workflow's token raise no workflow runs of their own, which is why the CI run is started with
@@ -161,3 +164,61 @@ jobs:
           if [[ "$OUTCOME" == "success" ]]; then reaction=rocket; else reaction=confused; fi
           gh api "repos/$GH_REPO/issues/comments/$COMMENT_ID/reactions" -f content="$reaction" >/dev/null || true
           gh pr comment "$PR" --body "${note:-The command failed.} ([run]($RUN_URL))" || true
+
+  # `/rerun-main`: on a pull request or an issue, from the same people. It touches no branch and checks nothing out.
+  rerun-main:
+    if: >-
+      startsWith(github.event.comment.body, '/rerun-main') &&
+      (contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association) ||
+       github.event.comment.user.login == 'cursor[bot]')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      ISSUE: ${{ github.event.issue.number }}
+      COMMENT_ID: ${{ github.event.comment.id }}
+      BODY: ${{ github.event.comment.body }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - name: Acknowledge
+        run: gh api "repos/$GH_REPO/issues/comments/$COMMENT_ID/reactions" -f content=eyes >/dev/null
+
+      - name: Re-run the red main run
+        run: |
+          given="$(head -n1 <<<"$BODY" | tr -d '\r' | awk '{print $2}')"
+          if [[ -n "$given" ]]; then
+            run="$(gh api "repos/$GH_REPO/actions/runs/$given" --jq '{id, status, conclusion, url: .html_url, branch: .head_branch, sha: .head_sha}')"
+          else
+            run="$(gh run list --workflow ci.yml --branch main --event push --limit 10 --json databaseId,status,conclusion,url,headBranch,headSha \
+              --jq '[.[] | select(.status == "completed" and .conclusion != "success")][0] // empty | {id: .databaseId, status, conclusion, url, branch: .headBranch, sha: .headSha}')"
+          fi
+          if [[ -z "$run" ]]; then
+            echo "note=The newest ten \`CI\` runs on main are green or still running; nothing to re-run." >> "$GITHUB_ENV"; exit 0
+          fi
+          echo "$run"
+          id="$(jq -r .id <<<"$run")"; status="$(jq -r .status <<<"$run")"; conclusion="$(jq -r .conclusion <<<"$run")"
+          url="$(jq -r .url <<<"$run")"; sha="$(jq -r .sha <<<"$run")"
+          if [[ "$(jq -r .branch <<<"$run")" != "main" ]]; then
+            echo "note=[Run $id]($url) is not a main run; use \`/rerun-ci\` on its pull request." >> "$GITHUB_ENV"; exit 1
+          fi
+          if [[ "$status" != "completed" ]]; then
+            echo "note=[CI]($url) on \`${sha::8}\` is still $status." >> "$GITHUB_ENV"; exit 0
+          elif [[ "$conclusion" == "success" ]]; then
+            echo "note=[CI]($url) on \`${sha::8}\` already passed." >> "$GITHUB_ENV"; exit 0
+          elif [[ "$conclusion" == "cancelled" ]]; then
+            gh run rerun "$id"
+            echo "note=Re-running every job of [CI]($url) on main \`${sha::8}\` (it was cancelled)." >> "$GITHUB_ENV"
+          else
+            gh run rerun "$id" --failed
+            echo "note=Re-running the failed jobs of [CI]($url) on main \`${sha::8}\`." >> "$GITHUB_ENV"
+          fi
+
+      - name: Report
+        if: always()
+        env:
+          OUTCOME: ${{ job.status }}
+        run: |
+          if [[ "$OUTCOME" == "success" ]]; then reaction=rocket; else reaction=confused; fi
+          gh api "repos/$GH_REPO/issues/comments/$COMMENT_ID/reactions" -f content="$reaction" >/dev/null || true
+          gh issue comment "$ISSUE" --body "${note:-The command failed.} ([run]($RUN_URL))" || true

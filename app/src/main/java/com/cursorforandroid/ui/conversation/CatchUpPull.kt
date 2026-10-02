@@ -1,19 +1,15 @@
 package com.cursorforandroid.ui.conversation
 
-import androidx.compose.animation.Crossfade
 import androidx.compose.animation.core.Animatable
-import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.SpringSpec
 import androidx.compose.animation.core.spring
-import androidx.compose.animation.core.tween
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.OverscrollEffect
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.pulltorefresh.PullToRefreshDefaults
 import androidx.compose.material3.pulltorefresh.PullToRefreshState
@@ -43,6 +39,10 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.cursorforandroid.ui.components.Haptic
 import com.cursorforandroid.ui.components.PullRefreshHaptics
+import com.cursorforandroid.ui.components.RefreshIndicator
+import com.cursorforandroid.ui.components.RefreshIndicatorContent
+import com.cursorforandroid.ui.components.RefreshIndicatorSize
+import com.cursorforandroid.ui.components.refreshDiscOutline
 import com.cursorforandroid.ui.components.rememberHaptics
 import com.cursorforandroid.util.AppClock
 import kotlinx.coroutines.flow.StateFlow
@@ -301,15 +301,15 @@ private sealed interface CatchUpRest {
 }
 
 /**
- * The pull's indicator: the sidebar's own — Material's pull-to-refresh indicator, its colours, its arrow and its
- * spinner — standing in the middle of the gap the lifted transcript opens over the composer, half as far up as the
- * transcript and as far from each. [edgeGap] is the room already there at rest, between the newest row and the
- * area's bottom edge (the list's bottom padding), so the middle is the whole gap's. It grows into the gap rather than
- * covering either side of it, and it is drawn whole once the gap has room for it. With the finger it follows [pull];
- * let go armed, the transcript is sprung to the held gap and the indicator spins there until [status] answers (through
- * any pause the server asked for), then both go home, and only once home is a failure told ([onSettled]), so the word
- * never lands on the indicator. As it starts to rise, [onRise]: whatever word is up gives way to it. Every frame of
- * all this is the indicator's layer; nothing is recomposed for it.
+ * The pull's indicator: the sidebar's own ([RefreshIndicator] — Material's pull-to-refresh indicator, its colours,
+ * its arrow and its spinner, in the app's outlined, shadowless disc) standing in the middle of the gap the lifted
+ * transcript opens over the composer, half as far up as the transcript and as far from each. [edgeGap] is the room
+ * already there at rest, between the newest row and the area's bottom edge (the list's bottom padding), so the middle
+ * is the whole gap's. It grows into the gap rather than covering either side of it, and it is drawn whole once the gap
+ * has room for it. With the finger it follows [pull]; let go armed, the transcript is sprung to the held gap and the
+ * indicator spins there until [status] answers (through any pause the server asked for), then both go home, and only
+ * once home is a failure told ([onSettled]), so the word never lands on the indicator. As it starts to rise, [onRise]:
+ * whatever word is up gives way to it. Every frame of all this is the indicator's layer; nothing is recomposed for it.
  *
  * The finger feels it as it does the sidebar's ([PullRefreshHaptics], so only as Settings › Haptic feedback
  * allows), and more: a confirm as an armed pull is let go, the lightest tick for the answer, a reject for a failure —
@@ -360,10 +360,9 @@ internal fun CatchUpIndicator(
     LaunchedEffect(pull) {
         snapshotFlow { pull.lift > 0f }.distinctUntilChanged().filter { it }.collect { rise() }
     }
-    val tint = PullToRefreshDefaults.indicatorColor
     Box(
         modifier
-            .size(CatchUpIndicatorSize)
+            .size(RefreshIndicatorSize)
             .graphicsLayer {
                 val gap = edgeGap.toPx() + pull.lift
                 val scale = catchUpIndicatorScale(gap, size.height, CatchUpIndicatorMargin.toPx())
@@ -372,21 +371,15 @@ internal fun CatchUpIndicator(
                 scaleX = -scale
                 scaleY = -scale
                 alpha = if (scale > 0f) 1f else 0f
-                shadowElevation = if (scale > 0f) PullToRefreshDefaults.Elevation.toPx() else 0f
                 shape = CircleShape
                 clip = true
             }
             .background(PullToRefreshDefaults.containerColor, CircleShape)
+            .refreshDiscOutline()
             .testTag(CATCH_UP_TEST_TAG),
         contentAlignment = Alignment.Center,
     ) {
-        Crossfade(targetState = refreshing, animationSpec = tween(CatchUpCrossfadeMillis, easing = FastOutSlowInEasing), label = "catch-up-spinner") { spinning ->
-            if (spinning) {
-                CircularProgressIndicator(strokeWidth = CatchUpStrokeWidth, color = tint, modifier = Modifier.size(CatchUpSpinnerSize))
-            } else {
-                CatchUpArrow(progress = { pull.distanceFraction }, color = tint)
-            }
-        }
+        RefreshIndicatorContent(refreshing, progress = { pull.distanceFraction })
     }
 }
 
@@ -448,12 +441,6 @@ private val HomeSpring: SpringSpec<Float> = spring(dampingRatio = Spring.Damping
 
 /** Released armed: down to the held gap, settling with the least give. */
 private val HeldSpring: SpringSpec<Float> = spring(dampingRatio = 0.75f, stiffness = 450f)
-
-/** Material's pull-to-refresh indicator's own measures (`PullToRefreshDefaults.Indicator`). */
-private val CatchUpIndicatorSize = 40.dp
-private val CatchUpSpinnerSize = 16.dp
-internal val CatchUpStrokeWidth = 2.5.dp
-private const val CatchUpCrossfadeMillis = 100
 
 /** The least room kept between the indicator and the transcript or the composer while it grows into the gap. */
 private val CatchUpIndicatorMargin = 8.dp

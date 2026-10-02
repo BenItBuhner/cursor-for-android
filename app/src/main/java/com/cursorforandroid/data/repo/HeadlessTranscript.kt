@@ -3,6 +3,7 @@ package com.cursorforandroid.data.repo
 import com.cursorforandroid.data.api.ConversationRecordApi
 import com.cursorforandroid.data.api.HeadlessStep
 import com.cursorforandroid.data.api.HeadlessToolCall
+import com.cursorforandroid.data.api.RecordImage
 import com.cursorforandroid.data.api.RunStreamEvent
 import com.cursorforandroid.data.api.dto.RunDto
 import com.cursorforandroid.data.api.CursorJson
@@ -48,6 +49,10 @@ object HeadlessTranscript {
         val turnIndex: Int? = null,
         /** The prompt was delivered into the turn under way rather than starting one (see [HeadlessStep.steer]). */
         val steer: Boolean = false,
+        /** The prompt's id as its sender minted it (see [HeadlessStep.messageId]); the blob-backed record's turns carry one. */
+        val messageId: String? = null,
+        /** The pictures the record carries with the prompt (see [HeadlessStep.images]). */
+        val images: List<RecordImage> = emptyList(),
     )
 
     /**
@@ -87,6 +92,8 @@ object HeadlessTranscript {
         var promptShape: StepShape? = null
         var projectMode = false
         var steer = false
+        var messageId: String? = null
+        var images: List<RecordImage> = emptyList()
         var turnIndex: Int? = null
         var current = ArrayList<HeadlessStep>()
         var started = false
@@ -95,11 +102,13 @@ object HeadlessTranscript {
             // turn whose prompt could not be read is still a turn of its own, not the previous turn's tail.
             val newTurn = step.userMessage != null || (step.turnIndex != null && turnIndex != null && step.turnIndex != turnIndex)
             if (newTurn) {
-                if (started) turns += Turn(prompt, current, projectMode, promptShape, turnIndex, steer)
+                if (started) turns += Turn(prompt, current, projectMode, promptShape, turnIndex, steer, messageId, images)
                 prompt = step.userMessage
                 promptShape = step.shape?.takeIf { step.userMessage != null }
                 projectMode = step.projectMode
                 steer = step.steer
+                messageId = step.messageId
+                images = step.images
                 turnIndex = step.turnIndex
                 current = ArrayList()
                 started = true
@@ -109,7 +118,7 @@ object HeadlessTranscript {
             current += step
             started = true
         }
-        if (started) turns += Turn(prompt, current, projectMode, promptShape, turnIndex, steer)
+        if (started) turns += Turn(prompt, current, projectMode, promptShape, turnIndex, steer, messageId, images)
         return turns
     }
 

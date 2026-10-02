@@ -92,12 +92,35 @@ object AgentSchemas {
         sub(3, "thinkingMessage") { msg("agent.v1.ThinkingMessage", str(1, "text"), u32(2, "durationMs"), u64(3, "startedAtMs"), u64(4, "completedAtMs")) },
     )
 
+    /**
+     * `agent.v1.SelectedImage`: one picture attached to a prompt — its bytes inline (`data`), in a blob the message
+     * names (`blob_id`, or both with `blob_id_with_data`), or by the upload it was staged as (`prompt_upload_ref`),
+     * with the client's id for it, its type and its size.
+     */
+    val SELECTED_IMAGE: Schema = msg(
+        "agent.v1.SelectedImage",
+        bytes(1, "blobId"),
+        str(2, "uuid"),
+        str(3, "path"),
+        sub(4, "dimension") { msg("agent.v1.ImageDimension", i32(1, "width"), i32(2, "height")) },
+        str(7, "mimeType"),
+        bytes(8, "data"),
+        sub(9, "blobIdWithData") { msg("agent.v1.BlobIdWithData", bytes(1, "blobId"), bytes(2, "data")) },
+        sub(10, "promptUploadRef") { msg("agent.v1.PromptUploadRef", str(1, "uploadId")) },
+    )
+
+    /** `agent.v1.SelectedContext`, in the corner this app reads: the images attached to the prompt. */
+    val SELECTED_CONTEXT: Schema = msg(
+        "agent.v1.SelectedContext",
+        sub(1, "selectedImages", repeated = true) { SELECTED_IMAGE },
+    )
+
     /** `agent.v1.UserMessage`: the prompt blob. `mode` is `agent.v1.AgentMode` (PROJECT = 6); `turnSteer` marks a message delivered into a turn under way. */
     val USER_MESSAGE: Schema = msg(
         "agent.v1.UserMessage",
         str(1, "text"),
         str(2, "messageId"),
-        sub(3, "selectedContext") { opaque("agent.v1.SelectedContext") },
+        sub(3, "selectedContext") { SELECTED_CONTEXT },
         enum(4, "mode"),
         bool(5, "isSimulatedMsg"),
         str(8, "richText"),

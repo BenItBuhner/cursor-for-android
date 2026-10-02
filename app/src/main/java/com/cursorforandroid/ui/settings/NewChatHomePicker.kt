@@ -9,10 +9,14 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -34,6 +38,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.DpSize
@@ -55,6 +60,7 @@ object NewChatHomePickerCopy {
     const val GROUP = "New chat page"
     const val RECENT = "Recent agents"
     const val PROJECTS = "Projects"
+    const val PROJECTS_RECENT = "Projects + Recent"
     const val COMPOSER = "Composer only"
     const val NEEDS_MODE = "Projects need Extended mode"
     const val NEEDS_MODE_DETAIL = "Until then, it lists recent agents."
@@ -62,6 +68,7 @@ object NewChatHomePickerCopy {
     fun label(home: NewChatHome): String = when (home) {
         NewChatHome.RECENT -> RECENT
         NewChatHome.PROJECTS -> PROJECTS
+        NewChatHome.PROJECTS_RECENT -> PROJECTS_RECENT
         NewChatHome.COMPOSER -> COMPOSER
     }
 }
@@ -69,22 +76,25 @@ object NewChatHomePickerCopy {
 object NewChatHomePickerTags {
     const val RECENT = "settings_new_chat_recent"
     const val PROJECTS = "settings_new_chat_projects"
+    const val PROJECTS_RECENT = "settings_new_chat_projects_recent"
     const val COMPOSER = "settings_new_chat_composer"
 
     fun of(home: NewChatHome): String = when (home) {
         NewChatHome.RECENT -> RECENT
         NewChatHome.PROJECTS -> PROJECTS
+        NewChatHome.PROJECTS_RECENT -> PROJECTS_RECENT
         NewChatHome.COMPOSER -> COMPOSER
     }
 }
 
 /**
  * Settings › New chat page, as the light/dark appearance pickers of iOS and One UI lay a choice out: each layout of
- * the New Chat pane side by side in miniature — the pane's own composables, drawn from the live list and scaled down
- * ([NewChatPageMiniature]) — its name under it, and the chosen one ringed and checked. A tap chooses, is written at
- * once, and the pane lays itself out that way the next time it is on screen. [pageSize] is the pane's (this screen
- * fills the same one), so a miniature has the page's proportions on a phone and on a tablet alike; [withHeader] is
- * whether the pane has its 44dp header, as it does wherever this screen has one.
+ * the New Chat pane in miniature — the pane's own composables, drawn from the live list and scaled down
+ * ([NewChatPageMiniature]) — its name under it, and the chosen one ringed and checked, the four abreast in one row
+ * on a phone and a tablet alike ([OptionRow]). A tap chooses, is written at once, and the pane lays itself out that
+ * way the next time it is on screen. [pageSize] is the pane's (this screen fills the same one), so a miniature has
+ * the page's proportions on a phone and on a tablet alike; [withHeader] is whether the pane has its 44dp header, as
+ * it does wherever this screen has one.
  *
  * Without Projects to pin — Extended mode off, outside the demo — Projects can still be chosen, and the row under the
  * miniatures says what the page shows until the mode is on.
@@ -108,17 +118,14 @@ internal fun NewChatHomeCard(
     val chosen = choice?.let { it.chosen ?: NewChatHome.automatic(projectsAvailable, hasProjects = list.projectRows.isNotEmpty(), settled = true) }
     val chips = rememberComposerChips(graph)
     SettingsCard {
-        Row(
-            Modifier.fillMaxWidth().selectableGroup().padding(horizontal = RowInset, vertical = 12.dp),
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
+        OptionRow(pageSize, Modifier.fillMaxWidth().selectableGroup().padding(horizontal = RowInset, vertical = 12.dp)) { size ->
             NewChatHome.entries.forEach { option ->
                 PickerOption(
                     label = NewChatHomePickerCopy.label(option),
                     selected = chosen == option,
                     onClick = { scope.launch { graph.prefs.setNewChatHome(option) } },
-                    pageSize = pageSize,
-                    modifier = Modifier.weight(1f).testTag(NewChatHomePickerTags.of(option)),
+                    size = size,
+                    modifier = Modifier.weight(1f).fillMaxHeight().testTag(NewChatHomePickerTags.of(option)),
                 ) { miniatureModifier ->
                     NewChatPageMiniature(
                         home = option,
@@ -145,16 +152,33 @@ internal fun NewChatHomeCard(
 }
 
 /**
- * One layout to choose: its miniature of the page at [pageSize], sized to the column ([miniatureSize]) and ringed in
- * the accent while chosen with a hairline's gap between ring and page, then its name and a round check under it. The
- * whole column is the radio button, read as its name.
+ * The four options abreast, each an equal share of the row with [OptionGap] between them, and all as tall as the
+ * tallest, so the checks under them stand in a line whether a name takes one line or two. The miniatures' size is
+ * worked out once here, from the share each option gets ([miniatureSize]), and handed to the options: a row sized
+ * to its tallest asks each option how tall it would be, which an option measuring its own room could not answer.
+ */
+@Composable
+private fun OptionRow(pageSize: DpSize, modifier: Modifier = Modifier, options: @Composable RowScope.(miniature: DpSize) -> Unit) {
+    BoxWithConstraints(modifier) {
+        val count = NewChatHome.entries.size
+        val size = miniatureSize(pageSize, (maxWidth - OptionGap * (count - 1)) / count - RingInset * 2)
+        Row(Modifier.fillMaxWidth().height(IntrinsicSize.Max), horizontalArrangement = Arrangement.spacedBy(OptionGap)) {
+            options(size)
+        }
+    }
+}
+
+/**
+ * One layout to choose: its miniature of the page at [size], ringed in the accent while chosen with a hairline's gap
+ * between ring and page, then its name — on two lines where a phone's share of the row is too narrow for one — and a
+ * round check under it, at the foot of the column. The whole column is the radio button, read as its name.
  */
 @Composable
 private fun PickerOption(
     label: String,
     selected: Boolean,
     onClick: () -> Unit,
-    pageSize: DpSize,
+    size: DpSize,
     modifier: Modifier = Modifier,
     miniature: @Composable (Modifier) -> Unit,
 ) {
@@ -162,6 +186,7 @@ private fun PickerOption(
     val type = CursorTheme.typography
     val ring by animateColorAsState(if (selected) colors.accent else Color.Transparent, tween(160), label = "ring")
     val interaction = remember { MutableInteractionSource() }
+    val radius = miniatureRadius(size.width)
     Column(
         modifier
             .clip(CursorTheme.shapes.xl)
@@ -175,34 +200,31 @@ private fun PickerOption(
             .padding(vertical = 4.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        BoxWithConstraints(Modifier.fillMaxWidth(), contentAlignment = Alignment.TopCenter) {
-            val size = miniatureSize(pageSize, maxWidth - RingInset * 2)
-            val radius = miniatureRadius(size.width)
-            Box(
+        Box(
+            Modifier
+                .width(size.width + RingInset * 2)
+                .border(RingWidth, ring, RoundedCornerShape(radius + RingInset))
+                .padding(RingInset),
+        ) {
+            val page = RoundedCornerShape(radius)
+            miniature(
                 Modifier
-                    .width(size.width + RingInset * 2)
-                    .border(RingWidth, ring, RoundedCornerShape(radius + RingInset))
-                    .padding(RingInset),
-            ) {
-                val page = RoundedCornerShape(radius)
-                miniature(
-                    Modifier
-                        .size(size)
-                        .clip(page)
-                        .border(CursorDimens.hairline, colors.strokeSubtle, page)
-                        .clearAndSetSemantics { },
-                )
-            }
+                    .size(size)
+                    .clip(page)
+                    .border(CursorDimens.hairline, colors.strokeSubtle, page)
+                    .clearAndSetSemantics { },
+            )
         }
         Spacer(Modifier.height(8.dp))
         Text(
             label,
-            style = type.base,
+            style = type.small,
             color = if (selected) colors.textPrimary else colors.textSecondary,
-            maxLines = 1,
+            textAlign = TextAlign.Center,
+            maxLines = 2,
             overflow = TextOverflow.Ellipsis,
         )
-        Spacer(Modifier.height(6.dp))
+        Spacer(Modifier.weight(1f).heightIn(min = 6.dp))
         CheckCircle(selected)
     }
 }
@@ -224,14 +246,14 @@ private fun CheckCircle(checked: Boolean) {
 }
 
 /**
- * A miniature's size in [room] (its option's width, less the ring): four fifths of it, so the three stand apart, but
- * never wider than [MiniatureMaxWidth] nor taller than [MiniatureMaxHeight] — a large phone's, a foldable's and a
- * tablet's thirds are wider than a phone's, and an upright page is tall, which drawn at the full width made each
- * miniature loom over the card. Its height is the [page]'s at that width.
+ * A miniature's size in [room] (its option's quarter of the row, less the ring): all of it on a phone, where four
+ * abreast leaves each little, but never wider than [MiniatureMaxWidth] nor taller than [MiniatureMaxHeight] — a
+ * foldable's and a tablet's options are far wider, and an upright page is tall, which drawn at the full width made
+ * each miniature loom over the card. Its height is the [page]'s at that width.
  */
 internal fun miniatureSize(page: DpSize, room: Dp): DpSize {
     val aspect = page.height / page.width
-    val width = minOf(room * 0.8f, MiniatureMaxWidth, MiniatureMaxHeight / aspect).coerceAtLeast(0.dp)
+    val width = minOf(room, MiniatureMaxWidth, MiniatureMaxHeight / aspect).coerceAtLeast(0.dp)
     return DpSize(width, width * aspect)
 }
 
@@ -244,6 +266,7 @@ internal fun miniatureRadius(width: Dp): Dp = (width * 0.05f).coerceIn(4.dp, 6.d
 
 internal val MiniatureMaxWidth = 96.dp
 internal val MiniatureMaxHeight = 124.dp
+private val OptionGap = 12.dp
 private val RingWidth = 2.dp
 private val RingGap = 2.dp
 private val RingInset = RingWidth + RingGap

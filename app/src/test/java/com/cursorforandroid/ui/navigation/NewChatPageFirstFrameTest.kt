@@ -24,6 +24,7 @@ import com.cursorforandroid.AppGraph
 import com.cursorforandroid.data.local.NewChatPageSnapshot
 import com.cursorforandroid.data.repo.SessionState
 import com.cursorforandroid.domain.CursorUser
+import com.cursorforandroid.domain.NewChatHome
 import com.cursorforandroid.domain.NewChatHomeChoice
 import com.cursorforandroid.domain.ProjectArrangement
 import com.cursorforandroid.ui.home.NewChatHomeFixtures
@@ -47,7 +48,8 @@ import java.io.File
  * The New Chat page on a launch after one that drew Projects: the shortcuts are on its very first frame, where they
  * stay, rather than an empty page the Projects slide into once the settings and the list have been read. The first
  * launch is the demo's shell left to load and write its page down; the second is a shell built from nothing over it —
- * a new process's graph reading the file, or a new activity over the live process.
+ * a new process's graph reading the file, or a new activity over the live process. The page stacking the Projects
+ * over the recent chats opens on its Projects the same way.
  */
 @RunWith(AndroidJUnit4::class)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
@@ -196,6 +198,44 @@ class NewChatPageFirstFrameTest {
         assertThat(drawn(project.name)).isFalse()
         assertThat(allHidden()).isTrue()
         assertThat(composerTop()).isWithin(1f).of(composer)
+    }
+
+    /**
+     * Projects + Recent chosen: the next launch opens on its Projects from the very first frame, as the Projects
+     * layout does — the page written down carries the choice and the shortcuts — and the recent chats, which the page
+     * does not write down, take their place under the shortcuts once the list has been read, never over or among them.
+     */
+    @Test
+    fun `a page stacking Projects over the recent chats opens on its Projects, the chats following under them`() {
+        val first = demoLaunch()
+        runBlocking { first.graph.prefs.setNewChatHome(NewChatHome.PROJECTS_RECENT) }
+        val projects = firstLaunch(first)
+        compose.waitUntil(30_000) { recents().isNotEmpty() }
+        compose.waitUntil(30_000) { pageFile.readText().contains("\"chosenHome\":\"${NewChatHome.PROJECTS_RECENT.key}\"") }
+        chatsUnderShortcuts()
+
+        val next = demoLaunch()
+        next.graph.caches.newChatPage.warm()
+        swapTo(next)
+        assertWithMessage("Project shortcuts on the first frame").that(tiles()).hasSize(projects)
+        repeat(60) {
+            compose.mainClock.advanceTimeBy(FRAME_MILLIS)
+            compose.waitForIdle()
+            assertWithMessage("shortcuts, frame ${it + 2}").that(tiles()).hasSize(projects)
+            chatsUnderShortcuts()
+        }
+        compose.mainClock.autoAdvance = true
+        compose.waitUntil(30_000) { recents().isNotEmpty() }
+        assertThat(tiles()).hasSize(projects)
+        chatsUnderShortcuts()
+    }
+
+    private fun recents(): List<SemanticsNode> = compose.onAllNodes(hasTestTag(NewChatHomeTags.RECENT_CHAT)).fetchSemanticsNodes()
+
+    /** Whatever recent chats are drawn start below the lowest shortcut. */
+    private fun chatsUnderShortcuts() {
+        val shortcutsEnd = tiles().maxOf { it.boundsInRoot.bottom }
+        recents().forEach { assertWithMessage("a recent chat under the shortcuts").that(it.boundsInRoot.top).isAtLeast(shortcutsEnd) }
     }
 
     private fun allHidden() = compose.onAllNodes(hasTestTag(NewChatHomeTags.ALL_HIDDEN)).fetchSemanticsNodes().isNotEmpty()

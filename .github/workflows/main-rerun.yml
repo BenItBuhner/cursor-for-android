@@ -1,0 +1,46 @@
+name: Main re-run
+
+# A red CI run on main from one flaky test stayed red until a person pressed "Re-run failed jobs": the agents' `gh`
+# is read-only and the integration token cannot re-run anything, so a release cut waited on a human noticing, and the
+# empty "CI proof" commits in the history were the workaround. When CI on a main push ends red on its first attempt
+# and every failed job is a test job, this re-runs the failed jobs once, with this workflow's own token. A second red
+# stays red: twice is not a flake. A build, lint or release-build failure is not re-run either; those do not flake.
+# `/rerun-main` (pr-commands.yml) is the hand on the lever for everything else.
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  rerun:
+    name: Re-run the failed test jobs once
+    if: >-
+      github.event.workflow_run.conclusion == 'failure' &&
+      github.event.workflow_run.run_attempt == 1 &&
+      github.event.workflow_run.event == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RUN_ID: ${{ github.event.workflow_run.id }}
+      RUN_URL: ${{ github.event.workflow_run.html_url }}
+    steps:
+      - name: Re-run when only test jobs failed
+        shell: bash
+        run: |
+          failed="$(gh api --paginate "repos/$GH_REPO/actions/runs/$RUN_ID/jobs?per_page=100" --jq '.jobs[] | select(.conclusion == "failure") | .name')"
+          echo "Failed jobs of $RUN_URL:"; echo "$failed"
+          others="$(grep -Ev '^(Unit tests \([0-9]+/[0-9]+\)|Screenshot tests)$' <<<"$failed" | grep -v '^CI$' || true)"
+          if [[ -n "$others" ]]; then
+            echo "::notice::Not re-run: $(paste -sd', ' <<<"$others") failed, and that is not a flake. Fix it, or comment /rerun-main on any pull request to re-run anyway."
+            exit 0
+          fi
+          gh run rerun "$RUN_ID" --failed
+          echo "::notice::Re-running the failed jobs of $RUN_URL once (attempt 2). A second failure stays red."

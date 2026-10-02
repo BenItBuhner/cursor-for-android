@@ -115,8 +115,8 @@ import com.cursorforandroid.ui.components.onContextClick
 
 /**
  * The "New Chat" pane — the home of the official app: context selectors, the composer, then — as Settings › New chat
- * page chooses ([home]) — the recent chats list with preview cards (cursor.com/agents), the Projects as shortcuts, or
- * nothing (see [homeBlocks]); what does not fill the pane sits in its middle. On phones a 44dp header carries the
+ * page chooses ([home]) — the recent chats list with preview cards (cursor.com/agents), the Projects as shortcuts, the
+ * two stacked, or nothing (see [homeBlocks]); what does not fill the pane sits in its middle. On phones a 44dp header carries the
  * sidebar toggle.
  *
  * Sending opens the new chat through [onLaunchOpen] right away, before the server has answered, and leaves the

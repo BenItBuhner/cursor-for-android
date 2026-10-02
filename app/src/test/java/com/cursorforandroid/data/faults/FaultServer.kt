@@ -129,10 +129,30 @@ class FaultServer(
      * names it for [queueLagMs] (the account's bookkeeping trails the run it starts, and a poll that began before is
      * older still). Null while it waits.
      */
-    data class Pending(val followupId: String, val text: String, val createdAtMs: Long, @Volatile var consumedAtMs: Long? = null, val runId: String? = null) {
+    data class Pending(
+        val followupId: String, val text: String, val createdAtMs: Long, @Volatile var consumedAtMs: Long? = null, val runId: String? = null,
+        /** The message's id as the client minted it (`userMessage.messageId`); null when the request named none. */
+        val messageId: String? = null,
+        /** The images the request carried inline (`selectedContext.selectedImages[].data`), as the record keeps them. */
+        val images: List<SentImage> = emptyList(),
+    ) {
         /** When the account consumed it, by the server's own monotonic clock (the app's clock is frozen in most tests). */
         @Volatile var consumedAtServerMs: Long? = null
     }
+
+    /** An image a send carried: its type and its bytes, base64 — what the account's record files with the prompt (`agent.v1.SelectedImage`). */
+    data class SentImage(val mimeType: String, val data: String, val uuid: String? = null)
+
+    /** The images each `POST /runs` carried (`prompt.images[]`), by the run it started. */
+    val runImages: MutableMap<String, List<SentImage>> = ConcurrentHashMap()
+    /**
+     * With [recordsDeliveries], the record's copy of a delivered prompt carries the images the send did (and the
+     * message id the client minted), as the account files them. Off, the record keeps the words alone — an
+     * account that strips the pictures, which the device's own copy must then stand in for.
+     */
+    @Volatile var recordsImages = true
+    /** The synthesized blob record keeps each prompt's images in blobs of their own (`SelectedImage.blob_id`) rather than inline (`data`). */
+    @Volatile var imageBlobs = false
 
     /** The account's queue per chat, oldest first. */
     val pending: MutableMap<String, MutableList<Pending>> = ConcurrentHashMap()
@@ -214,7 +234,16 @@ class FaultServer(
     private val resets = AtomicInteger()
 
     /** [Live] is `StreamConversation` asked with `purpose = LIVE` (an open chat's watch); [RecordState] the same method's state read. */
-    enum class Route { Me, ListAgents, ListAgentsV0, GetAgent, ListRuns, GetRun, CreateRun, CancelRun, Conversation, Stream, Auth, Record, RecordState, Live, Blob, QueueAdd, QueueList, QueueDelete, QueueUpdate, QueueReorder, QueueSendNow, QueueEditing, Steer, AccountList, Workers, Children, Pins, FleetWorkers, FleetPools, Other }
+    enum class Route { Me, ListAgents, ListAgentsV0, GetAgent, ListRuns, GetRun, CreateRun, CancelRun, Conversation, Stream, Auth, Record, RecordState, Live, Blob, QueueAdd, QueueList, QueueDelete, QueueUpdate, QueueReorder, QueueSendNow, QueueEditing, Steer, AccountList, Workers, Children, Pins, FleetWorkers, FleetPools, Repositories, StartComposer, Other }
+
+    /** `GET /v1/repositories`: the repositories the account's GitHub connection reaches, as URLs. */
+    val repositories = CopyOnWriteArrayList<String>()
+    /**
+     * `StartBackgroundComposerFromSnapshot`, as a Project's creation sends it: the chat started is listed by the
+     * account (running, a Project's root) and by the public API with no run, as a new Project is, and handed to this
+     * hook with its name, for a test to write the kickoff's record when it likes.
+     */
+    @Volatile var onStartComposer: ((bcId: String, name: String) -> Unit)? = null
 
     /**
      * One row of the account's own list (`ListBackgroundComposers`, Extended mode): the record the sidebar's rows
@@ -419,6 +448,8 @@ class FaultServer(
             segments.size == 2 && segments[0] == RECORD_SERVICE && segments[1] == "ListWorkersForManager" -> Route.Workers
             segments.size == 2 && segments[0] == RECORD_SERVICE && segments[1] == "ListBackgroundComposerChildren" -> Route.Children
             segments.size == 2 && segments[0] == RECORD_SERVICE && (segments[1] == "PinBackgroundComposers" || segments[1] == "UnpinBackgroundComposers") -> Route.Pins
+            segments.size == 2 && segments[0] == RECORD_SERVICE && segments[1] == "StartBackgroundComposerFromSnapshot" -> Route.StartComposer
+            segments.size == 2 && segments[0] == "v1" && segments[1] == "repositories" -> Route.Repositories
             else -> Route.Other
         }
     }
@@ -502,6 +533,8 @@ class FaultServer(
                 json(200, encode(ListWorkersResponseDto.serializer(), ListWorkersResponseDto(workers = fleetWorkers.filter { (it.scope == "team_pool") == teamPool })))
             }
             Route.FleetPools -> json(200, encode(ListPoolsResponseDto.serializer(), ListPoolsResponseDto(pools = fleetPools)))
+            Route.Repositories -> json(200, """{"items":[${repositories.joinToString(",") { url -> """{"url":${quote(url)}}""" }}]}""")
+            Route.StartComposer -> startComposer(request)
             Route.Other -> json(404, error("not_found", "No such route in the fault server: ${request.method} ${url.encodedPath}"))
         }
         answer.getBody()?.size?.let { size -> bytesByRoute.merge(route, size, Long::plus) }
@@ -550,6 +583,10 @@ class FaultServer(
         agents[agentId] = agent.copy(status = "ACTIVE", latestRunId = runId, updatedAt = now)
         v0[agentId]?.let { v0[agentId] = it.copy(status = "RUNNING") }
         transcripts[agentId] = transcripts[agentId].orEmpty() + V0ConversationMessageDto("$runId-u", "user_message", body.prompt.text)
+        val images = body.prompt.images.orEmpty().mapNotNull { image -> image.data?.let { SentImage(image.mimeType ?: "image/png", it) } }
+        if (images.isNotEmpty()) runImages[runId] = images
+        // The account's record of a prompt the public API started a run on: the message id is the server's own.
+        recordDelivery(agentId, body.prompt.text, messageId = "msg-server-$sequence", images = images)
         sent += body.prompt.text to runId
         return json(200, encode(CreateRunResponseDto.serializer(), CreateRunResponseDto(run)))
     }
@@ -561,7 +598,22 @@ class FaultServer(
         CursorJson.parseToJsonElement(String(body, 5, length, Charsets.UTF_8)).jsonObject["purpose"]?.jsonPrimitive?.contentOrNull == "STREAM_CONVERSATION_PURPOSE_LIVE"
     }.getOrDefault(false)
 
-    private val Route.isAccount: Boolean get() = this == Route.Record || this == Route.RecordState || this == Route.Live || this == Route.Blob || this == Route.QueueAdd || this == Route.QueueList || this == Route.QueueDelete || this == Route.QueueUpdate || this == Route.QueueReorder || this == Route.QueueSendNow || this == Route.QueueEditing || this == Route.Steer || this == Route.AccountList || this == Route.Workers || this == Route.Children || this == Route.Pins
+    private fun startComposer(request: RecordedRequest): MockResponse {
+        val body = CursorJson.parseToJsonElement(request.body.readUtf8()).jsonObject
+        val id = body["bcId"]?.jsonPrimitive?.contentOrNull ?: return json(400, connectError("invalid_argument", "bcId is required"))
+        val name = body["name"]?.jsonPrimitive?.contentOrNull ?: "New Project"
+        val at = clock()
+        val composer = Composer(id, name, activityMs = at, running = true, project = true)
+        composers[id] = composer
+        rootProjects += id
+        val iso = Instant.ofEpochMilli(at).toString()
+        agents[id] = AgentDto(id = id, name = name, status = "ACTIVE", createdAt = iso, updatedAt = iso, latestRunId = null, url = "https://cursor.com/agents/$id")
+        v0[id] = V0AgentDto(id = id, name = name, status = "RUNNING")
+        onStartComposer?.invoke(id, name)
+        return json(200, """{"composer":${composer.json()}}""")
+    }
+
+    private val Route.isAccount: Boolean get() = this == Route.Record || this == Route.RecordState || this == Route.Live || this == Route.Blob || this == Route.QueueAdd || this == Route.QueueList || this == Route.QueueDelete || this == Route.QueueUpdate || this == Route.QueueReorder || this == Route.QueueSendNow || this == Route.QueueEditing || this == Route.Steer || this == Route.AccountList || this == Route.Workers || this == Route.Children || this == Route.Pins || this == Route.StartComposer
 
     // ---- the account's list ----------------------------------------------------------------------------------------
 
@@ -615,12 +667,18 @@ class FaultServer(
         val text = body["followup"]?.jsonPrimitive?.contentOrNull ?: ""
         val followupId = body["followupId"]?.jsonPrimitive?.contentOrNull ?: "fu-server-${ids.incrementAndGet()}"
         val synchronous = body["synchronous"]?.jsonPrimitive?.booleanOrNull == true
+        val userMessage = body["followupConversationAction"]?.jsonObject?.get("userMessageAction")?.jsonObject?.get("userMessage")?.jsonObject
+        val messageId = userMessage?.get("messageId")?.jsonPrimitive?.contentOrNull
+        val images = (userMessage?.get("selectedContext")?.jsonObject?.get("selectedImages") as? JsonArray).orEmpty().mapNotNull { image ->
+            val data = image.jsonObject["data"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
+            SentImage(image.jsonObject["mimeType"]?.jsonPrimitive?.contentOrNull ?: "image/png", data, image.jsonObject["uuid"]?.jsonPrimitive?.contentOrNull)
+        }
         val agent = agents[agentId] ?: return json(404, connectError("not_found", "no such composer"))
         if (!processed) return json(500, connectError("internal", "The fault said this request was never processed."))
         val onATurn = agentId in accountTurns || agent.latestRunId?.let { runs[it]?.status }?.let { com.cursorforandroid.domain.RunStatus.parse(it).isActive } == true
         if (onATurn && !synchronous) {
             if (!namesQueuedRuns) {
-                pending.getOrPut(agentId) { CopyOnWriteArrayList() } += Pending(followupId, text, clock())
+                pending.getOrPut(agentId) { CopyOnWriteArrayList() } += Pending(followupId, text, clock(), messageId = messageId, images = images)
                 return json(200, "{}")
             }
             val sequence = ids.incrementAndGet()
@@ -628,14 +686,14 @@ class FaultServer(
             val at = Instant.ofEpochMilli(clock() + sequence).toString()
             if (datesQueuedRunsAtQueue) queuedRunDates[runId] = at
             if (listsQueuedRuns) runs[runId] = RunDto(id = runId, agentId = agentId, status = "CREATING", createdAt = at, updatedAt = at)
-            pending.getOrPut(agentId) { CopyOnWriteArrayList() } += Pending(followupId, text, clock(), runId = runId)
+            pending.getOrPut(agentId) { CopyOnWriteArrayList() } += Pending(followupId, text, clock(), runId = runId, messageId = messageId, images = images)
             return json(200, """{"runId":"$runId"}""")
         }
-        val run = startRun(agentId, text)
+        val run = startRun(agentId, text, messageId = messageId, images = images)
         // A message the account starts the run on at once still passes through its queue: the list names it for
         // [queueLagMs] after (Bennett's frames of 2026-09-20 23:24 and 2026-09-21 09:18, the chat idle when he sent).
         if (!synchronous) {
-            pending.getOrPut(agentId) { CopyOnWriteArrayList() } += Pending(followupId, text, clock(), consumedAtMs = clock()).also { it.consumedAtServerMs = nowMillis() }
+            pending.getOrPut(agentId) { CopyOnWriteArrayList() } += Pending(followupId, text, clock(), consumedAtMs = clock(), messageId = messageId, images = images).also { it.consumedAtServerMs = nowMillis() }
             delivered += followupId to run.id
         }
         return json(200, """{"runId":"${run.id}"}""")
@@ -729,16 +787,17 @@ class FaultServer(
         val runId = agent.latestRunId?.takeIf { runs[it]?.status?.let { st -> com.cursorforandroid.domain.RunStatus.parse(st).isActive } == true }
             ?: return json(200, """{"outcome":"OUTCOME_REJECTED"}""")
         val promote = body["promoteFollowupId"]?.jsonPrimitive?.contentOrNull
-        val text = if (promote != null) {
-            val p = pending[agentId]?.firstOrNull { it.followupId == promote } ?: return json(200, """{"outcome":"OUTCOME_REJECTED"}""")
-            p.consumedAtMs = clock()
-            p.consumedAtServerMs = nowMillis()
-            delivered += p.followupId to runId
-            p.text
+        val promoted = promote?.let { id -> pending[agentId]?.firstOrNull { it.followupId == id } ?: return json(200, """{"outcome":"OUTCOME_REJECTED"}""") }
+        val text = if (promoted != null) {
+            promoted.consumedAtMs = clock()
+            promoted.consumedAtServerMs = nowMillis()
+            delivered += promoted.followupId to runId
+            promoted.text
         } else {
             body["injectContextAction"]?.jsonObject?.get("userContext")?.jsonObject?.get("userMessage")?.jsonObject?.get("text")?.jsonPrimitive?.contentOrNull ?: ""
         }
         transcripts[agentId] = transcripts[agentId].orEmpty() + V0ConversationMessageDto("$runId-steer-${ids.incrementAndGet()}", "user_message", text)
+        recordDelivery(agentId, text, messageId = promoted?.messageId, images = promoted?.images.orEmpty(), steer = true)
         return json(200, """{"outcome":"OUTCOME_QUEUED"}""")
     }
 
@@ -754,11 +813,12 @@ class FaultServer(
         p.consumedAtServerMs = nowMillis()
         delivered += p.followupId to runId
         transcripts[agentId] = transcripts[agentId].orEmpty() + V0ConversationMessageDto("$runId-taken-${ids.incrementAndGet()}", "user_message", p.text)
+        recordDelivery(agentId, p.text, messageId = p.messageId, images = p.images, steer = true)
         return runId
     }
 
     /** The account starts a run on [text] now — [named] when it named one when it took the message: the run record, the agent's latest, the transcript's prompt. */
-    private fun startRun(agentId: String, text: String, named: String? = null): RunDto {
+    private fun startRun(agentId: String, text: String, named: String? = null, messageId: String? = null, images: List<SentImage> = emptyList()): RunDto {
         val agent = agents.getValue(agentId)
         val sequence = ids.incrementAndGet()
         val runId = named ?: "run-followup-$sequence"
@@ -768,9 +828,30 @@ class FaultServer(
         agents[agentId] = agent.copy(status = "ACTIVE", latestRunId = runId, updatedAt = now)
         v0[agentId]?.let { v0[agentId] = it.copy(status = "RUNNING") }
         transcripts[agentId] = transcripts[agentId].orEmpty() + V0ConversationMessageDto("$runId-u", "user_message", text)
-        if (recordsDeliveries) records[agentId]?.let { steps -> records[agentId] = steps + buildJsonObject { put("humanMessage", buildJsonObject { put("text", text) }) } }
+        recordDelivery(agentId, text, messageId, images)
         sent += text to runId
         return run
+    }
+
+    /**
+     * With [recordsDeliveries], the account's record takes the delivered prompt: its words, the message id the
+     * client minted and — with [recordsImages] — the images the send carried (see [humanMessage]). A chat without
+     * a record stays without one.
+     */
+    private fun recordDelivery(agentId: String, text: String, messageId: String?, images: List<SentImage>, steer: Boolean = false) {
+        if (!recordsDeliveries) return
+        records[agentId]?.let { steps -> records[agentId] = steps + humanMessage(text, messageId, if (recordsImages) images else emptyList(), steer) }
+    }
+
+    /** The record's prompt step as the fixtures write it, with the message id and the images `BlobFixtures` files into the `agent.v1.UserMessage` blob. */
+    fun humanMessage(text: String, messageId: String? = null, images: List<SentImage> = emptyList(), steer: Boolean = false, projectMode: Boolean = false): JsonObject = buildJsonObject {
+        put("humanMessage", buildJsonObject {
+            put("text", text)
+            if (projectMode) put("agentMode", "AGENT_MODE_PROJECT")
+            if (steer) put("turnSteer", true)
+            messageId?.let { put("messageId", it) }
+            if (images.isNotEmpty()) put(BlobFixtures.IMAGES, JsonArray(images.map { image -> buildJsonObject { put("mimeType", image.mimeType); put("data", image.data); image.uuid?.let { put("uuid", it) } } }))
+        })
     }
 
     /**
@@ -1041,7 +1122,7 @@ class FaultServer(
         val steps = records[agentId] ?: return blobRecords[agentId]
         synchronized(blobRecordsFrom) {
             if (blobRecordsFrom[agentId] !== steps) {
-                synthesized[agentId] = BlobFixtures.record(steps)
+                synthesized[agentId] = BlobFixtures.record(steps, imageBlobs = imageBlobs)
                 blobRecordsFrom[agentId] = steps
             }
             return synthesized[agentId]

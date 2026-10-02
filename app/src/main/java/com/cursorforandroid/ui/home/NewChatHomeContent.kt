@@ -135,14 +135,21 @@ internal sealed interface HomeBlock {
     data class Note(val note: ProjectsNote) : HomeBlock {
         override val key: String get() = "projects-note"
     }
+
+    /** The space between the Project shortcuts and the recent chats under them, where the page stacks the two. */
+    data object Gap : HomeBlock {
+        override val key: String get() = "section-gap"
+    }
 }
 
 /**
  * The pane under its composer for [home]. Recent: the recent chats, or the empty line once the list has loaded.
  * Projects: the Project shortcuts; with none to show — Extended mode off, or none created — a note saying so over the
  * recent chats, so the page is never left bare; a failed first read is the error line, as the recents show it.
- * Composer only: nothing. Null [home] (the preference not read yet) lists nothing, rather than one layout and then the
- * other.
+ * Projects + Recent: the shortcuts as Projects lays them out, then — a section's gap under them — the recent chats as
+ * Recent lists them (a Project's own chats are never among them, so nothing is listed twice); without Projects to
+ * show it is the Projects layout, note and all. Composer only: nothing. Null [home] (the preference not read yet)
+ * lists nothing, rather than one layout and then the other.
  */
 internal fun homeBlocks(home: NewChatHome?, list: AgentListUiState, projectsAvailable: Boolean): List<HomeBlock> {
     fun recent(): List<HomeBlock> = when {
@@ -150,11 +157,21 @@ internal fun homeBlocks(home: NewChatHome?, list: AgentListUiState, projectsAvai
         list.hasLoaded -> listOf(HomeBlock.Empty(list.error))
         else -> emptyList()
     }
+    // Under the shortcuts: the recent chats a gap away, or a failed read's line (it carries its own space above); with
+    // none the shortcuts stand alone, as the Projects layout leaves them, rather than over a line saying so.
+    fun recentUnderProjects(): List<HomeBlock> = when {
+        list.recentRows.isNotEmpty() -> listOf(HomeBlock.Gap) + list.recentRows.map(HomeBlock::Chat)
+        list.hasLoaded && list.error != null -> listOf(HomeBlock.Empty(list.error))
+        else -> emptyList()
+    }
     return when {
         home == null || home == NewChatHome.COMPOSER -> emptyList()
         home == NewChatHome.RECENT -> recent()
         !projectsAvailable -> listOf(HomeBlock.Note(ProjectsNote.NeedsExtendedMode)) + recent()
-        list.projectRows.isNotEmpty() -> listOf(HomeBlock.Projects(list.projectRows, list.local.hiddenProjectIds))
+        list.projectRows.isNotEmpty() -> {
+            val projects = HomeBlock.Projects(list.projectRows, list.local.hiddenProjectIds)
+            if (home == NewChatHome.PROJECTS_RECENT) listOf(projects) + recentUnderProjects() else listOf(projects)
+        }
         !list.hasLoaded -> emptyList()
         list.error != null -> listOf(HomeBlock.Empty(list.error))
         else -> listOf(HomeBlock.Note(ProjectsNote.NoProjects)) + recent()
@@ -210,6 +227,7 @@ internal fun HomeBlockView(block: HomeBlock, nowMillis: Long, actions: HomeBlock
             },
             modifier = inset.padding(bottom = 12.dp),
         )
+        HomeBlock.Gap -> Spacer(Modifier.height(SectionGap))
     }
 }
 
@@ -457,6 +475,13 @@ internal val ExpandedFootGap = 16.dp
 
 /** Between the composer and what the pane lists under it. */
 internal val ComposerGap = 26.dp
+
+/**
+ * Between the Project shortcuts and the recent chats under them, where the page stacks the two: the composer's gap,
+ * so the recents stand as far from the shortcuts as they stand from the composer on the Recent page (their first row
+ * carries half a row gap of its own above its card, there as here).
+ */
+internal val SectionGap = ComposerGap
 private const val MiniatureBlocks = 12
 private const val MiniatureShortcuts = 12
 

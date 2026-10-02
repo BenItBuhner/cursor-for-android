@@ -29,6 +29,7 @@ import com.cursorforandroid.data.local.CachedPlacement
 import com.cursorforandroid.data.local.CachedRecord
 import com.cursorforandroid.data.local.AttachmentStore
 import com.cursorforandroid.data.local.PreferencesStore
+import com.cursorforandroid.data.local.PromptKey
 import com.cursorforandroid.domain.AccountModel
 import com.cursorforandroid.domain.Agent
 import com.cursorforandroid.domain.AgentLifecycle
@@ -1725,6 +1726,7 @@ class AgentRepository(
 
     /** Fetches by id in flight, so two passes asking for the same row share one read (see [loadDetail]). */
     private val inFlightById = ConcurrentHashMap<String, kotlinx.coroutines.Deferred<Result<Agent>>>()
+    private val recordReadsById = ConcurrentHashMap<String, kotlinx.coroutines.Deferred<Result<AgentDto>>>()
 
     /**
      * A pinned chat is always shown, whatever page it would have been on, whatever it runs on and whatever it was
@@ -2118,10 +2120,35 @@ class AgentRepository(
         return fetchDetail(id, knownRun)
     }
 
+    /**
+     * The agent's record from the public API (`GET /v1/agents/{id}`), one read shared by every caller asking while it
+     * is out. A chat's load, its look for the next run and its check of where the chat stands each want it in the same
+     * moment — three reads of a new Project within five milliseconds — and every agent's read counts against the one
+     * limit Cursor sets the endpoint. A caller whose shared read was cancelled under it reads for itself.
+     */
+    suspend fun agentRecord(id: String, api: CursorApi = session.current.api): AgentDto {
+        val shared = recordReadsById[id]?.await()
+        if (shared != null && shared.exceptionOrNull() !is CancellationException) return shared.getOrThrow()
+        val deferred = kotlinx.coroutines.CompletableDeferred<Result<AgentDto>>()
+        val prior = recordReadsById.putIfAbsent(id, deferred)
+        if (prior != null) {
+            val theirs = prior.await()
+            return if (theirs.exceptionOrNull() !is CancellationException) theirs.getOrThrow() else api.getAgent(id)
+        }
+        return try {
+            api.getAgent(id).also { deferred.complete(Result.success(it)) }
+        } catch (t: Throwable) {
+            deferred.complete(Result.failure(t))
+            throw t
+        } finally {
+            recordReadsById.remove(id, deferred)
+        }
+    }
+
     private suspend fun fetchDetail(id: String, knownRun: RunDto?): Result<Agent> = runCatching {
         val startedIn = token()
         val api = session.current.api
-        val dto = api.getAgent(id)
+        val dto = agentRecord(id, api)
         val run: RunDto? = if (knownRun != null && (dto.latestRunId == null || dto.latestRunId == knownRun.id)) {
             knownRun
         } else {
@@ -2254,7 +2281,7 @@ class AgentRepository(
             upsert(agent, startedIn)
             // The agent exists now; a full disk must not turn that into a launch error. A retry that found the agent
             // already created files the images under the same run, so this stays idempotent.
-            if (saveImages) run?.let { runCatching { attachments.save(agent.id, it.id, request.images, request.files) } }
+            if (saveImages) run?.let { runCatching { attachments.save(agent.id, it.id, request.images, request.files, PromptKey(text = request.prompt.trim(), sentAtMs = AppClock.now())) } }
             prefs.markLaunchedHere(agent.id)
             // Read as of now; the finished run will bump updatedAt past this and surface the unread dot.
             prefs.markRead(agent.id, AppClock.now())

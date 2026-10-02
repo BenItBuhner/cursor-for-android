@@ -8,25 +8,67 @@
 #
 #   --no-warm       skip the Gradle warm-up (SDK and JDK only)
 #   --emulator      also install the emulator and an API 35 x86_64 system image, and create the AVD `pixel35`
+#   --kvm-only      only make /dev/kvm usable (the environment's start command: the device node is recreated at boot)
 set -euo pipefail
 
 warm=1
 emulator=0
+kvm_only=0
 for arg in "$@"; do
   case "$arg" in
     --no-warm) warm=0 ;;
     --emulator) emulator=1 ;;
+    --kvm-only) kvm_only=1 ;;
     *) echo "unknown argument: $arg" >&2; exit 2 ;;
   esac
 done
+
+log() { printf '[cloud-agent-setup] %s\n' "$*"; }
+
+# The emulator needs /dev/kvm; without it, it runs on software emulation and takes minutes to boot, when it boots.
+# The VM has the device (nested virtualisation is on), but owned by a group id no entry in /etc/group names, so the
+# agent's user cannot open it. Name that id `kvm`, put the user in it and keep the node 0660 root:kvm; the udev rule
+# does the same on a machine that runs udev (this VM does not: its /dev is static, which is why `--kvm-only` is run at
+# every boot too). Group membership is read at login, so the shell this runs in does not have it yet: the emulator
+# check below, and anything else in the same session, goes through `sg kvm -c`. Says what it did and never fails
+# the install: a machine without the device builds and tests everything but the emulator.
+kvm_access() {
+  if [[ ! -c /dev/kvm ]]; then log "no /dev/kvm: the emulator would run without acceleration"; return 0; fi
+  if ! sudo -n true 2>/dev/null; then log "no passwordless sudo: cannot change who may open /dev/kvm"; return 0; fi
+  local gid group user
+  gid="$(stat -c %g /dev/kvm)"
+  group="$(getent group "$gid" | cut -d: -f1 || true)"
+  if [[ -z "$group" || "$group" == root ]]; then
+    if ! getent group kvm >/dev/null; then
+      if [[ "$gid" != 0 ]]; then sudo groupadd -g "$gid" kvm; else sudo groupadd -r kvm; fi
+    fi
+    group=kvm
+  fi
+  sudo chgrp "$group" /dev/kvm
+  sudo chmod 0660 /dev/kvm
+  user="$(id -un)"
+  if ! id -nG "$user" | tr ' ' '\n' | grep -qx "$group"; then sudo usermod -aG "$group" "$user"; fi
+  if [[ -d /etc/udev/rules.d ]]; then
+    printf 'KERNEL=="kvm", GROUP="%s", MODE="0660"\n' "$group" | sudo tee /etc/udev/rules.d/99-kvm-group.rules >/dev/null
+  fi
+  if sg "$group" -c 'test -r /dev/kvm && test -w /dev/kvm'; then
+    log "/dev/kvm is $(stat -c '%A %U:%G' /dev/kvm); $user is in $group (new logins have it; this shell uses sg $group -c)"
+  else
+    log "/dev/kvm is $(stat -c '%A %U:%G' /dev/kvm) but $user still cannot open it"
+    return 1
+  fi
+}
+
+if [[ "$kvm_only" == 1 ]]; then
+  kvm_access || true
+  exit 0
+fi
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 sdk="${ANDROID_HOME:-$HOME/android-sdk}"
 # Keep in step with .github/actions/android-toolchain/action.yml.
 packages=("platforms;android-36" "platforms;android-35" "build-tools;35.0.0" "platform-tools")
 cmdline_tools_zip="commandlinetools-linux-13114758_latest.zip"
-
-log() { printf '[cloud-agent-setup] %s\n' "$*"; }
 
 if [[ ! -x /usr/lib/jvm/java-17-openjdk-amd64/bin/javac ]]; then
   log "installing JDK 17"
@@ -66,6 +108,17 @@ if [[ "$emulator" == 1 && ! -d "$HOME/.android/avd/pixel35.avd" ]]; then
   log "creating AVD pixel35"
   echo no | JAVA_HOME="$java_home" "$sdk/cmdline-tools/latest/bin/avdmanager" create avd -n pixel35 \
     -k "system-images;android-35;google_apis;x86_64" -d pixel_7 >/dev/null
+fi
+
+kvm_access || true
+if [[ "$emulator" == 1 && -c /dev/kvm ]]; then
+  # The emulator's own verdict on the acceleration it would get, through the group this shell does not have yet.
+  kvm_group="$(stat -c %G /dev/kvm)"
+  if accel="$(sg "$kvm_group" -c "'$sdk/emulator/emulator' -accel-check" 2>&1)"; then
+    log "emulator acceleration: $(tr '\n' ' ' <<<"$accel")"
+  else
+    log "emulator acceleration check failed: $(tr '\n' ' ' <<<"$accel")"
+  fi
 fi
 
 cat >"$HOME/.android-env" <<EOF

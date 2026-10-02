@@ -74,11 +74,12 @@ import java.util.TimeZone
 
 /**
  * The New chat page setting: the New Chat pane under each layout — the recent chats, the Projects pinned as
- * shortcuts, and the composer alone — on a phone and beside the sidebar on a tablet, dark and light, what does not
+ * shortcuts, the shortcuts over the recent chats, and the composer alone — on a phone and beside the sidebar on a
+ * tablet, dark and light, what does not
  * fill the pane in its middle; the Projects layout's two notes; the recent chats' cards and the shortcuts inset alike
  * from the composer's sides (drawn as guides); a shortcut's long-press menu, the shortcuts being arranged, one carried
  * over the "Hidden" line, and every one hidden; and
- * Settings' picker with each layout chosen, its three miniatures drawn from the same account, on both widths and in
+ * Settings' picker with each layout chosen, its four miniatures drawn from the same account, on both widths and in
  * both themes, then with Extended mode off. The account is [NewChatHomeFixtures]' (five Projects and the chats of its
  * own) over the demo session, whose catalogue fills the composer's chips on the page and in the miniatures alike.
  */
@@ -219,6 +220,20 @@ class NewChatHomeScreenshotTest {
         capture(frame)
     }
 
+    private fun recentChats() = compose.onAllNodes(hasTestTag(NewChatHomeTags.RECENT_CHAT)).fetchSemanticsNodes()
+
+    /**
+     * The Project shortcuts over the recent chats, a section's gap between: each as its own layout draws it, the chats
+     * starting under the lowest shortcut, so the page is the Projects page with the Recent page's list following.
+     */
+    private fun projectsRecentPage(mode: ThemeMode, tablet: Boolean, frame: String) {
+        showPage(NewChatHome.PROJECTS_RECENT, mode, tablet)
+        compose.waitUntil(10_000) { shortcuts() == 5 && recentChats().isNotEmpty() }
+        val shortcutsEnd = compose.onAllNodes(hasTestTag(NewChatHomeTags.PROJECT_SHORTCUT)).fetchSemanticsNodes().maxOf { it.boundsInRoot.bottom }
+        assertThat(recentChats().minOf { it.boundsInRoot.top }).isAtLeast(shortcutsEnd)
+        capture(frame)
+    }
+
     /** The composer alone, in the middle of the pane; the chats are the sidebar's (beside it on a tablet). */
     private fun composerPage(mode: ThemeMode, tablet: Boolean, frame: String) {
         showPage(NewChatHome.COMPOSER, mode, tablet)
@@ -354,6 +369,21 @@ class NewChatHomeScreenshotTest {
     @Test
     @Config(sdk = [35], qualifiers = TABLET_LIGHT)
     fun composerTabletLight() = composerPage(ThemeMode.Light, tablet = true, "453_new_chat_composer_tablet_light")
+
+    @Test
+    fun projectsRecentPhoneDark() = projectsRecentPage(ThemeMode.Dark, tablet = false, "960_new_chat_projects_recent_phone_dark")
+
+    @Test
+    @Config(sdk = [35], qualifiers = PHONE_LIGHT)
+    fun projectsRecentPhoneLight() = projectsRecentPage(ThemeMode.Light, tablet = false, "961_new_chat_projects_recent_phone_light")
+
+    @Test
+    @Config(sdk = [35], qualifiers = TABLET_DARK)
+    fun projectsRecentTabletDark() = projectsRecentPage(ThemeMode.Dark, tablet = true, "962_new_chat_projects_recent_tablet_dark")
+
+    @Test
+    @Config(sdk = [35], qualifiers = TABLET_LIGHT)
+    fun projectsRecentTabletLight() = projectsRecentPage(ThemeMode.Light, tablet = true, "963_new_chat_projects_recent_tablet_light")
 
     /** The recent chats' cards and the Project shortcuts start the same way inside the composer's sides. */
     @Test
@@ -504,6 +534,26 @@ class NewChatHomeScreenshotTest {
     @Config(sdk = [35], qualifiers = TABLET_LIGHT)
     fun settingsComposerTabletLight() = layoutChosen(NewChatHome.COMPOSER, ThemeMode.Light, tablet = true, "457_settings_new_chat_composer_tablet_light")
 
+    @Test
+    fun settingsProjectsRecentPhoneDark() = layoutChosen(NewChatHome.PROJECTS_RECENT, ThemeMode.Dark, tablet = false, "964_settings_new_chat_projects_recent_phone_dark")
+
+    @Test
+    @Config(sdk = [35], qualifiers = PHONE_LIGHT)
+    fun settingsProjectsRecentPhoneLight() = layoutChosen(NewChatHome.PROJECTS_RECENT, ThemeMode.Light, tablet = false, "965_settings_new_chat_projects_recent_phone_light")
+
+    @Test
+    @Config(sdk = [35], qualifiers = TABLET_DARK)
+    fun settingsProjectsRecentTabletDark() = layoutChosen(NewChatHome.PROJECTS_RECENT, ThemeMode.Dark, tablet = true, "966_settings_new_chat_projects_recent_tablet_dark")
+
+    @Test
+    @Config(sdk = [35], qualifiers = TABLET_LIGHT)
+    fun settingsProjectsRecentTabletLight() = layoutChosen(NewChatHome.PROJECTS_RECENT, ThemeMode.Light, tablet = true, "967_settings_new_chat_projects_recent_tablet_light")
+
+    /** The narrowest phone the card is laid out for: the four still abreast, the longer names on two lines. */
+    @Test
+    @Config(sdk = [35], qualifiers = NARROW_PHONE_DARK)
+    fun settingsProjectsRecentNarrowPhoneDark() = layoutChosen(NewChatHome.PROJECTS_RECENT, ThemeMode.Dark, tablet = false, "968_settings_new_chat_projects_recent_narrow_phone_dark")
+
     /** Outside the demo with Extended mode off: Projects chosen, its miniature the note over the recent chats, and the row saying why. */
     @Test
     fun settingsProjectsNeedExtendedMode() {
@@ -570,5 +620,6 @@ class NewChatHomeScreenshotTest {
 
 private const val PHONE_DARK = "w411dp-h914dp-night-420dpi"
 private const val PHONE_LIGHT = "w411dp-h914dp-notnight-420dpi"
+private const val NARROW_PHONE_DARK = "w360dp-h780dp-night-420dpi"
 private const val TABLET_DARK = "w1000dp-h720dp-night-320dpi"
 private const val TABLET_LIGHT = "w1000dp-h720dp-notnight-320dpi"

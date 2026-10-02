@@ -33,7 +33,7 @@ import org.robolectric.annotation.GraphicsMode
 /**
  * The New chat page setting through the shell, sidebar beside the pane: with nothing chosen the demo's Project is
  * pinned from the first, never after the recent chats; Projects chosen in Settings keeps it there and its shortcut
- * opens the Project; Recent agents chosen brings the recent chats back.
+ * opens the Project; Recent agents chosen brings the recent chats back; Projects + Recent stacks the two.
  */
 @RunWith(AndroidJUnit4::class)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
@@ -107,5 +107,14 @@ class NewChatHomeFlowTest {
         choose(NewChatHome.RECENT)
         compose.waitUntil(10_000) { shortcuts() == 0 && recentCards() > 0 }
         assertThat(runBlocking { graph.prefs.newChatHomeChoice.first() }.chosen).isEqualTo(NewChatHome.RECENT)
+
+        // Projects + Recent: the Project's shortcut back over the recent chats, and the chats under it.
+        choose(NewChatHome.PROJECTS_RECENT)
+        compose.waitUntil(10_000) { shortcuts() == 1 && recentCards() > 0 }
+        val shortcut = compose.onNodeWithTag(NewChatHomeTags.PROJECT_SHORTCUT).fetchSemanticsNode().boundsInRoot
+        compose.onAllNodes(hasTestTag(NewChatHomeTags.RECENT_CHAT)).fetchSemanticsNodes().forEach { assertThat(it.boundsInRoot.top).isAtLeast(shortcut.bottom) }
+        assertThat(runBlocking { graph.prefs.newChatHomeChoice.first() }.chosen).isEqualTo(NewChatHome.PROJECTS_RECENT)
+        compose.onNodeWithTag(NewChatHomeTags.PROJECT_SHORTCUT).performClick()
+        compose.waitUntil(30_000) { shortcuts() == 0 && !onScreen(NewChatHomeCopy.PLACEHOLDER) }
     }
 }

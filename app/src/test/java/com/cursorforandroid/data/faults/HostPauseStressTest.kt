@@ -26,7 +26,8 @@ import java.util.concurrent.atomic.AtomicLong
 /**
  * A `429` naming a wait longer than a call sleeps, against the app's real REST client and run streamer on a
  * [FaultServer] at 300–900 ms RTT, in virtual time (the interceptor's `now` / `sleeper` and the streamer's `waiter`
- * seams): the host is asked once, and neither the REST reads nor the streams go back to it inside the window.
+ * seams): the refused endpoint is asked once, and no call to it goes back inside the window — while every other
+ * endpoint of the host, the streams among them, goes on as before (Cursor scopes its limits to the endpoint).
  * Each scenario prints a `NETAUDIT` line (the networking audit's NET-4).
  */
 @RunWith(AndroidJUnit4::class)
@@ -79,7 +80,7 @@ class HostPauseStressTest {
     private fun sent(path: String) = sentAt.filter { it.first == path }.map { it.second }
 
     @Test
-    fun `a REST 429 naming 30 s is asked once, and reads and streams wait the window out`(): Unit = runBlocking {
+    fun `a REST 429 naming 30 s is asked once, its endpoint waits the window out, and other endpoints and the streams do not`(): Unit = runBlocking {
         val server = server()
         server.addIdleAgent("bc-a", "a", "run-a")
         runningAgent(server, "bc-b", "run-b")
@@ -87,32 +88,40 @@ class HostPauseStressTest {
         server.script(Route.GetAgent, Fault.Status(429, "rate_limited", "Slow down.", retryAfter = "30"))
 
         val (code, _) = client.get("${server.baseUrl}v1/agents/bc-a")
-        // Inside the window: a read hears the refusal with the wait left, without going out.
+        // Inside the window: a read of the same endpoint — this agent or another — hears the refusal with the wait
+        // left, without going out.
         virtual.addAndGet(5_000)
         val (heldCode, heldRetryAfter) = client.get("${server.baseUrl}v1/agents/bc-a")
-        val attemptsInWindow = sent("/v1/agents/bc-a")
-        // A stream asked for now waits the rest of the window before it connects.
+        val (otherHeldCode, _) = client.get("${server.baseUrl}v1/agents/bc-b")
+        val attemptsInWindow = sent("/v1/agents/bc-a") + sent("/v1/agents/bc-b")
+        // Another endpoint goes out: Cursor scopes its limits to the endpoint.
+        val (runsCode, _) = client.get("${server.baseUrl}v1/agents/bc-a/runs")
+        // A stream asked for now connects at once.
         withTimeout(30_000) { streamer(server, client).stream("bc-b", "run-b", null).first() }
         val streamSentAt = sent("/v1/agents/bc-b/runs/run-b/stream").single()
+        virtual.addAndGet(25_000)
         val (after, _) = client.get("${server.baseUrl}v1/agents/bc-a")
         println(
             "NETAUDIT rest-429 (after): finalCode=$code requestsInWindow=${attemptsInWindow.size} attemptsAtVirtualMs=$attemptsInWindow " +
-                "heldRead=$heldCode Retry-After=$heldRetryAfter streamWaitsMs=$waits streamSentAt=$streamSentAt afterWindow=$after " +
-                "(before: 3 requests at 0 / 10000 / 20000 ms, stream sent at once)",
+                "heldRead=$heldCode Retry-After=$heldRetryAfter otherAgentHeld=$otherHeldCode runList=$runsCode streamWaitsMs=$waits streamSentAt=$streamSentAt afterWindow=$after " +
+                "(before: the run list and the stream held for the whole window)",
         )
         assertThat(code).isEqualTo(429)
         assertThat(attemptsInWindow).containsExactly(0L)
-        assertThat(server.requests(Route.GetAgent)).hasSize(2)
         assertThat(heldCode).isEqualTo(429)
         assertThat(heldRetryAfter).isEqualTo("25")
-        assertThat(waits).containsExactly(25_000L)
-        assertThat(streamSentAt).isEqualTo(30_000L)
+        assertThat(otherHeldCode).isEqualTo(429)
+        assertThat(runsCode).isEqualTo(200)
+        assertThat(sent("/v1/agents/bc-a/runs")).containsExactly(5_000L)
+        assertThat(waits).isEmpty()
+        assertThat(streamSentAt).isEqualTo(5_000L)
         assertThat(after).isEqualTo(200)
+        assertThat(server.requests(Route.GetAgent)).hasSize(2)
         assertThat(sent("/v1/agents/bc-a")).containsExactly(0L, 30_000L).inOrder()
     }
 
     @Test
-    fun `a stream 429 pauses the host for the record read and the reconnect after the give-up`(): Unit = runBlocking {
+    fun `a stream 429 pauses the reconnect after the give-up, not the record read`(): Unit = runBlocking {
         val server = server()
         runningAgent(server, "bc-a", "run-a")
         repeat(5) { server.script(Route.Stream, Fault.Status(429, "rate_limited", "Slow down.", retryAfter = "30")) }
@@ -131,12 +140,12 @@ class HostPauseStressTest {
         println(
             "NETAUDIT stream-429 (after): passRequests=5 waitsMs=$passWaits error=${error.code} recordRead=$recordCode " +
                 "recordRequests=${server.requests(Route.GetRun).size} reconnectWaitsMs=$waits reconnectSentAt=${streams.last()} gaveUpAt=$gaveUpAt " +
-                "(before: record read unpaused, reconnect 1 s after the give-up)",
+                "(before: the record read refused inside the streams' window)",
         )
         assertThat(passWaits).containsExactly(30_000L, 30_000L, 30_000L, 30_000L).inOrder()
         assertThat(error.code).isEqualTo("stream_unavailable")
-        assertThat(recordCode).isEqualTo(429)
-        assertThat(server.requests(Route.GetRun)).isEmpty()
+        assertThat(recordCode).isEqualTo(200)
+        assertThat(server.requests(Route.GetRun)).hasSize(1)
         assertThat(waits).containsExactly(30_000L)
         assertThat(streams).hasSize(6)
         assertThat(streams.last()).isEqualTo(gaveUpAt + 30_000L)

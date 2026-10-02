@@ -345,7 +345,7 @@ class SseRunStreamer(
     private val now: () -> Long = System::currentTimeMillis,
     /** Seam for tests: the wait between attempts, so a honoured `Retry-After` is asserted without spending it. */
     private val waiter: suspend (Long) -> Unit = { delay(it) },
-    /** The host's pause a `429` asked for, shared with the REST calls (see [RetryInterceptor]): a connection waits it out first. */
+    /** The streams' pause a `429` asked for, kept with the REST calls' (see [RetryInterceptor]): a connection waits it out first. */
     private val pauses: HostPause = HostPause(now),
     /** Where streams are read without a thread each (see [RunStreamMux]); null, or a URL it cannot serve, reads them through OkHttp. */
     private val mux: RunStreamMux? = RunStreamMux(client),
@@ -358,8 +358,9 @@ class SseRunStreamer(
     }
 
     private fun frames(agentId: String, runId: String, lastEventId: String?, onStreamIo: Boolean): Flow<RunStreamEvent> = flow {
-        val host = urlFor(agentId, runId).toHttpUrlOrNull()?.host.orEmpty()
-        pauses.remainingMs(host).takeIf { it > 0 }?.let { waiter(it) }
+        // The streams' own endpoint: a refusal of another (the repositories' one a minute) does not hold a reconnect.
+        val endpoint = urlFor(agentId, runId).toHttpUrlOrNull()?.let { HostPause.endpoint("GET", it) }.orEmpty()
+        pauses.remainingMs(endpoint).takeIf { it > 0 }?.let { waiter(it) }
         var lastId = lastEventId
         var attempt = 0
         /** The reconnection time the server last asked for, which outlives the connection that carried it. */
@@ -405,9 +406,9 @@ class SseRunStreamer(
                 is Outcome.Retry -> {
                     attempt++
                     val backoff = backoffMillis(attempt, outcome.retryAfterMs, serverRetryMs)
-                    // Kept for the host whether or not this pass goes on: the record read and the reconnect after a
-                    // give-up hold to it too.
-                    if (outcome.rateLimited) pauses.pause(host, backoff)
+                    // Kept for the streams' endpoint whether or not this pass goes on: the reconnect after a give-up
+                    // holds to it too.
+                    if (outcome.rateLimited) pauses.pause(endpoint, backoff)
                     // Without a position to resume from, the next connection replays the run from its first event —
                     // into an accumulator that already holds part of it, which would read as the agent saying
                     // everything twice. Ending the pass hands that decision to the caller, which rebuilds from
@@ -419,7 +420,7 @@ class SseRunStreamer(
                         emit(RunStreamEvent.Error("stream_unavailable", outcome.reason, resumeFrom = lastId))
                         return@flow
                     }
-                    waiter(maxOf(backoff, pauses.remainingMs(host)))
+                    waiter(maxOf(backoff, pauses.remainingMs(endpoint)))
                 }
             }
         }

@@ -12,6 +12,7 @@ import org.junit.Test
 import org.junit.rules.TemporaryFolder
 import java.io.File
 import java.util.Random
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.concurrent.thread
 
 /**
@@ -90,10 +91,31 @@ class BlobDiskStoreTest {
         store.fill(OTHER, BLOBS, bytes = 256)
         readerStamping(root)
         val cache = BlobCache(BlobCache.MEMORY_BLOBS_WITH_DISK, BlobCache.MEMORY_BYTES_WITH_DISK, disk = store)
+        val order = AtomicInteger()
+        val kept = arrayOfNulls<String>(BLOBS)
 
-        (0 until 8).map { lane -> async(Dispatchers.IO) { repeat(BLOBS / 8) { i -> cache.keep(CHAT, "kept-$lane-$i", ByteArray(256) { lane.toByte() }) } } }.awaitAll()
+        (0 until 8).map { lane ->
+            async(Dispatchers.IO) {
+                repeat(BLOBS / 8) { i ->
+                    kept[order.getAndIncrement()] = "kept-$lane-$i"
+                    cache.keep(CHAT, "kept-$lane-$i", ByteArray(256) { lane.toByte() })
+                }
+            }
+        }.awaitAll()
 
-        assertThat(cache.read(CHAT, "kept-7-${BLOBS / 8 - 1}")!!.bytes.first()).isEqualTo(7.toByte())
+        // Which blobs outlive the run is the scheduler's call, not the store's: the memory tier holds the last
+        // MEMORY_BLOBS_WITH_DISK kept, the lanes finish thousands of writes apart, and the disk's trim takes
+        // the least recently stamped files, which the reader keeps making this chat's. The newest kept are in memory
+        // whichever lane wrote them (at most eight puts are in flight out of the order counted here).
+        kept.takeLast(100).forEach { id ->
+            val lane = id!!.split("-")[1].toByte()
+            assertThat(cache.read(CHAT, id)?.bytes?.first()).isEqualTo(lane)
+        }
+        // And every other one reads back as its own bytes or as missing, never as a failed read or another's bytes.
+        kept.forEach { id ->
+            val lane = id!!.split("-")[1].toByte()
+            cache.read(CHAT, id)?.let { held -> assertThat(held.bytes.all { it == lane }).isTrue() }
+        }
     }
 
     private companion object {

@@ -184,12 +184,19 @@ class LiveRunMonitorTest {
         awaitUntil { running().firstOrNull { it.agentId == "bc-1" }?.digest?.activity?.label == "Editing Composer.kt" }
         assertThat(running().first { it.agentId == "bc-1" }.phase).isEqualTo(LivePhase.Running)
 
-        // A conversation screen opens the same agent: it must ride the monitor's stream, not open a second one.
+        // A conversation screen opens the same agent: it rides the monitor's entry, not a stream of its own. Arriving
+        // on a connection the monitor has held, it has that connection verified — the record read once, the stream
+        // taken up again once (see LiveRunHub.stallTimeoutMs) — and then the two share the one connection.
         val conversations = ConversationRepository(session, agents, prefs, hub, attachments)
+        val recordReads = api.getRunCalls
         conversations.attach("bc-1")
         awaitUntil { conversations.state("bc-1").value.items.any { it is ActivityGroup } }
-        assertThat(streamer.connections.count { it == "run-1" }).isEqualTo(1)
+        awaitUntil { streamer.connections.count { it == "run-1" } == 2 }
+        delay(200)
+        assertThat(streamer.connections.count { it == "run-1" }).isEqualTo(2)
+        assertThat(api.getRunCalls).isEqualTo(recordReads + 1)
         assertThat(conversations.state("bc-1").value.isStreaming).isTrue()
+        assertThat(conversations.state("bc-1").value.isReconnecting).isFalse()
 
         now += 185_000
         val git = RunGitDto(listOf(RunGitBranchDto("github.com/acme/app", "cursor/pills-1a2b", "https://github.com/acme/app/pull/7")))
@@ -220,11 +227,11 @@ class LiveRunMonitorTest {
         assertThat(conversations.state("bc-1").value.isStreaming).isFalse()
         val finishedAt = now
         awaitUntil { prefs.localAgentState.first().readMarkers["bc-1"] == finishedAt }
-        // A run the hub followed to its end is replayed from memory, not from a second connection.
+        // A run the hub followed to its end is replayed from memory, not from another connection.
         val replayed = hub.replay("bc-1", "run-1")
         assertThat(replayed.hasTrace).isTrue()
         assertThat(replayed.items.filterIsInstance<ActivityGroup>().single().calls.single().status).isEqualTo("completed")
-        assertThat(streamer.connections.count { it == "run-1" }).isEqualTo(1)
+        assertThat(streamer.connections.count { it == "run-1" }).isEqualTo(2)
 
         // The second stream closes without a result: the hub reads the run record and, while the run is still going,
         // keeps coming back to the stream; the record ending the run is what ends the tracking.

@@ -50,7 +50,35 @@ data class HeadlessStep(
     val turnIndex: Int? = null,
     /** A prompt delivered into the turn under way (`agent.v1.UserMessage.turn_steer`), not one that started a turn. */
     val steer: Boolean = false,
+    /** The prompt's id as the client that sent it minted it (`agent.v1.UserMessage.message_id`); only a prompt step of the blob-backed record carries one. */
+    val messageId: String? = null,
+    /** The pictures attached to the prompt as the record carries them (`selected_context.selected_images`); only a prompt step has any. */
+    val images: List<RecordImage> = emptyList(),
 )
+
+/**
+ * A picture attached to a prompt as the account's record carries it (`agent.v1.SelectedImage`): its bytes inline
+ * ([data], base64), or in a blob of the chat's the message names ([blobId]), or both; the id the client gave it, its
+ * type and its size when the message says. An image staged as an upload (`prompt_upload_ref`) has neither bytes nor
+ * blob and cannot be read from the record.
+ */
+data class RecordImage(
+    val uuid: String? = null,
+    val mimeType: String? = null,
+    val data: String? = null,
+    val blobId: String? = null,
+    val width: Int = 0,
+    val height: Int = 0,
+) {
+    /** What names the picture among a message's: the client's id, else the blob's. Null for one that can be neither read nor named. */
+    val key: String? get() = uuid?.takeIf { it.isNotBlank() } ?: blobId?.takeIf { it.isNotBlank() }
+
+    /** The record can give the picture's bytes: inline, or from its blob. */
+    val readable: Boolean get() = data != null || blobId != null
+
+    /** The picture without its inline bytes — what is kept once they are on this device, so the turn in memory and on disk stays small. */
+    fun ref(): RecordImage = if (data == null) this else copy(data = null)
+}
 
 /**
  * A tool call as the account records it: its id, the tool's name, and the arguments the model wrote, as JSON. A
@@ -192,6 +220,12 @@ interface ConversationRecordApi {
      * (see `ConversationRepository.rebuiltFromHeldBlobs`). A piece not held leaves its turn short, not unreadable.
      */
     suspend fun heldTurns(agentId: String, turns: Map<Int, String>): List<HeadlessTurn> = emptyList()
+
+    /**
+     * One blob of [agentId]'s record by id, whole — a prompt's picture the message names rather than carries (see
+     * [RecordImage.blobId]). Null where the record has no blobs to give; a blob the server cannot give throws.
+     */
+    suspend fun blob(agentId: String, blobId: String): ByteArray? = null
 }
 
 /**
@@ -377,7 +411,7 @@ class HeadlessConversationApi(
      * read before. Blobs are content-addressed and never change, so the cache needs no invalidation; it is bounded
      * by count and by bytes (see [BlobCache]).
      */
-    suspend fun blob(agentId: String, blobId: String): ByteArray {
+    override suspend fun blob(agentId: String, blobId: String): ByteArray {
         blobs.read(agentId, blobId)?.takeIf { !it.partial }?.let { return it.bytes }
         return fetchBlob(agentId, blobId)
     }

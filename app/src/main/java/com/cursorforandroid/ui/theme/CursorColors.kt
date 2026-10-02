@@ -53,7 +53,7 @@ data class CursorColors(
     val fillActive: Color,
     /** `--cursor-stroke-primary` 20 %. */
     val strokeStrong: Color,
-    /** `--cursor-stroke-secondary` 12 %: human message, focused composer. */
+    /** `--cursor-stroke-secondary` 12 %: human message. */
     val stroke: Color,
     /** `--cursor-stroke-tertiary` 8 %: cards, composer, dividers. */
     val strokeSubtle: Color,

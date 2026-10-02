@@ -6,6 +6,7 @@ import com.cursorforandroid.data.api.HeadlessPage
 import com.cursorforandroid.data.api.HeadlessStep
 import com.cursorforandroid.data.api.HeadlessTurn
 import com.cursorforandroid.data.api.HeadlessTurnPage
+import com.cursorforandroid.data.api.RecordImage
 import com.cursorforandroid.data.api.RecordState
 import com.cursorforandroid.data.api.TurnPlan
 import com.cursorforandroid.data.api.TurnTiming
@@ -91,6 +92,16 @@ class RecordTurn(
      * [HeadlessTranscript.Turn.steer]): the turn has no run of its own — it is the tail of the run before it.
      */
     val steer: Boolean = false,
+    /**
+     * The prompt's id as its sender minted it (`agent.v1.UserMessage.message_id`, blob-backed record): what names the
+     * device's own copy of the prompt's pictures when the turn has no run to name it by (see `PromptAttachments`).
+     */
+    val messageId: String? = null,
+    /**
+     * The pictures the record carries with the prompt, without their inline bytes (see [RecordImage.ref]): the
+     * record's own copy, kept on this device under [messageId] once read (see `ConversationRepository.keepRecordImages`).
+     */
+    val images: List<RecordImage> = emptyList(),
 ) {
     /** The key the turn's items are filed under on disk (see `TraceCache`); stable while the record is append-only. */
     val traceKey: String get() = traceKey(stepIndex, turnIndexed)
@@ -107,11 +118,11 @@ class RecordTurn(
 
     /** This turn with [replies] — the `/v0` transcript's — as its text, marked as such (see [textFromTranscript]). */
     fun withTranscriptText(replies: List<TimelineItem>): RecordTurn =
-        RecordTurn(stepIndex, stepCount, prompt, projectMode, items + replies, shape, errorMessage, textFromTranscript = true, stepsFromRecord = hasBody, turnIndexed = turnIndexed, blobId = blobId, complete = complete, stepTotal = stepTotal, messageSteps = messageSteps, unavailable = unavailable, steer = steer)
+        RecordTurn(stepIndex, stepCount, prompt, projectMode, items + replies, shape, errorMessage, textFromTranscript = true, stepsFromRecord = hasBody, turnIndexed = turnIndexed, blobId = blobId, complete = complete, stepTotal = stepTotal, messageSteps = messageSteps, unavailable = unavailable, steer = steer, messageId = messageId, images = images)
 
     /** This turn as it stands, [pieces] of it having failed on the server in the last read (see [unavailable]). */
     fun withUnavailable(pieces: Int): RecordTurn =
-        RecordTurn(stepIndex, stepCount, prompt, projectMode, items, shape, errorMessage, textFromTranscript, stepsFromRecord, turnIndexed, blobId, complete, stepTotal, messageSteps, unavailable = pieces, steer = steer)
+        RecordTurn(stepIndex, stepCount, prompt, projectMode, items, shape, errorMessage, textFromTranscript, stepsFromRecord, turnIndexed, blobId, complete, stepTotal, messageSteps, unavailable = pieces, steer = steer, messageId = messageId, images = images)
 
     /** The turn's steps are not to be had: the record gave none and the reply is the transcript's (see [withTranscriptText]). */
     val activityMissing: Boolean get() = textFromTranscript && !stepsFromRecord
@@ -520,7 +531,7 @@ object RecordTranscript {
             // The newest turns' shapes, from the steps as they were just read — reused items or not: the shapes are
             // the diagnostics' account of the record as this read found it.
             val shape = if (i >= kept.size - SHAPE_TURNS) HeadlessTranscript.shape(turn, stepIndex) else null
-            RecordTurn(stepIndex, count, turn.prompt, turn.projectMode, items, shape, errorMessage = HeadlessTranscript.errorMessage(turn), turnIndexed = raw.turnIndexed, steer = turn.steer)
+            RecordTurn(stepIndex, count, turn.prompt, turn.projectMode, items, shape, errorMessage = HeadlessTranscript.errorMessage(turn), turnIndexed = raw.turnIndexed, steer = turn.steer, messageId = turn.messageId, images = turn.images.map { it.ref() })
         }
         return RecordWindow(raw.total, firstStep, turns, leading, state ?: previous?.state, now, newestTurn = kept.lastOrNull()?.first, turnIndexed = raw.turnIndexed)
     }
@@ -554,7 +565,7 @@ object RecordTranscript {
             // The turn as it stood: its items stand when nothing was appended to it (the delta went to later turns).
             val items = if (i == 0 && stepIndex == last.stepIndex && count == last.stepCount && turn.prompt == last.prompt) last.items else build(turn, RecordTurn.traceKey(stepIndex, window.turnIndexed))
             val shape = if (i >= cut.size - SHAPE_TURNS) HeadlessTranscript.shape(turn, stepIndex) else null
-            RecordTurn(stepIndex, count, turn.prompt, turn.projectMode, items, shape, errorMessage = HeadlessTranscript.errorMessage(turn), turnIndexed = window.turnIndexed, steer = turn.steer)
+            RecordTurn(stepIndex, count, turn.prompt, turn.projectMode, items, shape, errorMessage = HeadlessTranscript.errorMessage(turn), turnIndexed = window.turnIndexed, steer = turn.steer, messageId = turn.messageId, images = turn.images.map { it.ref() })
         }
         // The newest turn read again as it was, and nothing after it: the window stands, nothing to republish.
         if (rereadsNewest && rebuilt.size == 1 && rebuilt[0].items === last.items && delta.total == window.total) return window
@@ -600,7 +611,7 @@ object RecordTranscript {
             val short = read.unavailable > 0 || (read.messageSteps?.let { CoordinatorTranscript.sent(built).size < it } ?: false)
             val items = if (!same && short && held != null && held.prompt == turn.prompt) CoordinatorTranscript.keepMessages(held.items, built) else built
             val shape = if (i >= shapesFrom) HeadlessTranscript.shape(turn, read.index) else held?.shape
-            RecordTurn(read.index, count, turn.prompt, turn.projectMode, items, shape, errorMessage = HeadlessTranscript.errorMessage(turn), turnIndexed = true, blobId = read.blobId, complete = read.complete, stepTotal = read.stepTotal, messageSteps = read.messageSteps, unavailable = read.unavailable, steer = turn.steer)
+            RecordTurn(read.index, count, turn.prompt, turn.projectMode, items, shape, errorMessage = HeadlessTranscript.errorMessage(turn), turnIndexed = true, blobId = read.blobId, complete = read.complete, stepTotal = read.stepTotal, messageSteps = read.messageSteps, unavailable = read.unavailable, steer = turn.steer, messageId = turn.messageId, images = turn.images.map { it.ref() })
         }
         return turns to cut
     }
@@ -643,7 +654,7 @@ object RecordTranscript {
         val olderTurns = kept.map { cutTurn ->
             val turn = cutTurn.first
             val stepIndex = cutTurn.second
-            RecordTurn(stepIndex, turn.steps.size + (if (turn.prompt != null) 1 else 0), turn.prompt, turn.projectMode, build(turn, RecordTurn.traceKey(stepIndex, window.turnIndexed)), errorMessage = HeadlessTranscript.errorMessage(turn), turnIndexed = window.turnIndexed, steer = turn.steer)
+            RecordTurn(stepIndex, turn.steps.size + (if (turn.prompt != null) 1 else 0), turn.prompt, turn.projectMode, build(turn, RecordTurn.traceKey(stepIndex, window.turnIndexed)), errorMessage = HeadlessTranscript.errorMessage(turn), turnIndexed = window.turnIndexed, steer = turn.steer, messageId = turn.messageId, images = turn.images.map { it.ref() })
         }
         return RecordWindow(window.total, firstStep, olderTurns + window.turns, leading, window.state, now, window.newestTurn, window.turnIndexed)
     }

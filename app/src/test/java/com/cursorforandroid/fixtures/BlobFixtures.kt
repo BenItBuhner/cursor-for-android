@@ -30,6 +30,13 @@ import java.util.Base64
  */
 object BlobFixtures {
 
+    /**
+     * The key under which a legacy `humanMessage` step carries the prompt's images for this synthesis alone (the
+     * step-indexed record never carried them): `[{mimeType, data (base64), uuid?}]`, filed into the user-message
+     * blob as `agent.v1.SelectedContext.selected_images`.
+     */
+    const val IMAGES = "_images"
+
     /** A chat's blobs by id (base64, as Connect JSON writes `bytes`), and its turns' ids oldest first. */
     class Record(val turnIds: List<String>, val blobs: Map<String, ByteArray>) {
         val turnCount: Int get() = turnIds.size
@@ -54,18 +61,43 @@ object BlobFixtures {
      * [unknownStepFields] adds fields no schema knows to every step blob, the way a server ahead of this build
      * would; [omitPromptOfTurn] leaves that turn's user-message blob out.
      */
-    fun record(steps: List<JsonObject>, unknownStepFields: Boolean = false, omitPromptOfTurn: Int = -1): Record {
+    fun record(steps: List<JsonObject>, unknownStepFields: Boolean = false, omitPromptOfTurn: Int = -1, imageBlobs: Boolean = false): Record {
         val blobs = LinkedHashMap<String, ByteArray>()
         val turnIds = ArrayList<String>()
         val parsed = steps.mapIndexed { i, json -> HeadlessConversationApi.parseStep(json, i) }
-        HeadlessTranscript.split(parsed).forEachIndexed { t, turn ->
+        val split = HeadlessTranscript.split(parsed)
+        // The raw prompt steps, turn by turn, for what the legacy reader does not carry: the message id and the images.
+        val raw = turns(steps).takeIf { it.size == split.size }
+        split.forEachIndexed { t, turn ->
             var promptId: String? = null
             if (turn.prompt != null && t != omitPromptOfTurn) {
+                val human = raw?.get(t)?.firstOrNull()?.let { it["humanMessage"] as? JsonObject }
                 val message = buildJsonObject {
                     put("text", turn.prompt)
-                    put("messageId", "msg-$t")
+                    put("messageId", human?.get("messageId")?.jsonPrimitive?.contentOrNull ?: "msg-$t")
                     if (turn.projectMode) put("mode", AgentSchemas.AGENT_MODE_PROJECT)
                     if (turn.steer) put("turnSteer", true)
+                    val images = (human?.get(IMAGES) as? JsonArray).orEmpty().map { it.jsonObject }
+                    if (images.isNotEmpty()) {
+                        put("selectedContext", buildJsonObject {
+                            put("selectedImages", JsonArray(images.mapIndexed { i, image ->
+                                val data = image["data"]!!.jsonPrimitive.content
+                                buildJsonObject {
+                                    // Inline as the client sent it, or in a blob of its own the message names (`blob_id`).
+                                    if (imageBlobs) {
+                                        val bytes = Base64.getDecoder().decode(data)
+                                        val blobId = id(bytes)
+                                        blobs[blobId] = bytes
+                                        put("blobId", blobId)
+                                    } else {
+                                        put("data", data)
+                                    }
+                                    put("uuid", image["uuid"]?.jsonPrimitive?.contentOrNull ?: "img-$t-$i")
+                                    put("mimeType", image["mimeType"]?.jsonPrimitive?.contentOrNull ?: "image/png")
+                                }
+                            }))
+                        })
+                    }
                 }
                 val bytes = ProtoEncoder.encode(message, AgentSchemas.USER_MESSAGE)
                 promptId = id(bytes)

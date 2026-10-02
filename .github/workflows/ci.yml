@@ -23,10 +23,59 @@ defaults:
     shell: bash # -eo pipefail, so a failing command inside a pipeline fails the step
 
 jobs:
+  # A push to main whose tree a green run has already proved does not prove it again. After a merge of a pull request
+  # that was up to date with main, the merge commit's tree is byte-identical to the pull request head's, and the head's
+  # green run tested that very tree; release.yml's gate and scripts/release-cut.sh accept such a run as the evidence
+  # for the merge commit for the same reason. Here that run lets the heavy jobs below skip: the push costs one short
+  # job instead of eleven runners for a quarter of an hour, which at busy hours is where the queue comes from (twelve
+  # jobs per push against the account's twenty). `ci` then reports success naming the proving run, and the one
+  # unit-test job that still runs only warms the Gradle caches, which are written from main alone. A main commit whose
+  # tree no green run has seen (main moved under the pull request, a squash that differs, a direct push) runs in full.
+  proof:
+    name: Proof
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read # the runs of this workflow
+    outputs:
+      run: ${{ steps.find.outputs.run }}
+      shards: ${{ steps.find.outputs.shards || '["1/6", "2/6", "3/6", "4/6", "5/6", "6/6"]' }}
+    steps:
+      - name: Find a green run on this tree
+        id: find
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          commit="$(gh api "repos/$GH_REPO/commits/$SHA")"
+          tree="$(jq -r .commit.tree.sha <<<"$commit")"
+          echo "$SHA has tree $tree"
+          # The commits whose runs could stand in: a merge commit's other parents (the merged pull request's head), and
+          # the heads of the pull requests this commit belongs to (a squash or rebase merge has one parent).
+          candidates="$( (jq -r '.parents[1:][].sha' <<<"$commit"; gh api "repos/$GH_REPO/commits/$SHA/pulls" --jq '.[].head.sha') | sort -u)"
+          for c in $candidates; do
+            [[ "$c" != "$SHA" ]] || continue
+            if [[ "$(gh api "repos/$GH_REPO/commits/$c" --jq .commit.tree.sha)" != "$tree" ]]; then
+              echo "${c::8}: a different tree"; continue
+            fi
+            run="$(gh api "repos/$GH_REPO/actions/workflows/ci.yml/runs?head_sha=$c&status=success&per_page=5" --jq '.workflow_runs[0].html_url // empty')"
+            if [[ -z "$run" ]]; then echo "${c::8}: the identical tree, but no green run on it"; continue; fi
+            echo "::notice title=Proved tree::${c::8} has the identical tree and the green run $run; the heavy jobs skip."
+            echo "run=$run" >> "$GITHUB_OUTPUT"
+            echo 'shards=["1/6"]' >> "$GITHUB_OUTPUT"
+            exit 0
+          done
+          echo "No green run on this tree (candidates: ${candidates:-none}); everything runs."
+
   # Every job below checks out and compiles on its own runner; they run side by side, so the wall time of a run is
   # the slowest job, not the sum. The one status to require is `ci`, at the end.
   build:
     name: Build
+    needs: proof
+    if: needs.proof.outputs.run == ''
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -74,6 +123,8 @@ jobs:
   # The APK it produces is for verification only - it pins no certificate and cannot be published.
   release-build:
     name: Release build (R8)
+    needs: proof
+    if: needs.proof.outputs.run == ''
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -115,6 +166,8 @@ jobs:
   # between them where this alone takes under two.
   lint:
     name: Lint
+    needs: proof
+    if: needs.proof.outputs.run == ''
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -145,20 +198,34 @@ jobs:
   # 25-minute limit is seven over the slowest job seen (18); a test JVM that stops making progress is killed long
   # before it, by the stall watchdog ("Test stalls" in app/build.gradle.kts), whose report - the stuck test, its last
   # output, a thread dump - is in the log and is the `unit-test-stalls-*` artifact.
+  #
+  # On a main push whose tree `proof` found a green run for, the matrix is the first shard alone, and it compiles
+  # without testing: the Gradle caches (dependencies, the build cache the next runs' compiles restore from) are
+  # written from main only, so a main push that ran nothing would leave them to age.
   unit-tests:
     name: Unit tests (${{ matrix.shard }})
+    needs: proof
     runs-on: ubuntu-latest
     timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
-        shard: ["1/6", "2/6", "3/6", "4/6", "5/6", "6/6"]
+        shard: ${{ fromJSON(needs.proof.outputs.shards) }}
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-tags: true # the version is derived from the release tags (app/build.gradle.kts)
 
+      # The shards share one set of dependencies, so the first saves the Gradle caches for all six (on main; see the
+      # action): one gradle-home entry and one build-cache bundle per push instead of six of each.
       - uses: ./.github/actions/android-toolchain
+        with:
+          cache-read-only: ${{ matrix.shard != '1/6' }}
+
+      # The same compile the tests need, with the same stamp, so its outputs land in the build cache for the next runs.
+      - name: Warm the Gradle caches (the tree is proved by ${{ needs.proof.outputs.run }})
+        if: needs.proof.outputs.run != ''
+        run: ./gradlew :app:compileDebugUnitTestKotlin -Papp.versionNameSuffix=-dev.1+gci
 
       # A stamp of the same shape as the build job's, so AppVersionTest's parity check runs against a resolved dev
       # version name and not just the base one: a versionCode derived from the base would pass unnoticed otherwise.
@@ -169,6 +236,7 @@ jobs:
       #
       # The Roborazzi walkthrough is covered by the `screenshots` job below.
       - name: Run JVM unit tests (${{ matrix.shard }})
+        if: needs.proof.outputs.run == ''
         run: >
           ./gradlew :app:testDebugUnitTest -Papp.skipScreenshotTests=true -Papp.testShard=${{ matrix.shard }}
           -Papp.testForks=1 -Papp.versionNameSuffix=-dev.1+gci
@@ -210,6 +278,8 @@ jobs:
 
   screenshots:
     name: Screenshot tests
+    needs: proof
+    if: needs.proof.outputs.run == ''
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -247,21 +317,32 @@ jobs:
   # The one status to require in branch protection: "CI". It succeeds only when every job above did, so the set of
   # jobs (and the number of unit-test shards) can change without touching the protection rule. `!cancelled()` makes it
   # run after failures too (without it a failed dependency would leave it skipped), but not in a cancelled run, where
-  # `always()` kept it queued for a runner that the superseding run was waiting on.
+  # `always()` kept it queued for a runner that the superseding run was waiting on. A job that was skipped counts as
+  # a failure, so a job that never ran can never pass the run; the one exception is the main push whose tree `proof`
+  # found a green run for, where the skipped jobs are the point and the proving run is named.
   ci:
     name: CI
     if: ${{ !cancelled() }}
-    needs: [build, release-build, lint, unit-tests, screenshots]
+    needs: [proof, build, release-build, lint, unit-tests, screenshots]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - name: Check every job's result
         env:
           RESULTS: ${{ toJSON(needs) }}
+          PROOF: ${{ needs.proof.outputs.run }}
         run: |
-          echo "$RESULTS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
-          failed="$(echo "$RESULTS" | jq -r 'to_entries[] | select(.value.result != "success") | .key')"
+          jq -r 'to_entries[] | "\(.key): \(.value.result)"' <<<"$RESULTS"
+          failed="$(jq -r 'to_entries[] | select(.value.result != "success" and .value.result != "skipped") | .key' <<<"$RESULTS" | paste -sd' ')"
+          skipped="$(jq -r 'to_entries[] | select(.value.result == "skipped") | .key' <<<"$RESULTS" | paste -sd' ')"
           if [[ -n "$failed" ]]; then
-            echo "::error::Not every job succeeded: $(echo "$failed" | paste -sd' ')"
+            echo "::error::Not every job succeeded: $failed"
             exit 1
+          fi
+          if [[ -n "$skipped" && -z "$PROOF" ]]; then
+            echo "::error::Jobs were skipped with no green run on this tree to stand in for them: $skipped"
+            exit 1
+          fi
+          if [[ -n "$PROOF" ]]; then
+            echo "::notice title=Proved tree::This tree was proved by $PROOF; skipped here: $skipped."
           fi

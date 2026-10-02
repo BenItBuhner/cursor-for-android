@@ -3,6 +3,15 @@ description: >-
   Installs the JDK, the Android SDK packages this project compiles against and Gradle (with dependency caching and
   wrapper validation). Shared by every workflow so the toolchain is defined in exactly one place.
 
+inputs:
+  cache-read-only:
+    description: >-
+      Set to "true" for a job that should restore the Gradle caches but never save them, even on main: a job whose
+      dependencies another job saves already (the unit-test shards past the first). Off main every job is read-only
+      regardless; cache entries are written from the default branch only.
+    required: false
+    default: "false"
+
 runs:
   using: composite
   steps:
@@ -20,6 +29,11 @@ runs:
         log-accepted-android-sdk-licenses: false
 
     # Caches ~/.gradle (dependencies, wrapper distribution, build cache) and validates gradle-wrapper.jar.
-    # Cache entries are written from the default branch only; other refs read them.
+    # Cache entries are written from the default branch only; other refs read them. A job with `cache-read-only: true`
+    # reads them there too: setup-gradle saves one gradle-home entry per job per commit plus a build-cache bundle, and
+    # six unit-test shards with the same dependencies saved six of each per push. Restore keys fall back from the job's
+    # own entries to the newest entry of the same job id, so the shards that do not save restore the one that does.
     - name: Set up Gradle
       uses: gradle/actions/setup-gradle@v6
+      with:
+        cache-read-only: ${{ inputs.cache-read-only == 'true' || github.ref != 'refs/heads/main' }}

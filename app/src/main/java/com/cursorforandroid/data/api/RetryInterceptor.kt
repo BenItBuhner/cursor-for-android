@@ -15,7 +15,7 @@ import java.util.concurrent.ThreadLocalRandom
 /**
  * Retries idempotent requests (GET / HEAD) that fail transiently — a dropped connection, a `429` or a `5xx` — with
  * jittered exponential backoff, honouring `Retry-After` when the server sends one — a wait longer than a call sleeps
- * here is handed back to the caller with the response, and held by the host's other reads. Anything else (a POST, a `4xx`,
+ * here is handed back to the caller with the response, and held by the endpoint's other reads. Anything else (a POST, a `4xx`,
  * being offline, a cancelled call, or an event stream) goes straight through, so a retry can never duplicate a
  * launch or stall a UI that is waiting for a definite answer. Bounded to a few short attempts: the point is to
  * ride out a blip, not to hide an outage.
@@ -28,9 +28,9 @@ class RetryInterceptor(
     private val sleeper: (Long, () -> Boolean) -> Unit = ::sleepInSlices,
     private val random: () -> Double = { ThreadLocalRandom.current().nextDouble() },
     /**
-     * Until when each host asked every call to wait: a `429` on one call pauses the others before they go out, rather
-     * than each of them meeting the same refusal and backing off on its own. Shared with the run streams (see
-     * [SseRunStreamer]), which wait it out themselves.
+     * Until when each endpoint asked every call to it to wait (see [HostPause.endpoint]): a `429` on one call pauses
+     * the others to the same endpoint before they go out, rather than each of them meeting the same refusal and
+     * backing off on its own. Shared with the run streams (see [SseRunStreamer]), which wait out their own.
      */
     private val pauses: HostPause = HostPause(now),
 ) : Interceptor {
@@ -38,14 +38,14 @@ class RetryInterceptor(
     override fun intercept(chain: Interceptor.Chain): Response {
         val request = chain.request()
         if (request.header("Accept") == "text/event-stream") return chain.proceed(request)
-        val host = request.url.host
-        val held = pauses.remainingMs(host)
-        // A read the host asked to wait longer than a call sleeps here hears the refusal at once, with the wait left,
-        // rather than going out into the window or holding an OkHttp thread for it. A write keeps its bounded hold and
-        // goes out once, as ever.
+        val endpoint = HostPause.endpoint(request.method, request.url)
+        val held = pauses.remainingMs(endpoint)
+        // A read its endpoint asked to wait longer than a call sleeps here hears the refusal at once, with the wait
+        // left, rather than going out into the window or holding an OkHttp thread for it. A write keeps its bounded
+        // hold and goes out once, as ever.
         if (held > MAX_RETRY_AFTER_MS && request.isIdempotent()) return refused(request, held)
         if (held > 0) sleeper(held.coerceAtMost(MAX_RETRY_AFTER_MS)) { chain.call().isCanceled() }
-        if (!request.isIdempotent()) return chain.proceed(request).also { if (it.code == 429) pauses.pause(host, it.retryAfterMs() ?: baseDelayMs) }
+        if (!request.isIdempotent()) return chain.proceed(request).also { if (it.code == 429) pauses.pause(endpoint, it.retryAfterMs() ?: baseDelayMs) }
         var attempt = 1
         while (true) {
             val response = try {
@@ -56,9 +56,9 @@ class RetryInterceptor(
                 attempt++
                 continue
             }
-            // A refusal pauses the other calls of this client for what the server asked; this call's own backoff
-            // below covers the same wait, so it does not hold twice.
-            if (response.code == 429) pauses.pause(host, response.retryAfterMs() ?: baseDelayMs)
+            // A refusal pauses the other calls to the same endpoint for what the server asked; this call's own
+            // backoff below covers the same wait, so it does not hold twice.
+            if (response.code == 429) pauses.pause(endpoint, response.retryAfterMs() ?: baseDelayMs)
             if (attempt >= maxAttempts || !response.isTransientFailure() || chain.call().isCanceled()) return response
             val retryAfter = response.retryAfterMs()
             // Asked to wait longer than a call sleeps here: another try inside the window would only be refused again.

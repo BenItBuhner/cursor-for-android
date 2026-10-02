@@ -292,6 +292,19 @@ data class CachedRecordTurn(
     val messageSteps: Int? = null,
     /** The prompt went into the turn under way (see `RecordTurn.steer`). */
     val steer: Boolean = false,
+    /** The prompt's id as its sender minted it (see `RecordTurn.messageId`). */
+    val messageId: String? = null,
+    /** The pictures the record carries with the prompt, by reference (see `RecordTurn.images`): their bytes are on this device, or in the blobs named. */
+    val images: List<CachedRecordImage> = emptyList(),
+)
+
+@Serializable
+data class CachedRecordImage(
+    val uuid: String? = null,
+    val mimeType: String? = null,
+    val blobId: String? = null,
+    val width: Int = 0,
+    val height: Int = 0,
 )
 
 @Serializable
