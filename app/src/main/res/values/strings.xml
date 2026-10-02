@@ -35,6 +35,13 @@
     <string name="notif_action_view_pr">View PR</string>
     <string name="notif_stop_failed">Couldn\'t stop the run: %1$s</string>
 
+    <!-- Spotlight: one chat or Project followed in a notification of its own -->
+    <string name="channel_spotlight_name">Spotlight</string>
+    <string name="channel_spotlight_description">Live detail for the one chat or Project you put in the Spotlight. Silent; shown as a Live Update on Android 16.</string>
+    <string name="spotlight_label">Spotlight</string>
+    <string name="spotlight_action">Spotlight</string>
+    <string name="spotlight_action_stop">Stop Spotlight</string>
+    <string name="spotlight_connecting">Connecting…</string>
     <!-- App updates -->
     <string name="channel_updates_name">App updates</string>
     <string name="channel_updates_description">A new version of Cursor has been downloaded and is ready to install.</string>

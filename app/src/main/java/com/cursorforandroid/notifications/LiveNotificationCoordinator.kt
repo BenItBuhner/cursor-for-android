@@ -77,6 +77,7 @@ object LiveNotificationCoordinator {
                         local = graph.prefs.localAgentState,
                         scan = graph.agents.runningScan,
                         projectPrefs = graph.prefs.projectNotifications,
+                        spotlit = graph.spotlight.covered,
                     ),
                 )
             }
@@ -140,13 +141,16 @@ internal fun liveDecisions(
     local: Flow<LocalAgentState> = flowOf(LocalAgentState()),
     scan: Flow<RunningScan> = flowOf(RunningScan()),
     projectPrefs: Flow<ProjectNotificationPrefs> = flowOf(ProjectNotificationPrefs.DEFAULT),
+    /** The chats the Spotlight notification speaks for: left out here as the snoozed ones are, since they have a card. */
+    spotlit: Flow<Set<String>> = flowOf(emptySet()),
 ): Flow<LiveDecision> =
     combine(
         combine(session, list, enabled, serviceActive, local) { s, l, e, a, state -> Inputs(s, l, e, a, state) },
         scan,
         projectPrefs,
-    ) { inputs, sc, pp ->
-        liveDecision(inputs.session, inputs.list, inputs.enabled, inputs.serviceActive, canShowLive(), inputs.local.quietIds(AppClock.now()), sc, pp)
+        spotlit,
+    ) { inputs, sc, pp, lit ->
+        liveDecision(inputs.session, inputs.list, inputs.enabled, inputs.serviceActive, canShowLive(), inputs.local.quietIds(AppClock.now()) + lit, sc, pp)
     }.distinctUntilChanged()
 
 private class Inputs(val session: SessionState, val list: AgentListState, val enabled: Boolean, val serviceActive: Boolean, val local: LocalAgentState)

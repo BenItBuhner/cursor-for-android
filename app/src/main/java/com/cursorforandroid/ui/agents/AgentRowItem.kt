@@ -88,6 +88,10 @@ data class AgentRowActions(
     val onUnsnooze: (AgentRow) -> Unit,
     /** Opens the Project editor (name, icon, colour) for a Project's row; null hides "Edit Project" (default mode). */
     val onEditProject: ((AgentRow) -> Unit)? = null,
+    /** Puts the row in the Spotlight, or takes it out when it is [spotlightedId]; null hides the item. */
+    val onSpotlight: ((AgentRow) -> Unit)? = null,
+    /** The chat or Project in the Spotlight right now, whose menu offers "Stop Spotlight" instead. */
+    val spotlightedId: String? = null,
 )
 
 /**
@@ -318,6 +322,14 @@ fun ChatOverflowMenu(
     val uriHandler = LocalUriHandler.current
     val agent = row.agent
     CursorMenu(expanded = expanded, onDismissRequest = onDismiss, at = at) {
+        actions.onSpotlight?.let { spotlight ->
+            // A Live Update is for something in progress, so only a turn going (here or under a Project) is offered.
+            if (actions.spotlightedId == agent.id) {
+                CursorMenuItem("Stop Spotlight", CursorIcons.EyeOff) { onDismiss(); spotlight(row) }
+            } else if (!agent.isArchived && (agent.isRunning || row.workingCount > 0)) {
+                CursorMenuItem("Spotlight", CursorIcons.Eye) { onDismiss(); spotlight(row) }
+            }
+        }
         if (AgentListOrganizer.canPin(agent)) CursorMenuItem(if (row.isPinned) "Unpin" else "Pin", CursorIcons.Pin) { onDismiss(); actions.onTogglePin(row) }
         val editProject = actions.onEditProject?.takeIf { agent.isProjectRoot }
         if (editProject != null) CursorMenuItem("Edit Project", CursorIcons.Pencil) { onDismiss(); editProject(row) }

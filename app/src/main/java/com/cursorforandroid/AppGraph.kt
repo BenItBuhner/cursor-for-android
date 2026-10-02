@@ -74,6 +74,7 @@ import com.cursorforandroid.data.auth.CursorLoginEndpoints
 import com.cursorforandroid.data.auth.SessionTokenProvider
 import com.cursorforandroid.data.demo.DemoBackendFactory
 import com.cursorforandroid.data.demo.DemoData
+import com.cursorforandroid.data.demo.DemoPace
 import com.cursorforandroid.data.demo.DemoPerfSeeds
 import com.cursorforandroid.data.demo.DemoMcpConnectorApi
 import com.cursorforandroid.data.demo.DemoPullRequests
@@ -123,6 +124,7 @@ import com.cursorforandroid.data.repo.RefreshDepth
 import com.cursorforandroid.data.repo.RemoteRepository
 import com.cursorforandroid.data.repo.ReviewRepository
 import com.cursorforandroid.data.repo.RunMonitor
+import com.cursorforandroid.data.repo.SpotlightFeed
 import com.cursorforandroid.data.repo.SessionManager
 import com.cursorforandroid.data.repo.SessionState
 import com.cursorforandroid.data.repo.McpConnectorRepository
@@ -163,6 +165,8 @@ import com.cursorforandroid.domain.WorkerMembership
 import com.cursorforandroid.domain.WorkerSpawnKind
 import com.cursorforandroid.domain.WorkspaceTree
 import com.cursorforandroid.notifications.LiveNotifications
+import com.cursorforandroid.notifications.PostBudget
+import com.cursorforandroid.notifications.SpotlightController
 import com.cursorforandroid.share.ShareInbox
 import com.cursorforandroid.ui.components.ComposerMediaPreviews
 import com.cursorforandroid.ui.conversation.AttachmentImages
@@ -337,7 +341,10 @@ class AppGraph(
     private val perfSeeds = BuildConfig.DEBUG && DemoPerfSeeds.enabled(app.cacheDir)
     private val scaleFleet = if (BuildConfig.DEBUG) DemoPerfSeeds.scaleFleet(app.cacheDir) else null
     private val scaleDataset = scaleFleet?.let(DemoPerfSeeds::scaleDataset)
-    private val demoParts = lazy { DemoBackendFactory.create(perfSeeds = perfSeeds, scaleFleet = scaleFleet) }
+    private val demoParts = lazy {
+        val realistic = if (BuildConfig.DEBUG) DemoPace.fromMarker(app.cacheDir) else null
+        DemoBackendFactory.create(perfSeeds = perfSeeds, scaleFleet = scaleFleet, pace = realistic ?: DemoPace.Brisk)
+    }
 
     init {
         // A debug build measuring the transcript on a device: the `perf:` block after each presentation, in logcat.
@@ -973,6 +980,15 @@ class AppGraph(
     }
     val runMonitor: RunMonitor get() = lazyRunMonitor.value
 
+    /** The one chat or Project in the Spotlight. Plain state, cheap enough to build eagerly: menus read it on every row. */
+    val spotlight = SpotlightController()
+
+    /** Android rates the package's notification posts together, so the live roster and the Spotlight share one budget. Main thread only. */
+    internal val postBudget = PostBudget()
+
+    private val lazySpotlightFeed = lazy { SpotlightFeed(agents, liveRuns) }
+    val spotlightFeed: SpotlightFeed get() = lazySpotlightFeed.value
+
     /**
      * The GitHub releases of [BuildConfig.GITHUB_REPO], read anonymously: one client for the updater and the What's
      * new notes, so the rate limit GitHub answers one of them with is remembered for both.
@@ -1165,6 +1181,7 @@ class AppGraph(
             // reset and is left unbuilt. The wipes further down are the opposite case: what an earlier process
             // wrote is on disk whether or not this one ever looked at it, so those are forced.
             if (lazyRunMonitor.isInitialized()) runMonitor.stop()
+            spotlight.stop()
             if (lazyLiveRuns.isInitialized()) liveRuns.resetAll()
             if (lazyConversations.isInitialized()) conversations.resetAll()
             if (lazyFollowUps.isInitialized()) followUps.resetAll()
@@ -1299,6 +1316,7 @@ class AppGraph(
             "storeFiles" to lazyStoreFiles,
             "media" to lazyMedia,
             "runMonitor" to lazyRunMonitor,
+            "spotlightFeed" to lazySpotlightFeed,
             "releases" to lazyReleases,
             "updates" to lazyUpdates,
             "whatsNew" to lazyWhatsNew,

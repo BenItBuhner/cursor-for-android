@@ -17,6 +17,7 @@ import com.cursorforandroid.R
 object LiveNotifications {
     const val CHANNEL_LIVE = "live_agents"
     const val CHANNEL_FINISHED = "agent_finished"
+    const val CHANNEL_SPOTLIGHT = "spotlight"
 
     /** `Settings.ACTION_MANAGE_APP_PROMOTED_NOTIFICATIONS`; referenced by value because it only exists from Android 16 QPR1. */
     private const val ACTION_MANAGE_APP_PROMOTED_NOTIFICATIONS = "android.settings.MANAGE_APP_PROMOTED_NOTIFICATIONS"
@@ -36,6 +37,14 @@ object LiveNotifications {
                 description = context.getString(R.string.channel_finished_description)
             },
         )
+        manager.createNotificationChannel(
+            NotificationChannel(CHANNEL_SPOTLIGHT, context.getString(R.string.channel_spotlight_name), NotificationManager.IMPORTANCE_LOW).apply {
+                description = context.getString(R.string.channel_spotlight_description)
+                setShowBadge(false)
+                enableVibration(false)
+                setSound(null, null)
+            },
+        )
     }
 
     /** Runtime permission on Android 13+; implicitly granted before that. */
@@ -51,10 +60,15 @@ object LiveNotifications {
      * Following runs in the background exists to produce that notification, so it is not worth a foreground service
      * and its streams when the answer is no.
      */
-    fun canShowLive(context: Context): Boolean {
+    fun canShowLive(context: Context): Boolean = canShow(context, CHANNEL_LIVE)
+
+    /** [canShowLive] for the Spotlight's own channel, which the user can switch off apart from the live one. */
+    fun canShowSpotlight(context: Context): Boolean = canShow(context, CHANNEL_SPOTLIGHT)
+
+    private fun canShow(context: Context, channelId: String): Boolean {
         if (!areEnabled(context)) return false
         // Absent until the channels are created, which happens before anything is posted; it will be importance LOW.
-        val channel = runCatching { NotificationManagerCompat.from(context).getNotificationChannel(CHANNEL_LIVE) }
+        val channel = runCatching { NotificationManagerCompat.from(context).getNotificationChannel(channelId) }
             .getOrNull() ?: return true
         return channel.importance != NotificationManager.IMPORTANCE_NONE
     }

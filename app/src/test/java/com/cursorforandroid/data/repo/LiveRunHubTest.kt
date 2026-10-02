@@ -808,6 +808,25 @@ class LiveRunHubTest {
     }
 
     @Test
+    fun `a run only the Spotlight follows holds its quiet connection, as the notification's does`() = runBlocking {
+        hub = stallingHub()
+        api.addRunningAgent("bc-1", "Agent", "run-1")
+        streamer.emit("run-1", RunStreamEvent.Status("run-1", RunStatus.RUNNING))
+        streamer.emit("run-1", RunStreamEvent.Assistant("Hello"))
+        val spotlight = scope.launch { SpotlightFeed.follow(hub, "bc-1", "run-1", null, watched = true).collect { } }
+        awaitUntil { snapshot()?.items?.isNotEmpty() == true }
+
+        // A long tool call: nothing reaches the connection for many stall windows, and it is held rather than taken up again.
+        streamer.strand("run-1")
+        delay(1_500)
+        assertThat(connections()).isEqualTo(1)
+        assertThat(api.getRunCalls).isEqualTo(0)
+        assertThat(current().reconnecting).isFalse()
+        assertThat(current().finished).isFalse()
+        spotlight.cancel()
+    }
+
+    @Test
     fun `a chat back in front after the app was away has its held connection verified and taken up at once`() = runBlocking {
         hub = stallingHub(stallMs = 5_000, stallMaxMs = 20_000)
         api.addRunningAgent("bc-1", "Agent", "run-1")

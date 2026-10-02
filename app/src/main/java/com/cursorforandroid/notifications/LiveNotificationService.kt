@@ -62,7 +62,7 @@ class LiveNotificationService : Service() {
     private var idleJob: Job? = null
     private var latestStartId = 0
     /** Every notification this service posts counts against Android's rate for the package: see [PostBudget]. */
-    private val budget = PostBudget()
+    private val budget: PostBudget get() = graph.postBudget
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -149,8 +149,9 @@ class LiveNotificationService : Service() {
             LiveNotifications.post(this, LiveNotificationRenderer.LIVE_ID, LiveNotificationRenderer.live(this, look))
         }
         watching.launch {
-            combine(monitor.state, graph.prefs.liveNotifications, graph.prefs.localAgentState) { state, enabled, local ->
-                Triple(audible(state, local.quietIds(AppClock.now())), enabled, local)
+            // A chat in the Spotlight has a card of its own, so the roster leaves it out as it does a snoozed one.
+            combine(monitor.state, graph.prefs.liveNotifications, graph.prefs.localAgentState, graph.spotlight.covered) { state, enabled, local, spotlit ->
+                Triple(audible(state, local.quietIds(AppClock.now()) + spotlit), enabled, local)
             }
                 .collect { (state, enabled, _) ->
                     when {

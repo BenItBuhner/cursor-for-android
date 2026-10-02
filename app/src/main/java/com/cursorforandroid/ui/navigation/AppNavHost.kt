@@ -42,6 +42,7 @@ import com.cursorforandroid.domain.ProjectArrangement
 import com.cursorforandroid.domain.TranscriptHit
 import com.cursorforandroid.domain.UpdateState
 import com.cursorforandroid.notifications.NotificationPermissionPrompt
+import com.cursorforandroid.notifications.SpotlightService
 import com.cursorforandroid.ui.agents.AgentListUiState
 import com.cursorforandroid.ui.agents.AgentRowActions
 import com.cursorforandroid.ui.agents.AgentsViewModel
@@ -461,8 +462,10 @@ private fun AppShell(
         )
     }
 
+    val context = LocalContext.current
+    val spotlightedId = graph.spotlight.target.collectAsStateWithLifecycle().value?.agentId
     // Kept from one composition to the next, so the rows it is handed to skip whatever else recomposes the shell.
-    val rowActions = remember(agentsViewModel, isDemo, extendedMode) {
+    val rowActions = remember(agentsViewModel, isDemo, extendedMode, spotlightedId) {
         AgentRowActions(
             onOpen = { row ->
                 agentsViewModel.markRead(row.agent)
@@ -477,6 +480,8 @@ private fun AppShell(
             onUnsnooze = { agentsViewModel.unsnooze(it.agent.id) },
             // Projects are the account's: their editor, like the rename, is offered with Extended mode (the demo edits its own rows).
             onEditProject = if (isDemo || extendedMode) ({ row -> projectEditor = ProjectEditorTarget.Edit(row.agent.id) }) else null,
+            onSpotlight = { row -> SpotlightService.toggle(context, graph.spotlight, row.agent) },
+            spotlightedId = spotlightedId,
         )
     }
     val destination = when (topScreen) {

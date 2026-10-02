@@ -22,21 +22,42 @@ import kotlin.math.ceil
  *
  * Not thread-safe: [offer], [flush] and [cancel] are called on [scope]'s single thread, as the service's are on Main.
  */
-internal class LivePostPacer<L : Any>(
+internal fun <L : Any> LivePostPacer(
+    scope: CoroutineScope,
+    look: (LiveActivityState) -> L,
+    budget: PostBudget = PostBudget(),
+    post: (L) -> Unit,
+): PostPacer<LiveActivityState, L> = PostPacer(scope, look, ::runEnds, budget, post)
+
+/** A run leaving the notification, or being stopped. */
+private fun runEnds(shown: LiveActivityState, next: LiveActivityState): Boolean {
+    val phases = next.running.associate { it.agentId to it.phase }
+    return shown.running.any { run ->
+        val phase = phases[run.agentId]
+        phase == null || (phase != run.phase && (phase == LivePhase.Stopping || phase == LivePhase.Finished))
+    }
+}
+
+/**
+ * [LivePostPacer]'s pacing for any notification that shows a [look] of states [S]: posted when the look changes, within
+ * [budget], except that a state that [ends] what was shown posts at once.
+ */
+internal class PostPacer<S : Any, L : Any>(
     private val scope: CoroutineScope,
-    private val look: (LiveActivityState) -> L,
+    private val look: (S) -> L,
+    private val ends: (shown: S, next: S) -> Boolean,
     private val budget: PostBudget = PostBudget(),
     private val post: (L) -> Unit,
 ) {
-    private var shown: LiveActivityState? = null
+    private var shown: S? = null
     private var shownLook: L? = null
-    private var pending: LiveActivityState? = null
+    private var pending: S? = null
     private var pendingLook: L? = null
     /** The last post went out over the budget: post the shown look again once it allows. */
     private var again = false
     private var wake: Job? = null
 
-    fun offer(state: LiveActivityState) {
+    fun offer(state: S) {
         val next = look(state)
         val ending = shown?.let { ends(it, state) } == true
         if (!ending && next == shownLook) {
@@ -85,20 +106,12 @@ internal class LivePostPacer<L : Any>(
         }
     }
 
-    private fun emit(state: LiveActivityState, next: L) {
+    private fun emit(state: S, next: L) {
         shown = state
         shownLook = next
         pending = null
         pendingLook = null
         budget.post { post(next) }
-    }
-
-    private fun ends(shown: LiveActivityState, next: LiveActivityState): Boolean {
-        val phases = next.running.associate { it.agentId to it.phase }
-        return shown.running.any { run ->
-            val phase = phases[run.agentId]
-            phase == null || (phase != run.phase && (phase == LivePhase.Stopping || phase == LivePhase.Finished))
-        }
     }
 }
 
