@@ -90,12 +90,14 @@ object KeyboardShortcutsTags {
     fun field(shortcut: Shortcut) = "keyboard_shortcut_field_${shortcut.id}"
 
     fun reset(shortcut: Shortcut) = "keyboard_shortcut_reset_${shortcut.id}"
+
+    /** The card of a group of shortcuts, by its title: General, Composer, Media. */
+    fun group(title: String) = "keyboard_shortcuts_group_${title.lowercase()}"
 }
 
 object KeyboardShortcutsCopy {
     const val HINT = "Tap a shortcut to change it."
     const val FOOTER = "Shortcuts work from a hardware keyboard, with the composer focused too. The on-screen keyboard is left alone."
-    const val FIXED = "Always the same"
     const val PRESS = "Press the new keys. Esc cancels."
     const val PLACEHOLDER = "Press keys…"
     const val WAITING = "Waiting for keys"
@@ -129,8 +131,9 @@ private val FieldHeight = 34.dp
  * Settings › Keyboard shortcuts. Every shortcut that can move shows its keys in an outlined field on the right of its
  * row, as an input would: tapped, the field waits for the new keys ([ShortcutCapture]), says so when they are kept for
  * something else, and asks whether to swap or replace when another shortcut is on them — never leaving two on the
- * same keys. A moved shortcut has a reset beside its field. The chords that never move (Ctrl+Tab, Ctrl+1 … 0, Esc)
- * follow in a group of their own, as plain key caps with no field. [onChange] saves; [bindings] is what is saved.
+ * same keys. A moved shortcut has a reset beside its field. The keys that never move (Ctrl+Tab, Ctrl+1 … 0, Esc, the
+ * composer's and the media viewer's own) sit among them in their group — General, Composer, Media — as plain key caps
+ * with no field. [onChange] saves; [bindings] is what is saved.
  */
 @Composable
 fun KeyboardShortcutsScreen(
@@ -162,7 +165,6 @@ fun KeyboardShortcutsScreen(
     BackHandler(enabled = capturing) { capture.cancel() }
 
     val groups = ShortcutsCopy.groups(shown)
-    val fixed = groups.flatMap { group -> group.lines.filter { it.shortcut == null } }
 
     Column(modifier.fillMaxSize().background(colors.canvas).testTag(KeyboardShortcutsTags.PAGE)) {
         CursorHeader(
@@ -185,21 +187,18 @@ fun KeyboardShortcutsScreen(
                     Text(KeyboardShortcutsCopy.HINT, style = type.small, color = colors.textSecondary)
                 }
                 groups.forEach { group ->
-                    val editable = group.lines.mapNotNull { line -> line.shortcut?.let { line to it } }
-                    if (editable.isEmpty()) return@forEach
                     Group(group.title)
-                    SettingsCard {
-                        editable.forEachIndexed { index, (line, shortcut) ->
+                    group.note?.let { Text(it, style = type.small, color = colors.textTertiary, modifier = Modifier.padding(start = 2.dp, bottom = 6.dp)) }
+                    SettingsCard(Modifier.testTag(KeyboardShortcutsTags.group(group.title))) {
+                        group.lines.forEachIndexed { index, line ->
                             if (index > 0) HairlineDivider()
-                            BindingRow(line, shortcut, customized = !shown.isDefault(shortcut), capture = capture)
+                            val shortcut = line.shortcut
+                            if (shortcut != null) {
+                                BindingRow(line, shortcut, customized = !shown.isDefault(shortcut), capture = capture)
+                            } else {
+                                ShortcutLineRow(line, Modifier.heightIn(min = CursorDimens.listRow).padding(horizontal = RowInset, vertical = 11.dp))
+                            }
                         }
-                    }
-                }
-                Group(KeyboardShortcutsCopy.FIXED)
-                SettingsCard {
-                    fixed.forEachIndexed { index, line ->
-                        if (index > 0) HairlineDivider()
-                        ShortcutLineRow(line, Modifier.heightIn(min = CursorDimens.listRow).padding(horizontal = RowInset, vertical = 11.dp))
                     }
                 }
                 SettingsCard(Modifier.padding(top = 18.dp)) {
