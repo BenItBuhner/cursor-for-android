@@ -1,0 +1,30 @@
+// Builds the launch video's capture harness into :app's unit tests for one invocation, leaving the app's own build
+// files alone:
+//
+//   ./gradlew -I promo/capture/promo.init.gradle :app:testDebugUnitTest \
+//       --tests 'com.cursorforandroid.promo.*' --no-configuration-cache -Papp.testForks=1 [-Ppromo.scene=...]
+//
+// promo/capture/run.sh wraps this with the memory settings the capture VM needs.
+def promoProperties = ['promo.out', 'promo.scene', 'promo.preview', 'promo.frames']
+
+gradle.projectsLoaded {
+    def root = gradle.rootProject.rootDir
+    gradle.rootProject.project(':app') { app ->
+        app.plugins.withId('com.android.application') {
+            app.android.sourceSets.test.java.srcDir(new File(root, 'promo/capture/src'))
+        }
+        app.tasks.withType(Test).configureEach { t ->
+            t.systemProperty('promo.root', new File(root, 'promo').absolutePath)
+            promoProperties.each { key ->
+                def value = app.findProperty(key)
+                if (value != null) t.systemProperty(key, value.toString())
+            }
+            t.testLogging {
+                showStandardStreams = true
+                exceptionFormat = 'full'
+                events 'passed', 'failed', 'skipped'
+            }
+            t.outputs.upToDateWhen { false }
+        }
+    }
+}

@@ -1,0 +1,12 @@
+{
+  "hero.prompt": "Add a usage meter to the account page",
+  "hero.think": "The account page should show how much of the plan this cycle has used. PR #215 already rolls usage events up into usageDaily, so the meter can read those aggregates instead of summing raw events on every load. I'll check the schema and the account route first, then split the work: one subagent maps where usage is surfaced today, another builds the meter component.",
+  "hero.intro": "The daily aggregates from #215 are exactly what this needs, so the meter will read `usageDaily` directly. Splitting it in two: one subagent maps where usage already shows up, the other builds the meter itself.",
+  "hero.think2": "Both subagents are done. The meter sits under the plan card and the query stays server-side, so the page never sees raw events.",
+  "hero.final": "Added a usage meter to the account page.\n\n- **`currentCycleUsage`** in `convex/usage.ts` reads this cycle's rows from `usageDaily`, so the page never sums raw events.\n- **`UsageMeter`** shows the minutes used against the plan's limit, amber from 80% and red at the cap.\n- The account route renders it under the plan card, with its strings in `en.json`.\n\n`npm test -- usage` passes (14 tests). Pushed to `cursor/usage-meter-4b1e`.",
+  "pr.prompt": "Then open a PR",
+  "pr.think": "The branch is pushed and the tests pass, so this is only the PR: a title from the change and the summary as its body.",
+  "pr.final": "Opened [#221](https://github.com/techlitnow/cesium/pull/221), **Usage meter on the account page**, against `main`. It is small and self-contained: one query, one component, the route and its strings.",
+  "any.think": "Let me look at the relevant files before changing anything.",
+  "any.final": "Done. This is the demo backend, so nothing left the device."
+}

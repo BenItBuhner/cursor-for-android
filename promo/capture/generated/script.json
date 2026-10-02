@@ -1,0 +1,1600 @@
+{
+ "texts": {
+  "hero.prompt": {
+   "tokens": 8,
+   "pieces": [
+    [
+     "Add",
+     1
+    ],
+    [
+     " a",
+     1
+    ],
+    [
+     " usage",
+     1
+    ],
+    [
+     " meter",
+     1
+    ],
+    [
+     " to",
+     1
+    ],
+    [
+     " the",
+     1
+    ],
+    [
+     " account",
+     1
+    ],
+    [
+     " page",
+     1
+    ]
+   ]
+  },
+  "hero.think": {
+   "tokens": 75,
+   "pieces": [
+    [
+     "The",
+     1
+    ],
+    [
+     " account",
+     1
+    ],
+    [
+     " page",
+     1
+    ],
+    [
+     " should",
+     1
+    ],
+    [
+     " show",
+     1
+    ],
+    [
+     " how",
+     1
+    ],
+    [
+     " much",
+     1
+    ],
+    [
+     " of",
+     1
+    ],
+    [
+     " the",
+     1
+    ],
+    [
+     " plan",
+     1
+    ],
+    [
+     " this",
+     1
+    ],
+    [
+     " cycle",
+     1
+    ],
+    [
+     " has",
+     1
+    ],
+    [
+     " used",
+     1
+    ],
+    [
+     ".",
+     1
+    ],
+    [
+     " PR",
+     1
+    ],
+    [
+     " #",
+     1
+    ],
+    [
+     "215",
+     1
+    ],
+    [
+     " already",
+     1
+    ],
+    [
+     " rolls",
+     1
+    ],
+    [
+     " usage",
+     1
+    ],
+    [
+     " events",
+     1
+    ],
+    [
+     " up",
+     1
+    ],
+    [
+     " into",
+     1
+    ],
+    [
+     " usage",
+     1
+    ],
+    [
+     "Daily",
+     1
+    ],
+    [
+     ",",
+     1
+    ],
+    [
+     " so",
+     1
+    ],
+    [
+     " the",
+     1
+    ],
+    [
+     " meter",
+     1
+    ],
+    [
+     " can",
+     1
+    ],
+    [
+     " read",
+     1
+    ],
+    [
+     " those",
+     1
+    ],
+    [
+     " aggregates",
+     1
+    ],
+    [
+     " instead",
+     1
+    ],
+    [
+     " of",
+     1
+    ],
+    [
+     " summ",
+     1
+    ],
+    [
+     "ing",
+     1
+    ],
+    [
+     " raw",
+     1
+    ],
+    [
+     " events",
+     1
+    ],
+    [
+     " on",
+     1
+    ],
+    [
+     " every",
+     1
+    ],
+    [
+     " load",
+     1
+    ],
+    [
+     ".",
+     1
+    ],
+    [
+     " I'll",
+     1
+    ],
+    [
+     " check",
+     1
+    ],
+    [
+     " the",
+     1
+    ],
+    [
+     " schema",
+     1
+    ],
+    [
+     " and",
+     1
+    ],
+    [
+     " the",
+     1
+    ],
+    [
+     " account",
+     1
+    ],
+    [
+     " route",
+     1
+    ],
+    [
+     " first",
+     1
+    ],
+    [
+     ",",
+     1
+    ],
+    [
+     " then",
+     1
+    ],
+    [
+     " split",
+     1
+    ],
+    [
+     " the",
+     1
+    ],
+    [
+     " work",
+     1
+    ],
+    [
+     ":",
+     1
+    ],
+    [
+     " one",
+     1
+    ],
+    [
+     " sub",
+     1
+    ],
+    [
+     "agent",
+     1
+    ],
+    [
+     " maps",
+     1
+    ],
+    [
+     " where",
+     1
+    ],
+    [
+     " usage",
+     1
+    ],
+    [
+     " is",
+     1
+    ],
+    [
+     " surfaced",
+     1
+    ],
+    [
+     " today",
+     1
+    ],
+    [
+     ",",
+     1
+    ],
+    [
+     " another",
+     1
+    ],
+    [
+     " builds",
+     1
+    ],
+    [
+     " the",
+     1
+    ],
+    [
+     " meter",
+     1
+    ],
+    [
+     " component",
+     1
+    ],
+    [
+     ".",
+     1
+    ]
+   ]
+  },
+  "hero.intro": {
+   "tokens": 46,
+   "pieces": [
+    [
+     "The",
+     1
+    ],
+    [
+     " daily",
+     1
+    ],
+    [
+     " aggregates",
+     1
+    ],
+    [
+     " from",
+     1
+    ],
+    [
+     " #",
+     1
+    ],
+    [
+     "215",
+     1
+    ],
+    [
+     " are",
+     1
+    ],
+    [
+     " exactly",
+     1
+    ],
+    [
+     " what",
+     1
+    ],
+    [
+     " this",
+     1
+    ],
+    [
+     " needs",
+     1
+    ],
+    [
+     ",",
+     1
+    ],
+    [
+     " so",
+     1
+    ],
+    [
+     " the",
+     1
+    ],
+    [
+     " meter",
+     1
+    ],
+    [
+     " will",
+     1
+    ],
+    [
+     " read",
+     1
+    ],
+    [
+     " `",
+     1
+    ],
+    [
+     "usage",
+     1
+    ],
+    [
+     "Daily",
+     1
+    ],
+    [
+     "`",
+     1
+    ],
+    [
+     " directly",
+     1
+    ],
+    [
+     ".",
+     1
+    ],
+    [
+     " Spl",
+     1
+    ],
+    [
+     "itting",
+     1
+    ],
+    [
+     " it",
+     1
+    ],
+    [
+     " in",
+     1
+    ],
+    [
+     " two",
+     1
+    ],
+    [
+     ":",
+     1
+    ],
+    [
+     " one",
+     1
+    ],
+    [
+     " sub",
+     1
+    ],
+    [
+     "agent",
+     1
+    ],
+    [
+     " maps",
+     1
+    ],
+    [
+     " where",
+     1
+    ],
+    [
+     " usage",
+     1
+    ],
+    [
+     " already",
+     1
+    ],
+    [
+     " shows",
+     1
+    ],
+    [
+     " up",
+     1
+    ],
+    [
+     ",",
+     1
+    ],
+    [
+     " the",
+     1
+    ],
+    [
+     " other",
+     1
+    ],
+    [
+     " builds",
+     1
+    ],
+    [
+     " the",
+     1
+    ],
+    [
+     " meter",
+     1
+    ],
+    [
+     " itself",
+     1
+    ],
+    [
+     ".",
+     1
+    ]
+   ]
+  },
+  "hero.think2": {
+   "tokens": 28,
+   "pieces": [
+    [
+     "Both",
+     1
+    ],
+    [
+     " sub",
+     1
+    ],
+    [
+     "agents",
+     1
+    ],
+    [
+     " are",
+     1
+    ],
+    [
+     " done",
+     1
+    ],
+    [
+     ".",
+     1
+    ],
+    [
+     " The",
+     1
+    ],
+    [
+     " meter",
+     1
+    ],
+    [
+     " sits",
+     1
+    ],
+    [
+     " under",
+     1
+    ],
+    [
+     " the",
+     1
+    ],
+    [
+     " plan",
+     1
+    ],
+    [
+     " card",
+     1
+    ],
+    [
+     " and",
+     1
+    ],
+    [
+     " the",
+     1
+    ],
+    [
+     " query",
+     1
+    ],
+    [
+     " stays",
+     1
+    ],
+    [
+     " server",
+     1
+    ],
+    [
+     "-side",
+     1
+    ],
+    [
+     ",",
+     1
+    ],
+    [
+     " so",
+     1
+    ],
+    [
+     " the",
+     1
+    ],
+    [
+     " page",
+     1
+    ],
+    [
+     " never",
+     1
+    ],
+    [
+     " sees",
+     1
+    ],
+    [
+     " raw",
+     1
+    ],
+    [
+     " events",
+     1
+    ],
+    [
+     ".",
+     1
+    ]
+   ]
+  },
+  "hero.final": {
+   "tokens": 115,
+   "pieces": [
+    [
+     "Added",
+     1
+    ],
+    [
+     " a",
+     1
+    ],
+    [
+     " usage",
+     1
+    ],
+    [
+     " meter",
+     1
+    ],
+    [
+     " to",
+     1
+    ],
+    [
+     " the",
+     1
+    ],
+    [
+     " account",
+     1
+    ],
+    [
+     " page",
+     1
+    ],
+    [
+     ".\n\n",
+     1
+    ],
+    [
+     "-",
+     1
+    ],
+    [
+     " **",
+     1
+    ],
+    [
+     "`",
+     1
+    ],
+    [
+     "current",
+     1
+    ],
+    [
+     "Cycle",
+     1
+    ],
+    [
+     "Usage",
+     1
+    ],
+    [
+     "`",
+     1
+    ],
+    [
+     "**",
+     1
+    ],
+    [
+     " in",
+     1
+    ],
+    [
+     " `",
+     1
+    ],
+    [
+     "conv",
+     1
+    ],
+    [
+     "ex",
+     1
+    ],
+    [
+     "/",
+     1
+    ],
+    [
+     "usage",
+     1
+    ],
+    [
+     ".ts",
+     1
+    ],
+    [
+     "`",
+     1
+    ],
+    [
+     " reads",
+     1
+    ],
+    [
+     " this",
+     1
+    ],
+    [
+     " cycle",
+     1
+    ],
+    [
+     "'s",
+     1
+    ],
+    [
+     " rows",
+     1
+    ],
+    [
+     " from",
+     1
+    ],
+    [
+     " `",
+     1
+    ],
+    [
+     "usage",
+     1
+    ],
+    [
+     "Daily",
+     1
+    ],
+    [
+     "`,",
+     1
+    ],
+    [
+     " so",
+     1
+    ],
+    [
+     " the",
+     1
+    ],
+    [
+     " page",
+     1
+    ],
+    [
+     " never",
+     1
+    ],
+    [
+     " sums",
+     1
+    ],
+    [
+     " raw",
+     1
+    ],
+    [
+     " events",
+     1
+    ],
+    [
+     ".\n",
+     1
+    ],
+    [
+     "-",
+     1
+    ],
+    [
+     " **",
+     1
+    ],
+    [
+     "`",
+     1
+    ],
+    [
+     "Usage",
+     1
+    ],
+    [
+     "Meter",
+     1
+    ],
+    [
+     "`",
+     1
+    ],
+    [
+     "**",
+     1
+    ],
+    [
+     " shows",
+     1
+    ],
+    [
+     " the",
+     1
+    ],
+    [
+     " minutes",
+     1
+    ],
+    [
+     " used",
+     1
+    ],
+    [
+     " against",
+     1
+    ],
+    [
+     " the",
+     1
+    ],
+    [
+     " plan",
+     1
+    ],
+    [
+     "'s",
+     1
+    ],
+    [
+     " limit",
+     1
+    ],
+    [
+     ",",
+     1
+    ],
+    [
+     " amber",
+     1
+    ],
+    [
+     " from",
+     1
+    ],
+    [
+     " ",
+     1
+    ],
+    [
+     "80",
+     1
+    ],
+    [
+     "%",
+     1
+    ],
+    [
+     " and",
+     1
+    ],
+    [
+     " red",
+     1
+    ],
+    [
+     " at",
+     1
+    ],
+    [
+     " the",
+     1
+    ],
+    [
+     " cap",
+     1
+    ],
+    [
+     ".\n",
+     1
+    ],
+    [
+     "-",
+     1
+    ],
+    [
+     " The",
+     1
+    ],
+    [
+     " account",
+     1
+    ],
+    [
+     " route",
+     1
+    ],
+    [
+     " renders",
+     1
+    ],
+    [
+     " it",
+     1
+    ],
+    [
+     " under",
+     1
+    ],
+    [
+     " the",
+     1
+    ],
+    [
+     " plan",
+     1
+    ],
+    [
+     " card",
+     1
+    ],
+    [
+     ",",
+     1
+    ],
+    [
+     " with",
+     1
+    ],
+    [
+     " its",
+     1
+    ],
+    [
+     " strings",
+     1
+    ],
+    [
+     " in",
+     1
+    ],
+    [
+     " `",
+     1
+    ],
+    [
+     "en",
+     1
+    ],
+    [
+     ".json",
+     1
+    ],
+    [
+     "`.\n\n",
+     1
+    ],
+    [
+     "`",
+     1
+    ],
+    [
+     "npm",
+     1
+    ],
+    [
+     " test",
+     1
+    ],
+    [
+     " --",
+     1
+    ],
+    [
+     " usage",
+     1
+    ],
+    [
+     "`",
+     1
+    ],
+    [
+     " passes",
+     1
+    ],
+    [
+     " (",
+     1
+    ],
+    [
+     "14",
+     1
+    ],
+    [
+     " tests",
+     1
+    ],
+    [
+     ").",
+     1
+    ],
+    [
+     " P",
+     1
+    ],
+    [
+     "ushed",
+     1
+    ],
+    [
+     " to",
+     1
+    ],
+    [
+     " `",
+     1
+    ],
+    [
+     "cursor",
+     1
+    ],
+    [
+     "/",
+     1
+    ],
+    [
+     "usage",
+     1
+    ],
+    [
+     "-meter",
+     1
+    ],
+    [
+     "-",
+     1
+    ],
+    [
+     "4",
+     1
+    ],
+    [
+     "b",
+     1
+    ],
+    [
+     "1",
+     1
+    ],
+    [
+     "e",
+     1
+    ],
+    [
+     "`.",
+     1
+    ]
+   ]
+  },
+  "pr.prompt": {
+   "tokens": 4,
+   "pieces": [
+    [
+     "Then",
+     1
+    ],
+    [
+     " open",
+     1
+    ],
+    [
+     " a",
+     1
+    ],
+    [
+     " PR",
+     1
+    ]
+   ]
+  },
+  "pr.think": {
+   "tokens": 28,
+   "pieces": [
+    [
+     "The",
+     1
+    ],
+    [
+     " branch",
+     1
+    ],
+    [
+     " is",
+     1
+    ],
+    [
+     " pushed",
+     1
+    ],
+    [
+     " and",
+     1
+    ],
+    [
+     " the",
+     1
+    ],
+    [
+     " tests",
+     1
+    ],
+    [
+     " pass",
+     1
+    ],
+    [
+     ",",
+     1
+    ],
+    [
+     " so",
+     1
+    ],
+    [
+     " this",
+     1
+    ],
+    [
+     " is",
+     1
+    ],
+    [
+     " only",
+     1
+    ],
+    [
+     " the",
+     1
+    ],
+    [
+     " PR",
+     1
+    ],
+    [
+     ":",
+     1
+    ],
+    [
+     " a",
+     1
+    ],
+    [
+     " title",
+     1
+    ],
+    [
+     " from",
+     1
+    ],
+    [
+     " the",
+     1
+    ],
+    [
+     " change",
+     1
+    ],
+    [
+     " and",
+     1
+    ],
+    [
+     " the",
+     1
+    ],
+    [
+     " summary",
+     1
+    ],
+    [
+     " as",
+     1
+    ],
+    [
+     " its",
+     1
+    ],
+    [
+     " body",
+     1
+    ],
+    [
+     ".",
+     1
+    ]
+   ]
+  },
+  "pr.final": {
+   "tokens": 52,
+   "pieces": [
+    [
+     "Opened",
+     1
+    ],
+    [
+     " [",
+     1
+    ],
+    [
+     "#",
+     1
+    ],
+    [
+     "221",
+     1
+    ],
+    [
+     "](",
+     1
+    ],
+    [
+     "https",
+     1
+    ],
+    [
+     "://",
+     1
+    ],
+    [
+     "github",
+     1
+    ],
+    [
+     ".com",
+     1
+    ],
+    [
+     "/",
+     1
+    ],
+    [
+     "tech",
+     1
+    ],
+    [
+     "lit",
+     1
+    ],
+    [
+     "now",
+     1
+    ],
+    [
+     "/",
+     1
+    ],
+    [
+     "ces",
+     1
+    ],
+    [
+     "ium",
+     1
+    ],
+    [
+     "/p",
+     1
+    ],
+    [
+     "ull",
+     1
+    ],
+    [
+     "/",
+     1
+    ],
+    [
+     "221",
+     1
+    ],
+    [
+     "),",
+     1
+    ],
+    [
+     " **",
+     1
+    ],
+    [
+     "Usage",
+     1
+    ],
+    [
+     " meter",
+     1
+    ],
+    [
+     " on",
+     1
+    ],
+    [
+     " the",
+     1
+    ],
+    [
+     " account",
+     1
+    ],
+    [
+     " page",
+     1
+    ],
+    [
+     "**,",
+     1
+    ],
+    [
+     " against",
+     1
+    ],
+    [
+     " `",
+     1
+    ],
+    [
+     "main",
+     1
+    ],
+    [
+     "`.",
+     1
+    ],
+    [
+     " It",
+     1
+    ],
+    [
+     " is",
+     1
+    ],
+    [
+     " small",
+     1
+    ],
+    [
+     " and",
+     1
+    ],
+    [
+     " self",
+     1
+    ],
+    [
+     "-contained",
+     1
+    ],
+    [
+     ":",
+     1
+    ],
+    [
+     " one",
+     1
+    ],
+    [
+     " query",
+     1
+    ],
+    [
+     ",",
+     1
+    ],
+    [
+     " one",
+     1
+    ],
+    [
+     " component",
+     1
+    ],
+    [
+     ",",
+     1
+    ],
+    [
+     " the",
+     1
+    ],
+    [
+     " route",
+     1
+    ],
+    [
+     " and",
+     1
+    ],
+    [
+     " its",
+     1
+    ],
+    [
+     " strings",
+     1
+    ],
+    [
+     ".",
+     1
+    ]
+   ]
+  },
+  "any.think": {
+   "tokens": 11,
+   "pieces": [
+    [
+     "Let",
+     1
+    ],
+    [
+     " me",
+     1
+    ],
+    [
+     " look",
+     1
+    ],
+    [
+     " at",
+     1
+    ],
+    [
+     " the",
+     1
+    ],
+    [
+     " relevant",
+     1
+    ],
+    [
+     " files",
+     1
+    ],
+    [
+     " before",
+     1
+    ],
+    [
+     " changing",
+     1
+    ],
+    [
+     " anything",
+     1
+    ],
+    [
+     ".",
+     1
+    ]
+   ]
+  },
+  "any.final": {
+   "tokens": 14,
+   "pieces": [
+    [
+     "Done",
+     1
+    ],
+    [
+     ".",
+     1
+    ],
+    [
+     " This",
+     1
+    ],
+    [
+     " is",
+     1
+    ],
+    [
+     " the",
+     1
+    ],
+    [
+     " demo",
+     1
+    ],
+    [
+     " backend",
+     1
+    ],
+    [
+     ",",
+     1
+    ],
+    [
+     " so",
+     1
+    ],
+    [
+     " nothing",
+     1
+    ],
+    [
+     " left",
+     1
+    ],
+    [
+     " the",
+     1
+    ],
+    [
+     " device",
+     1
+    ],
+    [
+     ".",
+     1
+    ]
+   ]
+  }
+ },
+ "edits": {
+  "convex/usage.ts": {
+   "diff": "@@ -1,5 +1,7 @@\n import { v } from \"convex/values\";\n-import { internalMutation } from \"./_generated/server\";\n+import { internalMutation, query } from \"./_generated/server\";\n+import { requireAccount } from \"./auth\";\n+import { cycleStart } from \"./billing\";\n \n export const recordUsage = internalMutation({\n   args: { accountId: v.id(\"accounts\"), kind: v.string(), amount: v.number() },\n@@ -14,3 +16,20 @@\n     return null;\n   },\n });\n+\n+/** This billing cycle's transcription minutes, read from the daily aggregates rather than the raw events. */\n+export const currentCycleUsage = query({\n+  args: {},\n+  returns: v.object({ used: v.number(), limit: v.number(), resetsAt: v.number() }),\n+  handler: async (ctx) => {\n+    const account = await requireAccount(ctx);\n+    const days = await ctx.db\n+      .query(\"usageDaily\")\n+      .withIndex(\"by_account_and_day\", (q) =>\n+        q.eq(\"accountId\", account._id).gte(\"day\", cycleStart(account.billing)),\n+      )\n+      .collect();\n+    const used = days.reduce((sum, day) => sum + day.transcriptionMinutes, 0);\n+    return { used, limit: account.billing.minutesIncluded, resetsAt: account.billing.cycleEndsAt };\n+  },\n+});",
+   "added": 20,
+   "removed": 1
+  },
+  "src/components/UsageMeter.tsx": {
+   "diff": "@@ -0,0 +1,36 @@\n+import { useQuery } from \"convex/react\";\n+import { api } from \"../../convex/_generated/api\";\n+import { useI18n } from \"../i18n\";\n+\n+const WARN_AT = 0.8;\n+\n+export function UsageMeter() {\n+  const usage = useQuery(api.usage.currentCycleUsage);\n+  const t = useI18n();\n+  if (!usage) return <div className=\"usage-meter usage-meter--loading\" />;\n+\n+  const ratio = usage.limit > 0 ? Math.min(usage.used / usage.limit, 1) : 0;\n+  const tone = ratio >= 1 ? \"over\" : ratio >= WARN_AT ? \"warn\" : \"ok\";\n+\n+  return (\n+    <section className={`usage-meter usage-meter--${tone}`} aria-label={t(\"usage.title\")}>\n+      <header>\n+        <h3>{t(\"usage.title\")}</h3>\n+        <span>{t(\"usage.resets\", { date: new Date(usage.resetsAt) })}</span>\n+      </header>\n+      <div\n+        className=\"usage-meter__bar\"\n+        role=\"meter\"\n+        aria-valuemin={0}\n+        aria-valuemax={usage.limit}\n+        aria-valuenow={usage.used}\n+      >\n+        <div className=\"usage-meter__fill\" style={{ width: `${ratio * 100}%` }} />\n+      </div>\n+      <p>\n+        {t(\"usage.minutes\", { used: Math.round(usage.used), limit: usage.limit })}\n+        {tone === \"over\" && <strong> {t(\"usage.over\")}</strong>}\n+      </p>\n+    </section>\n+  );\n+}",
+   "added": 36,
+   "removed": 0
+  },
+  "src/routes/account.tsx": {
+   "diff": "@@ -2,6 +2,7 @@\n import { api } from \"../../convex/_generated/api\";\n import { EngineList } from \"../components/EngineList\";\n import { PlanCard } from \"../components/PlanCard\";\n+import { UsageMeter } from \"../components/UsageMeter\";\n \n export function AccountPage() {\n   const account = useQuery(api.accounts.current);\n@@ -11,9 +12,7 @@\n     <main className=\"account\">\n       <h1>{account.name}</h1>\n       <PlanCard plan={account.plan} />\n-      <p className=\"account__hint\">\n-        Usage appears here once your first engine is paired.\n-      </p>\n+      <UsageMeter />\n       <EngineList engines={account.engines} />\n     </main>\n   );",
+   "added": 2,
+   "removed": 3
+  },
+  "src/i18n/en.json": {
+   "diff": "@@ -1,5 +1,9 @@\n {\n   \"account.title\": \"Account\",\n   \"account.plan\": \"Plan\",\n-  \"engines.title\": \"Engines\"\n+  \"engines.title\": \"Engines\",\n+  \"usage.title\": \"Usage this cycle\",\n+  \"usage.minutes\": \"{used} of {limit} transcription minutes\",\n+  \"usage.resets\": \"Resets {date, date, medium}\",\n+  \"usage.over\": \"Over your plan's limit\"\n }",
+   "added": 5,
+   "removed": 1
+  }
+ }
+}
