@@ -320,6 +320,23 @@ class AutoPaginationTest {
         assertThat(compose.onAllNodes(hasTestTag("project-transcript")).fetchSemanticsNodes()).isNotEmpty()
     }
 
+    /**
+     * A chat whose newest eighty turns are injected events and tool calls — each folded into a collapsed line —
+     * used to stop after six unattended pages, leaving "Older messages" over an empty viewport. It now keeps
+     * paging until the newest reply is in view.
+     */
+    @Test
+    fun `collapsed tool groups keep paging past the unattended cap until a reply is in view`() {
+        seed(replies = 20, events = 80)
+        open()
+        quiesce()
+        assertThat(inView("Reply 20")).isTrue()
+        val state = graph.conversations.state(agentId).value
+        // Six unattended pages of ten runs is seventy turns, all events; the reply sits further back.
+        assertWithMessage("gave up after ${state.items.size} items").that(state.items.size).isGreaterThan(70)
+        assertThat(nodes("Prompt 1: read the modules and say what changed.")).isEmpty()
+    }
+
     private companion object {
         const val CALLS = 12
 

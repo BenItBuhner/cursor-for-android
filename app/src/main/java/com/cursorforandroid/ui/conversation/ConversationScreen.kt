@@ -55,6 +55,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalUriHandler
@@ -541,7 +542,8 @@ fun ConversationScreen(
             },
         )
 
-        Box(Modifier.weight(1f).fillMaxWidth()) {
+        var transcriptAreaPx by remember { mutableIntStateOf(0) }
+        Box(Modifier.weight(1f).fillMaxWidth().onSizeChanged { transcriptAreaPx = it.height }) {
             Box(Modifier.matchParentSize().readerBackdrop(readerScroll))
             val paneWidth = Modifier.widthIn(max = CursorDimens.composerMaxWidth).fillMaxWidth()
             // The column the rows are laid out in, measured whether or not there are any rows yet.
@@ -604,10 +606,18 @@ fun ConversationScreen(
                     if (!transcriptScroll.following) return@LaunchedEffect
                     if (queueFlights.handovers != handoversBefore) transcriptScroll.settleToNewest(scope) else listState.requestScrollToItem(0)
                 }
-                // The chat opens on its newest turns; the ones before them are paged in by what the list draws — until a
-                // reply is shown and a screen and a half lies above the viewport, at rest as the chat opens and ahead of
-                // the reader's scroll up (see OlderPaging). "Older messages" is only the fallback of a page that did not come.
-                OlderPagingEffect(agentId, listState, listedRows, canPage = hasOlder && !isLoadingOlder && items.isNotEmpty(), loadOlder = viewModel::loadOlder)
+                // The chat opens on its newest turns; the ones before them are paged in by what the list draws — until
+                // the viewport is filled with visible content (a collapsed tool group is its header, not the hidden
+                // steps), then until a reply is shown and a screen and a half lies above (see OlderPaging).
+                // "Older messages" is only the fallback of a page that did not come.
+                OlderPagingEffect(
+                    agentId,
+                    listState,
+                    listedRows,
+                    canPage = hasOlder && !isLoadingOlder && items.isNotEmpty(),
+                    areaHeight = transcriptAreaPx,
+                    loadOlder = viewModel::loadOlder,
+                )
                 TranscriptHitScroll(agentId, rows, conversation, transcriptScroll, viewModel)
                 val subagents = presentedTranscript.subagents
                 val subagentRuns = conversation.subagentRuns
