@@ -169,9 +169,10 @@ class OlderMessagesPaginationDemoTest {
         var stable = 0
         var lastItems = -1
         var ticks = 0
-        while (ticks < MAX_TICKS && stable < REST_TICKS) {
+        val deadline = System.nanoTime() + 60_000_000_000L
+        while (stable < REST_TICKS && System.nanoTime() < deadline) {
             compose.waitForIdle()
-            capture()
+            if (ticks % 2 == 0) capture()
             ticks++
             val state = graph.conversations.state(agentId).value
             val items = state.items.size
@@ -180,6 +181,7 @@ class OlderMessagesPaginationDemoTest {
             lastItems = items
             Thread.sleep(FRAME_MS)
         }
+        check(System.nanoTime() < deadline) { "the chat never came to rest ($lastItems items)" }
         repeat(HOLD_TICKS) {
             compose.waitForIdle()
             capture()
@@ -202,8 +204,7 @@ class OlderMessagesPaginationDemoTest {
         const val CALLS = 8
         const val LIVE = "run-${REPLIES + EVENTS + 1}"
         const val FRAME_MS = 33L
-        const val MAX_TICKS = 180
-        const val REST_TICKS = 6
-        const val HOLD_TICKS = 12
+        const val REST_TICKS = 3
+        const val HOLD_TICKS = 8
     }
 }
