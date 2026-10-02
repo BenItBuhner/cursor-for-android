@@ -46,7 +46,7 @@ data class PaletteResult(
 )
 
 /**
- * The search palette's matching (Ctrl+F): a chat's title, then its repository, then what its transcript says as kept
+ * The search palette's matching (Ctrl+P): a chat's title, then its repository, then what its transcript says as kept
  * on this device. Every word typed must be in the title (or the title and the repository together) for the chat to
  * match by name; the transcript is searched for the words as typed, together, since a phrase is what a reader
  * remembers of a conversation. One row per chat, name matches first — a title that starts with the query above one

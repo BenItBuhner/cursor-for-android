@@ -49,7 +49,7 @@ import org.robolectric.annotation.Config
 /**
  * The composer's expand button: offered only once the text scrolls inside the composer, and gone again when it no
  * longer does; tapped, the composer eases up over the room it has — the transcript above squeezed out of the way — and
- * back down on the button, Back, Ctrl+Shift+E or a send, the text, the caret and the footer untouched throughout.
+ * back down on the button, Back, Ctrl+F or Ctrl+Shift+E or a send, the text, the caret and the footer untouched throughout.
  * Laid out as a chat docks it: a transcript taking what is left over a composer at the foot of the window.
  */
 @RunWith(AndroidJUnit4::class)
@@ -282,6 +282,26 @@ class ComposerExpandTest {
         compose.waitForIdle()
         assertThat(named("Collapse composer")).isTrue()
         field.performKeyInput { withKeyDown(Key.CtrlLeft) { withKeyDown(Key.ShiftLeft) { pressKey(Key.E) } } }
+        compose.waitForIdle()
+        assertThat(named("Expand composer")).isTrue()
+        assertThat(editable()).isEqualTo(lines(30))
+    }
+
+    @OptIn(ExperimentalTestApi::class)
+    @Test
+    fun `Ctrl+F toggles full screen from a hardware keyboard, typing no f, only while the button is offered`() {
+        show()
+        type(lines(3))
+        field.performClick()
+        field.performKeyInput { withKeyDown(Key.CtrlLeft) { pressKey(Key.F) } }
+        compose.waitForIdle()
+        assertThat(offered()).isFalse()
+        assertThat(named("Collapse composer")).isFalse()
+        type(lines(30))
+        field.performKeyInput { withKeyDown(Key.CtrlLeft) { pressKey(Key.F) } }
+        compose.waitForIdle()
+        assertThat(named("Collapse composer")).isTrue()
+        field.performKeyInput { withKeyDown(Key.CtrlLeft) { pressKey(Key.F) } }
         compose.waitForIdle()
         assertThat(named("Expand composer")).isTrue()
         assertThat(editable()).isEqualTo(lines(30))

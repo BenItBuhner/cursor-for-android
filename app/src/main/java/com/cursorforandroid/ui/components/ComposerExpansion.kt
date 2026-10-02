@@ -24,7 +24,7 @@ import kotlin.math.roundToInt
  *
  * The composer offers it ([ComposerBox]'s button beside "+") only while its text has run past its own height and
  * scrolls inside it, and where growing would give it at least [MinGain] more; it collapses again on its button, Back,
- * Ctrl+Shift+E, or a send. The height eases between the two over [ExpandMillis] ([fraction], 0 collapsed, 1 expanded),
+ * Ctrl+F (or Ctrl+Shift+E), or a send. The height eases between the two over [ExpandMillis] ([fraction], 0 collapsed, 1 expanded),
  * the text, the caret and the selection staying as they are: the field is the same field throughout.
  *
  * Held by the composer, or by its owner when the owner lays out around it (the New Chat pane gives up the room above

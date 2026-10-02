@@ -192,9 +192,9 @@ class KeyboardShortcutsFlowTest {
 
     private fun resultRow(index: Int, text: String) = hasTestTag(PaletteTags.result(index)) and hasText(text, substring = true)
 
-    /** Ctrl+F, [query] typed, Enter on the first row once it is [expected]. */
+    /** Ctrl+P, [query] typed, Enter on the first row once it is [expected]. */
     private fun searchAndOpen(query: String, expected: String) {
-        chord(KeyEvent.KEYCODE_F)
+        chord(KeyEvent.KEYCODE_P)
         paletteField.assertIsFocused()
         paletteField.performTextInput(query)
         compose.waitUntil(20_000) { exists(resultRow(0, expected)) }
@@ -205,9 +205,9 @@ class KeyboardShortcutsFlowTest {
     }
 
     @Test
-    fun `Ctrl+F finds a chat by what its transcript says, with the snippet, and Enter opens it on the reply`() {
+    fun `Ctrl+P finds a chat by what its transcript says, with the snippet, and Enter opens it on the reply`() {
         showShell(wide = true)
-        chord(KeyEvent.KEYCODE_F)
+        chord(KeyEvent.KEYCODE_P)
         compose.onNodeWithTag(PaletteTags.CARD).assertIsDisplayed()
         paletteField.assertIsFocused()
 
@@ -512,7 +512,7 @@ class KeyboardShortcutsFlowTest {
     }
 
     @Test
-    fun `typing in the composer, with that keyboard app, Ctrl+Tab, Ctrl+1 to 0, Ctrl+N and Ctrl+F are the shell's, letting go of Ctrl too`() {
+    fun `typing in the composer, with that keyboard app, Ctrl+Tab, Ctrl+1 to 0, Ctrl+N and Ctrl+P are the shell's, letting go of Ctrl too`() {
         showShell(wide = true)
         searchAndOpen("Cli exploration", CLI)
         searchAndOpen("House environment", HOUSE)
@@ -542,12 +542,12 @@ class KeyboardShortcutsFlowTest {
         chord(KeyEvent.KEYCODE_N)
         compose.waitUntil(20_000) { exists(isFocused() and hasSetTextAction() and hasText(HOME_PLACEHOLDER, substring = true)) }
 
-        chord(KeyEvent.KEYCODE_F)
+        chord(KeyEvent.KEYCODE_P)
         compose.waitUntil(10_000) { exists(hasTestTag(PaletteTags.CARD)) }
         paletteField.assertIsFocused()
 
         assertTrue(KeyEvent.KEYCODE_CTRL_LEFT in imeHeard)
-        val shells = listOf(KeyEvent.KEYCODE_TAB, KeyEvent.KEYCODE_1, KeyEvent.KEYCODE_0, KeyEvent.KEYCODE_N, KeyEvent.KEYCODE_F)
+        val shells = listOf(KeyEvent.KEYCODE_TAB, KeyEvent.KEYCODE_1, KeyEvent.KEYCODE_0, KeyEvent.KEYCODE_N, KeyEvent.KEYCODE_P)
         assertTrue(shells.none { it in imeHeard })
     }
 

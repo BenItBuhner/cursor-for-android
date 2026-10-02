@@ -77,7 +77,7 @@ class ShortcutBindingsTest {
         assertThat(defaults.check(Shortcut.Search, ctrlJ)).isEqualTo(ChordCheck.Free)
         val moved = defaults.assign(Shortcut.Search, ctrlJ)
         assertThat(moved.chords(Shortcut.Search)).containsExactly(ctrlJ)
-        assertThat(moved.owner(KeyChord.ctrl(KeyEvent.KEYCODE_F))).isNull()
+        assertThat(moved.owner(KeyChord.ctrl(KeyEvent.KEYCODE_P))).isNull()
         assertThat(moved.owner(KeyChord.ctrl(KeyEvent.KEYCODE_K))).isNull()
         assertThat(moved.isDefault(Shortcut.Search)).isFalse()
         assertThat(moved.isAllDefault).isFalse()
@@ -98,7 +98,7 @@ class ShortcutBindingsTest {
     fun `replace leaves the other shortcut on whatever else it had`() {
         val next = defaults.assign(Shortcut.CatchUp, KeyChord.ctrl(KeyEvent.KEYCODE_K), ConflictResolution.Replace)
         assertThat(next.chords(Shortcut.CatchUp)).containsExactly(KeyChord.ctrl(KeyEvent.KEYCODE_K))
-        assertThat(next.chords(Shortcut.Search)).containsExactly(KeyChord.ctrl(KeyEvent.KEYCODE_F))
+        assertThat(next.chords(Shortcut.Search)).containsExactly(KeyChord.ctrl(KeyEvent.KEYCODE_P))
         assertNoChordOnTwo(next)
     }
 
