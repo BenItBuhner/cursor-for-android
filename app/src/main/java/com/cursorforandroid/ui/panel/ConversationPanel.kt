@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.Text
@@ -63,6 +64,7 @@ import com.cursorforandroid.ui.components.LocalMarkdownMedia
 import com.cursorforandroid.ui.components.MarkdownMediaContext
 import com.cursorforandroid.ui.components.SpinnerRing
 import com.cursorforandroid.ui.components.panelInsetPadding
+import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
 import kotlinx.coroutines.launch
 
@@ -125,14 +127,18 @@ fun ConversationPanel(
             menu = menu,
             onClosePanel = onClose,
         )
+        // The layout's own split can leave the panel wider on a desktop-sized window than the chat's column beside it;
+        // the tabs that are read take no more than that column, from the panel's start. A width the reader dragged
+        // the panel to is theirs, and the viewers — a file's text, a picture — keep the whole panel.
+        val reading = if (LocalPinnedPanel.current?.splits != false) Modifier.widthIn(max = PanelReadingMaxWidth) else Modifier
         CompositionLocalProvider(LocalMarkdownMedia provides rememberPanelMedia(state.agentId, actions)) {
             Box(Modifier.fillMaxSize()) {
                 tabStates.holder.SaveableStateProvider(current.key) {
                     when (current) {
-                        PanelTab.Project -> ProjectTabContent(state, actions)
-                        PanelTab.Details -> DetailsTab(state, actions, registry)
-                        is PanelTab.Agent -> AgentTab(current, state, actions)
-                        is PanelTab.Document -> DocumentTab(current, state, actions)
+                        PanelTab.Project -> ProjectTabContent(state, actions, reading)
+                        PanelTab.Details -> DetailsTab(state, actions, registry, reading)
+                        is PanelTab.Agent -> AgentTab(current, state, actions, reading)
+                        is PanelTab.Document -> DocumentTab(current, state, actions, reading)
                         is PanelTab.File -> FileTab(current, state, actions)
                         is PanelTab.Media -> MediaTab(current, actions)
                     }
@@ -240,7 +246,7 @@ private fun AgentDot(agent: Agent?) {
  * to show is not there.
  */
 @Composable
-private fun DetailsTab(state: PanelState, actions: PanelActions, registry: PanelRegistry) {
+private fun DetailsTab(state: PanelState, actions: PanelActions, registry: PanelRegistry, modifier: Modifier = Modifier) {
     val sections = registry.shown(state.capabilities, state)
     // A section whose rows are the list's own items (PanelSection.items) is composed beside the list and laid out
     // by it as its rows come on screen; the rest draw as one item each.
@@ -248,7 +254,7 @@ private fun DetailsTab(state: PanelState, actions: PanelActions, registry: Panel
         val items = section.items ?: return@mapNotNull null
         section.id to key(section.id) { lazySection(section, items, state, actions) }
     }.toMap()
-    FadingLazyColumn(Modifier.fillMaxSize().testTag("panel-sections"), contentPadding = PaddingValues(bottom = 16.dp)) {
+    FadingLazyColumn(modifier.fillMaxSize().testTag("panel-sections"), contentPadding = PaddingValues(bottom = 16.dp)) {
         item(key = "details-title") { DetailsTitle(state.agent) }
         for (section in sections) {
             val rows = lazySections[section.id]
@@ -316,6 +322,9 @@ private fun lazySection(
         if (expanded) item(key = "${section.id.name}-end") { Spacer(Modifier.height(SectionEndGap)) }
     }
 }
+
+/** The widest a read tab gets: the chat's column, [CursorDimens.contentMaxWidth], and the panel's gutters about it. */
+internal val PanelReadingMaxWidth = CursorDimens.contentMaxWidth + PanelGutter * 2
 
 /** The air under an open section, before the next one's header: what the web parts its groups by in place of a rule. */
 private val SectionEndGap = 8.dp
