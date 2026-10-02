@@ -3,6 +3,9 @@ package com.cursorforandroid.screenshots
 import android.view.InputDevice
 import android.view.KeyEvent
 import androidx.activity.ComponentActivity
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.LocalRippleConfiguration
 import androidx.compose.runtime.CompositionLocalProvider
@@ -10,20 +13,25 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.lifecycle.lifecycleScope
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.cursorforandroid.ui.settings.KeyboardShortcutsScreen
 import com.cursorforandroid.ui.settings.KeyboardShortcutsTags
+import com.cursorforandroid.ui.shortcuts.CommandPalette
 import com.cursorforandroid.ui.shortcuts.ConflictResolution
 import com.cursorforandroid.ui.shortcuts.KeyChord
 import com.cursorforandroid.ui.shortcuts.KeyboardShortcuts
 import com.cursorforandroid.ui.shortcuts.LocalKeyboardShortcuts
+import com.cursorforandroid.ui.shortcuts.PaletteState
 import com.cursorforandroid.ui.shortcuts.Shortcut
 import com.cursorforandroid.ui.shortcuts.ShortcutBindings
+import com.cursorforandroid.ui.shortcuts.ShortcutsCopy
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.ui.theme.ThemeMode
 import com.github.takahirom.roborazzi.ExperimentalRoborazziApi
@@ -39,7 +47,8 @@ import java.io.File
 /**
  * Settings › Keyboard shortcuts, each changeable shortcut showing its keys in an outlined field: the page as it comes,
  * a field waiting for its new keys (dark and light), keys another shortcut is on (swap or replace), keys Android keeps,
- * and moved shortcuts with their resets and an empty "Not set" field, in light.
+ * and moved shortcuts with their resets and an empty "Not set" field, in light; the Composer and Media groups; and the
+ * Ctrl+/ menu with the same groups, on a phone and a tablet.
  * The keys reach the page as a hardware keyboard's do, through the shell's reader. Written to `screenshots/`; CI
  * compares them pixel for pixel.
  */
@@ -140,5 +149,57 @@ class KeyboardShortcutsScreenshotTest {
         show(moved, ThemeMode.Light)
         compose.onNodeWithTag(KeyboardShortcutsTags.row(Shortcut.ExpandComposer)).performScrollTo()
         capture("704_keyboard_shortcuts_customized_light")
+    }
+
+    @Test
+    fun keyboardShortcutsComposerGroup() {
+        show()
+        compose.onNodeWithTag(KeyboardShortcutsTags.group(ShortcutsCopy.COMPOSER)).performScrollTo()
+        capture("991_keyboard_shortcuts_composer_media")
+    }
+
+    @Test
+    fun keyboardShortcutsMediaGroupLight() {
+        show(mode = ThemeMode.Light)
+        compose.onNodeWithTag(KeyboardShortcutsTags.group(ShortcutsCopy.MEDIA)).performScrollTo()
+        compose.onNodeWithText("Close the viewer").performScrollTo()
+        capture("992_keyboard_shortcuts_media_light")
+    }
+
+    /** The Ctrl+/ menu over a plain page, as the shell draws it: General first, then Composer and Media. */
+    @OptIn(ExperimentalMaterial3Api::class)
+    private fun menu(mode: ThemeMode = ThemeMode.Dark) {
+        val palette = PaletteState().apply { openShortcuts() }
+        compose.setContent {
+            CompositionLocalProvider(LocalRippleConfiguration provides null) {
+                CursorTheme(mode = mode) {
+                    Box(Modifier.fillMaxSize().background(CursorTheme.colors.canvas)) {
+                        CommandPalette(palette, emptyList(), emptyList(), emptyMap(), readingTranscripts = false, glyph = {}, onOpen = { _, _ -> }, onDismiss = {})
+                    }
+                }
+            }
+        }
+        compose.waitForIdle()
+    }
+
+    @Test
+    fun shortcutsMenu() {
+        menu()
+        capture("993_shortcuts_menu")
+    }
+
+    @Test
+    fun shortcutsMenuMedia() {
+        menu()
+        compose.onNodeWithText("Close the viewer").performScrollTo()
+        capture("994_shortcuts_menu_media")
+    }
+
+    @Test
+    @Config(sdk = [35], qualifiers = "w1000dp-h720dp-night-320dpi")
+    fun shortcutsMenuTabletLight() {
+        menu(ThemeMode.Light)
+        compose.onNodeWithText("Close the viewer").performScrollTo()
+        capture("995_shortcuts_menu_tablet_light")
     }
 }
