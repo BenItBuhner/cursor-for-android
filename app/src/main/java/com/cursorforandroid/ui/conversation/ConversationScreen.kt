@@ -126,6 +126,7 @@ import com.cursorforandroid.ui.files.FileOpenRequestSaver
 import com.cursorforandroid.ui.files.FullFileDialog
 import com.cursorforandroid.ui.files.FullFileResolver
 import com.cursorforandroid.ui.media.LocalMediaViewer
+import com.cursorforandroid.ui.home.ComposerErrorLine
 import com.cursorforandroid.ui.home.ModelSheet
 import com.cursorforandroid.ui.media.ConversationMedia
 import com.cursorforandroid.ui.home.NoModelRow
@@ -272,6 +273,7 @@ fun ConversationScreen(
     // Read by followUpComposer alone, below.
     val draftState = viewModel.draftText.collectAsStateWithLifecycle()
     val toast by viewModel.toastMessage.collectAsStateWithLifecycle()
+    val attachmentError by viewModel.attachmentError.collectAsStateWithLifecycle()
     val isPinned by viewModel.isPinned.collectAsStateWithLifecycle()
     val isSnoozed by viewModel.isSnoozed.collectAsStateWithLifecycle()
     val attachments by viewModel.pendingAttachments.collectAsStateWithLifecycle()
@@ -325,9 +327,9 @@ fun ConversationScreen(
         counts = counts,
         onPickedImages = viewModel::addAttachments,
         onPickedFiles = viewModel::addFiles,
-        onError = viewModel::showMessage,
+        onError = viewModel::showAttachmentError,
     )
-    val pickFiles = rememberFilePicker(counts = counts, onPickedFiles = viewModel::addFiles, onError = viewModel::showMessage)
+    val pickFiles = rememberFilePicker(counts = counts, onPickedFiles = viewModel::addFiles, onError = viewModel::showAttachmentError)
     val plusMenu = rememberComposerMenuActions(graph, onPickMedia = pickMedia, onPickFiles = if (extendedFiles) pickFiles else null)
     val voice = rememberComposerVoice(graph)
     val share by graph.share.offer.collectAsStateWithLifecycle()
@@ -954,7 +956,7 @@ fun ConversationScreen(
                         attachments = attachments,
                         onRemoveAttachment = viewModel::removeAttachment,
                         onAddAttachments = viewModel::addAttachments,
-                        onAttachmentError = viewModel::showMessage,
+                        onAttachmentError = viewModel::showAttachmentError,
                         files = files,
                         onRemoveFile = viewModel::removeFile,
                         fileUploads = fileUploads,
@@ -984,6 +986,12 @@ fun ConversationScreen(
                     )
                 }
                 followUpComposer()
+                // Under the box, as the new-agent composer says it: a picture or file that could not be attached, and why.
+                attachmentError?.let { error ->
+                    Box(Modifier.widthIn(max = CursorDimens.composerMaxWidth).fillMaxWidth()) {
+                        ComposerErrorLine(error, asked = null, onDismiss = viewModel::dismissAttachmentError)
+                    }
+                }
             }
         }
     }

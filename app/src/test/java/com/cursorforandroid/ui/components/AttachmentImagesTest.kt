@@ -17,6 +17,8 @@ import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 import java.io.ByteArrayOutputStream
 import java.io.File
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import kotlin.math.max
 import kotlin.random.Random
 
@@ -190,33 +192,26 @@ class AttachmentImagesTest {
         assertThat(prepared.bytes).isEqualTo(webp)
     }
 
-    /**
-     * A transparent PNG goes out as it is either way. One that has to be re-encoded keeps its transparency as PNG for a
-     * picked file, as it always reached the agent, and is flattened for an inline image, as that always was.
-     */
+    /** A transparent PNG goes out as it is; one that has to be re-encoded keeps its transparency as PNG. */
     @Test
-    fun `a transparent image re-encoded to fit keeps its transparency as PNG when asked, and is flattened onto white otherwise`() {
+    fun `a transparent image re-encoded to fit keeps its transparency as PNG`() {
         val original = bitmap(2400, 2400, alpha = true, noisyFraction = 0.5f).encode(Bitmap.CompressFormat.PNG)
         assertThat(AttachmentImages.prepare(original, "image/png").bytes).isSameInstanceAs(original)
 
         val ceiling = original.size - 1
-        val kept = AttachmentImages.prepare(original, "image/png", maxBytes = ceiling, keepTransparency = true)
-        assertThat(kept.mimeType).isEqualTo("image/png")
-        val decoded = BitmapFactory.decodeByteArray(kept.bytes, 0, kept.sizeBytes)
+        val prepared = AttachmentImages.prepare(original, "image/png", maxBytes = ceiling)
+        assertThat(prepared.mimeType).isEqualTo("image/png")
+        val decoded = BitmapFactory.decodeByteArray(prepared.bytes, 0, prepared.sizeBytes)
         assertThat(decoded.width).isEqualTo(AttachmentImages.MAX_EDGE_PX)
         assertThat(Color.alpha(decoded.getPixel(decoded.width - 1, decoded.height - 1))).isEqualTo(0)
-        assertReceivable(kept, ceiling)
-
-        val flattened = AttachmentImages.prepare(original, "image/png", maxBytes = ceiling)
-        assertThat(flattened.mimeType).isEqualTo("image/jpeg")
-        assertReceivable(flattened, ceiling)
+        assertReceivable(prepared, ceiling)
     }
 
     @Test
     fun `transparency too heavy for PNG is flattened onto white rather than black`() {
         val original = bitmap(2400, 2400, alpha = true, noisyFraction = 0.5f).encode(Bitmap.CompressFormat.PNG)
         val ceiling = 400 * 1024
-        val prepared = AttachmentImages.prepare(original, "image/png", maxBytes = ceiling, keepTransparency = true)
+        val prepared = AttachmentImages.prepare(original, "image/png", maxBytes = ceiling)
         assertThat(prepared.mimeType).isEqualTo("image/jpeg")
         val decoded = BitmapFactory.decodeByteArray(prepared.bytes, 0, prepared.sizeBytes)
         val corner = decoded.getPixel(decoded.width - 1, decoded.height - 1)
@@ -235,6 +230,16 @@ class AttachmentImagesTest {
         assertReceivable(prepared, ceiling)
     }
 
+    @Test
+    fun `a BMP is converted to a format the API takes`() {
+        val bmp = bmpOf(bitmap(300, 200, noisyFraction = 0.2f))
+        assertThat(FileFormat.sniff(bmp)).isEqualTo(FileFormat.BMP)
+        val prepared = AttachmentImages.prepare(bmp, "image/bmp")
+        assertThat(prepared.mimeType).isEqualTo("image/jpeg")
+        assertThat(dimensions(prepared.bytes)).isEqualTo(300 to 200)
+        assertReceivable(prepared)
+    }
+
     /** Before, anything that would not decode went out as it was picked, under the type it was declared as. */
     @Test
     fun `bytes that are no image, or an image that will not decode, are refused with an actionable reason`() {
@@ -251,7 +256,7 @@ class AttachmentImagesTest {
         val heicHeader = byteArrayOf(0, 0, 0, 0x18) + "ftypheic".toByteArray() + ByteArray(4) + "mif1heic".toByteArray() + ByteArray(64)
         assertThat(FileFormat.sniff(heicHeader)).isEqualTo(FileFormat.HEIC)
         val heic = assertThrows(UnreadableImageException::class.java) { AttachmentImages.prepare(heicHeader, "image/heic") }
-        assertThat(heic.message).isEqualTo("Unsupported image type (image/heic). Use PNG, JPEG, GIF or WebP.")
+        assertThat(heic.message).isEqualTo("Couldn't read this HEIC image. Re-save it as PNG or JPEG and attach it again.")
     }
 
     @Test
@@ -293,6 +298,24 @@ class AttachmentImagesTest {
         } finally {
             file.delete()
         }
+    }
+
+    /** A bottom-up 24-bit BMP of [bitmap], as Windows and older screenshot tools write one. */
+    private fun bmpOf(bitmap: Bitmap): ByteArray {
+        val rowSize = (bitmap.width * 3 + 3) / 4 * 4
+        val pixelBytes = rowSize * bitmap.height
+        val buffer = ByteBuffer.allocate(54 + pixelBytes).order(ByteOrder.LITTLE_ENDIAN)
+        buffer.put('B'.code.toByte()).put('M'.code.toByte()).putInt(54 + pixelBytes).putInt(0).putInt(54)
+        buffer.putInt(40).putInt(bitmap.width).putInt(bitmap.height).putShort(1).putShort(24).putInt(0).putInt(pixelBytes)
+            .putInt(2835).putInt(2835).putInt(0).putInt(0)
+        for (y in bitmap.height - 1 downTo 0) {
+            for (x in 0 until bitmap.width) {
+                val p = bitmap.getPixel(x, y)
+                buffer.put(Color.blue(p).toByte()).put(Color.green(p).toByte()).put(Color.red(p).toByte())
+            }
+            repeat(rowSize - bitmap.width * 3) { buffer.put(0) }
+        }
+        return buffer.array()
     }
 
     private companion object {

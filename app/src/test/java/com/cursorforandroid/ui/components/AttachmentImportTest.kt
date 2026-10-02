@@ -67,6 +67,19 @@ class AttachmentImportTest {
         assertThat(loadAttachment("BM".toByteArray(), "image/bmp", "y").exceptionOrNull()?.message).isEqualTo("Unsupported image type (image/bmp). Use PNG, JPEG, GIF or WebP.")
     }
 
+    /** Before, a pasted BMP was refused as an unsupported type; it now attaches as the JPEG the agent can read. */
+    @Test
+    fun `a pasted BMP attaches as an image the API takes`() {
+        val bmp = java.nio.ByteBuffer.allocate(54 + 16 * 4 * 3).order(java.nio.ByteOrder.LITTLE_ENDIAN).apply {
+            put('B'.code.toByte()).put('M'.code.toByte()).putInt(54 + 16 * 4 * 3).putInt(0).putInt(54)
+            putInt(40).putInt(16).putInt(4).putShort(1).putShort(24).putInt(0).putInt(16 * 4 * 3).putInt(2835).putInt(2835).putInt(0).putInt(0)
+            repeat(16 * 4) { put(0x20).put(0x80.toByte()).put(0xF0.toByte()) }
+        }.array()
+        val attached = loadAttachment(bmp, "image/bmp", "z").getOrThrow()
+        assertThat(attached.image.mimeType).isEqualTo("image/jpeg")
+        assertThat(attached.thumbnail).isNotNull()
+    }
+
     /** [count] temporary PNGs, as the clipboard or the picker hands them over: content the resolver can open. */
     private fun pngUris(count: Int): List<Uri> = List(count) {
         File.createTempFile("clipboard", ".png").also { file -> file.writeBytes(png()) }.let(Uri::fromFile)

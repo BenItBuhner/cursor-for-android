@@ -413,6 +413,24 @@ class ConversationViewModelTest {
         runBlocking { withTimeout(10_000) { idle.isSending.first { !it } } }
     }
 
+    /** A picture that could not be attached is said under the composer, not in a snackbar, until the attachments change. */
+    @Test
+    fun `an attachment error stays inline until a picture is added or the message goes`() {
+        val idle = open(IDLE)
+        idle.showAttachmentError("Couldn't read this PNG image. Re-save it as PNG or JPEG and attach it again.")
+        assertThat(idle.attachmentError.value).isEqualTo("Couldn't read this PNG image. Re-save it as PNG or JPEG and attach it again.")
+        assertThat(idle.toastMessage.value).isNull()
+
+        idle.addAttachments(listOf(PendingAttachment("img-1", PromptImage(byteArrayOf(1, 2, 3), "image/png"), null)))
+        assertThat(idle.attachmentError.value).isNull()
+
+        idle.showAttachmentError("Only 5 images can be attached to a prompt.")
+        idle.setDraft("Here it is")
+        assertThat(idle.send()).isEqualTo("Here it is")
+        assertThat(idle.attachmentError.value).isNull()
+        runBlocking { withTimeout(10_000) { idle.isSending.first { !it } } }
+    }
+
     @Test
     fun `removing a queued follow-up takes it away`() {
         val vm = open(RUNNING)

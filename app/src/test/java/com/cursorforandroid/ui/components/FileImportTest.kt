@@ -132,7 +132,23 @@ class FileImportTest {
     }
 
     @Test
-    fun `a broken picture is refused with the reason, and a HEIC stays the document it was`() {
+    fun `a picture the API does not take is converted and named as an image, not sent as a document`() {
+        val bmp = java.nio.ByteBuffer.allocate(54 + 16 * 4 * 3).order(java.nio.ByteOrder.LITTLE_ENDIAN).apply {
+            put('B'.code.toByte()).put('M'.code.toByte()).putInt(54 + 16 * 4 * 3).putInt(0).putInt(54)
+            putInt(40).putInt(16).putInt(4).putShort(1).putShort(24).putInt(0).putInt(16 * 4 * 3).putInt(2835).putInt(2835).putInt(0).putInt(0)
+            repeat(16 * 4) { put(0x20).put(0x80.toByte()).put(0xF0.toByte()) }
+        }.array()
+
+        val imported = importFiles(context, listOf(temp("diagram.bmp", bmp)), none)
+
+        val picked = imported.files.single()
+        assertThat(picked.isImage).isTrue()
+        assertThat(picked.file.mimeType).isEqualTo("image/jpeg")
+        assertThat(picked.file.name).isEqualTo("diagram.jpg")
+    }
+
+    @Test
+    fun `a broken picture is refused with the reason, and a HEIC this device cannot decode stays the document it was`() {
         val broken = importFiles(context, listOf(temp("shot.png", png().copyOf(30)), temp("notes.txt", "hi".toByteArray())), none)
         assertThat(broken.error).isEqualTo("Couldn't read this PNG image. Re-save it as PNG or JPEG and attach it again.")
         assertThat(broken.files.map { it.file.name }).containsExactly("notes.txt")
