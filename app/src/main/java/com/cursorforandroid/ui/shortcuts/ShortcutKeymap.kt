@@ -5,7 +5,7 @@ import android.view.KeyEvent
 
 /** What a chord on a hardware keyboard asks the app for (see [ShortcutKeymap]). */
 sealed interface ShortcutAction {
-    /** Ctrl+F or Ctrl+K (out of the box; see [ShortcutBindings]): the search palette over chats, Projects and the transcripts kept on this device. */
+    /** Ctrl+P or Ctrl+K (out of the box; see [ShortcutBindings]): the search palette over chats, Projects and the transcripts kept on this device. */
     data object Search : ShortcutAction
 
     /** Ctrl+Tab: the quick switcher, one step further back through the recent chats each press. */

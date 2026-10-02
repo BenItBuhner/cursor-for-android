@@ -89,7 +89,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 
-/** What the palette is showing: the search (Ctrl+F), the quick switcher (Ctrl+Tab), or the shortcuts (Ctrl+/). */
+/** What the palette is showing: the search (Ctrl+P), the quick switcher (Ctrl+Tab), or the shortcuts (Ctrl+/). */
 enum class PaletteMode { Search, Switcher, Shortcuts }
 
 /** Whether the palette is up and in which mode, with the switcher's selection; the shell's, driven by the keys. */
@@ -407,7 +407,8 @@ private fun ColumnScope.ShortcutsPane(onClose: () -> Unit) {
     HairlineDivider()
     Column(Modifier.weight(1f, fill = false).fadingVerticalScroll(surface = colors.elevated).padding(vertical = 6.dp).testTag(PaletteTags.SHORTCUTS)) {
         ShortcutsCopy.groups(LocalShortcutBindings.current).forEach { group ->
-            Text(group.title, style = type.small, color = colors.textTertiary, modifier = Modifier.padding(start = 18.dp, end = 18.dp, top = 10.dp, bottom = 4.dp))
+            Text(group.title, style = type.small, color = colors.textTertiary, modifier = Modifier.padding(start = 18.dp, end = 18.dp, top = 10.dp, bottom = if (group.note != null) 0.dp else 4.dp))
+            group.note?.let { Text(it, style = type.small, color = colors.textQuaternary, modifier = Modifier.padding(start = 18.dp, end = 18.dp, bottom = 4.dp)) }
             group.lines.forEach { line -> ShortcutLineRow(line, Modifier.padding(horizontal = 18.dp, vertical = 5.dp)) }
         }
     }

@@ -55,14 +55,14 @@ data class KeyChord(val keyCode: Int, val ctrl: Boolean = false, val shift: Bool
  * the shell is asked for; null for the composer's own shortcut, which the focused composer reads itself.
  */
 enum class Shortcut(val id: String, val label: String, val detail: String?, val action: ShortcutAction?, val defaults: List<KeyChord>) {
-    Search("search", "Search chats and Projects", "Titles, repositories and the transcripts kept on this device", ShortcutAction.Search, listOf(KeyChord.ctrl(KeyEvent.KEYCODE_F), KeyChord.ctrl(KeyEvent.KEYCODE_K))),
+    Search("search", "Search chats and Projects", "Titles, repositories and the transcripts kept on this device", ShortcutAction.Search, listOf(KeyChord.ctrl(KeyEvent.KEYCODE_P), KeyChord.ctrl(KeyEvent.KEYCODE_K))),
     NewChat("new_chat", "New chat", null, ShortcutAction.NewChat, listOf(KeyChord.ctrl(KeyEvent.KEYCODE_N))),
     NewProject("new_project", "New Project", "With Extended mode", ShortcutAction.NewProject, listOf(KeyChord.ctrl(KeyEvent.KEYCODE_N, shift = true))),
     OpenSettings("settings", "Settings", null, ShortcutAction.OpenSettings, listOf(KeyChord.ctrl(KeyEvent.KEYCODE_COMMA))),
     ShowShortcuts("shortcuts", "Keyboard shortcuts", null, ShortcutAction.ShowShortcuts, listOf(KeyChord.ctrl(KeyEvent.KEYCODE_SLASH), KeyChord.ctrl(KeyEvent.KEYCODE_SLASH, shift = true))),
     ToggleSidebar("sidebar", "Show or hide the sidebar", null, ShortcutAction.ToggleSidebar, listOf(KeyChord.ctrl(KeyEvent.KEYCODE_B))),
     TogglePanel("panel", "Show or hide the chat's panel", null, ShortcutAction.TogglePanel, listOf(KeyChord.ctrl(KeyEvent.KEYCODE_B, shift = true))),
-    ExpandComposer("composer", "Expand or collapse the composer", "Once a long prompt scrolls inside it", null, listOf(KeyChord.ctrl(KeyEvent.KEYCODE_E, shift = true))),
+    ExpandComposer("composer", "Full-screen composer", "Grows the focused composer over the window, or back", null, listOf(KeyChord.ctrl(KeyEvent.KEYCODE_F), KeyChord.ctrl(KeyEvent.KEYCODE_E, shift = true))),
     CatchUp("catch_up", "Check for new messages", "Then says \"Up to date\", or how many are new", ShortcutAction.CatchUp, listOf(KeyChord.ctrl(KeyEvent.KEYCODE_R))),
     ReloadTranscript("reload", "Reload transcript", "Reads the whole chat again, as the menu's Reload transcript does", ShortcutAction.ReloadTranscript, listOf(KeyChord.ctrl(KeyEvent.KEYCODE_R, shift = true))),
     ;

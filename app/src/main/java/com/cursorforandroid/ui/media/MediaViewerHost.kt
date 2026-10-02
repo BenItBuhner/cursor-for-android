@@ -15,6 +15,7 @@ import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
@@ -43,6 +44,8 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
@@ -55,6 +58,14 @@ import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.graphics.drawscope.scale
 import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.key.KeyEvent
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.isAltPressed
+import androidx.compose.ui.input.key.isCtrlPressed
+import androidx.compose.ui.input.key.isMetaPressed
+import androidx.compose.ui.input.key.isShiftPressed
+import androidx.compose.ui.input.key.onKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
@@ -368,10 +379,68 @@ private fun MediaViewerOverlay(
     val current = state.current
     val currentPlayback = currentPresentation()?.playback.takeIf { current?.isPlayable == true }
 
+    // The keys (MediaKeys) are read where the viewer holds the focus: taken as it opens, off a field under it, so a
+    // Space is never typed into a composer out of sight, and given up to any field over it, the palette's.
+    val keyFocus = remember { FocusRequester() }
+    LaunchedEffect(Unit) { runCatching { keyFocus.requestFocus() } }
+    var readout by remember { mutableStateOf<Readout?>(null) }
+    LaunchedEffect(readout) {
+        if (readout == null) return@LaunchedEffect
+        delay(ReadoutMillis)
+        readout = null
+    }
+    LaunchedEffect(state.currentIndex) { readout = null }
+
+    fun onMediaKey(event: KeyEvent): Boolean {
+        val native = event.nativeKeyEvent
+        val entry = state.current ?: return false
+        val key = MediaKeys.action(
+            keyCode = native.keyCode,
+            shift = event.isShiftPressed,
+            ctrl = event.isCtrlPressed,
+            alt = event.isAltPressed,
+            meta = event.isMetaPressed,
+            playable = entry.isPlayable,
+            rtl = rtl,
+            char = native.unicodeChar,
+        ) ?: return false
+        if (event.type != KeyEventType.KeyDown) return true
+        if (state.phase != MediaViewerState.Phase.Open) return true
+        if (native.repeatCount > 0 && !MediaKeys.repeats(key)) return true
+        val playback = currentPresentation()?.playback.takeIf { entry.isPlayable }
+        val said = when (key) {
+            MediaKey.PlayPause -> {
+                playback?.togglePlay()
+                null
+            }
+            is MediaKey.Seek -> playback?.let {
+                it.seekBy(key.deltaMs)
+                MediaKeys.seekLabel(key.deltaMs)
+            }
+            is MediaKey.Speed -> playback?.let { VideoPlayback.speedLabel(it.stepSpeed(key.faster)) }
+            MediaKey.Mute -> {
+                state.muted = !state.muted
+                if (state.muted) "Muted" else "Sound on"
+            }
+            is MediaKey.Page -> {
+                val target = state.currentIndex + key.step
+                if (target in session.entries.indices) scope.launch { pagerState.animateScrollToPage(target) }
+                return true
+            }
+        }
+        said?.let { readout = Readout(it) }
+        state.controlsVisible = true
+        interactions++
+        return true
+    }
+
     Box(
         Modifier
             .fillMaxSize()
             .onSizeChanged { viewport = it }
+            .onKeyEvent(::onMediaKey)
+            .focusRequester(keyFocus)
+            .focusable()
             // Never a root that consumes here: consuming every move cancelled the pager's touch-slop detection
             // (which re-reads each move on the Final pass), so only a swipe fast enough to clear the slop on its
             // first move ever turned a page. Hit testing alone keeps the shell underneath out of reach.
@@ -457,6 +526,10 @@ private fun MediaViewerOverlay(
                 }
             }
         }
+        KeyReadout(
+            readout?.text,
+            Modifier.align(Alignment.TopCenter).windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Top)).padding(top = 68.dp),
+        )
         // The transform layer: the page's picture on its way between its thumbnail and its place, above everything.
         frames?.let { active ->
             if (state.phase != MediaViewerState.Phase.Open) {
@@ -532,6 +605,9 @@ private fun TransformLayer(state: MediaViewerState, frames: TransformFrames, dis
     )
 }
 
+/** What a key did, for [KeyReadout]: a fresh one each press, so the same "+10 s" twice is shown for the full time again. */
+private class Readout(val text: String)
+
 /** What the notice pill says, and the one thing it offers to do about it (Retry), if any. */
 private class Notice(val text: String, val action: String? = null, val onAction: (() -> Unit)? = null)
 
@@ -553,6 +629,7 @@ private const val ChromeFadeMillis = 160
 /** The share of the open transform the chrome stays clear for before it fades in over the rest. */
 private const val ChromeFadeStart = 0.6f
 private const val AutoHideMillis = 3_500L
+private const val ReadoutMillis = 900L
 private const val NoticeMillis = 2_500L
 /** A notice with something to do about it stays long enough to be done. */
 private const val ActionNoticeMillis = 5_000L

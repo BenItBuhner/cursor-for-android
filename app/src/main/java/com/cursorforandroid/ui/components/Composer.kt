@@ -173,7 +173,7 @@ import kotlinx.coroutines.launch
  * Once the text runs past the ten lines the field shows and scrolls inside it, a button slides in right of "+" that
  * grows the composer over nearly all the height it can have ([expansion]): the room its parent allows — in a chat, all
  * of it above the keyboard or the navigation bar, the transcript giving way — or [expandRoom] where the owner measures it.
- * The same button, Back, Ctrl+Shift+E or a send brings it back down; see [ComposerExpansion]. Collapsed or expanded,
+ * The same button, Back, Ctrl+F (or Ctrl+Shift+E) or a send brings it back down; see [ComposerExpansion]. Collapsed or expanded,
  * text that runs past the field's top or bottom fades there ([scrollEdgeFade]), as every scrolling list in the app does.
  */
 @OptIn(ExperimentalFoundationApi::class)
@@ -808,7 +808,7 @@ private fun ComposerTextField(
                     // and the composer's own fill is flat behind it.
                     .scrollEdgeFade(textScroll, surface = colors.elevated)
                     .onPhysicalKey(onPhysicalKey)
-                    .onPreviewKeyEvent { event ->
+                    .expandKeys { event ->
                         val chord = event.type == KeyEventType.KeyDown && shortcutBindings.matches(
                             Shortcut.ExpandComposer,
                             event.nativeKeyEvent.keyCode,
@@ -1176,6 +1176,11 @@ private val FocusedSaver = Saver<MutableState<Boolean>, Boolean>(save = { it.val
  */
 @OptIn(ExperimentalComposeUiApi::class)
 private fun Modifier.modeCycleKeys(handle: (KeyEvent) -> Boolean): Modifier =
+    onPreInterceptKeyBeforeSoftKeyboard(handle).onPreviewKeyEvent(handle)
+
+/** The full-screen chord, read on both passes as [modeCycleKeys] are, so an IME that reads Ctrl chords never takes it. */
+@OptIn(ExperimentalComposeUiApi::class)
+private fun Modifier.expandKeys(handle: (KeyEvent) -> Boolean): Modifier =
     onPreInterceptKeyBeforeSoftKeyboard(handle).onPreviewKeyEvent(handle)
 
 /**

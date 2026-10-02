@@ -37,7 +37,7 @@ import org.robolectric.annotation.GraphicsMode
 
 /**
  * The search palette reads the transcripts this device keeps for the chats the list has, and again as the list
- * changes while search is up: the list still loading when Ctrl+F came, then a chat moving on with a new reply.
+ * changes while search is up: the list still loading when Ctrl+P came, then a chat moving on with a new reply.
  */
 @RunWith(AndroidJUnit4::class)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)

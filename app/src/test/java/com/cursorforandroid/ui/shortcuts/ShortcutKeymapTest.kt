@@ -10,7 +10,7 @@ class ShortcutKeymapTest {
 
     @Test
     fun `the listed chords are the app's`() {
-        assertThat(ctrl(KeyEvent.KEYCODE_F)).isEqualTo(ShortcutAction.Search)
+        assertThat(ctrl(KeyEvent.KEYCODE_P)).isEqualTo(ShortcutAction.Search)
         assertThat(ctrl(KeyEvent.KEYCODE_K)).isEqualTo(ShortcutAction.Search)
         assertThat(ctrl(KeyEvent.KEYCODE_TAB)).isEqualTo(ShortcutAction.SwitchNext)
         assertThat(ctrl(KeyEvent.KEYCODE_TAB, shift = true)).isEqualTo(ShortcutAction.SwitchPrevious)
@@ -97,8 +97,30 @@ class ShortcutKeymapTest {
     fun `the cheat sheet lists every chord the keymap answers`() {
         val listed = ShortcutsCopy.groups(ShortcutBindings.Defaults).flatMap { it.lines }.flatMap { it.chords }.map { it.joinToString("+") }
         assertThat(listed).containsAtLeast(
-            "Ctrl+F", "Ctrl+K", "Ctrl+Tab", "Ctrl+B", "Ctrl+Shift+B", "Ctrl+1 … 9", "Ctrl+0", "Ctrl+N", "Ctrl+Shift+N",
+            "Ctrl+P", "Ctrl+K", "Ctrl+F", "Ctrl+Tab", "Ctrl+B", "Ctrl+Shift+B", "Ctrl+1 … 9", "Ctrl+0", "Ctrl+N", "Ctrl+Shift+N",
             "Ctrl+,", "Ctrl+/", "Ctrl+Shift+?", "Esc", "Ctrl+R", "Ctrl+Shift+R", "Ctrl+Shift+E",
         )
+    }
+
+    @Test
+    fun `Ctrl+F is the focused composer's full screen, not the shell's search`() {
+        assertThat(ctrl(KeyEvent.KEYCODE_F)).isNull()
+        assertThat(ShortcutBindings.Defaults.owner(KeyChord.ctrl(KeyEvent.KEYCODE_F))).isEqualTo(Shortcut.ExpandComposer)
+        assertThat(ShortcutBindings.Defaults.chords(Shortcut.Search)).containsExactly(KeyChord.ctrl(KeyEvent.KEYCODE_P), KeyChord.ctrl(KeyEvent.KEYCODE_K)).inOrder()
+        assertThat(ShortcutBindings.Defaults.chords(Shortcut.ExpandComposer)).containsExactly(KeyChord.ctrl(KeyEvent.KEYCODE_F), KeyChord.ctrl(KeyEvent.KEYCODE_E, shift = true)).inOrder()
+    }
+
+    @Test
+    fun `the list is grouped General, Composer and Media, every shortcut in one of them once`() {
+        val groups = ShortcutsCopy.groups(ShortcutBindings.Defaults)
+        assertThat(groups.map { it.title }).containsExactly("General", "Composer", "Media").inOrder()
+        val listed = groups.flatMap { it.lines }.mapNotNull { it.shortcut }
+        assertThat(listed).containsExactlyElementsIn(Shortcut.entries)
+        assertThat(groups.single { it.title == "Composer" }.lines.first().shortcut).isEqualTo(Shortcut.ExpandComposer)
+        val media = groups.single { it.title == "Media" }
+        assertThat(media.note).isNotNull()
+        assertThat(media.lines.flatMap { it.chords }.map { it.joinToString("+") }).containsExactly(
+            "Space", "K", "J", "L", "←", "→", "Shift+P", "Shift+N", "<", ">", "M", "Esc",
+        ).inOrder()
     }
 }

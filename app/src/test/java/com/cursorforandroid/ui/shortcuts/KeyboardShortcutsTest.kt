@@ -97,7 +97,7 @@ class KeyboardShortcutsTest {
     @Test
     fun `a listed chord from a hardware keyboard is the app's, its key-up too`() {
         ctrlDown()
-        assertThat(chord(KeyEvent.KEYCODE_F)).isEqualTo(true to true)
+        assertThat(chord(KeyEvent.KEYCODE_P)).isEqualTo(true to true)
         assertThat(chord(KeyEvent.KEYCODE_B, shift = true)).isEqualTo(true to true)
         assertThat(chord(KeyEvent.KEYCODE_4)).isEqualTo(true to true)
         assertThat(handler.actions).containsExactly(ShortcutAction.Search, ShortcutAction.TogglePanel, ShortcutAction.OpenRailItem(3)).inOrder()
@@ -105,7 +105,7 @@ class KeyboardShortcutsTest {
 
     @Test
     fun `the on-screen keyboard's keys are never read`() {
-        assertThat(chord(KeyEvent.KEYCODE_F, soft = true)).isEqualTo(false to false)
+        assertThat(chord(KeyEvent.KEYCODE_P, soft = true)).isEqualTo(false to false)
         assertThat(chord(KeyEvent.KEYCODE_N, soft = true)).isEqualTo(false to false)
         assertThat(dispatch(key(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_ESCAPE, soft = true))).isFalse()
         assertThat(handler.actions).isEmpty()
@@ -120,13 +120,15 @@ class KeyboardShortcutsTest {
         assertThat(chord(KeyEvent.KEYCODE_N)).isEqualTo(false to false)
         assertThat(chord(KeyEvent.KEYCODE_N, shift = true)).isEqualTo(false to false)
         assertThat(chord(KeyEvent.KEYCODE_K)).isEqualTo(false to false)
+        // Search's Ctrl+P is the popover's step up while it is open, as Ctrl+K is.
+        assertThat(chord(KeyEvent.KEYCODE_P)).isEqualTo(false to false)
         assertThat(handler.actions).isEmpty()
         assertThat(handler.escapes).isEqualTo(0)
 
         // The chords it does not answer stay the app's, Ctrl+Tab among them.
         assertThat(chord(KeyEvent.KEYCODE_TAB)).isEqualTo(true to true)
-        assertThat(chord(KeyEvent.KEYCODE_F)).isEqualTo(true to true)
-        assertThat(handler.actions).containsExactly(ShortcutAction.SwitchNext, ShortcutAction.Search).inOrder()
+        assertThat(chord(KeyEvent.KEYCODE_B)).isEqualTo(true to true)
+        assertThat(handler.actions).containsExactly(ShortcutAction.SwitchNext, ShortcutAction.ToggleSidebar).inOrder()
 
         handler.actions.clear()
         release()
@@ -271,9 +273,9 @@ class KeyboardShortcutsTest {
     @Test
     fun `a key held across the focus loss is not taken on its way up`() {
         ctrlDown()
-        dispatch(key(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_F, ctrl = true))
+        dispatch(key(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_P, ctrl = true))
         keys.onFocusLost()
-        assertThat(dispatch(key(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_F, ctrl = true))).isFalse()
+        assertThat(dispatch(key(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_P, ctrl = true))).isFalse()
     }
 
     @Test
@@ -324,7 +326,7 @@ class KeyboardShortcutsTest {
     fun `after a key the IME answered itself, the next the activity hears is read afresh`() {
         assertThat(throughIme(key(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_A, ctrl = true), imeAnswers = true)).isFalse()
         // The focus left the fields: the next chord comes by the activity alone.
-        assertThat(dispatch(key(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_F, ctrl = true))).isTrue()
+        assertThat(dispatch(key(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_P, ctrl = true))).isTrue()
         assertThat(handler.actions).containsExactly(ShortcutAction.Search)
     }
 
@@ -342,7 +344,7 @@ class KeyboardShortcutsTest {
 
     @Test
     fun `the on-screen keyboard's keys are not read before the IME either`() {
-        assertThat(keys.onKeyEventPreIme(key(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_F, ctrl = true, soft = true))).isFalse()
+        assertThat(keys.onKeyEventPreIme(key(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_P, ctrl = true, soft = true))).isFalse()
         assertThat(keys.onKeyEventPreIme(key(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_R, ctrl = true, soft = true))).isFalse()
         assertThat(handler.actions).isEmpty()
     }
@@ -407,14 +409,14 @@ class KeyboardShortcutsTest {
     fun `the on-screen keyboard's keys pass a capture by`() {
         var seen = 0
         keys.capture { seen++; true }
-        assertThat(chord(KeyEvent.KEYCODE_F, soft = true)).isEqualTo(false to false)
+        assertThat(chord(KeyEvent.KEYCODE_P, soft = true)).isEqualTo(false to false)
         assertThat(seen).isEqualTo(0)
     }
 
     @Test
     fun `without a shell to answer, nothing is taken`() {
         keys.handler = null
-        assertThat(chord(KeyEvent.KEYCODE_F)).isEqualTo(false to false)
+        assertThat(chord(KeyEvent.KEYCODE_P)).isEqualTo(false to false)
         assertThat(chord(KeyEvent.KEYCODE_N)).isEqualTo(false to false)
         assertThat(dispatch(key(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_ESCAPE))).isFalse()
     }

@@ -816,7 +816,7 @@ class AppGraph(
     /** Whether background live sync runs: always, outside the demo (which has no account to stream from). */
     val liveSyncEnabled: Flow<Boolean> get() = prefs.demoMode.map { demo -> !demo }
 
-    /** The search palette's reading of the transcripts kept on this device (Ctrl+F, see [TranscriptSearchIndex]). */
+    /** The search palette's reading of the transcripts kept on this device (Ctrl+P, see [TranscriptSearchIndex]). */
     private val lazyTranscriptSearch = lazy { TranscriptSearchIndex(caches.conversations, caches.traces) }
     val transcriptSearch: TranscriptSearchIndex get() = lazyTranscriptSearch.value
 

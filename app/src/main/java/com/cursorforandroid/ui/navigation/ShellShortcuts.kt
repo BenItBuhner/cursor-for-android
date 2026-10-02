@@ -117,7 +117,7 @@ internal class ShellShortcuts {
 /**
  * The palette over the shell, fed from the list and the transcripts this device keeps. The transcripts are read
  * while search is up (see [TranscriptSearchIndex.refresh]): a chat read before and not moved on since is not read again.
- * They are read again as the list changes under an open search: the list can still be loading when Ctrl+F comes, and a
+ * They are read again as the list changes under an open search: the list can still be loading when Ctrl+P comes, and a
  * chat can move on while search is up.
  */
 @Composable
