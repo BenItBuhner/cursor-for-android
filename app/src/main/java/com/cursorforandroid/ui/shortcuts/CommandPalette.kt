@@ -38,9 +38,10 @@ import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
@@ -182,6 +183,25 @@ object PaletteTags {
     fun result(index: Int): String = "palette_result_$index"
 }
 
+/**
+ * The search's rows, the query they were found for, and the highlighted one. Rows found again for the same query — the
+ * transcripts read in, the list moving on — keep the highlight on its chat, wherever that chat went, so Enter opens the
+ * chat that was highlighted; a chat is one row, so it is the row's identity. A new query starts from the top.
+ */
+internal data class PaletteSelection(val query: String, val results: List<PaletteResult>, val index: Int = 0) {
+    val current: PaletteResult? get() = results.getOrNull(index)
+
+    fun moved(by: Int): PaletteSelection = copy(index = (index + by).coerceIn(0, results.lastIndex.coerceAtLeast(0)))
+
+    /** [found] for [query] in these rows' place; a chat no longer found leaves the highlight where it was, on the last row at most. */
+    fun next(query: String, found: List<PaletteResult>): PaletteSelection {
+        if (query != this.query) return PaletteSelection(query, found)
+        val id = current?.entry?.agentId
+        val at = found.indexOfFirst { it.entry.agentId == id }
+        return PaletteSelection(query, found, if (at >= 0) at else index.coerceAtMost(found.lastIndex).coerceAtLeast(0))
+    }
+}
+
 /** How long typing rests before the palette searches; a burst of keys is searched once. */
 private const val SEARCH_DEBOUNCE_MILLIS = 90L
 
@@ -256,33 +276,34 @@ private fun ColumnScope.SearchPane(
     }
     val query = field.text
     val blank = PaletteSearch.normalize(query).isEmpty()
-    val results by produceState(initialValue = recent.map { PaletteResult(it) }, query, entries, transcripts, recent) {
-        if (blank) {
-            value = recent.map { PaletteResult(it) }
-            return@produceState
+    var shown by remember { mutableStateOf(PaletteSelection("", recent.map { PaletteResult(it) })) }
+    LaunchedEffect(query, entries, transcripts, recent) {
+        val found = if (blank) {
+            recent.map { PaletteResult(it) }
+        } else {
+            delay(SEARCH_DEBOUNCE_MILLIS)
+            withContext(Dispatchers.Default) { PaletteSearch.search(query, entries, transcripts) }
         }
-        delay(SEARCH_DEBOUNCE_MILLIS)
-        value = withContext(Dispatchers.Default) { PaletteSearch.search(query, entries, transcripts) }
+        shown = shown.next(query, found)
     }
-    var selected by remember { mutableIntStateOf(0) }
-    LaunchedEffect(results) { selected = 0 }
+    val results = shown.results
+    val selected = shown.index
     val listState = rememberLazyListState()
-    KeepInView(listState, selected)
+    KeepInView(listState, selected, results)
 
     fun openSelected() {
-        results.getOrNull(selected)?.let { onOpen(it.entry, it.hit) }
+        shown.current?.let { onOpen(it.entry, it.hit) }
     }
 
     fun onKey(event: KeyEvent): Boolean {
         val down = event.type == KeyEventType.KeyDown
-        val last = results.lastIndex
         return when (event.key) {
             Key.DirectionDown -> {
-                if (down && last >= 0) selected = (selected + 1).coerceAtMost(last)
+                if (down) shown = shown.moved(1)
                 true
             }
             Key.DirectionUp -> {
-                if (down) selected = (selected - 1).coerceAtLeast(0)
+                if (down) shown = shown.moved(-1)
                 true
             }
             Key.Enter, Key.NumPadEnter -> {
@@ -527,19 +548,31 @@ private fun highlighted(text: String, match: IntRange?): AnnotatedString {
     }
 }
 
-/** Scrolls the list just enough for row [index] to be on screen, as the selection moves past its edges. */
+/**
+ * Scrolls the list just enough for row [index] to be on screen, as the selection moves past its edges, and again once
+ * [rows] changed under it have been laid out: rows above it growing (a longer snippet read in) push it off screen
+ * without its index changing.
+ */
 @Composable
-private fun KeepInView(listState: LazyListState, index: Int) {
-    LaunchedEffect(index) {
-        val visible = listState.layoutInfo.visibleItemsInfo
-        val first = visible.firstOrNull()?.index ?: return@LaunchedEffect
-        val last = visible.last().index
-        val fully = visible.filter { it.offset >= listState.layoutInfo.viewportStartOffset && it.offset + it.size <= listState.layoutInfo.viewportEndOffset }.map { it.index }
-        when {
-            index in fully -> Unit
-            index <= first -> listState.scrollToItem(index)
-            index >= last -> listState.scrollToItem((index - fully.size + 1).coerceAtLeast(0))
-            else -> Unit
-        }
+private fun KeepInView(listState: LazyListState, index: Int, rows: List<Any>? = null) {
+    val latest by rememberUpdatedState(index)
+    LaunchedEffect(index) { listState.reveal(index) }
+    LaunchedEffect(rows) {
+        if (rows == null) return@LaunchedEffect
+        withFrameNanos { }
+        listState.reveal(latest)
+    }
+}
+
+private suspend fun LazyListState.reveal(index: Int) {
+    val visible = layoutInfo.visibleItemsInfo
+    val first = visible.firstOrNull()?.index ?: return
+    val last = visible.last().index
+    val fully = visible.filter { it.offset >= layoutInfo.viewportStartOffset && it.offset + it.size <= layoutInfo.viewportEndOffset }.map { it.index }
+    when {
+        index in fully -> Unit
+        index <= first -> scrollToItem(index)
+        index >= last -> scrollToItem((index - fully.size + 1).coerceAtLeast(0))
+        else -> Unit
     }
 }
