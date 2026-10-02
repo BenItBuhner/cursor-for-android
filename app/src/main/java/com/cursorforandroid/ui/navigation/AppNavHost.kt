@@ -103,6 +103,8 @@ fun AppNavHost(
     onNewChatConsumed: () -> Unit = {},
     searchRequested: Boolean = false,
     onSearchConsumed: () -> Unit = {},
+    settingsRequested: Boolean = false,
+    onSettingsConsumed: () -> Unit = {},
 ) {
     val window = remember { ShellWindow() }
     ShellWindowReader(window, wide = null)
@@ -117,6 +119,8 @@ fun AppNavHost(
         onNewChatConsumed = onNewChatConsumed,
         searchRequested = searchRequested,
         onSearchConsumed = onSearchConsumed,
+        settingsRequested = settingsRequested,
+        onSettingsConsumed = onSettingsConsumed,
     )
 }
 
@@ -133,6 +137,8 @@ internal fun AppShell(
     onNewChatConsumed: () -> Unit = {},
     searchRequested: Boolean = false,
     onSearchConsumed: () -> Unit = {},
+    settingsRequested: Boolean = false,
+    onSettingsConsumed: () -> Unit = {},
 ) {
     val window = remember { ShellWindow() }
     ShellWindowReader(window, wide)
@@ -147,6 +153,8 @@ internal fun AppShell(
         onNewChatConsumed = onNewChatConsumed,
         searchRequested = searchRequested,
         onSearchConsumed = onSearchConsumed,
+        settingsRequested = settingsRequested,
+        onSettingsConsumed = onSettingsConsumed,
     )
 }
 
@@ -166,6 +174,8 @@ private fun AppShell(
     onNewChatConsumed: () -> Unit,
     searchRequested: Boolean,
     onSearchConsumed: () -> Unit,
+    settingsRequested: Boolean,
+    onSettingsConsumed: () -> Unit,
 ) {
     val wide = window.wide
     val stack = rememberSaveable(saver = NavStack.Saver) { NavStack(Screen.Home) }
@@ -413,6 +423,12 @@ private fun AppShell(
             if (!wide) drawerState.open() else revealSidebar()
             searchRequests++
             onSearchConsumed()
+        }
+    }
+    LaunchedEffect(settingsRequested) {
+        if (settingsRequested) {
+            openSettings()
+            onSettingsConsumed()
         }
     }
     // Coming back to the foreground (runs that finished meanwhile would otherwise stay "Working" until a manual

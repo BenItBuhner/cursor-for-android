@@ -36,6 +36,7 @@ import com.cursorforandroid.AppGraph
 import com.cursorforandroid.BuildConfig
 import com.cursorforandroid.data.local.PreferencesStore
 import com.cursorforandroid.data.update.WhatsNewFixtures
+import com.cursorforandroid.domain.AccountUsage
 import com.cursorforandroid.domain.CursorUser
 import com.cursorforandroid.ui.shortcuts.ShortcutsCopy
 import com.cursorforandroid.ui.theme.CursorTheme
@@ -103,7 +104,8 @@ class SettingsScreenTest {
         // Account, with the way out of it at the row's end, first; then appearance (the theme switch and OLED black
         // alone), what the New Chat pane lists, the chats (which may show as unread, how long the sidebar's Projects
         // list runs, the keyboard shortcuts), notifications, Extended mode, the version with its updater; the
-        // one-line disclaimer last.
+        // one-line disclaimer last. Usage sits between Account and Appearance only once a snapshot exists — this
+        // signed-in screen has none, and Extended mode is off, so the group is not offered.
         val order = listOf(
             SettingsCopy.GROUP_ACCOUNT, SettingsCopy.SIGN_OUT, SettingsCopy.GROUP_APPEARANCE, ThemeSwitchCopy.TITLE, SettingsCopy.OLED_BLACK,
             NewChatHomePickerCopy.GROUP, NewChatHomePickerCopy.NEEDS_MODE, SettingsCopy.GROUP_CHATS,
@@ -137,6 +139,7 @@ class SettingsScreenTest {
             "Transcript engine", "Stable", "Beta", "Takes effect the next time a chat is opened.",
             "Confirm before stopping", "Keep chats live", "Full transcript history", "Send crash reports", "Not available in this build.",
             "Match system", "Cursor Dark", "Cursor Light",
+            SettingsCopy.GROUP_USAGE, UsageCopy.CURSOR_MODELS, UsageCopy.API_USAGE, UsageCopy.CREDITS,
         )
         compose.onAllNodes(hasText("hardware keyboard", substring = true)).assertCountEquals(0)
         compose.onAllNodes(hasText(ExtendedModeCopy.SETTING_TITLE)).assertCountEquals(1)
@@ -184,6 +187,16 @@ class SettingsScreenTest {
         composeSettings(isDemo = true)
 
         compose.onNodeWithText(SettingsCopy.LEAVE_DEMO).assertExists()
+        compose.onNodeWithText(SettingsCopy.GROUP_USAGE).assertExists()
+        compose.onNodeWithText(UsageCopy.CURSOR_MODELS).assertExists()
+        compose.onNodeWithText(UsageCopy.CURSOR_MODELS_DETAIL).assertExists()
+        compose.onNodeWithText(UsageCopy.API_USAGE).assertExists()
+        compose.onNodeWithText(UsageCopy.CREDITS).assertExists()
+        compose.onNodeWithText(UsageCopy.percent(83)).assertExists()
+        compose.onNodeWithText(UsageCopy.percent(100)).assertExists()
+        compose.onNodeWithText(AccountUsage.formatCredits(90_000L)).assertExists()
+        assertThat(top(SettingsCopy.GROUP_ACCOUNT)).isLessThan(top(SettingsCopy.GROUP_USAGE))
+        assertThat(top(SettingsCopy.GROUP_USAGE)).isLessThan(top(SettingsCopy.GROUP_APPEARANCE))
         // Every chat in the demo is this phone's own: the unread switch would change nothing, so it is not offered.
         assertAbsent(SettingsCopy.SIGN_OUT, SettingsCopy.GROUP_ADVANCED, ExtendedModeCopy.SETTING_TITLE, SettingsCopy.UNREAD_THIS_PHONE)
         compose.onNodeWithText(SettingsCopy.SHORTEN_PROJECTS).assertExists()
@@ -193,6 +206,24 @@ class SettingsScreenTest {
         compose.onNodeWithTag(SettingsTags.SIGN_OUT).assertHasClickAction()
         assertThat(top(SettingsCopy.GROUP_ACCOUNT)).isLessThan(top(SettingsCopy.GROUP_APPEARANCE))
         assertThat(top(SettingsCopy.GROUP_NOTIFICATIONS)).isLessThan(top(SettingsCopy.GROUP_UPDATES))
+    }
+
+    @Test
+    fun `a signed-in snapshot puts Usage between Account and Appearance`() {
+        graph.usage.show(AccountUsage.SAMPLE)
+        composeSettings(isDemo = false)
+
+        compose.onNodeWithTag(SettingsTags.USAGE_CARD).assertExists()
+        compose.onNodeWithText(UsageCopy.CURSOR_MODELS).assertExists()
+        compose.onNodeWithText(UsageCopy.API_USAGE).assertExists()
+        compose.onNodeWithText(UsageCopy.CREDITS).assertExists()
+        compose.onNodeWithText(UsageCopy.percent(83)).assertExists()
+        compose.onNodeWithText(UsageCopy.percent(100)).assertExists()
+        compose.onNodeWithText(AccountUsage.formatCredits(90_000L)).assertExists()
+        assertThat(top(SettingsCopy.GROUP_ACCOUNT)).isLessThan(top(SettingsCopy.GROUP_USAGE))
+        assertThat(top(SettingsCopy.GROUP_USAGE)).isLessThan(top(SettingsCopy.GROUP_APPEARANCE))
+        // Signed in, so Extended mode is still on the page; the snapshot does not hide it.
+        compose.onNodeWithText(ExtendedModeCopy.SETTING_TITLE).assertExists()
     }
 
     /** On by default; the row is the switch, and what it writes is the device's setting and nothing else. */

@@ -18,8 +18,8 @@ class CursorApp : Application(), Configuration.Provider {
 
     /**
      * WorkManager (which Glance renders inside) hands out `JobScheduler` ids of its own, and left to itself it treats
-     * every id as available. It is told a range here so it can never take [UpdateJobService.JOB_ID] and replace the
-     * periodic update check with a widget render. Its default initializer is removed from the manifest so that this
+     * every id as available. It is told a range here so it can never take [UpdateJobService.JOB_ID] or
+     * [UsageJobService.JOB_ID] and replace those periodic jobs with a widget render. Its default initializer is removed from the manifest so that this
      * configuration is the one used, which also means WorkManager starts on first use rather than on every launch.
      */
     override val workManagerConfiguration: Configuration
@@ -70,7 +70,7 @@ class CursorApp : Application(), Configuration.Provider {
     }
 
     private companion object {
-        /** Well clear of [UpdateJobService.JOB_ID], and far more concurrent work than this app could ever enqueue. */
+        /** Well clear of [UpdateJobService.JOB_ID] and [UsageJobService.JOB_ID], and far more concurrent work than this app could ever enqueue. */
         const val WORK_JOB_ID_MAX = 100_000
     }
 }

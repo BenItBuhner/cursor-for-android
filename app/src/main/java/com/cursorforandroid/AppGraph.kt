@@ -8,6 +8,8 @@ import com.cursorforandroid.crash.Breadcrumbs
 import com.cursorforandroid.crash.CrashContext
 import com.cursorforandroid.crash.CrashLog
 import com.cursorforandroid.data.api.AccountApi
+import com.cursorforandroid.data.api.AccountUsageApi
+import com.cursorforandroid.data.api.DashboardAccountUsageApi
 import com.cursorforandroid.data.api.AccountTranscriptionApi
 import com.cursorforandroid.data.api.AccountFollowup
 import com.cursorforandroid.data.api.AccountList
@@ -92,6 +94,7 @@ import com.cursorforandroid.data.local.PreferencesStore
 import com.cursorforandroid.data.local.SecureKeyStore
 import com.cursorforandroid.data.local.TextSpill
 import com.cursorforandroid.data.media.MediaLoader
+import com.cursorforandroid.data.repo.AccountUsageMonitor
 import com.cursorforandroid.data.repo.AgentFileRepository
 import com.cursorforandroid.data.repo.AgentRepository
 import com.cursorforandroid.data.repo.SubagentActivity
@@ -163,6 +166,7 @@ import com.cursorforandroid.domain.WorkerMembership
 import com.cursorforandroid.domain.WorkerSpawnKind
 import com.cursorforandroid.domain.WorkspaceTree
 import com.cursorforandroid.notifications.LiveNotifications
+import com.cursorforandroid.notifications.UsageNotifications
 import com.cursorforandroid.share.ShareInbox
 import com.cursorforandroid.ui.components.ComposerMediaPreviews
 import com.cursorforandroid.ui.conversation.AttachmentImages
@@ -243,6 +247,11 @@ class AppGraph(
     repositoryBranchesApi: RepositoryBranchesApi? = null,
     /** Injectable for tests only: the account's transcription, so the composer's voice input can be driven against a scripted account. */
     transcriptionApi: TranscriptionApi? = null,
+    /**
+     * Injectable for tests only: the account's usage RPCs, so Settings and the reset notification can be driven
+     * against a scripted period and grants answer.
+     */
+    accountUsageApi: AccountUsageApi? = null,
     /**
      * Where the agent list is organized for its screens (see [com.cursorforandroid.ui.agents.AgentsViewModel.uiState]).
      * Injectable for tests only: the Compose test rule runs a screen's collectors on whichever thread publishes to
@@ -595,6 +604,27 @@ class AppGraph(
         profile = lazy { AccountApi(lazyAccountRpc.value, lazySessionTokens.value) },
         capabilities = capabilities,
     )
+
+    /**
+     * The account's usage as Settings shows it: remaining included-model and API percentages, and prepaid grant
+     * credits when `GetCreditGrantsBalance` names them. Built on first read (Settings, the poll); the demo has
+     * sample numbers and never reaches api2.
+     */
+    private val lazyUsageApi = lazy { accountUsageApi ?: DashboardAccountUsageApi(lazyAccountRpc.value, lazySessionTokens.value) }
+    private val lazyUsage = lazy {
+        AccountUsageMonitor(
+            api = { lazyUsageApi.value },
+            cache = caches.usage,
+            isDemo = { session.isDemo },
+            sessionAllowed = {
+                val state = session.state.value
+                state is SessionState.SignedIn && !state.isDemo && extendedMode.isEnabled()
+            },
+            pauseUntil = { if (lazyAccountRpc.isInitialized()) lazyAccountRpc.value.throttle.pausedUntil() else null },
+            onReset = { UsageNotifications.postReset(app, it) },
+        ).also { monitor -> startupScope.launch { runCatching { monitor.restore() } } }
+    }
+    val usage: AccountUsageMonitor get() = lazyUsage.value
 
     /**
      * A prompt's files of any type, staged the way the desktop stages them (`PresignPromptUpload`, the parts `PUT`,
@@ -1177,6 +1207,7 @@ class AppGraph(
             if (lazySteering.isInitialized()) steering.reset()
             if (lazyAccountPullRequests.isInitialized()) lazyAccountPullRequests.value.reset()
             if (lazySessionTokens.isInitialized()) lazySessionTokens.value.clear()
+            if (lazyUsage.isInitialized()) usage.reset()
             // Signing out of one real account and into another keeps the same backend, so the list must be
             // reset explicitly or the previous account's agents would show.
             if (lazyAgents.isInitialized()) agents.reset()
@@ -1210,6 +1241,7 @@ class AppGraph(
         // memory is reset only where this process built it, disk is wiped regardless.
         extendedMode.onDisabled = {
             if (lazySessionTokens.isInitialized()) lazySessionTokens.value.clear()
+            if (lazyUsage.isInitialized()) usage.reset()
             if (lazyPins.isInitialized()) pins.reset()
             // What the account said about a chat's queue and controls is the account's, not this device's.
             if (lazySteering.isInitialized()) steering.reset()
@@ -1243,6 +1275,7 @@ class AppGraph(
             // Built if it was not yet: the account's list is read the moment the mode allows it.
             pins.reset()
             pins.sync()
+            if (lazyUsage.isInitialized()) startupScope.launch { runCatching { usage.refresh(force = true) } }
         }
     }
 
@@ -1261,6 +1294,8 @@ class AppGraph(
             "accountClient" to lazyAccountClient,
             "accountRpc" to lazyAccountRpc,
             "sessionTokens" to lazySessionTokens,
+            "usageApi" to lazyUsageApi,
+            "usage" to lazyUsage,
             "accountAgents" to lazyAccountAgents,
             "accountPullRequests" to lazyAccountPullRequests,
             "accountSlashCommands" to lazyAccountSlashCommands,

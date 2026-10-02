@@ -48,6 +48,8 @@ class AppCaches(private val root: JsonDiskCache) {
     val blobs = BlobDiskStore(root.child("blobs"))
     /** Turns under way whose streams left the live-run table, parked to be resumed rather than replayed (see `LiveRunHub`). */
     val liveRuns: JsonDiskCache = root.child("liveruns")
+    /** The account's last usage snapshot (percentages and credit grants), for Settings and the reset notification. */
+    val usage: JsonDiskCache = root.child("usage")
     /** The long texts transcripts carry, kept off the heap while their chats are open (see [TextSpill]). */
     val spill: JsonDiskCache = root.child("spill")
 

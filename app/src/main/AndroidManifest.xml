@@ -196,6 +196,12 @@
             android:exported="false"
             android:permission="android.permission.BIND_JOB_SERVICE" />
 
+        <!-- Infrequent usage poll while the app is not on screen; the foreground loop is every five minutes. -->
+        <service
+            android:name=".UsageJobService"
+            android:exported="false"
+            android:permission="android.permission.BIND_JOB_SERVICE" />
+
         <!-- The "Chats" home-screen widget: recent, running or pinned chats as sidebar rows. -->
         <receiver
             android:name=".widget.ChatsWidgetReceiver"

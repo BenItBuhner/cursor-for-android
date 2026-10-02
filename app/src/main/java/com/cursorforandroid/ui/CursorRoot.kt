@@ -33,6 +33,8 @@ fun CursorRoot(
     onNewChatConsumed: () -> Unit = {},
     searchRequested: Boolean = false,
     onSearchConsumed: () -> Unit = {},
+    settingsRequested: Boolean = false,
+    onSettingsConsumed: () -> Unit = {},
 ) {
     val session by graph.session.state.collectAsStateWithLifecycle()
     // Whether the account that signed in still owes the first-run mode choice: true after a sign-in through the
@@ -68,6 +70,8 @@ fun CursorRoot(
                             onNewChatConsumed = onNewChatConsumed,
                             searchRequested = searchRequested,
                             onSearchConsumed = onSearchConsumed,
+                            settingsRequested = settingsRequested,
+                            onSettingsConsumed = onSettingsConsumed,
                         )
                     }
                 }

@@ -21,6 +21,7 @@ import kotlinx.coroutines.launch
  * service — `NotificationManager`, `JobScheduler`, the launcher's widget host — and the periodic update check is
  * the pointed case: scheduled during a launch, its `onStartJob` can be dispatched into a main thread that is
  * still building the first screen, and a callback the app cannot answer in time is an ANR rather than a slow start.
+ * Usage polling is the same job-shaped work, held back for the same reason.
  */
 object DeferredStartup {
 
@@ -40,6 +41,7 @@ object DeferredStartup {
             UpdateCoordinator.bind(activity, graph)
             CatalogFreshness.bind(activity, graph)
             LiveSyncBinding.bind(graph)
+            UsageCoordinator.bind(activity, graph)
             // The widget picker's live preview is composed here, once the screen is up; the widgets themselves are
             // followed from the application (see CursorApp), whichever way the process was started.
             WidgetSync.publishPreviews(activity)

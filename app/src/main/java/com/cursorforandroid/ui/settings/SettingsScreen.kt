@@ -37,6 +37,7 @@ import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.cursorforandroid.AppGraph
 import com.cursorforandroid.data.update.UpdateManager
+import com.cursorforandroid.domain.AccountUsage
 import com.cursorforandroid.domain.AppRelease
 import com.cursorforandroid.domain.CursorUser
 import com.cursorforandroid.domain.ProjectNotificationPrefs
@@ -64,6 +65,7 @@ import java.util.Locale
 /** The words the screen shows that more than one place (a test, a sheet) has to agree on. */
 object SettingsCopy {
     const val GROUP_ACCOUNT = "Account"
+    const val GROUP_USAGE = "Usage"
     const val GROUP_APPEARANCE = "Appearance"
     const val GROUP_CHATS = "Chats"
     const val GROUP_NOTIFICATIONS = "Notifications"
@@ -91,9 +93,22 @@ object SettingsCopy {
     const val DEBUG_ACTION = "Debug options"
 }
 
-/** Test tags for the rows that act rather than toggle, and the sheet behind the version row. */
+/** The words the usage card shows; tests and the reset notification agree on the meter names. */
+object UsageCopy {
+    const val CURSOR_MODELS = "Cursor models"
+    const val CURSOR_MODELS_DETAIL = "Composer and Grok"
+    const val API_USAGE = "API usage"
+    const val CREDITS = "Credits"
+    const val CREDITS_DETAIL = "Applied to your next invoice."
+
+    fun percent(remaining: Int): String = "$remaining%"
+
+    fun resets(atMs: Long): String = "Resets ${TimeFormat.date(atMs)}"
+}
+
 object SettingsTags {
     const val ACCOUNT_ROW = "settings_account"
+    const val USAGE_CARD = "settings_usage"
     const val SIGN_OUT = "settings_sign_out"
     const val OLED_BLACK = "settings_oled_black"
     const val UNREAD_THIS_PHONE = "settings_unread_this_phone"
@@ -171,6 +186,8 @@ fun SettingsScreen(
                 )
             }
 
+            UsageSection(graph = graph, isDemo = isDemo)
+
             Group(SettingsCopy.GROUP_APPEARANCE)
             SettingsCard {
                 SettingsRow(
@@ -241,6 +258,53 @@ fun SettingsScreen(
         SettingsDebugSheet(graph = graph, isDemo = isDemo, extendedMode = extendedMode, open = uriHandler::openUri, onDismiss = { debugOpen = false })
     }
 }
+
+/**
+ * Included-model remaining, API remaining, and prepaid grant credits when we have them. Hidden until a snapshot
+ * exists so a signed-in install with Extended mode off does not grow Settings; the demo always has sample numbers.
+ */
+@Composable
+private fun UsageSection(graph: AppGraph, isDemo: Boolean) {
+    val colors = CursorTheme.colors
+    val type = CursorTheme.typography
+    val scope = rememberCoroutineScope()
+    val live by graph.usage.snapshot.collectAsStateWithLifecycle(initialValue = null, context = Dispatchers.Main.immediate)
+    val usage = if (isDemo) live ?: AccountUsage.SAMPLE else live
+    LifecycleResumeEffect(isDemo) {
+        if (!isDemo) scope.launch { runCatching { graph.usage.refresh() } }
+        onPauseOrDispose { }
+    }
+    if (usage == null || !usage.hasMeters) return
+    val reset = usage.billingCycleEndMs?.takeIf { it > 0L }?.let(UsageCopy::resets)
+    val rows = buildList {
+        usage.includedRemainingPercent?.let { remaining ->
+            add(UsageRow(UsageCopy.CURSOR_MODELS, listOfNotNull(UsageCopy.CURSOR_MODELS_DETAIL, reset).joinToString(" · "), UsageCopy.percent(remaining)))
+        }
+        usage.apiRemainingPercent?.let { remaining ->
+            add(UsageRow(UsageCopy.API_USAGE, reset, UsageCopy.percent(remaining)))
+        }
+        usage.creditBalanceCents?.let { cents ->
+            add(UsageRow(UsageCopy.CREDITS, UsageCopy.CREDITS_DETAIL, AccountUsage.formatCredits(cents)))
+        }
+    }
+    if (rows.isEmpty()) return
+    Group(SettingsCopy.GROUP_USAGE)
+    SettingsCard(Modifier.testTag(SettingsTags.USAGE_CARD)) {
+        rows.forEachIndexed { index, row ->
+            if (index > 0) HairlineDivider()
+            SettingsRow(
+                title = row.title,
+                description = row.description,
+                role = null,
+                trailing = {
+                    Text(row.value, style = type.base, color = colors.textTertiary, maxLines = 1)
+                },
+            )
+        }
+    }
+}
+
+private data class UsageRow(val title: String, val description: String?, val value: String)
 
 /**
  * Who is signed in — the avatar, the name, the address — with the way out of the account (or the demo) at the row's

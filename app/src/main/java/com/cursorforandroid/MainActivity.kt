@@ -30,6 +30,7 @@ import com.cursorforandroid.ui.shortcuts.LocalKeyboardShortcuts
 import com.cursorforandroid.ui.theme.AppNightMode
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.ui.theme.ThemeMode
+import com.cursorforandroid.notifications.UsageNotifications
 import com.cursorforandroid.update.UpdateNotifications
 import com.cursorforandroid.util.DeepLinks
 import kotlinx.coroutines.launch
@@ -44,6 +45,9 @@ class MainActivity : ComponentActivity() {
 
     /** Set by an [ACTION_SEARCH] launch (the widget's corner button); the nav host opens the sidebar's search and clears it. */
     private var pendingSearch by mutableStateOf(false)
+
+    /** Set by a usage-reset notification; the nav host opens Settings and clears it. */
+    private var pendingSettings by mutableStateOf(false)
 
     /**
      * The hardware keyboard's shortcuts: read by the shell before the IME is given the key (`Modifier.shortcutsBeforeIme`),
@@ -92,6 +96,11 @@ class MainActivity : ComponentActivity() {
                             pendingSearch = false
                             DeepLinks.clearAction(intent, ACTION_SEARCH)
                         },
+                        settingsRequested = pendingSettings,
+                        onSettingsConsumed = {
+                            pendingSettings = false
+                            DeepLinks.clearAction(intent, UsageNotifications.ACTION_OPEN_SETTINGS)
+                        },
                     )
                 }
             }
@@ -131,13 +140,14 @@ class MainActivity : ComponentActivity() {
     }
 
     /**
-     * Takes what the intent asks for: a chat to open, the New Chat pane, the sidebar's search, a share to draft, or an update to finish
-     * installing.
+     * Takes what the intent asks for: a chat to open, the New Chat pane, the sidebar's search, Settings (a usage-reset
+     * notification), a share to draft, or an update to finish installing.
      */
     private fun readRequests(intent: Intent?) {
         DeepLinks.agentId(intent)?.let { pendingAgentId = it }
         if (intent?.action == ACTION_NEW_CHAT) pendingNewChat = true
         if (intent?.action == ACTION_SEARCH) pendingSearch = true
+        if (intent?.action == UsageNotifications.ACTION_OPEN_SETTINGS) pendingSettings = true
         appGraph.share.receive(intent) { ShareIntent.clear(intent) }
         resumeUpdateIfAsked(intent)
     }
