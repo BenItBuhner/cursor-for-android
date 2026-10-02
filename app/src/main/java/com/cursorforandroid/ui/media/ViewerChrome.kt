@@ -1,7 +1,10 @@
 package com.cursorforandroid.ui.media
 
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
@@ -25,6 +28,10 @@ import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -33,7 +40,9 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -349,6 +358,36 @@ internal fun SaveButton(state: MediaSaves.State, onClick: () -> Unit, modifier: 
 private enum class SavePhase { Idle, Working, Saved, Failed }
 
 private fun percentOf(fraction: Float): Int = (fraction.coerceIn(0f, 1f) * 100).toInt()
+
+/**
+ * What a key just did to the recording — "+10 s", "1.25×", "Muted" — on a dark pill under the top bar, as the hold's
+ * "2×" is drawn; [text] null fades it out. Part of the player, read out politely to a screen reader.
+ */
+@Composable
+internal fun KeyReadout(text: String?, modifier: Modifier = Modifier) {
+    var shown by remember { mutableStateOf(text.orEmpty()) }
+    if (text != null) shown = text
+    AnimatedVisibility(
+        visible = text != null,
+        enter = fadeIn(tween(ReadoutFadeMillis)),
+        exit = fadeOut(tween(ReadoutFadeMillis)),
+        modifier = modifier,
+    ) {
+        Text(
+            shown,
+            style = CursorTheme.typography.small.copy(fontWeight = FontWeight.SemiBold),
+            color = Color.White,
+            maxLines = 1,
+            modifier = Modifier
+                .background(Color.Black.copy(alpha = 0.6f), CursorTheme.shapes.full)
+                .padding(horizontal = 12.dp, vertical = 6.dp)
+                .semantics { liveRegion = LiveRegionMode.Polite }
+                .testTag("viewer-key-readout"),
+        )
+    }
+}
+
+private const val ReadoutFadeMillis = 120
 
 /**
  * A word from the viewer to the reader — saved, couldn't share — as a pill over the bottom of the page, with an

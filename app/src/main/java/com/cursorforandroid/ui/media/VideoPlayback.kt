@@ -130,6 +130,26 @@ class VideoPlayback(val player: Player) : Player.Listener {
         applySpeed(selectedSpeed)
     }
 
+    /**
+     * One of [KEY_SPEEDS] slower or faster than the rate picked, as the keyboard's < and > step it; the rate it plays
+     * at now, unchanged at either end. A pick off the steps (the menu's 4×) steps to the nearest one past it.
+     */
+    fun stepSpeed(faster: Boolean): Float {
+        val next = if (faster) KEY_SPEEDS.firstOrNull { it > selectedSpeed } else KEY_SPEEDS.lastOrNull { it < selectedSpeed }
+        if (next != null) selectSpeed(next)
+        return selectedSpeed
+    }
+
+    /** [deltaMs] on from where it is (back when negative), held inside the recording; a scrub under way is left alone. */
+    fun seekBy(deltaMs: Long) {
+        if (scrubbingToMs != null) return
+        val from = player.currentPosition.coerceAtLeast(0L)
+        val end = durationMs.takeIf { it > 0L } ?: Long.MAX_VALUE
+        val target = (from + deltaMs).coerceIn(0L, end)
+        player.seekTo(target)
+        positionMs = target
+    }
+
     private fun applySpeed(rate: Float) {
         // Pitch 1 keeps voices natural at any rate: ExoPlayer time-stretches the sound (Sonic) instead of resampling it.
         player.playbackParameters = PlaybackParameters(rate, 1f)
@@ -205,6 +225,9 @@ class VideoPlayback(val player: Player) : Player.Listener {
     companion object {
         /** The rates the speed menu offers, slowest first. */
         val SPEEDS = listOf(0.5f, 1f, 2f, 4f)
+
+        /** The rates the keyboard's < and > step through ([stepSpeed]), slowest first, as YouTube's are. */
+        val KEY_SPEEDS = listOf(0.25f, 0.5f, 0.75f, 1f, 1.25f, 1.5f, 1.75f, 2f)
 
         /** What a finger held on a playing page plays at. */
         const val HOLD_SPEED = 2f
