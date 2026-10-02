@@ -380,6 +380,8 @@ internal fun KeyReadout(text: String?, modifier: Modifier = Modifier) {
             maxLines = 1,
             modifier = Modifier
                 .background(Color.Black.copy(alpha = 0.6f), CursorTheme.shapes.full)
+                // Tinted as the speed pill is, so the pill still shows over the black letterbox, not only over a frame.
+                .background(Color.White.copy(alpha = 0.14f), CursorTheme.shapes.full)
                 .padding(horizontal = 12.dp, vertical = 6.dp)
                 .semantics { liveRegion = LiveRegionMode.Polite }
                 .testTag("viewer-key-readout"),
