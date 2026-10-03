@@ -1,0 +1,22 @@
+{
+  "src/styles/theme.css": {
+    "before": "body {\n  margin: 0;\n  font-family: system-ui, sans-serif;\n  background: #fff;\n  color: #111827;\n}\n",
+    "after": ":root {\n  --bg: #fff;\n  --fg: #111827;\n}\n\n[data-theme=\"dark\"] {\n  --bg: #0b0d12;\n  --fg: #e5e7eb;\n}\n\nbody {\n  margin: 0;\n  font-family: system-ui, sans-serif;\n  background: var(--bg);\n  color: var(--fg);\n}\n"
+  },
+  "src/hooks/useTheme.ts": {
+    "before": "",
+    "after": "import { useEffect, useState } from \"react\";\n\nexport type Theme = \"light\" | \"dark\";\n\nconst saved = (): Theme =>\n  localStorage.theme === \"dark\" ? \"dark\" : \"light\";\n\nexport function useTheme() {\n  const [theme, setTheme] = useState(saved);\n\n  useEffect(() => {\n    const root = document.documentElement;\n    root.dataset.theme = theme;\n    localStorage.theme = theme;\n  }, [theme]);\n\n  return [theme, setTheme] as const;\n}\n"
+  },
+  "src/components/ThemeToggle.tsx": {
+    "before": "",
+    "after": "import { Moon, Sun } from \"lucide-react\";\nimport { useTheme } from \"../hooks/useTheme\";\n\nexport function ThemeToggle() {\n  const [theme, setTheme] = useTheme();\n  const dark = theme === \"dark\";\n\n  return (\n    <button\n      className=\"icon-button\"\n      aria-label=\"Toggle dark mode\"\n      aria-pressed={dark}\n      onClick={() => setTheme(dark ? \"light\" : \"dark\")}\n    >\n      {dark ? <Sun size={16} /> : <Moon size={16} />}\n    </button>\n  );\n}\n"
+  },
+  "src/components/Header.tsx": {
+    "before": "import { Logo } from \"./Logo\";\nimport { SearchBox } from \"./SearchBox\";\nimport { UserMenu } from \"./UserMenu\";\n\nexport function Header() {\n  return (\n    <header className=\"header\">\n      <Logo />\n      <SearchBox />\n      <UserMenu />\n    </header>\n  );\n}\n",
+    "after": "import { Logo } from \"./Logo\";\nimport { SearchBox } from \"./SearchBox\";\nimport { ThemeToggle } from \"./ThemeToggle\";\nimport { UserMenu } from \"./UserMenu\";\n\nexport function Header() {\n  return (\n    <header className=\"header\">\n      <Logo />\n      <SearchBox />\n      <ThemeToggle />\n      <UserMenu />\n    </header>\n  );\n}\n"
+  },
+  "src/hooks/useTheme.ts#system": {
+    "before": "import { useEffect, useState } from \"react\";\n\nexport type Theme = \"light\" | \"dark\";\n\nconst saved = (): Theme =>\n  localStorage.theme === \"dark\" ? \"dark\" : \"light\";\n\nexport function useTheme() {\n  const [theme, setTheme] = useState(saved);\n\n  useEffect(() => {\n    const root = document.documentElement;\n    root.dataset.theme = theme;\n    localStorage.theme = theme;\n  }, [theme]);\n\n  return [theme, setTheme] as const;\n}\n",
+    "after": "import { useEffect, useState } from \"react\";\n\nexport type Theme = \"light\" | \"dark\";\n\nconst query = \"(prefers-color-scheme: dark)\";\n\nconst system = (): Theme =>\n  matchMedia(query).matches ? \"dark\" : \"light\";\n\nconst saved = (): Theme | null => {\n  const t = localStorage.theme;\n  return t === \"dark\" || t === \"light\" ? t : null;\n};\n\nexport function useTheme() {\n  const [choice, setChoice] = useState(saved);\n  const [os, setOs] = useState(system);\n  const theme = choice ?? os;\n\n  useEffect(() => {\n    const media = matchMedia(query);\n    const follow = () => setOs(system());\n    media.addEventListener(\"change\", follow);\n    return () =>\n      media.removeEventListener(\"change\", follow);\n  }, []);\n\n  useEffect(() => {\n    const root = document.documentElement;\n    root.dataset.theme = theme;\n    if (choice) localStorage.theme = choice;\n  }, [theme, choice]);\n\n  return [theme, setChoice] as const;\n}\n"
+  }
+}

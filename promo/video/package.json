@@ -1,0 +1,34 @@
+{
+  "name": "cursor-for-android-launch-video",
+  "private": true,
+  "description": "The launch video for Cursor for Android, cut from the capture's takes (promo/capture) with Remotion.",
+  "type": "module",
+  "scripts": {
+    "footage": "node scripts/footage.mjs",
+    "music": "tsx scripts/cues.ts && python3 scripts/music.py public/audio/score.wav",
+    "music:film": "tsx scripts/film-cues.ts && python3 scripts/music.py public/audio/film-score.wav film-cues.json",
+    "studio": "remotion studio",
+    "typecheck": "tsc --noEmit",
+    "render": "tsx scripts/render.ts",
+    "render:film": "tsx scripts/render-film.ts"
+  },
+  "dependencies": {
+    "@react-three/drei": "9.114.0",
+    "@react-three/fiber": "8.17.10",
+    "@react-three/postprocessing": "2.16.3",
+    "@remotion/cli": "4.0.529",
+    "@remotion/google-fonts": "4.0.529",
+    "@remotion/three": "4.0.529",
+    "postprocessing": "6.36.4",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "remotion": "4.0.529",
+    "three": "0.169.0"
+  },
+  "devDependencies": {
+    "@types/react": "18.3.12",
+    "@types/three": "0.169.0",
+    "tsx": "4.19.2",
+    "typescript": "5.6.3"
+  }
+}

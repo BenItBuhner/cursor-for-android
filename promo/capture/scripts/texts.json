@@ -1,0 +1,9 @@
+{
+  "hero.prompt": "Add dark mode to the dashboard",
+  "hero.intro": "I'll move the colors into theme tokens, add a dark palette, and put a toggle in the header.",
+  "hero.steer.prompt": "Follow the system theme too",
+  "hero.adapt": "Got it. Dark mode will follow the system setting, and the toggle overrides it.",
+  "hero.final": "Dark mode is in. It follows the system theme, and the header toggle overrides it.\n\nTests and checks pass. Opened PR #221.",
+  "any.think": "Let me look at the relevant files before changing anything.",
+  "any.final": "Done. This is the demo backend, so nothing left the device."
+}

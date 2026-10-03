@@ -1,0 +1,510 @@
+{
+ "texts": {
+  "hero.prompt": {
+   "tokens": 6,
+   "pieces": [
+    [
+     "Add",
+     1
+    ],
+    [
+     " dark",
+     1
+    ],
+    [
+     " mode",
+     1
+    ],
+    [
+     " to",
+     1
+    ],
+    [
+     " the",
+     1
+    ],
+    [
+     " dashboard",
+     1
+    ]
+   ]
+  },
+  "hero.intro": {
+   "tokens": 21,
+   "pieces": [
+    [
+     "I'll",
+     1
+    ],
+    [
+     " move",
+     1
+    ],
+    [
+     " the",
+     1
+    ],
+    [
+     " colors",
+     1
+    ],
+    [
+     " into",
+     1
+    ],
+    [
+     " theme",
+     1
+    ],
+    [
+     " tokens",
+     1
+    ],
+    [
+     ",",
+     1
+    ],
+    [
+     " add",
+     1
+    ],
+    [
+     " a",
+     1
+    ],
+    [
+     " dark",
+     1
+    ],
+    [
+     " palette",
+     1
+    ],
+    [
+     ",",
+     1
+    ],
+    [
+     " and",
+     1
+    ],
+    [
+     " put",
+     1
+    ],
+    [
+     " a",
+     1
+    ],
+    [
+     " toggle",
+     1
+    ],
+    [
+     " in",
+     1
+    ],
+    [
+     " the",
+     1
+    ],
+    [
+     " header",
+     1
+    ],
+    [
+     ".",
+     1
+    ]
+   ]
+  },
+  "hero.steer.prompt": {
+   "tokens": 5,
+   "pieces": [
+    [
+     "Follow",
+     1
+    ],
+    [
+     " the",
+     1
+    ],
+    [
+     " system",
+     1
+    ],
+    [
+     " theme",
+     1
+    ],
+    [
+     " too",
+     1
+    ]
+   ]
+  },
+  "hero.adapt": {
+   "tokens": 17,
+   "pieces": [
+    [
+     "Got",
+     1
+    ],
+    [
+     " it",
+     1
+    ],
+    [
+     ".",
+     1
+    ],
+    [
+     " Dark",
+     1
+    ],
+    [
+     " mode",
+     1
+    ],
+    [
+     " will",
+     1
+    ],
+    [
+     " follow",
+     1
+    ],
+    [
+     " the",
+     1
+    ],
+    [
+     " system",
+     1
+    ],
+    [
+     " setting",
+     1
+    ],
+    [
+     ",",
+     1
+    ],
+    [
+     " and",
+     1
+    ],
+    [
+     " the",
+     1
+    ],
+    [
+     " toggle",
+     1
+    ],
+    [
+     " overrides",
+     1
+    ],
+    [
+     " it",
+     1
+    ],
+    [
+     ".",
+     1
+    ]
+   ]
+  },
+  "hero.final": {
+   "tokens": 29,
+   "pieces": [
+    [
+     "Dark",
+     1
+    ],
+    [
+     " mode",
+     1
+    ],
+    [
+     " is",
+     1
+    ],
+    [
+     " in",
+     1
+    ],
+    [
+     ".",
+     1
+    ],
+    [
+     " It",
+     1
+    ],
+    [
+     " follows",
+     1
+    ],
+    [
+     " the",
+     1
+    ],
+    [
+     " system",
+     1
+    ],
+    [
+     " theme",
+     1
+    ],
+    [
+     ",",
+     1
+    ],
+    [
+     " and",
+     1
+    ],
+    [
+     " the",
+     1
+    ],
+    [
+     " header",
+     1
+    ],
+    [
+     " toggle",
+     1
+    ],
+    [
+     " overrides",
+     1
+    ],
+    [
+     " it",
+     1
+    ],
+    [
+     ".\n\n",
+     1
+    ],
+    [
+     "Tests",
+     1
+    ],
+    [
+     " and",
+     1
+    ],
+    [
+     " checks",
+     1
+    ],
+    [
+     " pass",
+     1
+    ],
+    [
+     ".",
+     1
+    ],
+    [
+     " Open",
+     1
+    ],
+    [
+     "ed",
+     1
+    ],
+    [
+     " PR",
+     1
+    ],
+    [
+     " #",
+     1
+    ],
+    [
+     "221",
+     1
+    ],
+    [
+     ".",
+     1
+    ]
+   ]
+  },
+  "any.think": {
+   "tokens": 11,
+   "pieces": [
+    [
+     "Let",
+     1
+    ],
+    [
+     " me",
+     1
+    ],
+    [
+     " look",
+     1
+    ],
+    [
+     " at",
+     1
+    ],
+    [
+     " the",
+     1
+    ],
+    [
+     " relevant",
+     1
+    ],
+    [
+     " files",
+     1
+    ],
+    [
+     " before",
+     1
+    ],
+    [
+     " changing",
+     1
+    ],
+    [
+     " anything",
+     1
+    ],
+    [
+     ".",
+     1
+    ]
+   ]
+  },
+  "any.final": {
+   "tokens": 14,
+   "pieces": [
+    [
+     "Done",
+     1
+    ],
+    [
+     ".",
+     1
+    ],
+    [
+     " This",
+     1
+    ],
+    [
+     " is",
+     1
+    ],
+    [
+     " the",
+     1
+    ],
+    [
+     " demo",
+     1
+    ],
+    [
+     " backend",
+     1
+    ],
+    [
+     ",",
+     1
+    ],
+    [
+     " so",
+     1
+    ],
+    [
+     " nothing",
+     1
+    ],
+    [
+     " left",
+     1
+    ],
+    [
+     " the",
+     1
+    ],
+    [
+     " device",
+     1
+    ],
+    [
+     ".",
+     1
+    ]
+   ]
+  }
+ },
+ "edits": {
+  "src/styles/theme.css": {
+   "path": "src/styles/theme.css",
+   "diff": "@@ -1,6 +1,16 @@\n+:root {\n+  --bg: #fff;\n+  --fg: #111827;\n+}\n+\n+[data-theme=\"dark\"] {\n+  --bg: #0b0d12;\n+  --fg: #e5e7eb;\n+}\n+\n body {\n   margin: 0;\n   font-family: system-ui, sans-serif;\n-  background: #fff;\n-  color: #111827;\n+  background: var(--bg);\n+  color: var(--fg);\n }",
+   "added": 12,
+   "removed": 2,
+   "tokens": 62
+  },
+  "src/hooks/useTheme.ts": {
+   "path": "src/hooks/useTheme.ts",
+   "diff": "@@ -0,0 +1,18 @@\n+import { useEffect, useState } from \"react\";\n+\n+export type Theme = \"light\" | \"dark\";\n+\n+const saved = (): Theme =>\n+  localStorage.theme === \"dark\" ? \"dark\" : \"light\";\n+\n+export function useTheme() {\n+  const [theme, setTheme] = useState(saved);\n+\n+  useEffect(() => {\n+    const root = document.documentElement;\n+    root.dataset.theme = theme;\n+    localStorage.theme = theme;\n+  }, [theme]);\n+\n+  return [theme, setTheme] as const;\n+}",
+   "added": 18,
+   "removed": 0,
+   "tokens": 109
+  },
+  "src/components/ThemeToggle.tsx": {
+   "path": "src/components/ThemeToggle.tsx",
+   "diff": "@@ -0,0 +1,18 @@\n+import { Moon, Sun } from \"lucide-react\";\n+import { useTheme } from \"../hooks/useTheme\";\n+\n+export function ThemeToggle() {\n+  const [theme, setTheme] = useTheme();\n+  const dark = theme === \"dark\";\n+\n+  return (\n+    <button\n+      className=\"icon-button\"\n+      aria-label=\"Toggle dark mode\"\n+      aria-pressed={dark}\n+      onClick={() => setTheme(dark ? \"light\" : \"dark\")}\n+    >\n+      {dark ? <Sun size={16} /> : <Moon size={16} />}\n+    </button>\n+  );\n+}",
+   "added": 18,
+   "removed": 0,
+   "tokens": 124
+  },
+  "src/components/Header.tsx": {
+   "path": "src/components/Header.tsx",
+   "diff": "@@ -1,5 +1,6 @@\n import { Logo } from \"./Logo\";\n import { SearchBox } from \"./SearchBox\";\n+import { ThemeToggle } from \"./ThemeToggle\";\n import { UserMenu } from \"./UserMenu\";\n \n export function Header() {\n@@ -7,6 +8,7 @@\n     <header className=\"header\">\n       <Logo />\n       <SearchBox />\n+      <ThemeToggle />\n       <UserMenu />\n     </header>\n   );",
+   "added": 2,
+   "removed": 0,
+   "tokens": 15
+  },
+  "src/hooks/useTheme.ts#system": {
+   "path": "src/hooks/useTheme.ts",
+   "diff": "@@ -2,17 +2,34 @@\n \n export type Theme = \"light\" | \"dark\";\n \n-const saved = (): Theme =>\n-  localStorage.theme === \"dark\" ? \"dark\" : \"light\";\n+const query = \"(prefers-color-scheme: dark)\";\n+\n+const system = (): Theme =>\n+  matchMedia(query).matches ? \"dark\" : \"light\";\n+\n+const saved = (): Theme | null => {\n+  const t = localStorage.theme;\n+  return t === \"dark\" || t === \"light\" ? t : null;\n+};\n \n export function useTheme() {\n-  const [theme, setTheme] = useState(saved);\n+  const [choice, setChoice] = useState(saved);\n+  const [os, setOs] = useState(system);\n+  const theme = choice ?? os;\n+\n+  useEffect(() => {\n+    const media = matchMedia(query);\n+    const follow = () => setOs(system());\n+    media.addEventListener(\"change\", follow);\n+    return () =>\n+      media.removeEventListener(\"change\", follow);\n+  }, []);\n \n   useEffect(() => {\n     const root = document.documentElement;\n     root.dataset.theme = theme;\n-    localStorage.theme = theme;\n-  }, [theme]);\n+    if (choice) localStorage.theme = choice;\n+  }, [theme, choice]);\n \n-  return [theme, setTheme] as const;\n+  return [theme, setChoice] as const;\n }",
+   "added": 23,
+   "removed": 6,
+   "tokens": 183
+  }
+ },
+ "pr": {
+  "src/styles/theme.css": {
+   "diff": "@@ -1,6 +1,16 @@\n+:root {\n+  --bg: #fff;\n+  --fg: #111827;\n+}\n+\n+[data-theme=\"dark\"] {\n+  --bg: #0b0d12;\n+  --fg: #e5e7eb;\n+}\n+\n body {\n   margin: 0;\n   font-family: system-ui, sans-serif;\n-  background: #fff;\n-  color: #111827;\n+  background: var(--bg);\n+  color: var(--fg);\n }",
+   "added": 12,
+   "removed": 2
+  },
+  "src/hooks/useTheme.ts": {
+   "diff": "@@ -0,0 +1,35 @@\n+import { useEffect, useState } from \"react\";\n+\n+export type Theme = \"light\" | \"dark\";\n+\n+const query = \"(prefers-color-scheme: dark)\";\n+\n+const system = (): Theme =>\n+  matchMedia(query).matches ? \"dark\" : \"light\";\n+\n+const saved = (): Theme | null => {\n+  const t = localStorage.theme;\n+  return t === \"dark\" || t === \"light\" ? t : null;\n+};\n+\n+export function useTheme() {\n+  const [choice, setChoice] = useState(saved);\n+  const [os, setOs] = useState(system);\n+  const theme = choice ?? os;\n+\n+  useEffect(() => {\n+    const media = matchMedia(query);\n+    const follow = () => setOs(system());\n+    media.addEventListener(\"change\", follow);\n+    return () =>\n+      media.removeEventListener(\"change\", follow);\n+  }, []);\n+\n+  useEffect(() => {\n+    const root = document.documentElement;\n+    root.dataset.theme = theme;\n+    if (choice) localStorage.theme = choice;\n+  }, [theme, choice]);\n+\n+  return [theme, setChoice] as const;\n+}",
+   "added": 35,
+   "removed": 0
+  },
+  "src/components/ThemeToggle.tsx": {
+   "diff": "@@ -0,0 +1,18 @@\n+import { Moon, Sun } from \"lucide-react\";\n+import { useTheme } from \"../hooks/useTheme\";\n+\n+export function ThemeToggle() {\n+  const [theme, setTheme] = useTheme();\n+  const dark = theme === \"dark\";\n+\n+  return (\n+    <button\n+      className=\"icon-button\"\n+      aria-label=\"Toggle dark mode\"\n+      aria-pressed={dark}\n+      onClick={() => setTheme(dark ? \"light\" : \"dark\")}\n+    >\n+      {dark ? <Sun size={16} /> : <Moon size={16} />}\n+    </button>\n+  );\n+}",
+   "added": 18,
+   "removed": 0
+  },
+  "src/components/Header.tsx": {
+   "diff": "@@ -1,5 +1,6 @@\n import { Logo } from \"./Logo\";\n import { SearchBox } from \"./SearchBox\";\n+import { ThemeToggle } from \"./ThemeToggle\";\n import { UserMenu } from \"./UserMenu\";\n \n export function Header() {\n@@ -7,6 +8,7 @@\n     <header className=\"header\">\n       <Logo />\n       <SearchBox />\n+      <ThemeToggle />\n       <UserMenu />\n     </header>\n   );",
+   "added": 2,
+   "removed": 0
+  }
+ }
+}
